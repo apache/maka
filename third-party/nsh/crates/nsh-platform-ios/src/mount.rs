@@ -1,12 +1,7 @@
 //! Applies mount batches to UIKit views and owns the per-surface native
 //! state: views, animation graph, image loads and gesture recognizers.
 
-use std::{
-    cell::{Cell, RefCell},
-    ptr::NonNull,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{cell::RefCell, ptr::NonNull, sync::Arc};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
@@ -22,21 +17,17 @@ use nsh_core::{
 };
 use nsh_engine::EngineControl;
 use objc2::{
-    MainThreadMarker, MainThreadOnly, Message,
-    rc::Retained,
-    runtime::{AnyObject, ProtocolObject},
-    sel,
+    MainThreadMarker, MainThreadOnly, Message, rc::Retained, runtime::ProtocolObject, sel,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_quartz_core::{CAAnimation, CALayer, CAMediaTiming, CATransform3D};
 use objc2_ui_kit::{
     UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIControlEvents, UIDevice,
-    UIFocusEnvironment, UIFocusSystem, UIGestureRecognizer, UIGestureRecognizerState,
-    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIRefreshControl,
-    UIRotationGestureRecognizer, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
-    UIScrollViewKeyboardDismissMode, UITraitEnvironment, UIUserInterfaceIdiom, UIView,
-    UIViewAnimationOptions, UIViewControllerTransitionCoordinator,
-    UIViewControllerTransitionCoordinatorContext,
+    UIGestureRecognizer, UIGestureRecognizerState, UIPanGestureRecognizer,
+    UIPinchGestureRecognizer, UIRefreshControl, UIRotationGestureRecognizer, UIScrollView,
+    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewKeyboardDismissMode,
+    UITraitEnvironment, UIUserInterfaceIdiom, UIView, UIViewAnimationOptions,
+    UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
 
 use crate::{
@@ -176,19 +167,7 @@ enum Refresh {
     Custom {
         spinner: Option<Retained<UIActivityIndicatorView>>,
         refreshing: bool,
-        /// Qualification of the already-scheduled native reveal task.
-        reveal_pending: Rc<Cell<bool>>,
-        /// Latest (resting inset, refresh room) for a queued reveal.
-        reveal_geometry: Rc<Cell<(CGFloat, CGFloat)>>,
     },
-}
-
-impl Drop for Refresh {
-    fn drop(&mut self) {
-        if let Self::Custom { reveal_pending, .. } = self {
-            reveal_pending.set(false);
-        }
-    }
 }
 
 /// Lays UIKit's own content of `view` (controls, navigation bars, text
@@ -514,6 +493,9 @@ struct Slot {
     tracked: u16,
     /// Current interaction states.
     states: u16,
+    /// A style was applied before: a view's first style does not transition
+    /// from the defaults, as in `nsh_core`'s `transition::restyle`.
+    styled: bool,
 }
 
 impl Slot {
@@ -562,6 +544,7 @@ impl Slot {
             image_shown: false,
             tracked: 0,
             states: 0,
+            styled: false,
         }
     }
 }
@@ -588,6 +571,8 @@ pub(crate) struct Mounter {
     target: Retained<EventTarget>,
     animator: Animator,
     images: ImageLoader,
+    /// The engine's sounds and players ([`crate::audio`]).
+    audio: crate::audio::Speaker,
     /// What the app may reach (web view navigations check it).
     access: std::sync::Arc<nsh_engine::Access>,
     control: EngineControl,
@@ -717,6 +702,7 @@ impl Mounter {
                 },
                 access.clone(),
             ),
+            audio: Default::default(),
             control,
             access,
             shared,
@@ -765,9 +751,19 @@ impl Mounter {
     /// Measures the surface's frames and commits with a performance
     /// monitor ([`crate::fps`]) from now on.
     pub(crate) fn measure(&mut self) {
+        if self.fps.is_some() {
+            return;
+        }
         let fps = crate::fps::Fps::start(self.mtm);
         self.control.set_perf_monitor(Some(fps.monitor.clone()));
         self.fps = Some(fps);
+    }
+
+    /// Stops measuring ([`Mounter::measure`]).
+    fn stop_measuring(&mut self) {
+        if self.fps.take().is_some() {
+            self.control.set_perf_monitor(None);
+        }
     }
 
     pub(crate) fn apply(&mut self, batch: MountBatch) {
@@ -982,12 +978,9 @@ impl Mounter {
                         id,
                         self.control.clone(),
                     ))),
-                    ViewKind::Modal => Native::Modal(Box::new(ModalHost::new(
-                        self.mtm,
-                        id,
-                        self.control.clone(),
-                        self.target.clone(),
-                    ))),
+                    ViewKind::Modal => {
+                        Native::Modal(Box::new(ModalHost::new(self.mtm, id, self.control.clone())))
+                    }
                     ViewKind::HeaderItem => Native::HeaderItem(NshView::new(self.mtm)),
                     ViewKind::InputAccessory => Native::InputAccessory(NshView::new(self.mtm)),
                     ViewKind::Canvas => Native::Canvas(crate::canvas::CanvasView::new(self.mtm)),
@@ -1047,77 +1040,34 @@ impl Mounter {
                 parent,
                 child,
                 before,
-            } => self.insert(parent, child, before),
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
             } => {
-                let before = following
-                    .into_iter()
-                    .find(|&anchor| self.root_anchor(parent, id, anchor));
-                self.insert(parent, id, before);
-            }
-            MountItem::RetireListCell { id, request, roots } => {
-                // Earlier items can synchronously enqueue native callbacks
-                // while mount holds its borrow. They belong before the ACK.
-                let target = self.target.clone();
-                target.drain_deferred(self);
-                let path = self.retirement_focus_path(&roots);
-                let retired = !roots.iter().any(|root| path.contains(root));
-                if retired {
-                    let mut stacks: Vec<_> = roots
-                        .iter()
-                        .filter_map(|root| {
-                            matches!(
-                                self.slot(*root).map(|slot| &slot.native),
-                                Some(Native::Screen(_))
-                            )
-                            .then(|| self.hosts.get(root).copied())
-                            .flatten()
-                        })
-                        .collect();
-                    stacks.sort_unstable();
-                    stacks.dedup();
-                    for stack in stacks {
-                        if matches!(self.slot(stack).map(|slot| &slot.native),
-                            Some(Native::Stack(host)) if host.nav.transitionCoordinator().is_none())
-                        {
-                            self.report_popped(stack);
-                        }
-                    }
-                    // Core supplies the entire logical group's native roots.
-                    // Complete the focus check before changing any member.
-                    for root in &roots {
-                        if let Some(view) = self.slot(*root).map(|s| s.native.view().retain()) {
-                            self.retire_input(&view);
-                        }
-                    }
-                    let target = self.target.clone();
-                    target.without_callbacks(|| {
-                        for root in roots {
-                            self.park_retired_root(root);
-                        }
-                    });
+                if self.insert_hosted(parent, child, before) {
+                    return false;
                 }
-                self.control.set_focus_path(path);
-                self.control.retire_list_cell(id, request, retired);
-            }
-            MountItem::ListCellRetired { roots } => {
-                // Core accepted the ACK: cancellation of this assignment is
-                // no longer possible. SDK GC acts only on the old instance.
-                let target = self.target.clone();
-                target.without_callbacks(|| {
-                    for root in roots {
-                        if let Some(Slot {
-                            native: Native::Modal(modal),
-                            ..
-                        }) = self.slot_mut(root)
-                        {
-                            **modal = modal.confirmed_retirement();
-                        }
+                if self.disappearing.remove(&child)
+                    && let Some(c) = self.slot(child)
+                {
+                    // Back before its removal finished animating.
+                    c.native.view().layer().removeAllAnimations();
+                    apply_dynamic(c, &self.animator);
+                }
+                if let (Some(p), Some(c)) = (self.slot(parent), self.slot(child)) {
+                    let zoom = p.zoom_view();
+                    let p = zoom
+                        .as_deref()
+                        .unwrap_or(p.decor.container(p.native.view()));
+                    let c = c.native.view();
+                    match before.and_then(|b| self.slot(b)) {
+                        Some(b) => p.insertSubview_belowSubview(c, b.native.view()),
+                        None => p.addSubview(c),
                     }
-                });
+                }
+                let mirrored = self.slot(parent).is_some_and(|p| p.mirrored);
+                self.set_in_mirrored(child, mirrored);
+                if self.sticky.contains_key(&parent) {
+                    // New cells must not cover the pinned ones.
+                    self.front_sticky(parent);
+                }
             }
             MountItem::Remove { id } => {
                 if self.remove_hosted(id) {
@@ -1141,7 +1091,7 @@ impl Mounter {
                 self.disappearing.remove(&id);
                 self.target.scroll_deleted(id);
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
-                    self.areas.remove(i).1.detach();
+                    self.areas.remove(i).1.delete();
                 }
                 if let Some(mut s) = self.views.get_mut(id as usize).and_then(Option::take) {
                     // A modal deleted while presented (the app closed it and
@@ -1196,7 +1146,7 @@ impl Mounter {
                         old.origin,
                         CGSize::new(old.size.width.max(frame.size.width.0 as CGFloat), height),
                     ));
-                    if old.size.height != height && self.hosts.contains_key(&id) {
+                    if old.size.height != height {
                         let view = Retained::into_super(view.clone());
                         for slot in self.views.iter().flatten() {
                             if let Native::Input(input) = &slot.native
@@ -1467,19 +1417,6 @@ impl Mounter {
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
                     scroll.setContentInset(inset);
-                    if let Some(Refresh::Custom {
-                        refreshing: true,
-                        reveal_geometry,
-                        ..
-                    }) = &s.gestures.refresh
-                    {
-                        let lead = if b.refresh_indicator.is_some() {
-                            rest_top(scroll, b.content_inset.top.0 as CGFloat)
-                        } else {
-                            0.0
-                        };
-                        reveal_geometry.set((lead, b.refresh_inset().0 as CGFloat));
-                    }
                     // Zooming (UIKit asks the delegate for the zoom view).
                     scroll.setMinimumZoomScale(b.min_zoom as CGFloat);
                     scroll.setMaximumZoomScale(b.max_zoom.max(b.min_zoom) as CGFloat);
@@ -1618,16 +1555,13 @@ impl Mounter {
             }
             MountItem::Input { id, config } => {
                 let (target, mtm) = (self.target.clone(), self.mtm);
-                let accessory = config
-                    .accessory
-                    .filter(|a| self.hosts.contains_key(a))
-                    .and_then(|a| match self.slot(a) {
-                        Some(Slot {
-                            native: Native::InputAccessory(v),
-                            ..
-                        }) => Some(Retained::into_super(v.clone())),
-                        _ => None,
-                    });
+                let accessory = config.accessory.and_then(|a| match self.slot(a) {
+                    Some(Slot {
+                        native: Native::InputAccessory(v),
+                        ..
+                    }) => Some(Retained::into_super(v.clone())),
+                    _ => None,
+                });
                 if let Some(Slot {
                     native: Native::Input(input),
                     ..
@@ -1700,72 +1634,9 @@ impl Mounter {
             MountItem::Command { id, command } => self.command(id, command),
             // Hardware keyboards' shortcuts are not matched yet.
             MountItem::Keymap(keymap) => self.target.keymap().set(keymap),
+            MountItem::TreeOrder(_) | MountItem::ProjectStates { .. } => {}
         }
         false
-    }
-
-    fn root_anchor(&self, parent: NodeId, child: NodeId, anchor: NodeId) -> bool {
-        let (Some(child), Some(candidate)) = (self.slot(child), self.slot(anchor)) else {
-            return false;
-        };
-        let hosted = match (&child.native, &candidate.native) {
-            (Native::Screen(_), Native::Screen(_))
-            | (Native::HeaderItem(_), Native::HeaderItem(_))
-            | (Native::Modal(_), Native::Modal(_))
-            | (Native::InputAccessory(_), Native::InputAccessory(_)) => true,
-            (
-                Native::Screen(_)
-                | Native::HeaderItem(_)
-                | Native::Modal(_)
-                | Native::InputAccessory(_),
-                _,
-            ) => return false,
-            _ => false,
-        };
-        if hosted {
-            return self.hosts.get(&anchor) == Some(&parent);
-        }
-        let Some(parent) = self.slot(parent) else {
-            return false;
-        };
-        let zoom = parent.zoom_view();
-        let parent = zoom
-            .as_deref()
-            .unwrap_or(parent.decor.container(parent.native.view()));
-        candidate
-            .native
-            .view()
-            .superview()
-            .is_some_and(|native| std::ptr::eq::<UIView>(&*native, parent))
-    }
-
-    fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
-        if self.insert_hosted(parent, child, before) {
-            return;
-        }
-        if self.disappearing.remove(&child)
-            && let Some(c) = self.slot(child)
-        {
-            // Back before its removal finished animating.
-            c.native.view().layer().removeAllAnimations();
-            apply_dynamic(c, &self.animator);
-        }
-        if let (Some(p), Some(c)) = (self.slot(parent), self.slot(child)) {
-            let zoom = p.zoom_view();
-            let p = zoom
-                .as_deref()
-                .unwrap_or(p.decor.container(p.native.view()));
-            let c = c.native.view();
-            match before.and_then(|b| self.slot(b)) {
-                Some(b) => p.insertSubview_belowSubview(c, b.native.view()),
-                None => p.addSubview(c),
-            }
-        }
-        let mirrored = self.slot(parent).is_some_and(|p| p.mirrored);
-        self.set_in_mirrored(child, mirrored);
-        if self.sticky.contains_key(&parent) {
-            self.front_sticky(parent);
-        }
     }
 
     fn command(&mut self, id: NodeId, command: Command) {
@@ -1788,7 +1659,8 @@ impl Mounter {
                 | Command::GoForward
                 | Command::StopLoading
                 | Command::InjectJavaScript(_)
-                | Command::PostMessage(_)),
+                | Command::PostMessage(_)
+                | Command::Load(_)),
                 Native::Web(web),
             ) => web.command(&c),
             (Command::Seek(seconds), Native::Video(video)) => video.seek(seconds),
@@ -1855,8 +1727,28 @@ impl Mounter {
             ) if id == nsh_core::ROOT_ID => {
                 crate::picker::pick_images(request, asked, native.view(), &self.control);
             }
+            (Command::Notification(command), _) if id == nsh_core::ROOT_ID => {
+                crate::notifications::command(&self.control, &command);
+            }
+            (
+                Command::PickFiles {
+                    id: request,
+                    request: asked,
+                },
+                native,
+            ) if id == nsh_core::ROOT_ID => {
+                crate::picker::pick_files(request, asked, native.view(), &self.control);
+            }
             (Command::Speech(command), _) if id == nsh_core::ROOT_ID => {
                 crate::speech::command(&self.control, &command);
+            }
+            (Command::Audio(command), _) if id == nsh_core::ROOT_ID => {
+                use nsh_core::image::loader::AssetBase as Base;
+                let base = self.images.asset_base().map(|base| match base {
+                    crate::image::AssetBase::Http(url) => Base::Http(url.clone()),
+                    crate::image::AssetBase::Directory(dir) => Base::Directory(dir.clone()),
+                });
+                crate::audio::command(&self.audio, &self.control, &command, base.as_ref());
             }
             (Command::SetJsResponder { block }, _) => self.set_js_responder(id, block),
             (Command::SetSelection { start, end }, Native::Input(input)) => {
@@ -1864,6 +1756,8 @@ impl Mounter {
             }
             (Command::ClearJsResponder, _) => self.clear_js_responder(),
             (Command::Announce(text), _) => crate::system::announce(&text),
+            (Command::PerfMonitor(true), _) => self.measure(),
+            (Command::PerfMonitor(false), _) => self.stop_measuring(),
             (Command::Tokens(tokens), _) => self.alert_tint = crate::system::alert_tint(&tokens),
             (Command::ImageInfo { id, uri }, _) => self.images.info(id, &uri),
             (Command::SetClipboard(text), _) => crate::system::set_clipboard(&text),
@@ -1899,245 +1793,6 @@ impl Mounter {
             }
             (command, _) => log::warn!("{command:?} does not apply to view {id}"),
         }
-    }
-
-    /// Publishes UIKit's current focus without introducing a second focus
-    /// owner. This is also called on hardware focus-system notifications.
-    pub(crate) fn publish_focus_path(&self) {
-        self.control.set_focus_path(self.focus_path());
-    }
-
-    fn focus_path(&self) -> Vec<NodeId> {
-        let path = self.hardware_focus_path();
-        if !path.is_empty() {
-            return path;
-        }
-        // UIKit's keyboard editor can be first responder independently of
-        // the hardware-keyboard focus system. Validate the existing input
-        // callback's owner against the actual editor before using it.
-        if let Some(Slot {
-            native: Native::Input(input),
-            ..
-        }) = self.focused.and_then(|id| self.slot(id))
-            && input.editor_view().isFirstResponder()
-        {
-            return self.path_from_native(input.editor_view());
-        }
-        Vec::new()
-    }
-
-    fn hardware_focus_path(&self) -> Vec<NodeId> {
-        let Some(root) = self.slot(nsh_core::ROOT_ID) else {
-            return Vec::new();
-        };
-        let Some(system) =
-            UIFocusSystem::focusSystemForEnvironment(ProtocolObject::from_ref(root.native.view()))
-        else {
-            return Vec::new();
-        };
-        let Some(item) = system.focusedItem() else {
-            return Vec::new();
-        };
-        let object: &AnyObject = AsRef::<AnyObject>::as_ref(&*item);
-        if let Some(view) = object.downcast_ref::<UIView>() {
-            let path = self.path_from_native(view);
-            if !path.is_empty() {
-                return path;
-            }
-        }
-        // A custom focus item need not itself be a UIView.
-        let mut parent = item.parentFocusEnvironment();
-        while let Some(environment) = parent {
-            let object: &AnyObject = AsRef::<AnyObject>::as_ref(&*environment);
-            if let Some(controller) = object.downcast_ref::<crate::navigation::ModalController>()
-                && let Some(Slot {
-                    native: Native::Modal(modal),
-                    ..
-                }) = self.slot(controller.modal_id())
-                && std::ptr::eq(&*modal.controller, controller)
-            {
-                // UIKit sheet controls can live outside NSH's content view.
-                return self.path_from_native(&modal.view);
-            }
-            if let Some(view) = object.downcast_ref::<UIView>() {
-                let path = self.path_from_native(view);
-                if !path.is_empty() {
-                    return path;
-                }
-            }
-            parent = environment.parentFocusEnvironment();
-        }
-        Vec::new()
-    }
-
-    fn path_from_native(&self, view: &UIView) -> Vec<NodeId> {
-        let mut path = Vec::new();
-        let focused = view;
-        let mut current = Some(view.retain());
-        while let Some(view) = current {
-            let id = view.tag() as NodeId;
-            let slot = self
-                .slot(id)
-                .filter(|slot| std::ptr::eq::<UIView>(slot.native.view(), &*view));
-            if let Some(slot) = slot {
-                if let Native::Stack(stack) = &slot.native
-                    && focused.isDescendantOfView(&stack.nav.navigationBar())
-                    && let Some(screen) = stack.nav.topViewController().and_then(|controller| {
-                        controller
-                            .downcast::<crate::navigation::ScreenController>()
-                            .ok()
-                    })
-                {
-                    // UIKit's own back button is a sibling of Screen.view,
-                    // but dispatches to the currently shown native screen.
-                    let screen = screen.screen_id();
-                    if !path.contains(&screen) {
-                        path.push(screen);
-                    }
-                }
-                path.push(id);
-                if id == nsh_core::ROOT_ID {
-                    return path;
-                }
-            }
-            current = slot
-                .and_then(|_| self.hosts.get(&id))
-                .and_then(|&parent| self.slot(parent))
-                .map(|parent| parent.native.view().retain())
-                .or_else(|| view.superview());
-        }
-        // Focus belongs to another surface in the same window.
-        Vec::new()
-    }
-
-    fn retirement_focus_path(&self, roots: &[NodeId]) -> Vec<NodeId> {
-        let path = self.focus_path();
-        if roots.iter().any(|root| path.contains(root)) {
-            return path;
-        }
-        // Hosted web/native components can own a first responder without
-        // an Input delegate callback. Check only the retiring cell's live
-        // UIKit subtree; ordinary input events never scan the scene.
-        let mut pending: Vec<_> = roots
-            .iter()
-            .filter_map(|&root| self.slot(root).map(|slot| slot.native.view().retain()))
-            .collect();
-        while let Some(view) = pending.pop() {
-            if view.isFirstResponder() || view.isFocused() {
-                return self.path_from_native(&view);
-            }
-            pending.extend(view.subviews());
-        }
-        path
-    }
-
-    fn retire_input(&mut self, cell: &UIView) {
-        for (_, tracker) in &self.touch_trackers {
-            tracker.cancel_in(cell);
-        }
-        let active = |state| {
-            matches!(
-                state,
-                UIGestureRecognizerState::Began | UIGestureRecognizerState::Changed
-            )
-        };
-        let mut pending = vec![cell.retain()];
-        let mut recognizers = Vec::new();
-        let mut scrolls = Vec::new();
-        while let Some(view) = pending.pop() {
-            let id = view.tag() as NodeId;
-            let owned = self
-                .slot(id)
-                .is_some_and(|slot| std::ptr::eq::<UIView>(slot.native.view(), &*view));
-            if owned
-                && let Some(Refresh::Custom { reveal_pending, .. }) = self
-                    .slot(id)
-                    .and_then(|slot| slot.gestures.refresh.as_ref())
-            {
-                reveal_pending.set(false);
-            }
-            if let Some(gestures) = view.gestureRecognizers() {
-                for gesture in gestures {
-                    if let Some(press) = gesture.downcast_ref::<PressRecognizer>() {
-                        if let Some(link) = press.retire() {
-                            if let Some(link) = link {
-                                if link.events.contains(EventKind::PressUp) {
-                                    self.control.dispatch_event(
-                                        link.node,
-                                        EventKind::PressUp,
-                                        EventPayload::None,
-                                    );
-                                }
-                            } else if owned {
-                                self.press_changed(id, false);
-                            }
-                        }
-                    } else if owned && active(gesture.state()) {
-                        if let Some(pan) = gesture.downcast_ref::<UIPanGestureRecognizer>()
-                            && self
-                                .slot(id)
-                                .and_then(|slot| slot.gestures.pan.as_deref())
-                                .is_some_and(|current| std::ptr::eq(current, pan))
-                        {
-                            let parent = view.superview();
-                            self.pan(
-                                id,
-                                UIGestureRecognizerState::Cancelled,
-                                pan.translationInView(parent.as_deref()),
-                                pan.velocityInView(parent.as_deref()),
-                            );
-                        } else if let Some(pinch) =
-                            gesture.downcast_ref::<UIPinchGestureRecognizer>()
-                        {
-                            self.transform_gesture(
-                                id,
-                                false,
-                                UIGestureRecognizerState::Cancelled,
-                                pinch.scale(),
-                                pinch.velocity(),
-                            );
-                        } else if let Some(rotation) =
-                            gesture.downcast_ref::<UIRotationGestureRecognizer>()
-                        {
-                            self.transform_gesture(
-                                id,
-                                true,
-                                UIGestureRecognizerState::Cancelled,
-                                rotation.rotation(),
-                                rotation.velocity(),
-                            );
-                        } else if gesture
-                            .downcast_ref::<objc2_ui_kit::UIHoverGestureRecognizer>()
-                            .is_some()
-                        {
-                            self.hover(id, UIGestureRecognizerState::Cancelled, CGPoint::ZERO, 0);
-                        }
-                    }
-                    if gesture.isEnabled() {
-                        recognizers.push(gesture);
-                    }
-                }
-            }
-            if let Some(scroll) = view.downcast_ref::<UIScrollView>() {
-                scrolls.push(scroll.retain());
-            }
-            pending.extend(view.subviews());
-        }
-        // The final events above precede ACK on the original control. UIKit
-        // cancellation callbacks below cannot enqueue work behind that ACK.
-        self.target.without_callbacks(|| {
-            for gesture in recognizers {
-                gesture.setEnabled(false);
-                gesture.setEnabled(true);
-            }
-            for scroll in scrolls {
-                let enabled = scroll.isScrollEnabled();
-                scroll.setScrollEnabled(false);
-                scroll.setContentOffset_animated(scroll.contentOffset(), false);
-                scroll.setScrollEnabled(enabled);
-            }
-            cell.removeFromSuperview();
-        });
     }
 
     /// An input event, if the input listens to it.
@@ -2253,7 +1908,6 @@ impl Mounter {
         } else if self.focused == Some(id) {
             self.focused = None;
         }
-        self.publish_focus_path();
     }
 
     /// Return pressed in an input that submits (`submitBehavior`): reports
@@ -2726,11 +2380,14 @@ impl Mounter {
         let keyframes_changed = s.style.animation != style.animation;
         let blend_changed = s.style.blend_mode != style.blend_mode;
         let cursor_changed = s.style.cursor != style.cursor;
-        // Transitions apply to changes of a view already on screen.
+        // Transitions apply to changes of a view already on screen, not to
+        // its first style: there is nothing to transition from (`nsh_core`'s
+        // `transition::restyle` and Android's mounter skip it the same way).
         let transition = style
             .transition
-            .filter(|t| t.duration > 0.0 && view.window().is_some());
+            .filter(|t| t.duration > 0.0 && s.styled && view.window().is_some());
         s.style = style;
+        s.styled = true;
         view.setHidden(s.style.hidden);
         match transition {
             Some(t) => {
@@ -2902,11 +2559,12 @@ impl Mounter {
             return;
         };
         let (position, page_position) = self.pointer_positions(&view, in_window);
-        let event = nsh_core::ContextMenuEvent {
+        let event = nsh_core::ContextMenuEvent::new(
             position,
             page_position,
-            modifiers: key_modifiers(modifiers),
-        };
+            key_modifiers(modifiers),
+            Some(nsh_core::PointerType::Mouse),
+        );
         self.control
             .dispatch_event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
     }
@@ -3314,6 +2972,9 @@ impl Mounter {
             .slot(id)
             .is_some_and(|s| s.events.contains(EventKind::Touch));
         self.set_view_events(id, events);
+        if let Some((_, area)) = self.areas.iter().find(|(a, _)| *a == id) {
+            area.set_listens(events.contains(EventKind::SelectionChange));
+        }
         let listens = self
             .slot(id)
             .is_some_and(|s| s.events.contains(EventKind::Touch));
@@ -3474,8 +3135,7 @@ impl Mounter {
         if wanted == current {
             return;
         }
-        let previous = slot.gestures.refresh.take();
-        let refreshing = match previous.as_ref() {
+        let refreshing = match slot.gestures.refresh.take() {
             Some(Refresh::Native(control)) => {
                 let refreshing = control.isRefreshing();
                 scroll.setRefreshControl(None);
@@ -3484,21 +3144,19 @@ impl Mounter {
             Some(Refresh::Custom {
                 spinner,
                 refreshing,
-                ..
             }) => {
                 if let Some(spinner) = spinner {
                     spinner.removeFromSuperview();
                 }
-                if *refreshing {
+                if refreshing {
                     let mut inset = scroll.contentInset();
                     inset.top = behavior.content_inset.top.0 as CGFloat;
                     scroll.setContentInset(inset);
                 }
-                *refreshing
+                refreshing
             }
             None => false,
         };
-        drop(previous);
         match wanted {
             Some(Some(shows)) => {
                 let spinner = shows.then(|| {
@@ -3518,8 +3176,6 @@ impl Mounter {
                 slot.gestures.refresh = Some(Refresh::Custom {
                     spinner,
                     refreshing: false,
-                    reveal_pending: Rc::new(Cell::new(false)),
-                    reveal_geometry: Rc::new(Cell::new((0.0, 0.0))),
                 });
             }
             Some(None) => {
@@ -3550,8 +3206,7 @@ impl Mounter {
             return false;
         };
         match &c.native {
-            Native::Screen(screen) => {
-                screen.restore();
+            Native::Screen(_) => {
                 if let Some(Slot {
                     native: Native::Stack(stack),
                     ..
@@ -3567,130 +3222,17 @@ impl Mounter {
             }
             Native::HeaderItem(_) => self.dirty_headers.push(parent),
             Native::Modal(_) => self.dirty_modals.push(child),
-            // A cancellation can reinsert this root without changing the
-            // editors' InputConfig, so restore their actual native references.
-            Native::InputAccessory(view) => {
-                for slot in self.views.iter().flatten() {
-                    if let Native::Input(input) = &slot.native
-                        && input.accessory() == Some(child)
-                    {
-                        input.set_accessory(Some(view), true);
-                    }
-                }
-            }
+            // Inputs show it (`MountItem::Input`).
+            Native::InputAccessory(_) => {}
             _ => return false,
         }
         self.hosts.insert(child, parent);
         true
     }
 
-    /// Parks one member of Core's supplied logical-root snapshot. The
-    /// existing native hosting relation is enough to remove platform chrome;
-    /// it is not a second logical-ownership tree.
-    fn park_retired_root(&mut self, id: NodeId) {
-        let parent = self.hosts.remove(&id);
-        let kind = self.slot(id).map(|slot| match &slot.native {
-            Native::Modal(_) => ViewKind::Modal,
-            Native::Screen(_) => ViewKind::Screen,
-            Native::HeaderItem(_) => ViewKind::HeaderItem,
-            Native::InputAccessory(_) => ViewKind::InputAccessory,
-            _ => ViewKind::View,
-        });
-        match kind {
-            Some(ViewKind::Modal) => {
-                self.dirty_modals.retain(|&modal| modal != id);
-                if let Some(Slot {
-                    native: Native::Modal(modal),
-                    ..
-                }) = self.slot_mut(id)
-                {
-                    modal.controller.flush_dismiss();
-                    modal.park();
-                }
-            }
-            Some(ViewKind::Screen) => {
-                if let Some(Slot {
-                    native: Native::Screen(screen),
-                    ..
-                }) = self.slot(id)
-                {
-                    screen.park();
-                }
-                if let Some(Slot {
-                    native: Native::Stack(stack),
-                    ..
-                }) = parent.and_then(|parent| self.slot_mut(parent))
-                {
-                    stack.park_screen(id);
-                }
-            }
-            Some(ViewKind::HeaderItem) => {
-                if let Some(parent) = parent {
-                    self.apply_hosted_header(parent);
-                }
-            }
-            Some(ViewKind::InputAccessory) => {
-                for slot in self.views.iter().flatten() {
-                    if let Native::Input(input) = &slot.native
-                        && input.accessory() == Some(id)
-                    {
-                        input.set_accessory(None, true);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn apply_hosted_header(&self, id: NodeId) {
-        if let Some(Slot {
-            native: Native::Screen(screen),
-            ..
-        }) = self.slot(id)
-        {
-            screen.apply_header(
-                |item| {
-                    if self.hosts.get(&item) != Some(&id) {
-                        return None;
-                    }
-                    match self.slot(item).map(|slot| &slot.native) {
-                        Some(Native::HeaderItem(view)) => Some(Retained::into_super(view.clone())),
-                        _ => None,
-                    }
-                },
-                Some(self.shared.clone()),
-            );
-        }
-    }
-
     /// The counterpart of [`Mounter::insert_hosted`] for removals.
     fn remove_hosted(&mut self, id: NodeId) -> bool {
-        if let Some(Slot {
-            native: Native::Modal(modal),
-            ..
-        }) = self.slot_mut(id)
-            && modal.revoke_parked()
-        {
-            self.hosts.remove(&id);
-            self.dirty_modals.retain(|&modal| modal != id);
-            return true;
-        }
-        let parent = self.hosts.remove(&id).or_else(|| {
-            // A parked screen keeps its existing stack order/pop authority;
-            // a real source removal still has to revoke that membership.
-            if !matches!(
-                self.slot(id).map(|slot| &slot.native),
-                Some(Native::Screen(_))
-            ) {
-                return None;
-            }
-            self.views.iter().enumerate().find_map(|(parent, slot)| {
-                matches!(slot.as_ref().map(|slot| &slot.native),
-                    Some(Native::Stack(stack)) if stack.screens.contains(&id))
-                .then_some(parent as NodeId)
-            })
-        });
-        let Some(parent) = parent else {
+        let Some(parent) = self.hosts.remove(&id) else {
             return false;
         };
         match self.slot(id).map(|s| &s.native) {
@@ -3832,7 +3374,6 @@ impl Mounter {
                 .screens
                 .iter()
                 .filter(|s| !stack.popped.contains(s))
-                .filter(|screen| self.hosts.get(screen) == Some(&id))
                 .filter_map(|&s| match self.slot(s).map(|s| &s.native) {
                     Some(Native::Screen(screen)) => {
                         Some((s, screen.controller.clone(), screen.config.animation))
@@ -3918,7 +3459,14 @@ impl Mounter {
             else {
                 continue;
             };
-            self.apply_hosted_header(id);
+            let press = Some(self.shared.clone());
+            screen.apply_header(
+                |item| match self.slot(item).map(|s| &s.native) {
+                    Some(Native::HeaderItem(v)) => Some(Retained::into_super(v.clone())),
+                    _ => None,
+                },
+                press,
+            );
             if screen.config.large_title {
                 // Large titles collapse as the content scrolls under them.
                 if let Some(scroll) = first_scroll_view(&screen.view) {
@@ -3951,11 +3499,7 @@ impl Mounter {
             };
             if shown {
                 if let Some(root) = &root {
-                    if !modal.present(root, at_once) {
-                        // An exact old SDK shell is completing GC. Its real
-                        // completion retries this existing native projection.
-                        self.dirty_modals.push(id);
-                    }
+                    modal.present(root, at_once);
                 }
             } else {
                 modal.dismiss(at_once, move || {
@@ -3969,10 +3513,6 @@ impl Mounter {
         self.leaving_screens
             .retain(|stack, _| deferred.contains(stack));
         self.shaders.release_held(|key| deferred.contains(&key));
-    }
-
-    pub(crate) fn native_navigation_completed(&mut self) {
-        self.finish_navigation();
     }
 
     /// A stack is about to show a screen: its header options apply.
@@ -4083,7 +3623,7 @@ impl Mounter {
             .screens
             .iter()
             .rev()
-            .find(|s| !stack.popped.contains(s) && self.hosts.get(s) == Some(&id))?;
+            .find(|s| !stack.popped.contains(s))?;
         match self.slot(top) {
             Some(Slot {
                 native: Native::Screen(screen),
@@ -4116,7 +3656,7 @@ impl Mounter {
             .screens
             .iter()
             .rev()
-            .find(|s| !stack.popped.contains(s) && self.hosts.get(s) == Some(&id))
+            .find(|s| !stack.popped.contains(s))
             .and_then(|&s| match self.slot(s).map(|s| &s.native) {
                 Some(Native::Screen(screen)) => {
                     Some(screen.config.gesture_enabled && !screen.config.prevent_back)
@@ -4203,10 +3743,19 @@ impl Mounter {
         }
         // After the props: the texts below read whether they are in an area.
         match (area, was_area) {
-            (Some(view), false) => self.areas.push((
-                id,
-                crate::selectable_view::AreaResponder::attach(&view, mtm, self.control.clone()),
-            )),
+            (Some(view), false) => {
+                let listens = self
+                    .slot(id)
+                    .is_some_and(|s| s.events.contains(EventKind::SelectionChange));
+                let area = crate::selectable_view::AreaResponder::attach(
+                    &view,
+                    mtm,
+                    self.control.clone(),
+                    id,
+                    listens,
+                );
+                self.areas.push((id, area));
+            }
             (None, true) => {
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
                     self.areas.remove(i).1.detach();
@@ -4678,11 +4227,8 @@ impl Mounter {
             Some(Refresh::Custom {
                 spinner,
                 refreshing,
-                reveal_pending,
-                reveal_geometry,
             }) if *refreshing != on => {
                 *refreshing = on;
-                reveal_pending.set(on);
                 let mut inset = scroll.contentInset();
                 let base = s
                     .behavior
@@ -4691,7 +4237,6 @@ impl Mounter {
                 // The app's indicator is revealed below what UIKit adds; the
                 // Mac idiom's spinner where it always was.
                 let lead = if own { rest_top(scroll, base) } else { 0.0 };
-                reveal_geometry.set((lead, room));
                 inset.top = base + if on { room } else { 0.0 };
                 if on {
                     if let Some(spinner) = spinner {
@@ -4702,15 +4247,9 @@ impl Mounter {
                     // next turn: a release past the top has already started
                     // its bounce towards the old inset, which this replaces.
                     let scroll = MainThreadBound::new(scroll.clone(), mtm);
-                    let pending = MainThreadBound::new(reveal_pending.clone(), mtm);
-                    let geometry = MainThreadBound::new(reveal_geometry.clone(), mtm);
                     DispatchQueue::main().exec_async(move || {
                         let mtm = MainThreadMarker::new().expect("main queue");
-                        if !pending.get(mtm).replace(false) {
-                            return;
-                        }
                         let scroll = scroll.get(mtm);
-                        let (lead, room) = geometry.get(mtm).get();
                         let offset = scroll.contentOffset();
                         if offset.y <= -lead && !scroll.isDragging() {
                             scroll.setContentOffset_animated(

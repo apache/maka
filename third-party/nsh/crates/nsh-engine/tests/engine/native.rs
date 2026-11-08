@@ -102,6 +102,8 @@ fn start_in(
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -449,4 +451,93 @@ fn web_view_input_available_needs_the_platform_and_the_grant() {
     let hosts = Capabilities::from_json(&json!({ "webview": { "hosts": [] } })).unwrap();
     assert_eq!(web_input_available(true, Some(hosts)), "web input false");
     assert_eq!(web_input_available(true, None), "web input false");
+}
+
+const WEB_LOAD_APP: &str = r#"import { mount, View, WebView } from "nsh";
+
+function App() {
+  return (
+    <View>
+      <WebView
+        style={{ height: 100 }}
+        ref={(page: any) =>
+          page &&
+          queueMicrotask(() => {
+            page.load({
+              src: "https://example.com/signed-in",
+              headers: { Authorization: "DPoP token", DPoP: "proof" },
+            });
+            // A host the capability does not allow: the core sends nothing.
+            page.load({ src: "https://elsewhere.test/", headers: { Authorization: "DPoP token" } });
+            // Headers that could start another header throw.
+            for (const headers of [{ "Bad Name": "x" }, { Authorization: "a\r\nX-Evil: 1" }, { A: 1 }]) {
+              try {
+                page.load({ src: "https://example.com/", headers });
+              } catch (e) {
+                if (e instanceof TypeError) page.load({ src: "https://example.com/threw" });
+              }
+            }
+          })
+        }
+      />
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
+#[test]
+fn a_web_view_ref_loads_a_page_with_headers() {
+    use nsh_core::{WebLoad, access::Capabilities};
+    let declared =
+        Capabilities::from_json(&json!({ "webview": { "hosts": ["example.com"] } })).unwrap();
+    let (_engine, rx) = start_with(WEB_LOAD_APP, Some(declared));
+    let mut web = None;
+    let mut loads = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while loads.len() < 4 && std::time::Instant::now() < deadline {
+        let Ok(batch) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        for item in &batch.items {
+            match item {
+                MountItem::Create {
+                    id,
+                    kind: ViewKind::WebView,
+                } => web = Some(*id),
+                MountItem::Command {
+                    id,
+                    command: Command::Load(load),
+                } => loads.push((*id, load.clone())),
+                _ => {}
+            }
+        }
+    }
+    let web = web.expect("a web view");
+    let load = |src: &str, headers: &[(&str, &str)]| {
+        let headers = headers
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect();
+        (web, WebLoad::new(src, headers).unwrap())
+    };
+    assert_eq!(
+        loads,
+        [
+            load(
+                "https://example.com/signed-in",
+                &[("Authorization", "DPoP token"), ("DPoP", "proof")]
+            ),
+            load("https://example.com/threw", &[]),
+            load("https://example.com/threw", &[]),
+            load("https://example.com/threw", &[]),
+        ]
+    );
+    // Its debug form, what logs would show, names the headers only.
+    let shown = format!("{:?}", loads[0].1);
+    assert!(
+        shown.contains("Authorization") && !shown.contains("token"),
+        "{shown}"
+    );
 }

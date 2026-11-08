@@ -16,6 +16,9 @@ on:
       - ".github/workflows/**"
       - ".github/ci/**"
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -24,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-paths-${{ github.ref }}
+  group: ci-paths-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,6 +36,8 @@ env:
 
 jobs:
   check:
+    # Nothing for drafts or a pull request being closed.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

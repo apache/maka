@@ -15,7 +15,7 @@
 //! `ShellExecuteW`, `SHOpenFolderAndSelectItems` and `IFileOperation`;
 //! GPUI's prompts and openers) and answers with the root's
 //! [`EventKind::FileRequest`](crate::EventKind::FileRequest), whose
-//! [`EventPayload::FileRequest`] carries
+//! [`EventPayload::FileRequest`](crate::EventPayload::FileRequest) carries
 //! the paths and the error, if any ([`EventPayload::file_answer`],
 //! [`EventPayload::file_failed`]).
 //!

@@ -3,7 +3,9 @@
 //! inside it that read no state of their own (no `focus:`), and leaves
 //! with it; a ref's `on_focus_in` / `on_focus_out` hear the focus come into
 //! an element and leave it, a `Popover`'s content counting as inside the
-//! view that holds the popover.
+//! view that holds the popover, and the focus in a popover that closes
+//! goes back to its trigger. A press on a field that listens to presses
+//! focuses it first.
 
 use std::{
     collections::HashMap,
@@ -173,4 +175,78 @@ fn a_popovers_content_is_within_the_view_holding_the_popover() {
     assert!(app.app.shows("Within: in"));
     app.app.press_key("tab").unwrap();
     app.app.wait_for("Within: in out").unwrap();
+}
+
+/// A popover whose trigger and content log the focus they take.
+#[component]
+fn PopoverFocus() -> impl IntoElement {
+    let log = signal(String::from("focus"));
+    let note = move |what: &'static str| log.update(|log| log.push_str(what));
+    view()
+        .child(text(move || log.get()))
+        .child(
+            popover()
+                .trigger(
+                    view()
+                        .test_id("trigger")
+                        .focusable(true)
+                        .w(px(100.0))
+                        .h(px(30.0))
+                        .on_focus(move |_: &()| note(" trigger"))
+                        .child(text("Details")),
+                )
+                .child(
+                    view()
+                        .test_id("inside")
+                        .focusable(true)
+                        .h(px(30.0))
+                        .on_focus(move |_: &()| note(" inside"))
+                        .child(text("Inside")),
+                ),
+        )
+        .child(view().test_id("after").focusable(true).h(px(30.0)))
+}
+
+#[test]
+fn escape_in_a_popover_gives_the_focus_back_to_its_trigger() {
+    let mut app = start(Root::new::<PopoverFocus>(|| ()));
+    app.app.press_key("tab").unwrap();
+    app.app.wait_for("focus trigger").unwrap();
+    app.app.press("id:trigger").unwrap();
+    app.app.wait_for("Inside").unwrap();
+    // Back from the trigger, around to the popup's view (the last stop).
+    app.app.press_key("shift+tab").unwrap();
+    app.app.wait_for("focus trigger inside").unwrap();
+    // Escape closes it, and the focus, gone with its view, comes back to
+    // the trigger, so Tab goes on from there.
+    app.app.press_key("escape").unwrap();
+    app.app.wait_for("focus trigger inside trigger").unwrap();
+    assert!(!app.app.shows("Inside"));
+}
+
+/// A field that listens to presses, as a combobox's does, and a log of
+/// what it hears.
+#[component]
+fn PressedField() -> impl IntoElement {
+    let log = signal(String::from("log"));
+    let note = move |what: &'static str| log.update(|log| log.push_str(what));
+    view()
+        .child(
+            input()
+                .test_id("field")
+                .h(px(30.0))
+                .on_focus(move |_: &()| note(" focus"))
+                .on_press(move |_: &()| note(" press")),
+        )
+        .child(text(move || log.get()))
+}
+
+#[test]
+fn a_press_on_a_field_that_listens_to_presses_focuses_it_then_reports_the_press() {
+    let mut app = start(Root::new::<PressedField>(|| ()));
+    app.app.press("id:field").unwrap();
+    assert!(app.app.shows("log focus press"));
+    // Focused already: the press alone.
+    app.app.press("id:field").unwrap();
+    assert!(app.app.shows("log focus press press"));
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 // The element pages and the gallery's Elements (examples/gallery/App.tsx) list
 // the same things in the same order: `nsh`'s primitives from the simplest
 // (the pages' `order`), then `nsh/base`'s components by name. A gallery entry
-// shows the pages its name joins with "and" ("WebView and Video"); a page with
+// shows the pages its name joins with "and" ("A and B"); a page with
 // no gallery entry takes its place on the site alone.
 
 const ROOT = join(import.meta.dir, '..');

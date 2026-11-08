@@ -163,6 +163,7 @@ const toggle = (id: number) =>
 | `numColumns` | `.columns(n)` | `number` | `1` | 每行的条目数（纵向列表）。 |
 | `inverted` | `.inverted()` | `boolean` | `false` | 第 0 项在底部（聊天）；初始滚动到末尾，并保持与末尾的距离。 |
 | `maintainVisibleContentPosition` | `.follow_end(px(..))` | `{ autoscrollToBottomThreshold?: number }` | | 非倒置列表在距离末尾不超过该点数时，随内容增长停留在末尾（见下文）。 |
+| `alignment` | `.alignment(ListAlignment::..)` | `"top" \| "bottom"` | `"top"` | 列表停靠的位置。`"bottom"`：打开时位于末尾，内容增长时保持在末尾，行按阅读顺序排列（见下文）。 |
 | `stickyHeaderIndices` | `.sticky_header_indices(..)` | `number[]` | | 滚过时吸附在顶部的条目（单列且非倒置）。 |
 | `stickyHeaderOffset` | `.sticky_header_offset(px(..))`、`.bind_sticky_header_offset(&node)` | `number \| AnimatedNode` | `0` | 吸顶条目吸附在距顶部多远的位置，同 CSS `position: sticky` 的 `top`；内容继续在其上方的空间下滚动。动画值让它们逐帧移动。 |
 | `contentStyle` | `.content_padding(..)`、`.content_padding_x(..)` 等、`.row_gap(..)`、`.column_gap(..)` | `{ padding*, gap, rowGap, columnGap }` | | 内容的内边距和间距，只接受数字。 |
@@ -181,14 +182,14 @@ const toggle = (id: number) =>
 | `keyExtractor` | `.keys(..)` | `(item, index) => string` | | 可见性回调中的键；在 Rust 中是各行的标识。 |
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | 下拉刷新。 |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | 应用自己的下拉刷新指示器，取代平台的转圈（见[滚动](./scrolling.md#自己的指示器)）。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`、`scrollToOffset`、`scrollToEnd`、`scrollTo`。 |
 
-头部、尾部和空状态插槽接受元素（在 TSX 中也可以是组件：`header={Header}`）。它们是独立的单元格，从不被复用，并且和其他元素一样是响应式的。
+头部、尾部和空状态插槽接受元素（在 TSX 中也可以是组件：`header={Header}`）。它们是独立的单元格，从不被复用，并且和其他元素一样是响应式的：整个插槽是一个 `<If>` 或 `<Each>` 时，它随条件或数据更新；组件只调用一次。
 
 ## 多列与网格
 
-`numColumns`（`.columns(n)`）把条目排成每行若干列；内容内边距添加在内容四周，并设置行间距和列间距。网格中各行的高度可以不同：每行与其中最高的条目一样高。
+`numColumns`（`.columns(n)`）把条目排成每行若干列；内容内边距添加在内容四周，并设置行间距和列间距。网格中各行的高度可以不同：每行与其中最高的条目一样高。列表显示期间 `numColumns` 可以改变（窗口变宽时列数增加）：第一个可见条目保持在顶部；`estimatedItemSize` 改变时也是如此。
 
 ```rust tabs
 let count = photos.len();
@@ -454,7 +455,26 @@ function Chat() {
           submitBehavior="submit"
           returnKeyType="send"
           placeholder="Message"
-          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
+          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical### 底部对齐
+
+`alignment="bottom"`（Rust 中为 `.alignment(ListAlignment::Bottom)`）是构建聊天界面最简单的方式：消息按阅读顺序排列，最旧的在前，列表打开时显示最新消息。回复流式输出、追加消息或键盘弹出时，列表保持在末尾；用户向上滚动后，可见内容保持不动，滚回末尾后继续跟随。消息不足一屏时位于视口底部。
+
+列表增长时，各行在内容中的位置不变，所以追加一条消息不会移动其他行：列表只放置新行并滚动一次。通过 `onLoadMoreAtStart` 在前面插入的旧消息也不会移动可见的行。
+
+```rust tabs
+virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
+    .keys(move || messages.with(|m| m.iter().map(|m| m.id).collect::<Vec<_>>()))
+    .alignment(ListAlignment::Bottom)
+    .flex_1()
+```
+
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
+
+: 8 }}
         />
       </View>
     </View>

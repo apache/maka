@@ -40,6 +40,8 @@ pub(crate) fn compat(record: Option<&str>) -> anyhow::Result<()> {
     cargo.arg(if record.is_some() { "run" } else { "test" });
     // Cargo's own option, so before `run`'s `--`.
     cargo.arg("--target-dir").arg(root.join("target"));
+    // The cases compile shaders, which nsh-core leaves out without this.
+    cargo.args(["--features", "nsh-core/shader"]);
     if let Some(version) = record {
         cargo.args(["--", "record", version]);
     }

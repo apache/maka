@@ -4,14 +4,15 @@ import { Dialog, Input, type InputProps, NavPage } from "nsh/base";
 import { Keyboard, keyboardFrame, platform, safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
-import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, follow, header, hint, IconTile, Inset, Meter, mono, PageHeader, Press, radius, RoundButton, Section, Segmented, Spinner, tints, type Tone, toneColor } from "../ui";
+import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, fieldLook, fieldSize, fieldText, finish, focusRing, follow, header, hint, IconTile, Inset, Meter, mono, PageHeader, Press, radius, RoundButton, Section, Segmented, Spinner, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, tints, type Tone, toneColor } from "../ui";
 
 /** A pointer and a keyboard: desktop density. */
 const pointer = platform.desktop;
 
-/** A field's text size and its side padding. */
-const fieldFont = pointer ? 13 : 15;
-const fieldPad = pointer ? 8 : 14;
+/** A field's text size and its side padding (`fieldSize`): in the terminal the text sits
+ * one Cell inside the border's own column. */
+const fieldFont = fieldSize.font;
+const fieldPad = fieldSize.pad;
 
 /** The next commit's frames ease to their new places (a message sliding in), unless motion is reduced. */
 const relayout = () => {
@@ -47,7 +48,7 @@ function Affix(props: { text: string; addon?: boolean; side: "start" | "end" }) 
 
 /**
  * A labelled input (`api` names the prop it shows, `hint` is a plain note):
- * the border glows accent while focused (a ring springing in natively), an
+ * the field's edge turns accent while focused (`fieldLook`'s focus edge), an
  * error turns it red, slides a message in (layout animation) and shakes
  * the field, again each time `attempt` grows (a submit); `valid` fades a
  * check in at its end. `prefix` / `suffix` are text around the value
@@ -77,8 +78,6 @@ function Field(
   // Made once: the views inside follow their own state.
   const leading = own.leading;
   const trailing = own.trailing;
-  const focused = signal(false);
-  const focus = follow(() => (focused() ? 1 : 0));
   const ok = follow(() => (own.valid && !own.error ? 1 : 0));
   const shake = createAnimatedValue(0);
   const wobble = () => {
@@ -100,12 +99,10 @@ function Field(
     tried = n;
     if (own.error) wobble();
   });
-  // Desktop density with a pointer (28 pt, text 13), touch density otherwise.
-  const box = () =>
-    props.multiline ? (pointer ? { minHeight: 28, paddingTop: 6, paddingBottom: 6 } : { minHeight: 46, paddingTop: 13, paddingBottom: 13 }) : { height: pointer ? 28 : 46 };
   return (
-    <View style={{ gap: 6, translate: [shake, 0], opacity: props.disabled ? 0.5 : 1 }}>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+    <View style={{ gap: terminal ? 0 : 6, translate: [shake, 0], opacity: props.disabled ? 0.5 : 1 }}>
+      {/* The terminal keeps two columns between the label, the API and the hint: one would run them together. */}
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: terminal ? TERMINAL_GAP : 8 }}>
         <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: colors.muted }}>{own.label}</Text>
         <If when={own.api}>
           <Text style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>{own.api}</Text>
@@ -114,21 +111,8 @@ function Field(
           <Text style={{ fontSize: 13, color: own.hintColor ?? colors.faint, fontVariant: ["tabular-nums"], transitionProperty: "color", transitionDuration: 150 }}>{own.hint}</Text>
         </If>
       </View>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: props.multiline ? "flex-start" : "center",
-          borderRadius: radius.control,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: own.error ? colors.danger : props.readonly || props.disabled ? colors.line : colors.fieldBorder,
-          backgroundColor: colors.field,
-          // Recessed while editable; a read-only or disabled field lies flat.
-          ...(props.readonly || props.disabled ? {} : finish.field),
-          transitionProperty: "border-color",
-          transitionDuration: reduceMotion() ? 0 : 150,
-        }}
-      >
+      {/* The well: its edge, and the fields' focus edge while the input in it has the keys (`fieldLook`). */}
+      <View {...fieldLook({ invalid: () => !!own.error, readonly: () => !!props.readonly, disabled: () => !!props.disabled, multiline: props.multiline })}>
         <If when={own.prefix}>
           <Affix text={own.prefix!} addon={own.addon} side="start" />
         </If>
@@ -138,25 +122,14 @@ function Field(
         <Input
           returnKeyType={own.next ? "next" : "done"}
           onSubmit={() => own.next?.()?.focus()}
-          onFocus={() => {
-            focused.set(true);
-            own.onFocus?.();
-          }}
-          onBlur={() => {
-            focused.set(false);
-            own.onBlur?.();
-          }}
+          onFocus={() => own.onFocus?.()}
+          onBlur={() => own.onBlur?.()}
           {...input}
           style={[
             {
-              flex: 1,
-              paddingHorizontal: fieldPad,
-              fontSize: fieldFont,
-              color: props.readonly ? colors.muted : colors.text,
-              placeholderColor: colors.faint,
-              caretColor: colors.accent,
-              selectionColor: colors.accent,
-              ...box(),
+              ...fieldText({ readonly: props.readonly, multiline: props.multiline }),
+              // The terminal keeps one Cell between a prefix and the value.
+              paddingLeft: own.prefix && terminal ? TERMINAL_COLUMN : fieldPad,
             },
             ...(Array.isArray(own.style) ? own.style : [own.style]),
           ]}
@@ -172,26 +145,12 @@ function Field(
         <If when={own.suffix}>
           <Affix text={own.suffix!} addon={own.addon} side="end" />
         </If>
-        <View
-          style={{
-            pointerEvents: "none",
-            position: "absolute",
-            top: -1,
-            left: -1,
-            right: -1,
-            bottom: -1,
-            // Around the field's border: its radius plus the 1pt it reaches out.
-            borderRadius: radius.control + 1,
-            borderCurve: "continuous",
-            borderWidth: 2,
-            borderColor: own.error ? colors.danger : colors.accent,
-            opacity: focus,
-          }}
-        />
       </View>
       <If when={own.error}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.danger }} />
+          <If when={!terminal}>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.danger }} />
+          </If>
           <Text style={{ flex: 1, fontSize: 13, color: colors.danger }}>{own.error}</Text>
         </View>
       </If>
@@ -202,9 +161,13 @@ function Field(
 /**
  * A small button inside a field (show the password, clear the text): its
  * name for screen readers, faint until the pointer is over it; it sinks
- * while pressed. `show` false shrinks and fades it out, untouchable.
+ * while pressed. `show` false shrinks and fades it out, untouchable. A
+ * terminal draws no icons: it shows `short` there, as text, in a slot with
+ * a blank Cell each side (` × `) that all takes the press; the text turns
+ * the accent while the pointer is over the slot or presses it, no band.
  */
-function FieldButton(props: { icon: IconName; label: string; show?: boolean; onPress: () => void }) {
+function FieldButton(props: { icon: IconName; label: string; short: string; show?: boolean; onPress: () => void }) {
+  if (terminal) return <TerminalFieldButton {...props} />;
   const size = pointer ? 22 : 36;
   const shown = follow(() => (props.show === false ? 0 : 1));
   return (
@@ -218,8 +181,11 @@ function FieldButton(props: { icon: IconName; label: string; show?: boolean; onP
       hoverStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
       activeStyle={{ backgroundColor: alpha(colors.text, 0.12), transform: [{ scale: 0.9 }] }}
       style={{
-        width: size,
-        height: size,
+        // The terminal sizes it to its text, and keeps no columns for it
+        // while it is hidden: its field's band then reaches the end.
+        display: terminal && props.show === false ? "none" : "flex",
+        width: terminal ? undefined : size,
+        height: terminal ? undefined : size,
         borderRadius: size / 2,
         alignItems: "center",
         justifyContent: "center",
@@ -234,30 +200,70 @@ function FieldButton(props: { icon: IconName; label: string; show?: boolean; onP
   );
 }
 
-/** A row that opens something: an icon, a title, the API it shows. */
+/** `FieldButton` in a terminal: a slot of three Cells around a one-Cell
+ * mark, as `nsh/base`'s triggers' `▾` and `×`, a word with a blank Cell
+ * each side, and no columns at all while it is hidden. A word's blanks are
+ * its text's own: a terminal keeps no padding on a box with no fill. A Tab stop,
+ * as everywhere: what the pointer does the keys do. */
+function TerminalFieldButton(props: { label: string; short: string; show?: boolean; onPress: () => void }) {
+  const over = signal(false);
+  const held = signal(false);
+  return (
+    <View
+      onPress={props.onPress}
+      onPressDown={() => held.set(true)}
+      onPressUp={() => held.set(false)}
+      onMouseEnter={() => over.set(true)}
+      onMouseLeave={() => over.set(false)}
+      role="button"
+      accessibilityLabel={props.label}
+      disabled={props.show === false}
+      style={{
+        display: props.show === false ? "none" : "flex",
+        // A mark of one Cell is the middle of a slot three wide.
+        width: [...props.short].length === 1 ? 3 * TERMINAL_COLUMN : undefined,
+        height: TERMINAL_ROW,
+        flexShrink: 0,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text style={{ color: over() || held() ? colors.accent : colors.muted }}>{[...props.short].length === 1 ? props.short : ` ${props.short} `}</Text>
+    </View>
+  );
+}
+
+/** A row that opens something: an icon, a title, the API it shows (the
+ * title and the API on one row in the terminal, the API at its end). */
 function LinkRow(props: { icon: IconName; title: string; note: string; first?: boolean; onPress: () => void }) {
   return (
     <Press onPress={props.onPress} scale={0.98} accessibilityLabel={props.title}>
       <View
-        style={{
-          minHeight: 60,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 12,
-          paddingHorizontal: 10,
-          paddingVertical: 8,
-          borderTopWidth: props.first ? 0 : 1,
-          borderTopColor: colors.line,
-        }}
+        style={
+          terminal
+            ? { height: TERMINAL_ROW, flexDirection: "row", alignItems: "center" }
+            : {
+                minHeight: 60,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                borderTopWidth: props.first ? 0 : 1,
+                borderTopColor: colors.line,
+              }
+        }
       >
         <IconTile name={props.icon} size={34} />
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={{ fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
+        <View style={terminal ? { flex: 1, flexDirection: "row", gap: TERMINAL_GAP } : { flex: 1, gap: 2 }}>
+          <Text style={{ flex: terminal ? 1 : undefined, fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
           <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
             {props.note}
           </Text>
         </View>
-        <Icon name="chevron" size={14} tint={colors.faint} />
+        <If when={!terminal}>
+          <Icon name="chevron" size={14} tint={colors.faint} />
+        </If>
       </View>
     </Press>
   );
@@ -266,7 +272,7 @@ function LinkRow(props: { icon: IconName; title: string; note: string; first?: b
 /** Two items side by side, equal widths. */
 function Pair(props: { children: [JSX.Element, JSX.Element] }) {
   return (
-    <View style={{ flexDirection: "row", gap: 8 }}>
+    <View style={{ flexDirection: "row", gap: terminal ? TERMINAL_GAP : 8 }}>
       <View style={{ flex: 1 }}>{props.children[0]}</View>
       <View style={{ flex: 1 }}>{props.children[1]}</View>
     </View>
@@ -335,14 +341,18 @@ function Strength(props: { password: string }) {
           {strengthLabel[score()]}
         </Text>
       </View>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", rowGap: 6, columnGap: 14 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", rowGap: 6, columnGap: terminal ? TERMINAL_GAP : 14 }}>
         <Each of={rules}>
           {(rule) => {
             const met = () => rule().test(props.password);
             const t = follow(() => (met() ? 1 : 0));
             return (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: pointer ? 150 : 140 }}>
-                <View style={{ width: 14, height: 14, alignItems: "center", justifyContent: "center" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: terminal ? undefined : pointer ? 150 : 140 }}>
+                {/* A terminal's mark is text: a check once met, a dot until then. */}
+                <If when={terminal}>
+                  <Text style={{ color: met() ? colors.up : colors.faint }}>{met() ? "✓" : "·"}</Text>
+                </If>
+                <View style={{ display: terminal ? "none" : "flex", width: 14, height: 14, alignItems: "center", justifyContent: "center" }}>
                   <View style={{ position: "absolute", width: 5, height: 5, borderRadius: 3, backgroundColor: colors.faint, opacity: t.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }} />
                   <View style={{ opacity: t, transform: [{ scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) }] }}>
                     <Icon name="check" size={14} tint={colors.up} weight={2.2} />
@@ -457,6 +467,7 @@ function Search() {
             <FieldButton
               icon="close"
               label="Clear the search"
+              short="×"
               show={query().length > 0}
               onPress={() => {
                 change("");
@@ -601,7 +612,7 @@ export function Form() {
               autoComplete="email"
               placeholder="ada@example.com"
             />
-            <View style={{ gap: 8 }}>
+            <View style={{ gap: terminal ? 0 : 8 }}>
               <Field
                 ref={ref(2)}
                 next={next(2)}
@@ -617,7 +628,7 @@ export function Form() {
                 autoComplete="new-password"
                 placeholder="At least 8 characters"
                 leading={<Icon name="lock" size={pointer ? 13 : 16} tint={colors.faint} />}
-                trailing={<FieldButton icon={reveal() ? "eye-off" : "eye"} label={reveal() ? "Hide the password" : "Show the password"} onPress={() => reveal.set(!reveal())} />}
+                trailing={<FieldButton icon={reveal() ? "eye-off" : "eye"} label={reveal() ? "Hide the password" : "Show the password"} short={reveal() ? "Hide" : "Show"} onPress={() => reveal.set(!reveal())} />}
               />
               <Strength password={password()} />
             </View>
@@ -719,7 +730,7 @@ export function Form() {
               placeholder="A blue placeholder, an amber selection"
               style={{ placeholderColor: colors.info, caretColor: colors.warn, selectionColor: colors.warn }}
             />
-            <View style={{ gap: 8 }}>
+            <View style={{ gap: terminal ? 0 : 8 }}>
               <Field
                 ref={ref(14)}
                 label="Message"
@@ -752,12 +763,14 @@ export function Form() {
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
-                  padding: 12,
+                  padding: terminal ? 0 : 12,
                   borderRadius: radius.control,
                   backgroundColor: status()?.tone === "up" ? tints.up : tints.danger,
                 }}
               >
-                <Icon name={status()?.tone === "up" ? "check" : "bell"} size={16} tint={status()?.tone === "up" ? colors.up : colors.danger} />
+                <If when={!terminal}>
+                  <Icon name={status()?.tone === "up" ? "check" : "bell"} size={16} tint={status()?.tone === "up" ? colors.up : colors.danger} />
+                </If>
                 <Text style={{ flex: 1, fontSize: 14, lineHeight: 19, color: status()?.tone === "up" ? colors.up : colors.danger }}>{status()?.text}</Text>
               </View>
             </If>

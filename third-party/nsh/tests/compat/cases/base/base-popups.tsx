@@ -2,7 +2,7 @@
 // `nsh/base` on a phone, on the core's overlays: a `Popover` anchored to its
 // trigger (controlled and not; its side, alignment, gap and margin; Escape
 // heard without closing), a `Menu` presented as a sheet whose `Submenu`
-// replaces its items, its `MenuItem`s (disabled, kept open, labelled) and a
+// replaces its items (and reports it), its `MenuItem`s (disabled, kept open, labelled) and a
 // `MenuSeparator`, a `ContextMenu` a held finger opens, `Tooltip`s given as
 // elements' `tooltip` the app opens (a touch screen shows none of its own, nor an
 // element's `tooltip`), a `Sheet` at an edge over a backdrop; every part
@@ -74,6 +74,7 @@ function App() {
         <Submenu
           trigger={<View><Text>ShareItem</Text></View>}
           back={<View><Text>BackRow</Text></View>}
+          onOpenChange={({ open, reason }) => log.set(`Log: share ${open} ${reason}`)}
         >
           <MenuItem onSelect={() => log.set("Log: chose Mail")}><Text>MailItem</Text></MenuItem>
         </Submenu>

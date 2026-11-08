@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Button, Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, Split, ui } from "./palette";
+import { desktop, Icon, Log, Split, toggleGlyph, toggleLabel, toggleLook, toolbarRule, toolbarTrack, ui, sectionSurface } from "./palette";
 
 type Mark = "bold" | "italic" | "underline";
 type Align = "left" | "center" | "right";
@@ -23,8 +23,6 @@ const tools: { id: Tool; label: string; glyph: string }[] = [
   { id: "text", label: "Text", glyph: "T" },
 ];
 
-const side = desktop ? 28 : 34;
-
 function App() {
   const on = signal<Mark[]>(["bold"]);
   const align = signal<Align>("left");
@@ -37,19 +35,11 @@ function App() {
     log(what);
   };
   const has = (m: Mark) => on().includes(m);
-  // A tool: bare while off, raised while pressed, a hover fill, the focus ring.
-  const look = (pressed: boolean) => ({
-    style: { minWidth: side, height: side, paddingHorizontal: 6, borderRadius: 7, alignItems: "center", justifyContent: "center" } as const,
-    class: "transition-colors active:opacity-70 disabled:opacity-35 motion-reduce:transition-none",
-    pressedStyle: ui().raised,
-    hoverStyle: pressed ? undefined : hoverFill(),
-    focusStyle: focusRing(),
-  });
-  const glyph = (text: string, active: boolean) => <Text style={{ fontSize: 14, fontWeight: "600", color: active ? ui().text : ui().muted }}>{text}</Text>;
-  const rule = (vertical = false) => (
-    <ToolbarSeparator style={vertical ? { height: 1, alignSelf: "stretch", marginVertical: 4, backgroundColor: ui().line } : { width: 1, height: 16, marginHorizontal: 4, backgroundColor: ui().line }} />
-  );
-  const bar = { alignItems: "center", gap: 2, padding: 3, borderRadius: 10, ...ui().inset } as const;
+  // A tool in the toggles' look (`toggleLook`): bare while off, the on
+  // fill while pressed, a hover fill, the focus ring; its glyph muted until
+  // it is on. A command (undo, clear) is a `Button` in the same look.
+  const glyph = (text: string, active: () => boolean) => <Text style={{ ...toggleLabel(active), fontWeight: "600" }}>{text}</Text>;
+  const rule = (vertical = false) => <ToolbarSeparator style={toolbarRule(vertical)} />;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>toolbar</Text>
@@ -59,13 +49,13 @@ function App() {
 
       <Split gap={14} inspector={<Log title={`${history().length} edits · ${on().join(", ") || "no marks"}, ${align()} · ${tool()}`} lines={events()} minHeight={76} />}>
         {/* A formatting bar: history, a toggle group of marks (a group of the toolbar), the alignment. */}
-        <Toolbar accessibilityLabel="Formatting" style={{ ...bar, alignSelf: "flex-start" }}>
+        <Toolbar accessibilityLabel="Formatting" style={{ ...toolbarTrack(), alignSelf: "flex-start" }}>
           <ToolbarGroup accessibilityLabel="History">
             <Button accessibilityLabel="Undo" disabled={history().length === 0} onPress={() => {
               history.set(history().slice(0, -1));
               log("Undo");
-            }} {...look(false)}>
-              {glyph("↶", true)}
+            }} {...toggleLook({ disabled: () => history().length === 0 })}>
+              <Icon name="undo" {...toggleGlyph(() => true)} />
             </Button>
           </ToolbarGroup>
           {rule()}
@@ -79,9 +69,9 @@ function App() {
                     on.set(pressed ? [...on(), m().id] : on().filter((x) => x !== m().id));
                     edit(`${m().label}: ${pressed}`);
                   }}
-                  {...look(has(m().id))}
+                  {...toggleLook()}
                 >
-                  {glyph(m().glyph, has(m().id))}
+                  {glyph(m().glyph, () => has(m().id))}
                 </Toggle>
               )}
             </Each>
@@ -98,9 +88,9 @@ function App() {
                     if (pressed) align.set(a().id);
                     edit(`${a().label}`);
                   }}
-                  {...look(align() === a().id)}
+                  {...toggleLook()}
                 >
-                  {glyph(a().glyph, align() === a().id)}
+                  {glyph(a().glyph, () => align() === a().id)}
                 </Toggle>
               )}
             </Each>
@@ -109,7 +99,7 @@ function App() {
 
         <View style={{ flexDirection: "row", gap: 14, alignItems: "stretch" }}>
           {/* A vertical palette: Up and Down move along it. */}
-          <Toolbar axis="vertical" accessibilityLabel="Tools" style={{ ...bar, alignSelf: "flex-start" }}>
+          <Toolbar axis="vertical" accessibilityLabel="Tools" style={{ ...toolbarTrack({ vertical: true }), alignSelf: "flex-start" }}>
             <Each of={tools}>
               {(t) => (
                 <Toggle
@@ -120,18 +110,18 @@ function App() {
                     tool.set(t().id);
                     log(`Tool: ${t().label}`);
                   }}
-                  {...look(tool() === t().id)}
+                  {...toggleLook()}
                 >
-                  {glyph(t().glyph, tool() === t().id)}
+                  {glyph(t().glyph, () => tool() === t().id)}
                 </Toggle>
               )}
             </Each>
             {rule(true)}
-            <Button accessibilityLabel="Clear canvas" onPress={() => log("Clear canvas")} {...look(false)}>
-              {glyph("⌫", false)}
+            <Button accessibilityLabel="Clear canvas" onPress={() => log("Clear canvas")} {...toggleLook()}>
+              {glyph("⌫", () => false)}
             </Button>
           </Toolbar>
-          <View style={{ flex: 1, ...ui().card, borderRadius: 14, padding: 14, gap: 6 }}>
+          <View style={{ flex: 1, ...sectionSurface({ padded: true }), gap: 6 }}>
             <Text
               style={{
                 fontSize: 15,

@@ -624,6 +624,7 @@ fn PlatformInfo() -> impl IntoElement {
         Idiom::Mac => "mac",
         Idiom::Tv => "tv",
         Idiom::Desktop => "desktop",
+        Idiom::Terminal => "terminal",
     };
     let rows: [(&str, Reactive<SharedString>); 8] = [
         ("platform.os", os.name().into_reactive()),

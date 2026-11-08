@@ -41,20 +41,30 @@
 use slab::Slab;
 use taffy::{
     AvailableSpace, BlockContext, Cache, CacheTree, DetailedGridInfo, DetailedLayoutInfo, Display,
-    Layout, LayoutBlockContainer, LayoutContainingBlock, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, RunMode, Size,
-    Style, TraversePartialTree, TraverseTree, compute_block_layout, compute_cached_layout,
-    compute_flexbox_layout, compute_grid_layout, compute_hidden_layout, compute_oof_layout,
-    compute_root_layout,
+    FlexDirection, FlexWrap, Layout, LayoutBlockContainer, LayoutContainingBlock,
+    LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree,
+    NodeId, RequestedAxis, RunMode, Size, Style, TraversePartialTree, TraverseTree,
+    compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
+    compute_hidden_layout, compute_oof_layout, compute_root_layout,
 };
+
+use super::terminal_layout::{self, Grid, Role};
 
 /// A node: its style, place in the tree, cache and layout, and what
 /// measures it when it is a leaf.
 struct LayoutNode<C> {
     style: Style,
-    /// Stable owner identity, distinct from the reusable slab index.
-    lifetime: u64,
+    /// What the core knows of it that its style does not say: in a
+    /// terminal a control has no border and some nodes are left out
+    /// ([`LayoutTree::set_role`]).
+    role: Role,
+    /// In a terminal, the border and padding its last full layout gave it
+    /// ([`terminal_layout::Insets`]).
+    insets: terminal_layout::Insets,
     parent: Option<NodeId>,
+    /// The list a cell is a row of: a cell is laid out apart, a root
+    /// ([`LayoutTree::set_host`]).
+    host: Option<NodeId>,
     children: Vec<NodeId>,
     cache: Cache,
     unrounded: Layout,
@@ -89,11 +99,13 @@ struct LayoutNode<C> {
 const MEASURED: usize = 8;
 
 impl<C> LayoutNode<C> {
-    fn new(style: Style, context: Option<C>, lifetime: u64) -> Self {
+    fn new(style: Style, context: Option<C>) -> Self {
         LayoutNode {
             style,
-            lifetime,
+            role: Role::default(),
+            insets: terminal_layout::Insets::default(),
             parent: None,
+            host: None,
             children: Vec::new(),
             cache: Cache::new(),
             unrounded: Layout::new(),
@@ -120,9 +132,14 @@ impl<C> LayoutNode<C> {
 /// measured with.
 pub(crate) struct LayoutTree<C> {
     nodes: Slab<LayoutNode<C>>,
-    next_lifetime: u64,
     /// Boundaries a change inside made dirty, to lay out again.
     dirty_boundaries: Vec<NodeId>,
+    /// The Cell grid of a terminal surface: laid out in Cells there
+    /// ([`terminal_layout`]).
+    grid: Option<Grid>,
+    /// What a leaf is measured with in a terminal: the algorithm resolves
+    /// its sizes and insets in Cells itself ([`terminal_layout::compute`]).
+    plain: Style,
 }
 
 fn key(node: NodeId) -> usize {
@@ -133,41 +150,92 @@ impl<C> LayoutTree<C> {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         LayoutTree {
             nodes: Slab::with_capacity(capacity),
-            next_lifetime: 1,
             dirty_boundaries: Vec::new(),
+            grid: None,
+            plain: Style::DEFAULT,
         }
     }
 
-    /// Identifies this allocation even when a removed node's slot is reused.
-    /// Zero remains reserved for a missing owner in native hint watches.
-    pub(crate) fn lifetime(&self, node: NodeId) -> u64 {
-        self.nodes[key(node)].lifetime
-    }
-
-    fn insert(&mut self, style: Style, context: Option<C>) -> NodeId {
-        let lifetime = self.next_lifetime;
-        self.next_lifetime = lifetime.checked_add(1).expect("layout lifetime exhausted");
-        NodeId::from(self.nodes.insert(LayoutNode::new(style, context, lifetime)))
+    fn insert(&mut self, style: Style, context: Option<C>, children: &[NodeId]) -> NodeId {
+        let mut node = LayoutNode::new(style, context);
+        node.children = children.to_vec();
+        let id = NodeId::from(self.nodes.insert(node));
+        for &child in children {
+            self.nodes[key(child)].parent = Some(id);
+        }
+        id
     }
 
     /// A new detached node.
     pub(crate) fn new_leaf(&mut self, style: Style) -> NodeId {
-        self.insert(style, None)
+        self.insert(style, None, &[])
     }
 
     /// A new detached node measured with `context`.
     pub(crate) fn new_leaf_with_context(&mut self, style: Style, context: C) -> NodeId {
-        self.insert(style, Some(context))
+        self.insert(style, Some(context), &[])
     }
 
     /// A new detached node holding `children` (detached nodes).
     pub(crate) fn new_with_children(&mut self, style: Style, children: &[NodeId]) -> NodeId {
-        let id = self.insert(style, None);
-        for &child in children {
-            self.nodes[key(child)].parent = Some(id);
+        self.insert(style, None, children)
+    }
+
+    /// The Cell grid of a terminal surface, if it is one.
+    pub(crate) fn grid(&self) -> Option<Grid> {
+        self.grid
+    }
+
+    /// Lays out in a terminal's Cells from now on ([`terminal_layout`]),
+    /// or in points with `None`: every node is laid out again. Returns
+    /// whether it changed.
+    pub(crate) fn set_grid(&mut self, grid: Option<Grid>) -> bool {
+        if self.grid == grid {
+            return false;
         }
-        self.nodes[key(id)].children = children.to_vec();
-        id
+        self.grid = grid;
+        for (_, n) in self.nodes.iter_mut() {
+            n.clear_cache();
+            n.stale = true;
+            n.last = None;
+        }
+        true
+    }
+
+    /// The room a list laid out in a terminal leaves its scroll bar across
+    /// its cells, in points: a column (a row when horizontal) when it shows
+    /// its indicator, as a scroll view's content does
+    /// ([`terminal_layout::bar_room`]); none elsewhere.
+    pub(crate) fn list_bar_room(&self, node: NodeId, horizontal: bool) -> f32 {
+        let Some(grid) = self.grid else {
+            return 0.0;
+        };
+        let n = &self.nodes[key(node)];
+        let own = n.unrounded;
+        let parent = n.parent.map(|p| {
+            let p = &self.nodes[key(p)];
+            (p.insets, p.unrounded.size.width)
+        });
+        terminal_layout::list_bar_room(n.role, own, parent, horizontal, grid)
+    }
+
+    /// What the core knows of `node` (`Core::grid_role`): in a terminal a
+    /// control has no border and what a terminal cannot show is left out.
+    /// Returns whether its layout changed.
+    pub(crate) fn set_role(&mut self, node: NodeId, role: Role) -> bool {
+        let n = &mut self.nodes[key(node)];
+        if n.role == role {
+            return false;
+        }
+        n.role = role;
+        if self.grid.is_none() {
+            return false;
+        }
+        // A role decides its parent's borders too (a box of text).
+        let parent = self.nodes[key(node)].parent;
+        self.mark_dirty(parent.unwrap_or(node));
+        self.mark_dirty(node);
+        true
     }
 
     /// Records that `node` lays out the core's node `tag`.
@@ -191,8 +259,29 @@ impl<C> LayoutTree<C> {
         }
     }
 
+    /// Whether `node` is out of the layout: `display: none`, or left out
+    /// in a terminal ([`terminal_layout::LeftOut`]).
+    pub(crate) fn displays_none(&self, node: NodeId) -> bool {
+        let n = &self.nodes[key(node)];
+        n.style.display == Display::None
+            || (self.grid.is_some() && terminal_layout::left_out(&n.style, n.role.left_out))
+    }
+
+    /// `node`'s style.
     pub(crate) fn style(&self, node: NodeId) -> &Style {
         &self.nodes[key(node)].style
+    }
+
+    /// Records that `cell`, laid out apart (a root), is a row of `list`: in
+    /// a terminal it keeps the padding its list's box reached across (a
+    /// select's options in their popup's panel). Its cache is cleared when
+    /// that changes.
+    pub(crate) fn set_host(&mut self, cell: NodeId, list: NodeId) {
+        let n = &mut self.nodes[key(cell)];
+        if n.host != Some(list) {
+            n.host = Some(list);
+            n.clear_cache();
+        }
     }
 
     /// Records that `node` holds the app's JSX in a Rust component's tree:
@@ -352,7 +441,8 @@ impl<C> LayoutTree<C> {
     }
 
     /// Whether what changes inside `node` cannot change what its parent's
-    /// layout takes from it, so that layout stands: it has a size of fixed
+    /// layout takes from it, so that layout stands: it is placed absolutely
+    /// at a size of fixed points both ways, or it has a size of fixed
     /// points both ways in a flex container, and everything the flex
     /// algorithm takes from an item follows from that size alone. Its flex
     /// basis is `auto`, its main size (a percentage basis against a parent
@@ -365,12 +455,27 @@ impl<C> LayoutTree<C> {
     /// it gives back that the size does not fix (overflow, margins) is
     /// compared after ([`LayoutTree::relayout_boundaries`]).
     fn is_boundary(&self, node: NodeId) -> bool {
+        // A terminal's sizes follow content, explicit or not.
+        if self.grid.is_some() {
+            return false;
+        }
         let n = &self.nodes[key(node)];
         let Some(parent) = self.layout_parent(node) else {
             return false;
         };
         let fixed = |d: taffy::Dimension| d.into_raw().tag() == taffy::CompactLength::LENGTH_TAG;
         let (style, parent) = (&n.style, &self.nodes[key(parent)].style);
+        // Placed out of flow at a size of fixed points: its parent takes
+        // nothing from its content, whatever its parent's layout (the
+        // cells of a table, rows of a list placed by their offsets).
+        if n.last.is_some()
+            && style.position == taffy::Position::Absolute
+            && style.display != Display::None
+            && fixed(style.size.width)
+            && fixed(style.size.height)
+        {
+            return true;
+        }
         let baseline = |a: taffy::AlignItems| a.keyword() == taffy::AlignItemsKeyword::Baseline;
         n.last.is_some()
             && parent.display == Display::Flex
@@ -390,17 +495,41 @@ impl<C> LayoutTree<C> {
     /// was asked too much to tell, the caller marks it dirty
     /// ([`LayoutTree::mark_dirty`]). A leaf never asked (new, or dirty
     /// already) measures as before: nothing was computed from it.
+    /// Whether `node`'s size follows from its style alone both ways: fixed
+    /// points, or a percentage of a parent sized in fixed points that way.
+    /// What it contains, such as its text, then never changes its size.
+    pub(crate) fn sized_by_style(&self, node: NodeId) -> bool {
+        let n = &self.nodes[key(node)];
+        let Some(parent) = n.parent else {
+            return false;
+        };
+        let parent = &self.nodes[key(parent)].style;
+        let style = &n.style;
+        let tag = |d: taffy::Dimension| d.into_raw().tag();
+        let axis = |own: taffy::Dimension, of: taffy::Dimension| {
+            tag(own) == taffy::CompactLength::LENGTH_TAG
+                || (tag(own) == taffy::CompactLength::PERCENT_TAG
+                    && tag(of) == taffy::CompactLength::LENGTH_TAG)
+        };
+        n.last.is_some()
+            && style.display != Display::None
+            && axis(style.size.width, parent.size.width)
+            && axis(style.size.height, parent.size.height)
+    }
+
     pub(crate) fn measures_as_before<M>(&mut self, node: NodeId, mut measure: M) -> bool
     where
         M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
     {
+        let plain = self.grid.is_some();
         let n = &mut self.nodes[key(node)];
         let Some(measured) = &n.measured else {
             return false;
         };
+        let style = if plain { &self.plain } else { &n.style };
         measured
             .iter()
-            .all(|(input, output)| measure(*input, node, n.context.as_mut(), &n.style) == *output)
+            .all(|(input, output)| measure(*input, node, n.context.as_mut(), style) == *output)
     }
 
     /// Whether `node` has no cached layout: it changed, or something in it
@@ -432,6 +561,7 @@ impl<C> LayoutTree<C> {
         let mut view = View {
             tree: self,
             measure,
+            framed: false,
         };
         while let Some(node) = view.tree.dirty_boundaries.pop() {
             let n = &mut view.tree.nodes[key(node)];
@@ -468,9 +598,61 @@ impl<C> LayoutTree<C> {
         let mut view = View {
             tree: self,
             measure,
+            framed: false,
         };
         compute_root_layout(&mut view, root, available);
     }
+}
+
+/// Taffy's flexbox, with a row's width as CSS's shrink-to-fit has it. In
+/// definite space Taffy adds up the items' flex bases, so an item with
+/// `flex: 1` counts for nothing, however much text it holds: a view around
+/// the row, sized by it, ends up narrower than the width its items' heights
+/// were measured at. The row's width is its max-content width, up to that
+/// space.
+fn compute_flex_layout<C, M>(
+    view: &mut View<'_, C, M>,
+    node: NodeId,
+    mut inputs: LayoutInput,
+) -> LayoutOutput
+where
+    M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
+{
+    let n = view.node(node);
+    if let (None, AvailableSpace::Definite(space)) =
+        (inputs.known_dimensions.width, inputs.available_space.width)
+        && matches!(
+            n.style.flex_direction,
+            FlexDirection::Row | FlexDirection::RowReverse
+        )
+        && n.style.flex_wrap == FlexWrap::NoWrap
+        && n.children
+            .iter()
+            .any(|&child| view.node(child).style.flex_grow > 0.0)
+    {
+        let measuring = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            axis: RequestedAxis::Horizontal,
+            ..inputs
+        };
+        let bases = compute_flexbox_layout(view, node, measuring).size.width;
+        let content = compute_flexbox_layout(
+            view,
+            node,
+            LayoutInput {
+                available_space: Size {
+                    width: AvailableSpace::MaxContent,
+                    ..inputs.available_space
+                },
+                ..measuring
+            },
+        )
+        .size
+        .width;
+        inputs.known_dimensions.width = Some(bases.max(content.min(space)));
+        inputs.known_dimensions_are_definite.width = true;
+    }
+    compute_flexbox_layout(view, node, inputs)
 }
 
 /// Whether `style` is a view's that nothing styles: React Native's
@@ -486,6 +668,9 @@ fn unstyled(style: &Style) -> bool {
 struct View<'t, C, M> {
     tree: &'t mut LayoutTree<C>,
     measure: M,
+    /// In a terminal, whether the nodes being laid out are inside a
+    /// bordered box (`terminal_layout::Tree::framed`).
+    framed: bool,
 }
 
 impl<C, M> View<'_, C, M>
@@ -494,6 +679,26 @@ where
 {
     fn node(&self, node: NodeId) -> &LayoutNode<C> {
         &self.tree.nodes[key(node)]
+    }
+
+    /// Measures the leaf `node` with `inputs` (with no style of its own
+    /// when `plain`: a terminal's), recording the answer
+    /// ([`LayoutNode::measured`]).
+    fn measure_leaf(&mut self, node: NodeId, inputs: LayoutInput, plain: bool) -> LayoutOutput {
+        let tree = &mut *self.tree;
+        let n = &mut tree.nodes[key(node)];
+        let style = if plain { &tree.plain } else { &n.style };
+        let output = (self.measure)(inputs, node, n.context.as_mut(), style);
+        if let Some(measured) = &mut n.measured
+            && !measured.iter().any(|(asked, _)| *asked == inputs)
+        {
+            if measured.len() < MEASURED {
+                measured.push((inputs, output.clone()));
+            } else {
+                n.measured = None;
+            }
+        }
+        output
     }
 
     /// What both `compute_child_layout` and `compute_block_child_layout`
@@ -510,28 +715,22 @@ where
             return compute_hidden_layout(self, node);
         }
         let output = compute_cached_layout(self, node, inputs, |view, node, inputs| {
+            if let Some(grid) = view.tree.grid {
+                return if view.tree.displays_none(node) {
+                    compute_hidden_layout(view, node)
+                } else {
+                    terminal_layout::compute(view, node, inputs, grid)
+                };
+            }
             let display = view.node(node).style.display;
             let has_children = !view.node(node).children.is_empty();
             let mut output = match (display, has_children) {
                 (Display::None, _) => compute_hidden_layout(view, node),
                 (Display::Block, true) => compute_block_layout(view, node, inputs, block),
                 (Display::FlowRoot, true) => compute_block_layout(view, node, inputs, None),
-                (Display::Flex, true) => compute_flexbox_layout(view, node, inputs),
+                (Display::Flex, true) => compute_flex_layout(view, node, inputs),
                 (Display::Grid, true) => compute_grid_layout(view, node, inputs),
-                (_, false) => {
-                    let n = &mut view.tree.nodes[key(node)];
-                    let output = (view.measure)(inputs, node, n.context.as_mut(), &n.style);
-                    if let Some(measured) = &mut n.measured
-                        && !measured.iter().any(|(asked, _)| *asked == inputs)
-                    {
-                        if measured.len() < MEASURED {
-                            measured.push((inputs, output.clone()));
-                        } else {
-                            n.measured = None;
-                        }
-                    }
-                    output
-                }
+                (_, false) => view.measure_leaf(node, inputs, false),
             };
             // The out-of-flow nodes this one is the containing block of, in
             // full layout passes only, as Taffy's tree does.
@@ -544,6 +743,91 @@ where
             self.tree.nodes[key(node)].last = Some((inputs, output.clone()));
         }
         output
+    }
+}
+
+impl<C, M> terminal_layout::Tree for View<'_, C, M>
+where
+    M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
+{
+    fn style(&self, node: NodeId) -> &Style {
+        &self.node(node).style
+    }
+
+    fn role(&self, node: NodeId) -> Role {
+        self.node(node).role
+    }
+
+    fn child_count(&self, node: NodeId) -> usize {
+        self.node(node).children.len()
+    }
+
+    fn child(&self, node: NodeId, index: usize) -> NodeId {
+        self.tree.laid_out(self.node(node).children[index])
+    }
+
+    fn is_root(&self, node: NodeId) -> bool {
+        self.node(node).parent.is_none()
+    }
+
+    fn measures(&self, node: NodeId) -> bool {
+        self.node(node).context.is_some()
+    }
+
+    fn measure(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+        self.measure_leaf(node, inputs, true)
+    }
+
+    fn layout(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+        View::compute_child_layout(self, node, inputs, None)
+    }
+
+    fn place(&mut self, node: NodeId, layout: &Layout) {
+        LayoutPartialTree::set_unrounded_layout(self, node, layout);
+    }
+
+    fn framed(&self) -> bool {
+        self.framed
+    }
+
+    fn insets(&self, node: NodeId) -> terminal_layout::Insets {
+        self.node(node).insets
+    }
+
+    fn set_insets(&mut self, node: NodeId, insets: terminal_layout::Insets) {
+        self.tree.nodes[key(node)].insets = insets;
+    }
+
+    fn set_framed(&mut self, framed: bool) {
+        self.framed = framed;
+    }
+
+    fn page(&self) -> crate::Color {
+        self.tree.grid.map_or(crate::Color::BLACK, |g| g.page)
+    }
+
+    fn backdrop(&self, node: NodeId) -> Option<crate::Color> {
+        let mut at = self.tree.parent(node);
+        while let Some(n) = at {
+            let fill = self.tree.nodes[key(n)].role.fill;
+            if fill.0 & 0xff == 0xff {
+                return Some(fill);
+            }
+            at = self.tree.parent(n);
+        }
+        None
+    }
+
+    fn placed(&self, node: NodeId) -> Layout {
+        *self.tree.unrounded_layout(node)
+    }
+
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        self.tree.parent(node)
+    }
+
+    fn host(&self, node: NodeId) -> Option<NodeId> {
+        self.node(node).host
     }
 }
 

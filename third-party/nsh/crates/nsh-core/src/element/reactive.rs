@@ -530,6 +530,12 @@ impl<T: 'static> Stored<T> {
         self.0.with_untracked(|cell| f(&mut cell.borrow_mut()))
     }
 
+    /// `f` of the value, or `None` (and `f` not called) once the value's
+    /// owner was disposed: for cleanups that may run after it.
+    pub fn try_with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.0.is_live().then(|| self.with(f))
+    }
+
     /// Replaces the value, returning the old one.
     #[track_caller]
     pub fn replace(&self, value: T) -> T {
@@ -886,7 +892,7 @@ pub(crate) fn render_effect(f: impl Fn() + 'static) {
 
 /// Runs `f` before the current owner runs again or is disposed (TS:
 /// `cleanup(fn)`). With no owner it never runs; under an owner disposed
-/// while it ran (`Owner::scope`) it runs at once.
+/// while it ran ([`Owner::scope`]) it runs at once.
 pub fn cleanup(f: impl FnOnce() + 'static) {
     cleanup_boxed(Box::new(f));
 }

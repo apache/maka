@@ -48,6 +48,7 @@ fn bundles_errors_and_logs_round_trip() {
         AppInfo {
             capabilities: Some("{\"statusBar\":true}".into()),
             id: Some("com.example.roundtrip".into()),
+            window: Some("{\"title\":\"Roundtrip\"}".into()),
         },
         None,
         vec!["app/native".into()],
@@ -70,9 +71,11 @@ fn bundles_errors_and_logs_round_trip() {
             source_map,
             capabilities,
             app_id,
+            window,
             limits,
         } => {
             assert_ne!(session, 0, "the server names its run");
+            assert_eq!(window.as_deref(), Some("{\"title\":\"Roundtrip\"}"));
             assert_eq!(limits.as_deref(), Some("memory=64MB,call=500ms"));
             assert_eq!(app_id.as_deref(), Some("com.example.roundtrip"));
             assert_eq!(bytes, [1, 2, 3]);
@@ -459,4 +462,180 @@ fn a_traced_test_session_hears_the_batches_before_the_step_ends() {
         traces.try_recv().expect("the batch, before the step's end"),
         ["Create { id: 2, kind: View }"]
     );
+}
+
+/// The status code of `GET <path>` with `headers` (raw HTTP/1.1).
+fn status(addr: std::net::SocketAddr, path: &str, headers: &str) -> u16 {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n{headers}\r\n"
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    let line = String::from_utf8_lossy(&response);
+    line.split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+fn assets_are_the_apps_media_and_named_files_only() {
+    let dir = std::env::temp_dir().join(format!("nsh-dev-served-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    for file in [
+        "logo.png",
+        ".env",
+        "App.tsx",
+        "nsh.json",
+        "data.json",
+        ".git/config",
+    ] {
+        std::fs::write(dir.join(file), b"x").unwrap();
+    }
+    let server = DevServer::start(
+        "127.0.0.1:0".parse().unwrap(),
+        "bc-1",
+        Some(dir.clone()),
+        |_| {},
+    )
+    .unwrap();
+    server.serve_files([("data.json".to_owned(), dir.join("data.json"))]);
+    let addr = server.local_addr();
+    assert_eq!(status(addr, "/assets/logo.png", ""), 200);
+    // Named by a build (an import, a crate's files): any type.
+    assert_eq!(status(addr, "/assets/data.json", ""), 200);
+    for path in [
+        "/assets/.env",
+        "/assets/App.tsx",
+        "/assets/nsh.json",
+        "/assets/.git/config",
+        "/assets/..%2f..%2fetc%2fpasswd",
+    ] {
+        assert_eq!(status(addr, path, ""), 404, "{path}");
+    }
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_websocket_refuses_other_web_pages() {
+    use tungstenite::client::IntoClientRequest;
+    let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc-1", None, |_| {}).unwrap();
+    let addr = server.local_addr();
+    let url = format!("ws://{addr}{WS_PATH}");
+    let connect = |origin: Option<String>| {
+        let mut request = url.as_str().into_client_request().unwrap();
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert("Origin", origin.parse().unwrap());
+        }
+        tungstenite::connect(request)
+    };
+    // A native host, and the dev server's own page.
+    assert!(connect(None).is_ok());
+    assert!(connect(Some(format!("http://{addr}"))).is_ok());
+    for origin in ["https://evil.example", "http://127.0.0.1:1", "null"] {
+        match connect(Some(origin.to_owned())) {
+            Err(tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 403, "{origin}")
+            }
+            other => panic!("{origin}: {:?}", other.map(|_| ())),
+        }
+    }
+}
+
+/// The status line and body of `GET path` with `accept`, over a plain
+/// HTTP/1.1 connection.
+fn get(addr: std::net::SocketAddr, path: &str, accept: &str) -> (String, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: {accept}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response.lines().next().unwrap_or_default().to_owned();
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
+const BROWSER: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
+#[test]
+fn the_web_host_serves_its_page_at_the_apps_paths() {
+    let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc-1", None, |_| {}).unwrap();
+    server.serve_web("<p>page</p>".into(), [("nsh.js".into(), b"js".to_vec())]);
+    let addr = server.local_addr();
+    assert_eq!(get(addr, "/", BROWSER).1, "<p>page</p>");
+    assert_eq!(get(addr, "/sports/football", BROWSER).1, "<p>page</p>");
+    assert_eq!(
+        get(addr, "/sports/football?tab=live", BROWSER).1,
+        "<p>page</p>"
+    );
+    assert_eq!(get(addr, "/nsh.js", "*/*").1, "js");
+    // A file that is not there, and the app's own requests, stay missing.
+    assert!(get(addr, "/sports/nsh.js", BROWSER).0.contains("404"));
+    assert!(get(addr, "/api/teams", "*/*").0.contains("404"));
+}
+
+#[test]
+fn a_packaged_site_serves_its_page_at_the_apps_paths() {
+    let dir = std::env::temp_dir().join(format!("nsh-site-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<p>site</p>").unwrap();
+    std::fs::write(dir.join("assets/logo.png"), "png").unwrap();
+    let server = nsh_dev::SiteServer::start("127.0.0.1:0".parse().unwrap(), dir.clone()).unwrap();
+    let addr = server.local_addr();
+    assert_eq!(get(addr, "/", BROWSER).1, "<p>site</p>");
+    assert_eq!(get(addr, "/sports/football", BROWSER).1, "<p>site</p>");
+    assert_eq!(get(addr, "/assets/logo.png", "*/*").1, "png");
+    assert!(get(addr, "/assets/missing.png", BROWSER).0.contains("404"));
+    assert!(
+        get(addr, "/api/teams", "application/json")
+            .0
+            .contains("404")
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_site_deployed_under_a_path_is_served_there() {
+    let dir = std::env::temp_dir().join(format!("nsh-site-base-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "<p>site</p>").unwrap();
+    std::fs::write(dir.join("nsh.0123456789.js"), "js").unwrap();
+    let server = nsh_dev::SiteServer::start_at(
+        "127.0.0.1:0".parse().unwrap(),
+        dir.clone(),
+        "/apps/counter/",
+    )
+    .unwrap();
+    let addr = server.local_addr();
+    assert_eq!(get(addr, "/apps/counter/", BROWSER).1, "<p>site</p>");
+    assert_eq!(get(addr, "/apps/counter/nsh.0123456789.js", "*/*").1, "js");
+    assert_eq!(
+        get(addr, "/apps/counter/sports/football", BROWSER).1,
+        "<p>site</p>"
+    );
+    for path in ["/", "/apps/counter"] {
+        let (status, _) = get(addr, path, BROWSER);
+        assert!(status.contains("307"), "{path}: {status}");
+    }
+    assert!(get(addr, "/nsh.0123456789.js", "*/*").0.contains("404"));
+    drop(server);
+    let _ = std::fs::remove_dir_all(dir);
 }

@@ -14,6 +14,7 @@ mod navigation;
 mod photos;
 mod physics;
 mod scrolling;
+mod spacex;
 mod stocks;
 mod storage;
 mod styles;
@@ -208,10 +209,16 @@ pub(crate) static GROUPS: &[Group] = &[
                 content: || components::components().into_element(),
             },
             Demo {
-                name: "Web and video",
-                detail: "WKWebView / WebView, AVPlayer / MediaPlayer",
+                name: "WebView",
+                detail: "Inline HTML with messages both ways, a web site and its navigation",
                 icon: IconName::Media,
-                content: || media::media().into_element(),
+                content: || media::web_view_page().into_element(),
+            },
+            Demo {
+                name: "Video",
+                detail: "A player: play, seek, volume and what it reports",
+                icon: IconName::Media,
+                content: || media::video_page().into_element(),
             },
             Demo {
                 name: "System",

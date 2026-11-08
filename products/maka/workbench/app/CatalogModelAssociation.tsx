@@ -175,8 +175,8 @@ function CatalogModelPicker(props: {
         style={{
           width: '100%',
           maxWidth: 560,
-          height: windowSize().height * 0.75,
-          maxHeight: '100%',
+          flex: 1,
+          maxHeight: windowSize().height * 0.75,
           minHeight: 0,
           backgroundColor: C.surface,
           borderWidth: 1,

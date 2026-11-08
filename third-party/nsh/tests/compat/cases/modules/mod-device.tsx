@@ -1,10 +1,20 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/device`
 // as the headless runtime reports it (iOS, a phone, 1 pixel per point, the
-// script's viewport; mobile, so `platform.desktop` is false; the app in use), the color scheme an app sets and
+// script's viewport; mobile, so `platform.desktop` is false; the app in use; the locale settings of en-US in UTC; `Intl` formats local time in the zone it names), the color scheme an app sets and
 // `openUrl`: a promise for a URL it opens (the headless runtime answers none), one rejected with a `TypeError` for
 // a URL it never opens (it never throws). Its script checks each.
 import { Text, View, signal } from "nsh";
-import { colorScheme, fontScale, lifecycle, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
+import { colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
+
+// Whether `Intl`'s local time is in the zone it names: formatting in that zone
+// writes what local time does (in 1970, a summer and a winter), on a machine in
+// any zone.
+function intlLocalTime() {
+  const options = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const;
+  const local = new Intl.DateTimeFormat("en-US", options);
+  const named = new Intl.DateTimeFormat("en-US", { ...options, timeZone: local.resolvedOptions().timeZone });
+  return [0, 1720000000000, 1736000000000].every((t) => named.format(t) === local.format(t)) ? "its zone" : "another zone";
+}
 
 function App() {
   const opened = signal("not opened");
@@ -22,6 +32,10 @@ function App() {
       <Text>{`Window: ${windowSize().width}x${windowSize().height}`}</Text>
       <Text>{`Scheme: ${colorScheme()}`}</Text>
       <Text>{`Lifecycle: ${lifecycle()}`}</Text>
+      <Text>{`Time zone: ${localeSettings().timeZone}`}</Text>
+      <Text>{`Intl local time: ${intlLocalTime()}`}</Text>
+      <Text>{`Languages: ${localeSettings().languages.join(", ")}`}</Text>
+      <Text>{`Regional: ${localeSettings().hourCycle}, week from ${localeSettings().firstDayOfWeek}, ${localeSettings().measurementSystem}, ${localeSettings().temperatureUnit}`}</Text>
       <View testID="dark" onPress={() => setColorScheme("dark")}>
         <Text>Go dark</Text>
       </View>

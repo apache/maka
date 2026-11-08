@@ -29,7 +29,7 @@ use super::{
 use crate::{
     input,
     rich_editor::{
-        model::{Mark, Node, utf16_len},
+        model::{DomOutputSpec, Mark, Node, utf16_len},
         state::{Decoration, DecorationKind},
         tables::{CellSelection, TableRole, table_role},
     },
@@ -240,6 +240,15 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
         None => Kind::Container,
     };
     let props = rv.props;
+    let terminal = crate::terminal::is_terminal();
+    // A terminal's rule is a row of `─` across the editor: the app's
+    // hairline (`h-px`) has no row there, so its look stays out.
+    if terminal && matches!(kind, Kind::Atom) && dom_tag(&first.node) == Some("hr") {
+        return view()
+            .on_layout(move |b: &Bounds<Points>| rv.set_frame(id, Some(parent), *b))
+            .child(crate::terminal::rule_line())
+            .into_element();
+    }
     let (class_rv, style_rv, layout_rv) = (rv.clone(), rv.clone(), rv.clone());
     let wrapper = view()
         .on_layout(move |b: &Bounds<Points>| layout_rv.set_frame(id, Some(parent), *b))
@@ -276,10 +285,14 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
                 parts::merge(&list)
             })
         });
-    // A list's item carries its marker, placed in the indent before it.
-    let wrapper = match list_marker(&rv, &first) {
-        Some(_) => wrapper.relative().child(marker(rv.clone(), item)),
-        None => wrapper,
+    // A list's item carries its marker, placed in the indent before it;
+    // a terminal's goes in flow before the content instead, as TextView
+    // sets its markers, since its Cells round the indent down.
+    let marked = list_marker(&rv, &first).is_some();
+    let wrapper = match marked {
+        true if terminal => wrapper.flex_row().child(marker(rv.clone(), item, true)),
+        true => wrapper.relative().child(marker(rv.clone(), item, false)),
+        false => wrapper,
     };
     // Tables are grids of their cells (`table.rs`).
     let wrapper = match (table_role(first.node.ty()), &kind) {
@@ -294,6 +307,11 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
         Kind::Text => Some(text_block(rv.clone(), item, id).into_element()),
         Kind::Image => Some(dynamic(move || image_of(&item.get().node)).into_element()),
         Kind::Atom => None,
+        // A terminal's quote has a bar of `│` down its left side, as a
+        // Markdown source's `>`: the app's one-sided border has no Cell.
+        Kind::Container if terminal && dom_tag(&first.node) == Some("blockquote") => {
+            Some(crate::terminal::quoted(blocks(rv.clone(), id)).into_element())
+        }
         Kind::Container => Some(blocks(rv.clone(), id).into_element()),
     };
     // A task item is a row: its checkbox, then its content (Tiptap's
@@ -306,7 +324,21 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
             .child(view().flex_1().min_w(px(0.0)).children(content))
             .into_element();
     }
+    if marked && terminal {
+        return wrapper
+            .child(view().flex_1().min_w(px(0.0)).children(content))
+            .into_element();
+    }
     wrapper.children(content).into_element()
+}
+
+/// The tag of the element the node's spec renders as (`to_dom`), when it
+/// is a fixed one: `blockquote`, `hr`.
+fn dom_tag(node: &Node) -> Option<&str> {
+    match node.ty().spec().to_dom.as_ref()? {
+        DomOutputSpec::Element { tag, .. } => Some(tag),
+        _ => None,
+    }
 }
 
 /// How the view renders a node without a node view: its spec's
@@ -428,8 +460,10 @@ fn marker_kind(node: &Node) -> Option<ListMarker> {
 /// The text of `it`'s marker: a bullet by its depth among bulleted lists
 /// (disc, circle, square, around again deeper), or its number from
 /// the list's start (`extra.listMarkerStart` names that attribute,
-/// `order` by default; 1., a., i. by depth).
-fn marker_text(rv: &Rv, it: &BlockItem) -> Option<String> {
+/// `order` by default; 1., a., i. by depth). In a terminal the number is
+/// right-aligned to the list's widest and a space follows the marker, so
+/// the items' content lines up after it.
+fn marker_text(rv: &Rv, it: &BlockItem, terminal: bool) -> Option<String> {
     let state = rv.st.borrow();
     let at = state.doc().resolve(it.pos).ok()?;
     let list = at.parent();
@@ -449,20 +483,38 @@ fn marker_text(rv: &Rv, it: &BlockItem) -> Option<String> {
             let depth = (0..at.depth)
                 .filter(|&d| marker_kind(at.node(d)) == Some(ListMarker::Ordered))
                 .count();
-            let label = match (depth % 3, n) {
-                (1, 1..) => alpha(n as u64),
-                (2, 1..) => roman(n as u64),
-                _ => n.to_string(),
-            };
-            Some(format!("{label}."))
+            let label = format!("{}.", ordered_label(depth, n));
+            if !terminal {
+                return Some(label);
+            }
+            let widest = (0..list.child_count() as i64)
+                .map(|i| ordered_label(depth, start + i).chars().count() + 1)
+                .max()
+                .unwrap_or(0);
+            Some(format!("{label:>widest$} "))
         }
         ListMarker::Bullet => {
             let depth = (0..at.depth)
                 .filter(|&d| marker_kind(at.node(d)) == Some(ListMarker::Bullet))
                 .count();
             // Disc, circle, square, and around again deeper down.
-            Some(["•", "◦", "▪"][depth % 3].to_owned())
+            let bullet = ["•", "◦", "▪"][depth % 3];
+            Some(if terminal {
+                format!("{bullet} ")
+            } else {
+                bullet.to_owned()
+            })
         }
+    }
+}
+
+/// Item `n`'s number in an ordered list `depth` ordered lists deep: 1,
+/// then a, then i, and around again.
+fn ordered_label(depth: usize, n: i64) -> String {
+    match (depth % 3, n) {
+        (1, 1..) => alpha(n as u64),
+        (2, 1..) => roman(n as u64),
+        _ => n.to_string(),
     }
 }
 
@@ -507,12 +559,14 @@ fn roman(mut n: u64) -> String {
 
 /// A list item's marker: in the indent before its content, its end
 /// against it, as a browser places it (the app's classes give the item
-/// its indent). The view draws it; the document has no marker.
-fn marker(rv: Rv, item: ReadSignal<BlockItem>) -> impl IntoElement {
+/// its indent); in a `terminal`, in flow before the content, where Cells
+/// would round the indent below a number's width. The view draws it; the
+/// document has no marker.
+fn marker(rv: Rv, item: ReadSignal<BlockItem>, terminal: bool) -> impl IntoElement {
     dynamic(move || {
         rv.doc_rev.get();
         let it = item.get();
-        let label = marker_text(&rv, &it)?;
+        let label = marker_text(&rv, &it, terminal)?;
         // The first line's typography (and the space above it), so the
         // marker sits on that line's baseline as a browser's does; the
         // marker's part comes after it.
@@ -533,9 +587,12 @@ fn marker(rv: Rv, item: ReadSignal<BlockItem>) -> impl IntoElement {
                 parts::join(list)
             })
         };
-        Some(
-            text(label)
-                .app_class(typography)
+        let marker = text(label).app_class(typography);
+        // A terminal's is in flow before the content, its own spaces
+        // aligning it (`marker_text`).
+        let marker = match terminal {
+            true => marker.flex_none(),
+            false => marker
                 .absolute()
                 .top(px(0.0))
                 .right(relative(1.0))
@@ -543,7 +600,10 @@ fn marker(rv: Rv, item: ReadSignal<BlockItem>) -> impl IntoElement {
                 // TextView places its markers.
                 .w(px(32.0))
                 .pe(px(6.0))
-                .text_right()
+                .text_right(),
+        };
+        Some(
+            marker
                 .pointer_events(PointerEvents::None)
                 .inline_style(move || {
                     props
@@ -1249,6 +1309,18 @@ fn caret(rv: Rv) -> impl IntoElement {
         if !empty_text {
             return None;
         }
+        let visible = move || {
+            if focused.get() && blink.get() {
+                1.0_f32
+            } else {
+                0.0
+            }
+        };
+        // A terminal shows its own cursor at the sink, which sits on the
+        // caret's Cell (`sink`): nothing of the editor's is drawn there.
+        if crate::terminal::is_terminal() {
+            return None;
+        }
         let b = rv.caret_glyph_rect()?;
         // On whole device pixels: a caret between pixels is drawn smeared
         // over two, wider or narrower as it moves (gpui-kit's fix).
@@ -1260,13 +1332,7 @@ fn caret(rv: Rv) -> impl IntoElement {
                 Size::new(width, snap(b.size.height)),
             ))
             .bg(move || theme().foreground)
-            .opacity(move || {
-                if focused.get() && blink.get() {
-                    1.0_f32
-                } else {
-                    0.0
-                }
-            }),
+            .opacity(visible),
             &rv,
             Part::Caret,
         ))
@@ -1288,8 +1354,13 @@ fn sink(rv: Rv) -> impl IntoElement {
             // At the bottom of the caret's line: input methods open their
             // candidates under the field's line, which would cover the
             // lower part of a taller line (a heading's).
-            let y = caret.origin.y + (caret.size.height - px(SINK_HEIGHT)).max(px(0.0))
-                - rv.scroll_y.get();
+            // A terminal's line is one row: the sink on the caret's own
+            // Cell, where the terminal draws its cursor.
+            let bottom = match crate::terminal::is_terminal() {
+                true => px(0.0),
+                false => (caret.size.height - px(SINK_HEIGHT)).max(px(0.0)),
+            };
+            let y = caret.origin.y + bottom - rv.scroll_y.get();
             Point::new(
                 caret.origin.x.min(size.width - px(1.0)).max(px(0.0)),
                 y.min(size.height - px(1.0)).max(px(0.0)),
@@ -1314,7 +1385,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         .top(move || Length::from(at.get().y))
         .w(px(1.0))
         .h(px(SINK_HEIGHT))
-        .pointer_events(PointerEvents::BoxNone)
+        .pointer_events(PointerEvents::None)
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)
@@ -1327,7 +1398,7 @@ fn sink(rv: Rv) -> impl IntoElement {
             !editable.editable()
         })
         // The terminal applies native autofocus after the sink is attached.
-        .auto_focus(move || is_terminal() && props.auto_focus.get())
+        .auto_focus(move || crate::terminal::is_terminal() && props.auto_focus.get())
         // The app's scroll bars (`Scrollbar.setTheme`) are for what people
         // see: a thumb here would show at the caret once the text it
         // holds overflows.

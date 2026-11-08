@@ -1,7 +1,7 @@
 import { type JSX, platform, signal, Text, View } from "nsh";
 import { HoverCard, type OpenChangeReason } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
-import { alpha, Badge, Button, Caption, colors, Card, DemoPage, focusRing, hint, mono, PopIn, type PopupSide, popupSurface, Segmented, Stat, Toggle, toneColor } from "../ui";
+import { alpha, Badge, Button, Caption, colors, Card, DemoPage, finish, focusRing, hint, mono, PopIn, popoverLook, type PopupSide, Segmented, Stat, terminal, Toggle, toneColor } from "../ui";
 import { Avatar, createEvents } from "./OverlayUi";
 
 // A trigger is a view with the link role and its own `onPress`: the card's
@@ -18,7 +18,6 @@ const exit = {
   popupClass: "transition-opacity duration-150 ease-in motion-reduce:transition-none",
   popupEndingClass: "opacity-0",
 };
-const card = (width: number) => ({ ...popupSurface(), width, padding: pointer ? 14 : 16, gap: 12 });
 const small = pointer ? 12 : 13;
 const body = pointer ? 13 : 15;
 
@@ -41,12 +40,12 @@ const people: Record<string, Person> = {
   lena: { handle: "lena", name: "Lena Okafor", role: "Product manager · Trading", bio: "Owns the order ticket and everything that can go wrong in it.", city: "Lagos", time: "09:42", projects: "7", reviews: "96", followers: 512, away: true },
 };
 
-type Site = { href: string; domain: string; title: string; summary: string; icon: LucideIconName; read: string; hue: [string, string] };
+type Site = { href: string; domain: string; title: string; summary: string; icon: LucideIconName; read: string };
 
 const sites: Record<string, Site> = {
-  taffy: { href: "https://github.com/DioxusLabs/taffy", domain: "github.com", title: "taffy: a flexbox, grid and block layout library", summary: "A high-performance UI layout library written in Rust, with CSS Block, Flexbox and Grid.", icon: "code", read: "2.3k stars", hue: ["#3b82f6", "#8b5cf6"] },
-  quickjs: { href: "https://bellard.org/quickjs/", domain: "bellard.org", title: "QuickJS JavaScript Engine", summary: "A small and embeddable JavaScript engine supporting the ES2023 specification.", icon: "globe", read: "Fabrice Bellard", hue: ["#f59e0b", "#ef4444"] },
-  wgsl: { href: "https://www.w3.org/TR/WGSL/", domain: "w3.org", title: "WebGPU Shading Language", summary: "The shader language of WebGPU: types, expressions, statements and the built-in functions.", icon: "scroll-text", read: "W3C Draft", hue: ["#10b981", "#0ea5e9"] },
+  taffy: { href: "https://github.com/DioxusLabs/taffy", domain: "github.com", title: "taffy: a flexbox, grid and block layout library", summary: "A high-performance UI layout library written in Rust, with CSS Block, Flexbox and Grid.", icon: "code", read: "2.3k stars" },
+  quickjs: { href: "https://bellard.org/quickjs/", domain: "bellard.org", title: "QuickJS JavaScript Engine", summary: "A small and embeddable JavaScript engine supporting the ES2023 specification.", icon: "globe", read: "Fabrice Bellard" },
+  wgsl: { href: "https://www.w3.org/TR/WGSL/", domain: "w3.org", title: "WebGPU Shading Language", summary: "The shader language of WebGPU: types, expressions, statements and the built-in functions.", icon: "scroll-text", read: "W3C Draft" },
 };
 
 type Quote = { symbol: string; name: string; price: number; open: number; volume: string; cap: string; pe: string };
@@ -102,7 +101,7 @@ export function HoverCardDemo() {
           <Text style={{ fontSize: body, fontWeight: "500", color: colors.accent }}>@{p.name}</Text>
         </View>
       }>
-        <PopIn side={side()} style={card(pointer ? 280 : 300)}>
+        <PopIn side={side()} style={popoverLook({ width: pointer ? 280 : 300 })}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <View>
               <Avatar name={p.name} size={44} />
@@ -216,18 +215,20 @@ export function HoverCardDemo() {
           <Text style={{ fontSize: body, color: colors.accent }}>{props.label}</Text>
         </View>
       }>
-        <PopIn side="top" style={{ ...card(pointer ? 300 : 310), padding: 0, gap: 0, overflow: "hidden" }}>
-          <View style={{ height: 88, backgroundImage: `linear-gradient(135deg, ${s.hue[0]}, ${s.hue[1]})`, alignItems: "flex-start", justifyContent: "flex-end", padding: 12 }}>
-            <View style={{ width: 34, height: 34, borderRadius: 9, backgroundColor: "rgba(255,255,255,0.92)", alignItems: "center", justifyContent: "center" }}>
-              <LucideIcon name={s.icon} size={18} tint={s.hue[0]} />
+        <PopIn side="top" style={popoverLook({ width: pointer ? 300 : 310 })}>
+          {/* The site: its mark on a raised tile, its domain and what it is, the
+              link's way out at the end; then the page's title and summary. */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <View style={{ width: 32, height: 32, borderRadius: 8, borderCurve: "continuous", borderWidth: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.raised, ...finish.raised }}>
+              <LucideIcon name={s.icon} size={16} tint={colors.text} />
             </View>
+            <View style={{ flex: 1, gap: 1 }}>
+              <Text style={{ fontSize: small, fontWeight: "500", color: colors.text }}>{s.domain}</Text>
+              <Text style={{ fontSize: 11.5, color: colors.faint }}>{s.read}</Text>
+            </View>
+            <LucideIcon name="external-link" size={13} tint={colors.faint} />
           </View>
-          <View style={{ padding: pointer ? 12 : 14, gap: 6 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <LucideIcon name="external-link" size={12} tint={colors.faint} />
-              <Text style={{ fontSize: 11.5, color: colors.faint }}>{s.domain}</Text>
-              <Text style={{ fontSize: 11.5, color: colors.faint }}>· {s.read}</Text>
-            </View>
+          <View style={{ gap: 4 }}>
             <Text style={{ fontSize: body, fontWeight: "600", color: colors.text }}>{s.title}</Text>
             <Text style={{ fontSize: small, lineHeight: pointer ? 17 : 19, color: colors.muted }}>{s.summary}</Text>
           </View>
@@ -298,7 +299,7 @@ export function HoverCardDemo() {
           </View>
         }
       >
-        <PopIn style={card(pointer ? 260 : 290)}>
+        <PopIn style={popoverLook({ width: pointer ? 260 : 290 })}>
           <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={{ fontSize: pointer ? 15 : 17, fontWeight: "600", color: colors.text }}>{q.symbol}</Text>
@@ -315,8 +316,16 @@ export function HoverCardDemo() {
               {change().toFixed(2)} ({((change() / q.open) * 100).toFixed(2)}%)
             </Text>
           </View>
-          {/* The day's closes as bars, the latest at the right. */}
-          <View style={{ height: 44, flexDirection: "row", alignItems: "flex-end", gap: 2 }}>
+          {/* The day's closes as bars, the latest at the right; a terminal's
+              are a row of block glyphs, eighths of a Cell, as a sparkline is. */}
+          <If when={terminal}>
+            <Text style={{ color: toneColor(tone()) }}>
+              {closes()
+                .map((c) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.floor(((c - lo()) / Math.max(0.01, hi() - lo())) * 8))])
+                .join("")}
+            </Text>
+          </If>
+          <View style={{ height: 44, flexDirection: "row", alignItems: "flex-end", gap: 2, display: terminal ? "none" : "flex" }}>
             <Each of={closes()}>
               {(c, i) => (
                 <View
@@ -384,7 +393,7 @@ export function HoverCardDemo() {
               </View>
             }
           >
-            <PopIn side={side()} style={{ ...popupSurface(), padding: 12, gap: 4, maxWidth: 220 }}>
+            <PopIn side={side()} style={{ ...popoverLook({ compact: true }), maxWidth: 220 }}>
               <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>
                 {open()} ms in · {close()} ms out
               </Text>
@@ -413,13 +422,15 @@ export function HoverCardDemo() {
             offset={8}
             margin={8}
             trigger={
-              <View focusable focusStyle={focusRing(1)} style={{ flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 8, borderWidth: 1, borderColor: "transparent" }}>
+              // A terminal shows the focus itself: no edge kept for a ring,
+              // which would take a row above and below.
+              <View focusable focusStyle={terminal ? undefined : focusRing(1)} style={{ flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 8, borderWidth: terminal ? 0 : 1, borderColor: "transparent" }}>
                 <Avatar name="Ravi Patel" size={pointer ? 28 : 34} />
                 <Text style={{ fontSize: body, color: colors.text }}>Build #4182</Text>
               </View>
             }
           >
-            <PopIn side="right" style={card(pointer ? 220 : 240)}>
+            <PopIn side="right" style={popoverLook({ width: pointer ? 220 : 240 })}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <LucideIcon name="circle-check" size={16} tint={colors.up} />
                 <Text style={{ fontSize: body, fontWeight: "600", color: colors.text }}>Passed in 4m 12s</Text>
@@ -431,6 +442,9 @@ export function HoverCardDemo() {
             </PopIn>
           </HoverCard>
           <View style={{ flex: 1 }} />
+          {/* The switch's name in sight, as the gallery's other switches have
+              theirs: alone, a terminal's `[ ]` would say nothing. */}
+          <Text style={{ fontSize: small, color: colors.muted }}>Pin open</Text>
           <Toggle label="Pin open" value={pinned()} onChange={(v) => pinned.set(v)} />
         </View>
         <Caption label={pinned() ? "Pinned: onOpenChange still reports, the app keeps it open" : "Pin it, then move away"} />

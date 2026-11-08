@@ -1,7 +1,7 @@
 import { effect, signal, Text, untracked, View } from "nsh";
 import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
 import { Icon } from "../../icons";
-import { Button, colors, finish, isDark, Press, radius, Segmented, tints } from "../../ui";
+import { Button, colors, finish, isDark, Press, radius, Segmented, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, tints } from "../../ui";
 import { grouped, type Stock, price } from "./market";
 
 export type Side = "buy" | "sell";
@@ -31,23 +31,26 @@ export function createBanner() {
       style={{
         pointerEvents: "none",
         position: "absolute",
-        top: 10,
-        left: 16,
-        right: 16,
+        top: terminal ? TERMINAL_ROW : 10,
+        left: terminal ? TERMINAL_COLUMN : 16,
+        right: terminal ? TERMINAL_COLUMN : 16,
         flexDirection: "row",
         alignItems: "center",
         gap: 12,
-        padding: 14,
+        paddingVertical: terminal ? 0 : 14,
+        paddingHorizontal: terminal ? TERMINAL_COLUMN : 14,
         borderRadius: radius.inset + 3,
         borderCurve: "continuous",
         backgroundColor: colors.light,
         opacity: t.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 1, 1] }),
         translate: [0, t.interpolate({ inputRange: [0, 1], outputRange: [-90, 0] })],
-        scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }),
+        // Whole Cells in the terminal: it does not grow in.
+        scale: terminal ? 1 : t.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }),
       }}
     >
       <View
         style={{
+          display: terminal ? "none" : "flex",
           width: 34,
           height: 34,
           borderRadius: 17,
@@ -69,8 +72,9 @@ export function createBanner() {
   return { show, view };
 }
 
-/** A square 44 pt stepper button. */
+/** A square 44 pt stepper button; a text button in the terminal. */
 function Step(props: { icon: "plus" | "minus"; label: string; onPress: () => void }) {
+  if (terminal) return <Button label={props.icon === "plus" ? "Raise" : "Lower"} accessibilityLabel={props.label} variant="secondary" onPress={props.onPress} />;
   return (
     <Press onPress={props.onPress} accessibilityLabel={props.label}>
       <View style={{ width: 44, height: 44, borderRadius: radius.control, alignItems: "center", justifyContent: "center", ...finish.pill, borderWidth: 1 }}>
@@ -85,7 +89,7 @@ function Step(props: { icon: "plus" | "minus"; label: string; onPress: () => voi
 /** A line of the review: a label and a value. */
 function Line(props: { label: string; value: string; strong?: boolean }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "baseline", minHeight: 24 }}>
+    <View style={{ flexDirection: "row", alignItems: "baseline", minHeight: terminal ? TERMINAL_ROW : 24 }}>
       <Text style={{ flex: 1, fontSize: 14, color: colors.muted }}>{props.label}</Text>
       <Text style={{ fontSize: props.strong ? 17 : 14, fontWeight: props.strong ? "600" : "400", color: colors.text, fontVariant: ["tabular-nums"] }}>{props.value}</Text>
     </View>
@@ -120,7 +124,7 @@ export function Ticket(props: { open: () => boolean; stock: Stock; side: () => S
   const tone = () => (props.side() === "buy" ? colors.up : colors.down);
   const verb = () => (props.side() === "buy" ? "Buy" : "Sell");
   return (
-    <View style={{ gap: 16, paddingTop: 4 }}>
+    <View style={{ gap: 16, paddingTop: terminal ? 0 : 4 }}>
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 20, fontWeight: "600", color: colors.text }}>
           {verb()} {props.stock.code}
@@ -128,7 +132,7 @@ export function Ticket(props: { open: () => boolean; stock: Stock; side: () => S
         <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>simulated · nothing is sent</Text>
       </View>
       <Segmented options={sides} value={props.side()} onChange={(s) => props.onSide(s)} />
-      <View style={{ gap: 8 }}>
+      <View style={{ gap: terminal ? 0 : 8 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline" }}>
           <Text style={{ flex: 1, fontSize: 14, color: colors.muted }}>Limit price</Text>
           <Text
@@ -140,27 +144,27 @@ export function Ticket(props: { open: () => boolean; stock: Stock; side: () => S
             use last {p(props.stock.quote().last)}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_GAP : 10 }}>
           <Step icon="minus" label="Lower the price" onPress={() => nudge(-1)} />
-          <View style={{ flex: 1, height: 44, borderRadius: radius.control, alignItems: "center", justifyContent: "center", backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.border }}>
+          <View style={{ flex: 1, height: terminal ? TERMINAL_ROW : 44, borderRadius: radius.control, alignItems: "center", justifyContent: "center", backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.border }}>
             <Text style={{ fontSize: 20, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>{p(limit())}</Text>
           </View>
           <Step icon="plus" label="Raise the price" onPress={() => nudge(1)} />
         </View>
       </View>
-      <View style={{ gap: 8 }}>
+      <View style={{ gap: terminal ? 0 : 8 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline" }}>
           <Text style={{ flex: 1, fontSize: 14, color: colors.muted }}>Quantity</Text>
           <Text style={{ fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] }}>{grouped(quantity(), 0)} sh</Text>
         </View>
-        <View style={{ flexDirection: "row", gap: 8 }}>
+        <View style={{ flexDirection: "row", gap: terminal ? TERMINAL_GAP : 8 }}>
           <Each of={quantities}>
             {(q) => (
               <View style={{ flex: 1 }}>
                 <Press onPress={() => quantity.set(q())} accessibilityLabel={`${q()} shares`} accessibilityState={{ selected: quantity() === q() }}>
                   <View
                     style={{
-                      height: 44,
+                      height: terminal ? TERMINAL_ROW : 44,
                       borderRadius: radius.control,
                       alignItems: "center",
                       justifyContent: "center",
@@ -179,14 +183,16 @@ export function Ticket(props: { open: () => boolean; stock: Stock; side: () => S
           </Each>
         </View>
       </View>
-      <View style={{ gap: 6, paddingTop: 2 }}>
+      <View style={terminal ? undefined : { gap: 6, paddingTop: 2 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline" }}>
           <Text style={{ flex: 1, fontSize: 14, color: colors.muted }}>Estimated {props.side() === "buy" ? "cost" : "proceeds"}</Text>
           <Text style={{ fontSize: 22, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>{grouped(cost())}</Text>
         </View>
-        <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.raised, overflow: "hidden" }}>
-          <View style={{ width: `${Math.min(100, (cost() / POWER) * 100)}%`, height: 6, borderRadius: 3, backgroundColor: cost() > POWER ? colors.danger : tone() }} />
-        </View>
+        <If when={!terminal}>
+          <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.raised, overflow: "hidden" }}>
+            <View style={{ width: `${Math.min(100, (cost() / POWER) * 100)}%`, height: 6, borderRadius: 3, backgroundColor: cost() > POWER ? colors.danger : tone() }} />
+          </View>
+        </If>
         <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>
           {((cost() / POWER) * 100).toFixed(1)}% of {grouped(POWER, 0)} buying power
         </Text>
@@ -195,19 +201,31 @@ export function Ticket(props: { open: () => boolean; stock: Stock; side: () => S
         when={review()}
         else={<Button label={`Review ${verb().toLowerCase()}`} onPress={() => expand(true)} />}
       >
-        <View style={{ gap: 12, padding: 14, borderRadius: radius.inset, borderCurve: "continuous", borderWidth: 1, borderColor: tone(), backgroundColor: props.side() === "buy" ? tints.up : tints.down }}>
+        <View
+          style={{
+            gap: terminal ? 0 : 12,
+            // The terminal's border takes a row and a column on each side: the rest of them is padding.
+            paddingVertical: terminal ? TERMINAL_ROW - 1 : 14,
+            paddingHorizontal: terminal ? 2 * TERMINAL_COLUMN - 1 : 14,
+            borderRadius: radius.inset,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: tone(),
+            backgroundColor: props.side() === "buy" ? tints.up : tints.down,
+          }}
+        >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={{ flex: 1, fontSize: 15, fontWeight: "600", color: tone() }}>
               {verb()} {grouped(quantity(), 0)} {props.stock.code}
             </Text>
             <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>LIMIT · DAY</Text>
           </View>
-          <View style={{ gap: 2 }}>
+          <View style={{ gap: terminal ? 0 : 2 }}>
             <Line label="Limit" value={p(limit())} />
             <Line label="Fees (est.)" value={grouped(fee())} />
             <Line label="Total" value={grouped(props.side() === "buy" ? cost() + fee() : cost() - fee())} strong />
           </View>
-          <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flexDirection: "row", gap: terminal ? TERMINAL_GAP : 10, marginTop: terminal ? TERMINAL_ROW : 0 }}>
             <View style={{ flex: 1 }}>
               <Button label="Edit" variant="secondary" onPress={() => expand(false)} />
             </View>

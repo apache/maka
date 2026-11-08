@@ -40,7 +40,21 @@
   a number or an ARGB color, on the frames it changes). iOS shapes the decoration with a bound
   border color (and the layers for it even while it is transparent: `bound_style`), then sets the colors on those
   layers each frame; Android and web get them as properties. Driven on the main thread by `CADisplayLink`,
-  paused while nothing animates. `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
+  paused while nothing animates.
+- **Deadlines** (frames draw, time ends): every driver is a function of the time elapsed, so what an animation's end
+  does (its `{ finished }` to JS, a transition detaching a view, a screen transition settling and sending `Dismiss` /
+  `Show`, a scroll's `onScrollEnd`) needs the right time, not frames. While frames stop (a minimized or occluded
+  window, a locked screen, a hidden tab) the platforms must still get there. The core tells when the next end comes:
+  `Animator::deadline(now)` (the graph's: a timing's end; an unbounded decay's rest in closed form; a spring or a
+  bounded decay every `CHECK_SECONDS`; `now` for what has to be stepped to start; none for loops without an end,
+  which only frames move), `transition::Live::deadline` (a view's transitions and finite keyframes),
+  `navigation::Transitions::deadline` and `scroll::deadline` (a glide's or an eased move's end, a wheel's rest), each
+  a millisecond past the end so the step there finds it ended. A backend keeps the earliest with one timer a little
+  past it, which steps everything once if no frame ran since it came due, and does nothing while frames come: no
+  second clock beside the display's, and no work for a hidden window whose animations only draw. The one exception is
+  a test's app (`nsh test --target macos|windows`): it runs as on screen whatever covers its window (the test windows
+  do not come to the front, a test machine's screen may be locked), so while it wants frames and the display gives
+  none, it gets one a frame later, drawing included (JS frame requests, a list binding rows over frames). `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
   directly, and JS receives the velocity when the drag ends. Animated values referenced by a view's style (or `pan`, `scrollValue`, ...) are kept by its node
   (`nsh-js` `dom.rs`) and derived nodes hold their inputs, so bindings do not break when JS objects are collected. In
   Rust components `AnimatedValue` / `AnimatedNode` are `Copy` handles their owner keeps; the element's bindings, a
@@ -100,7 +114,8 @@
   and after), the way it draws an animated `color`, so no frame typesets the text again; `nsh_core::animation::Animator` holds the graph with its bindings to views, gestures and scroll views
   and hands each bound view its `AnimValues`.
 - **Mobile backends**: style transitions are the platform's (Core Animation on iOS, `ValueAnimator`s in
-  `Mounter.java` on Android). A text's color follows the same rules as on the desktops and is drawn the same way,
+  `Mounter.java` on Android), and a view's first style does not transition (the desktops' `transition::restyle` skips it,
+  iOS waits for a view it has styled before, Android for one with a style to transition from). A text's color follows the same rules as on the desktops and is drawn the same way,
   over the laid-out lines in an in-between color, as an animated `color` is: iOS steps a `transition::TextColor` per
   text (`transition::recolor` decides) on a display link that runs only while one moves (`interaction.rs`
   `TextColors`); on Android the `TEXT` item carries the text's one color (`uniform_color`) and `TextBox.recolor`
@@ -108,6 +123,14 @@
 - **Web**: animated values run in Rust as elsewhere; layout animations, transitions, keyframes and screen transitions
   are Web Animations and CSS made to match the Linux backend (`web.md` "Animation"); a text's color is a CSS
   transition of its element's `color`, which its runs inherit.
+- **Frame rate**: an animation may say the highest rate it needs, in Hz: `frameRate` in the options of `timing`,
+  `spring`, `decay`, `Animated.*`, keyframes and motions (`Driver`'s `frame_rate`, `KeyframeTiming::frame_rate`, Rust's
+  `Timing::frame_rate` / `Spring::frame_rate`), and `animationFrameRate` beside a keyframe `animation`'s other keys
+  (`KeyframeAnimation::frame_rate`). Unset, it needs the screen's highest. `Graph::frame_rate` folds what runs (the
+  highest rate; `None` as soon as one runs uncapped; a composite asks for the highest of its steps while it runs),
+  `transition::Live::frame_rate` a view's keyframes while they run alone. Platforms that can lower their frame rate
+  honor it while nothing else wants frames (macOS: `macos.md` "Frames"; iOS: the graph's display link and Core
+  Animation's keyframes); the others run at the screen's rate.
 
 ## Pointer-driven motion follows the pointer
 

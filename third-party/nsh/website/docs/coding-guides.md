@@ -16,6 +16,39 @@ This is a normative guide. **Must** marks lifecycle, correctness, or ecosystem c
 architecture and requires a concrete reason to depart from it. Current source, the reference pages and the
 declarations in `.nsh/types` remain authoritative for exact signatures.
 
+## Build the app's UI foundations before pages
+
+For a new app, establish the design standards, theme tokens and app-owned styled components before implementing
+feature pages. For an existing app, locate and reuse these first. Keep the standards and shared UI code in the app's
+repository; the [Design Guides](./design-guides.md#establish-the-apps-design-system-first) describe their contents.
+
+Use this development order:
+
+1. Identify the app's Desktop, Mobile, Web and TUI targets and their input, navigation and density requirements.
+2. Define the app's semantic color roles and light/dark values in its theme file (`nsh.json` `"theme"`), together
+   with the typography, spacing, radius and size scales the components use.
+3. Wrap and compose `nsh/base` into the app's styled controls, including visible parts, variants and interaction
+   states. Verify a representative composition on the supported targets before replicating it across pages.
+4. Compose pages from that layer. Add a missing token or shared variant in its owning layer first, then use it in
+   pages; changes to a shared control should update all its consumers consistently.
+
+NSH provides the unstyled `nsh-base` crate (`nsh/base` in TSX), analogous to [`gpui-base`](https://gpui-kit.com/base). The app or a community
+library owns the styled layer analogous to [`gpui-component`](https://gpui-kit.com/component); `nsh-core` is the underlying GPUI counterpart. App code
+should import its own styled controls for ordinary UI, keeping base-component assembly and styling in the shared
+layer. Preserve base behavior, focus and accessibility while adapting presentation for each supported platform.
+
+Theme colors must be read through semantic tokens: `theme().primary` or `theme().color("warning")` in Rust,
+`bg-primary`, `text-warning` or `token("warning")` in TSX. Define raw hex, RGB/RGBA and HSL/HSLA values in the theme
+source, not in page or component styles, including state styles, gradients and shadows. A palette class such as
+`bg-blue-500` or an arbitrary color class also bypasses the app's semantic roles. Add the missing role instead.
+Token opacity such as `bg-primary/90` or `theme().primary.opacity(0.9)` keeps the semantic source of the color.
+User-authored colors and data values, such as an image's pixels or a color picker's selected value, remain data;
+the surrounding controls still use theme tokens.
+
+Before finishing, inspect new presentation code for raw color literals and palette classes, verify shared component
+use, and exercise the feature's states in both appearances and the platforms it targets. Record any unavailable
+platform verification rather than assuming one screenshot proves all targets.
+
 ## Make the common path inexpensive
 
 **Design principle: choose framework types and ownership so ordinary component use is inexpensive by default.**
@@ -762,6 +795,18 @@ Represent async operations with explicit states: a resource's `state()` is `unre
 again. Prevent duplicate destructive submissions and surface recoverable errors in the UI; do not rely on logs as user
 feedback.
 
+For ordinary, reversible settings (a radio choice, switch or stepper), update the locally owned value in the event
+handler before starting the save; bind the visible checked or selected state to that value. Submit asynchronously so
+network latency does not delay the control. Keep the last confirmed state and reconcile pending edits in order: an older
+load or response must not replace a newer choice, and a failed save must roll back only its own change without losing
+later edits. A server may acknowledge the requested configuration before its effective state catches up; distinguish
+those values and do not replace the accepted choice with a stale effective value. Show a useful error on failure.
+Use pessimistic confirmation instead when the action is consequential or the result cannot be safely predicted.
+
+Test the visible control state while a deliberately delayed request is still pending, then test failure, rapid changes
+and stale or reordered responses. A headless result alone does not establish touch-to-frame latency: inspect or measure
+the interaction on the requested native target when available.
+
 ```rust tabs
 let results = resource(
     move || {
@@ -843,7 +888,7 @@ padding and margin (read the values with their accessors), which follow rotation
 
 ## Lists, tables, and large data
 
-Use [`List`](./lists.md) (`virtual_list` in Rust) when data can grow beyond a small, bounded collection. Keep row
+Prefer [`List`](./lists.md) (`virtual_list` in Rust) for collections that can grow, including chat timelines, feeds and history. Reserve a scroll view with ordinary children for small, bounded content. Keep row
 identity separate from visible position and avoid copying the full data set on every update. Let the list own
 recycling, scroll coordination and the visible range while row functions own row presentation.
 
@@ -940,7 +985,7 @@ clipboard, haptics, scroll physics, fonts and timing can differ. One bundle runs
 the fallback behavior:
 
 - what an element means on every platform is a top-level prop; a platform's own system feature goes in
-  `ios={{…}}`, `android={{…}}`, `desktop={{…}}` or `web={{…}}` (a builder method in Rust), in each of the platforms
+  `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}` or `web={{…}}` (a builder method in Rust), in each of the platforms
   that have it, and only the current platform's object is applied;
 - APIs of mobile platforms come from `nsh/mobile`, those of the desktops from `nsh/desktop`;
 - styles per platform are `ios:`, `android:` and `web:` classes.
@@ -971,7 +1016,7 @@ its `permission` naming the capability and its `resource` what was asked for.
 ### Vocabulary is part of the API
 
 Use the same word for the same concept across components. Before naming a prop or an event, look for the term in
-NSH's own API, then in GPUI Kit's `gpui-base`, GPUI and `gpui-component`, then in the platforms' controls. What a
+NSH's own API, then in GPUI Kit's [`gpui-base`](https://gpui-kit.com/base), GPUI and [`gpui-component`](https://gpui-kit.com/component), then in the platforms' controls. What a
 primitive shows and the global APIs take their names from HTML, the DOM and CSS (`src`, `html`, `placeholder`). Rust
 names are `snake_case` and translate to `camelCase` in TSX (`on_open_change` is `onOpenChange`); one word stays one
 word (`readonly`, `multiline`).

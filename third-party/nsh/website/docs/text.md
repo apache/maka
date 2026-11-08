@@ -284,6 +284,11 @@ text(order_number).select_text().selection_color(rgb(0x7c3aed))
 
 To copy from code (a Copy button), use `set_clipboard(..)` in Rust or [`Clipboard`](../modules/nsh.md#clipboard) in TSX.
 
+In the terminal host, drag across a selectable view or Text to select whole graphemes; a double click selects a word and a triple click its paragraph, and dragging on from either extends the selection by words or paragraphs.
+Selected Cells use reversed colors. Copy with Ctrl+C, Ctrl+Shift+C, Ctrl+Insert, Alt+W or Cmd+C; the host sends the
+text through OSC 52 to the terminal clipboard. Shift+click extends the selection, Ctrl+A / Cmd+A selects the area,
+and Esc or any other key clears it. With nothing selected, Ctrl+C quits the terminal host.
+
 ## onTextLayout
 
 `onTextLayout` (the `TextLayout` event in Rust) reports the laid-out lines after each layout, in the text's content box:

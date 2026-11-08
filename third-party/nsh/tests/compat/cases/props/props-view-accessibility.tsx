@@ -1,7 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the
 // accessibility props of every element as the platform receives them on
 // iOS (the scripts' default platform): `accessible`, `accessibilityHint`,
-// `accessibilityState`, `accessibilityValue`, `accessibilityElementsHidden`,
+// `accessibilityState` (with `hasPopup`, a popup's trigger), `accessibilityValue`, `accessibilityElementsHidden`,
 // `accessibilityActions`, `importantForAccessibility`, which decides
 // `accessible` and hides the descendants for `"no-hide-descendants"`, and
 // the `"listbox"` and `"option"` roles of a select's popup, the chosen
@@ -21,6 +21,11 @@ function App() {
       <View
         testID="state"
         accessibilityState={{ disabled: true, checked: "mixed", expanded: false }}
+        style={{ height: 20 }}
+      />
+      <View
+        testID="popup-state"
+        accessibilityState={{ expanded: false, hasPopup: true }}
         style={{ height: 20 }}
       />
       <View

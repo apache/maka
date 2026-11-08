@@ -113,6 +113,7 @@ pub(crate) struct NativeModule {
 /// `nsh`: the API apps write against.
 const NSH: &[Item] = &[
     crate::env::TOKEN_EXPORT,
+    crate::env::SET_THEME_EXPORT,
     (
         "signal",
         Export::Function(reactive::signal, 2),
@@ -313,7 +314,7 @@ export interface Accessor<T> {
   (): T;
 }
 
-/** A signal: `count()` reads it, `count.set(1)` and `count.update((n) => n + 1)` write it. */
+/** A signal: `count()` reads it, `count.set(1)` and `count.update((n) => n + 1)` write it (both bound: `count.set` can be passed on its own). */
 export interface Signal<T> extends Accessor<T> {
   set(value: T): void;
   update(fn: (value: T) => T): void;
@@ -376,6 +377,21 @@ export type Component<P = {}> = (props: P) => JSX.Element;
  * the app's (`.nsh/types/nsh/tokens.d.ts`, from `nsh.json` `"theme"`).
  */
 export interface Tokens {}
+
+/**
+ * A theme, as `nsh.json`'s `"theme"` writes it: shadcn/ui's `cssVars`, the
+ * values as CSS writes them (colors, `var(--name)`, `color-mix()`, lengths in
+ * `px` or `rem`, font family lists for `font-*`). `theme`'s apply in both
+ * appearances, `light`'s in the light one and in the dark one where `dark`
+ * leaves them out, `dark`'s in the dark one.
+ */
+export interface Theme {
+  cssVars: {
+    theme?: Record<string, string | number>;
+    light?: Record<string, string | number>;
+    dark?: Record<string, string | number>;
+  };
+}
 "#;
 
 /// The sources of what `nsh` serves (`NativeModule::moved_to`), kept by
@@ -447,6 +463,13 @@ pub(crate) const MODULES: &[NativeModule] = &[
         also: &[],
         moved_to: None,
         types: decl!(desktop::TYPES),
+    },
+    NativeModule {
+        name: "nsh/i18n",
+        exports: crate::i18n::EXPORTS,
+        also: &[],
+        moved_to: None,
+        types: "",
     },
     NativeModule {
         name: "nsh/mobile",

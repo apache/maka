@@ -8,6 +8,9 @@ on:
   release:
     types: [published]
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - ".github/workflows/packages.yml"
       - ".github/packages/**"
@@ -37,7 +40,13 @@ jobs:
     name: Check Homebrew formula
     runs-on: macos-15
     timeout-minutes: 15
-    if: github.event_name != 'release' || !github.event.release.prerelease
+    # Nothing for drafts or a pull request being closed.
+    if: (github.event_name != 'release' || !github.event.release.prerelease) && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft))
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_ANALYTICS: "1"
@@ -81,6 +90,7 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           brew tap-new --no-git longbridge/tap
+          brew trust longbridge/tap
           cp formula/nsh.rb "$(brew --repository)/Library/Taps/longbridge/homebrew-tap/Formula/nsh.rb"
           brew style --formula longbridge/tap/nsh
           brew audit --strict --formula longbridge/tap/nsh

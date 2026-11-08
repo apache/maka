@@ -7,7 +7,7 @@ demo: el-button
 
 # Button
 
-按钮是一个按压目标。它负责行为：按压、通过应用的状态样式呈现的按压反馈、禁用和选中状态、键盘焦点，以及它对屏幕阅读器而言的角色。外观由应用决定：`Button` 没有自己的颜色、尺寸、内边距或文字，所以同一个组件可以按你给它的样式和子元素，成为主按钮、图标按钮、标签页、工具栏开关或列表的一行。
+按钮是一个按压目标。它负责行为：按压、通过应用的状态样式呈现的按压反馈、禁用和选中状态、键盘焦点，以及它对屏幕阅读器而言的角色。外观由应用决定：`Button` 没有自己的颜色、尺寸、内边距或文字，所以同一个组件可以按你给它的样式和子元素，成为主按钮、图标按钮、菜单的触发按钮或列表的一行。
 
 ```rust tabs
 use nsh_base::button;
@@ -59,7 +59,7 @@ mount(App);
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压，也没有按压反馈；`disabled:` 样式生效，屏幕阅读器会报告它不可用。 |
-| `selected` | `.selected(..)` | `boolean` | `false` | 选中：打开的开关、当前标签页。屏幕阅读器会报告。值由应用持有，样式也由应用决定。 |
+| `selected` | `.selected(..)` | `boolean` | `false` | 选中：当前项（文件夹、筛选条件）或菜单打开期间的触发按钮。开或关的东西用 `Toggle`。屏幕阅读器会报告。值由应用持有，样式也由应用决定。 |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | `selected` 且未禁用时的样式，与 `selected:` 类相同。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 内容不足以说明时（比如只有图标），屏幕阅读器读出的文字。 |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | 当 `nsh/base` 没有对应的组件时，它对屏幕阅读器而言是什么：`"link"`（打开一个 URL）等。 |
@@ -184,39 +184,39 @@ fn save(saving: Signal<bool>) -> impl IntoElement {
 </Button>
 ```
 
-<a id="a-toggle-with-selected"></a>
+<a id="the-current-item-with-selected"></a>
 
-## 用 selected 做开关
+## 用 selected 标出当前项
 
-`selected` 让按钮成为一个开关：工具栏的加粗按钮、筛选标签、当前标签页。值由应用持有，在 `onPress` 中切换，并为选中状态设置样式；屏幕阅读器会报告按钮已选中。
+`selected` 把按钮标为同类中的当前项，或正在打开的内容的触发器：侧栏当前显示的文件夹、生效中的筛选条件、菜单打开期间的菜单按钮（见设计指南的“交互状态”）。值由应用持有，选中状态的样式也由应用设置；屏幕阅读器会报告按钮已选中。
 
 ```rust tabs
-fn bold(on: Signal<bool>) -> impl IntoElement {
+use nsh_base::{button, theme};
+
+fn folder(name: &'static str, current: Signal<&'static str>) -> impl IntoElement {
+    let selected = move || current.get() == name;
     button()
-        .selected(on)
-        .accessibility_label("Bold")
-        .on_press(move || on.update(|on| *on = !*on))
-        .size(px(40.0))
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .selected_style(|s| s.bg(rgb(0xdbeafe)))
-        .child(text("B").font_weight(FontWeight::BOLD))
+        .selected(selected)
+        .on_press(move || current.set(name))
+        .px_3()
+        .py_2()
+        .rounded(move || theme().radius)
+        .selected_style(|s| s.bg(move || theme().accent))
+        .child(text(name))
 }
 ```
 
 ```tsx tabs
 <Button
-  selected={bold()}
-  onPress={() => bold.set(!bold())}
-  accessibilityLabel="Bold"
-  class="size-10 items-center justify-center rounded-md selected:bg-blue-100"
+  selected={folder() === "Inbox"}
+  onPress={() => folder.set("Inbox")}
+  class="rounded-(--radius) px-3 py-2 selected:bg-accent"
 >
-  <Text class="font-bold">B</Text>
+  <Text>Inbox</Text>
 </Button>
 ```
 
-标签行用 [`Tabs`](./tabs.md)，开关用 [`Switch`](./switch.md)（均来自 `nsh/base`）：它们自带该类控件的角色、选中状态和键盘行为，用 `role="tab"` 或 `role="switch"` 的 `Button` 做不到这些。
+开或关的东西（工具栏的加粗、收藏、视图选项）用 [`Toggle`](./toggle.md)：它自带按下状态，屏幕阅读器会把它报告为切换按钮。标签行用 [`Tabs`](./tabs.md)，开或关的设置项用 [`Switch`](./switch.md)（均来自 `nsh/base`）：它们自带该类控件的角色、状态和键盘行为，用 `role="tab"` 或 `role="switch"` 的 `Button` 做不到这些。
 
 <a id="a-small-target-with-hitslop"></a>
 

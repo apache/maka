@@ -336,13 +336,17 @@ platform/computer-use/THIRD_PARTY_NOTICES.
 
 NSH native shell sources (Apache License 2.0)
 
-third-party/nsh contains NSH from https://github.com/M4n5ter/nsh at revision
-de176695240d550f2b303643b8019146c7989e7f, based on https://github.com/longbridge/nsh.
+third-party/nsh contains NSH initially imported from
+https://github.com/M4n5ter/nsh at revision
+de176695240d550f2b303643b8019146c7989e7f and synchronized with
+https://github.com/longbridge/nsh through revision
+323a8663f6fdb63340c634a50da9bbb820037b69.
 Copyright 2026 Longbridge <https://longbridge.com>.
 Original license texts, the complete source inventory and local integration
 changes are recorded in third-party/nsh/{LICENSE-APACHE,upstream.json,SOURCE.md}.
 The snapshot preserves the separate licenses for its bundled icy_sixel
-sources, LLRT type definitions, and example and test fonts.
+sources, LLRT type definitions, browser polyfills, KaTeX fonts, sound
+fixtures, and example and test fonts.
 The IBM Plex Sans test font in products/maka/workbench/tests/fonts retains
 its SIL Open Font License in the adjacent OFL.txt.
 

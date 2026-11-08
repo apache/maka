@@ -54,7 +54,7 @@ pub(crate) mod colors {
     /// Quiet text: counts, notes, chevrons.
     pub(crate) const FAINT: AdaptiveColor = tone(rgb(0x9a9ea4), rgb(0x5a5e65));
     /// The accent as a foreground: text, icons, lines, small marks.
-    pub(crate) const ACCENT: AdaptiveColor = tone(rgb(0x4f6e0c), rgb(0xc8f26d));
+    pub(crate) const ACCENT: AdaptiveColor = tone(rgb(0x4a840a), rgb(0xc8f26d));
     /// The accent as a fill (buttons, bubbles), with [`ON_ACCENT`] on it.
     pub(crate) const ACCENT_FILL: AdaptiveColor = tone(rgb(0xc8f26d), rgb(0xc8f26d));
     /// Text on the accent fill.
@@ -174,6 +174,7 @@ pub(crate) mod motion {
         damping: 34.0,
         mass: 1.0,
         velocity: None,
+        frame_rate: None,
     };
     /// Knobs and indicators settling at their place.
     pub(crate) const SETTLE: Spring = Spring {
@@ -181,6 +182,7 @@ pub(crate) mod motion {
         damping: 30.0,
         mass: 1.0,
         velocity: None,
+        frame_rate: None,
     };
     /// Content coming in.
     pub(crate) const ENTER: Timing = Timing::new(420.0, Easing::Curve(Curve::Cubic, EaseMode::Out));

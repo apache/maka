@@ -66,9 +66,9 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSBorderType, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent,
-    NSEventModifierFlags, NSEventType, NSFocusRingType, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
+    NSApplication, NSBorderType, NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation,
+    NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventType, NSFocusRingType,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
     NSParagraphStyleAttributeName, NSPasteboard, NSResponder, NSScrollView, NSSecureTextField,
     NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextInputClient,
     NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem, NSView, NSWritingDirection,
@@ -999,7 +999,90 @@ define_field!(
     NSObject
 );
 
-define_class!(
+/// Defines a direct subclass of `NSTextView` that an input edits with, as
+/// `define_class!` does, with its file drags appended to its methods:
+/// files dragged over the text go to the file drop target around the input
+/// ([`crate::file_drop::text_entered`]); `surface` names the function that
+/// gives the surface of a view of the class.
+macro_rules! define_text_view {
+    (
+        $(#[$($attr:tt)*])*
+        struct $name:ident;
+        surface = $surface:path;
+
+        unsafe impl NSObjectProtocol for $protocol_for:ident {}
+
+        impl $impl_for:ident {
+            $($methods:tt)*
+        }
+    ) => {
+        define_class!(
+            $(#[$($attr)*])*
+            struct $name;
+
+            unsafe impl NSObjectProtocol for $name {}
+
+            impl $name {
+                $($methods)*
+
+                #[unsafe(method(draggingEntered:))]
+                fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_entered(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), draggingEntered: sender] })
+                }
+
+                #[unsafe(method(draggingUpdated:))]
+                fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_updated(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), draggingUpdated: sender] })
+                }
+
+                #[unsafe(method(draggingExited:))]
+                fn dragging_exited(&self, sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+                    if let Some(surface) = $surface(self) {
+                        crate::file_drop::clear(&surface);
+                    }
+                    // SAFETY: NSTextView's own method.
+                    let _: () = unsafe { msg_send![super(self), draggingExited: sender] };
+                }
+
+                #[unsafe(method(prepareForDragOperation:))]
+                fn prepare_drag(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_updated(&surface, sender))
+                        .is_some()
+                        // SAFETY: NSTextView's own method.
+                        || unsafe { msg_send![super(self), prepareForDragOperation: sender] }
+                }
+
+                #[unsafe(method(performDragOperation:))]
+                fn perform_drag(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_performed(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), performDragOperation: sender] })
+                }
+
+                #[unsafe(method(draggingEnded:))]
+                fn dragging_ended(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) {
+                    if let Some(surface) = $surface(self) {
+                        crate::file_drop::clear(&surface);
+                    }
+                    if NSTextView::class().responds_to(sel!(draggingEnded:)) {
+                        // SAFETY: NSTextView's own method, when it has one.
+                        let _: () = unsafe { msg_send![super(self), draggingEnded: sender] };
+                    }
+                }
+            }
+        );
+    };
+}
+
+define_text_view!(
     /// The text view of a multiline input: tells [`Ctx`] when it takes and
     /// loses the focus, and which modifiers its keys hold.
     #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
@@ -1007,6 +1090,7 @@ define_class!(
     #[ivars = OnceCell<Ctx>]
     #[name = "NshTextView"]
     struct TextArea;
+    surface = area_surface;
 
     unsafe impl NSObjectProtocol for TextArea {}
 
@@ -1138,6 +1222,11 @@ define_class!(
     }
 );
 
+/// The surface of text area `area`, for its drags.
+fn area_surface(area: &TextArea) -> Option<Rc<Surface>> {
+    area.ivars().get()?.surface.upgrade()
+}
+
 /// An in-process paste that waits for any unsettled focus-triggering engine
 /// event on `surface` before targeting the focused input.
 #[cfg(any(feature = "dev", feature = "terminal"))]
@@ -1243,13 +1332,14 @@ fn text_area_pasting(area: &TextArea, pasteboard: &NSPasteboard) -> bool {
     area.ivars().get().is_none_or(|cx| cx.pasting(pasteboard))
 }
 
-define_class!(
+define_text_view!(
     /// The field editor of a single-line input ([`FieldCell`]): AppKit's
     /// shared one, but for pastes, which an input reports (`onPaste`).
     #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NshFieldEditor"]
     struct FieldEditor;
+    surface = editor_surface;
 
     unsafe impl NSObjectProtocol for FieldEditor {}
 
@@ -1291,6 +1381,11 @@ define_class!(
         }
     }
 );
+
+/// The surface of the input field `editor` edits, for its drags.
+fn editor_surface(editor: &FieldEditor) -> Option<Rc<Surface>> {
+    field_ctx(editor)?.surface.upgrade()
+}
 
 /// The input of the field `editor` edits (its delegate, while it edits).
 fn field_ctx(editor: &FieldEditor) -> Option<Ctx> {
@@ -2138,7 +2233,7 @@ fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
             .push(weak.clone());
     });
     let mut frames = 0;
-    surface.add_frame_callback(move |surface, _| {
+    surface.add_draw_callback(move |surface, _| {
         frames += 1;
         let Some(input) = weak.upgrade() else {
             return false;
@@ -2385,30 +2480,40 @@ pub(crate) fn blur(view: &NshView) {
     }
 }
 
-/// Unfocuses whatever input of the surface has focus.
+/// Unfocuses whatever input of the surface has focus, in any of its
+/// windows (the main one and the app's own).
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
-    if let Some(window) = surface.root.ns().window()
-        && editing(surface)
-    {
-        to_root(&window, surface);
+    let roots = std::iter::once(surface.root.clone()).chain(crate::window::roots(surface));
+    for root in roots {
+        if let Some(window) = root.ns().window()
+            && editing_in(&root)
+        {
+            to_root(&window, surface);
+        }
     }
     if !has_pending(surface) {
         disarm(surface);
     }
 }
 
-/// Ends editing and gives the keyboard focus to the surface's root. The
-/// window takes it first: the root refuses it while a field edits during a
-/// click (a click elsewhere leaves the focus in the field).
+/// Ends editing and gives the keyboard focus to the root `window` shows.
+/// The window takes it first: the root refuses it while a field edits
+/// during a click (a click elsewhere leaves the focus in the field).
 pub(crate) fn to_root(window: &objc2_app_kit::NSWindow, surface: &Surface) {
     window.makeFirstResponder(None);
-    window.makeFirstResponder(Some(surface.root.ns()));
+    window.makeFirstResponder(Some(crate::input::root_in(surface, window).ns()));
 }
 
-/// Whether one of the surface's inputs has the keyboard focus (a click
-/// elsewhere leaves it there, as desktops do).
+/// Whether one of the surface's inputs has the keyboard focus in the window
+/// of the event being handled (a click elsewhere leaves it there, as
+/// desktops do).
 pub(crate) fn editing(surface: &Surface) -> bool {
-    let root = surface.root.ns();
+    editing_in(&crate::input::event_root(surface))
+}
+
+/// Whether an input under `root` has its window's keyboard focus.
+pub(crate) fn editing_in(root: &NshView) -> bool {
+    let root = root.ns();
     let Some(responder) = root.window().and_then(|w| w.firstResponder()) else {
         return false;
     };
@@ -2427,68 +2532,6 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
         // A field only has a selection while it is edited.
         input.pending_selection.set(Some((start, end)));
     }
-}
-
-/// One undoable application edit of the focused input `view`, dropped unless
-/// the input still is what the app saw when it asked (`Command::ReplaceRange`).
-pub(crate) fn replace_range(view: &NshView, command: &nsh_core::Command) {
-    let nsh_core::Command::ReplaceRange {
-        range,
-        text,
-        expected_text,
-        expected_selection,
-        count,
-    } = command
-    else {
-        return;
-    };
-    let Some(input) = view.state().input.clone() else {
-        return;
-    };
-    let editor = input.editor.borrow().clone();
-    if !input.focused.get()
-        || !input.config.borrow().editable
-        || input.count.get() != *count
-        || editor.marked_text().is_some()
-        || editor.text() != *expected_text
-        || editor.selection() != Some((expected_selection.start, expected_selection.end))
-        || !splits_no_character(expected_text, range)
-    {
-        return;
-    }
-    let Some(editing) = editor.editing() else {
-        return;
-    };
-    let Some(text_view) = editing.downcast_ref::<NSTextView>() else {
-        return;
-    };
-    let target = NSRange::new(range.start as usize, (range.end - range.start) as usize);
-    let replacement = NSString::from_str(text);
-    let allowed = text_view.shouldChangeTextInRange_replacementString(target, Some(&replacement));
-    if allowed {
-        text_view.replaceCharactersInRange_withString(target, &replacement);
-    }
-    // A clipped edit is made by `should_change`, which then refuses this one.
-    let now = text_view.string();
-    if allowed || now.to_string() != *expected_text {
-        let inserted = now.length() + target.length - expected_text.encode_utf16().count();
-        text_view.setSelectedRange(NSRange::new(target.location + inserted, 0));
-    }
-    if allowed {
-        text_view.didChangeText();
-    }
-}
-
-/// Whether `range` (UTF-16) is inside `text` and ends between its characters.
-fn splits_no_character(text: &str, range: &std::ops::Range<u32>) -> bool {
-    let mut offset = 0;
-    let mut ends = 0;
-    for c in text.chars() {
-        ends += usize::from(offset == range.start) + usize::from(offset == range.end);
-        offset += c.len_utf16() as u32;
-    }
-    ends += usize::from(offset == range.start) + usize::from(offset == range.end);
-    ends == 2
 }
 
 /// Sets the `focused` interaction state of `view`, which the core hears
@@ -3287,16 +3330,6 @@ pub(crate) fn terminal_candidate(surface: &Surface) -> Option<Bounds<Points>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn application_edits_keep_characters_whole() {
-        assert!(splits_no_character("a😀b", &(0..4)));
-        assert!(splits_no_character("a😀b", &(1..3)));
-        assert!(splits_no_character("a😀b", &(4..4)));
-        assert!(splits_no_character("", &(0..0)));
-        assert!(!splits_no_character("a😀b", &(2..3)));
-        assert!(!splits_no_character("a😀b", &(0..5)));
-    }
 
     #[test]
     fn single_line_placeholder_matches_native_editor_metrics() {

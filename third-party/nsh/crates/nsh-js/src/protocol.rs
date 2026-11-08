@@ -152,6 +152,7 @@ pub(crate) fn decode_command<'js>(
             Some(input) => Command::SendInput(input),
             None => return Ok(None),
         },
+        "load" => Command::Load(web_load(&arg)?),
         "seek" => Command::Seek(arg.as_number().unwrap_or(0.0)),
         "native" => {
             let o = arg.as_object();
@@ -181,44 +182,6 @@ pub(crate) fn decode_command<'js>(
             Command::SetSelection {
                 start: field("start"),
                 end: field("end"),
-            }
-        }
-        "replaceRange" => {
-            let cx = arg.ctx();
-            let object = arg.as_object().ok_or_else(|| {
-                Exception::throw_type(cx, "replaceRange: expected an edit object")
-            })?;
-            let offset = |object: &Object<'js>, key: &str| -> rquickjs::Result<u32> {
-                let number = object.get::<_, Value>(key)?.as_number().ok_or_else(|| {
-                    Exception::throw_type(cx, "replaceRange: expected a UTF-16 offset")
-                })?;
-                if !number.is_finite()
-                    || number < 0.0
-                    || number.fract() != 0.0
-                    || number > f64::from(u32::MAX)
-                {
-                    return Err(Exception::throw_type(
-                        cx,
-                        "replaceRange: offsets must be nonnegative UTF-16 integers",
-                    ));
-                }
-                Ok(number as u32)
-            };
-            let range = offset(object, "start")?..offset(object, "end")?;
-            let selection = object.get::<_, Object>("expectedSelection")?;
-            let expected_selection = offset(&selection, "start")?..offset(&selection, "end")?;
-            if range.start > range.end || expected_selection.start > expected_selection.end {
-                return Err(Exception::throw_type(
-                    cx,
-                    "replaceRange: range start must not exceed its end",
-                ));
-            }
-            Command::ReplaceRange {
-                range,
-                text: object.get("text")?,
-                expected_text: object.get("expectedText")?,
-                expected_selection,
-                count: 0,
             }
         }
         "scrollToIndex" => {
@@ -295,6 +258,36 @@ fn number(value: &Value<'_>) -> Option<f32> {
     value.as_number().map(|n| n as f32)
 }
 
+/// `load`'s argument: `{ src, headers? }`, headers a plain object of
+/// strings. A header that could end the request's header and start another
+/// (a name not an HTTP token, a value with a line break) throws, as does a
+/// missing `src`: an app that meant to send a credential learns it did not.
+fn web_load(arg: &Value<'_>) -> rquickjs::Result<nsh_core::WebLoad> {
+    let invalid = |message: &str| Exception::throw_type(arg.ctx(), &format!("load: {message}"));
+    let o = arg
+        .as_object()
+        .ok_or_else(|| invalid("expected { src, headers? }"))?;
+    let src = o
+        .get::<_, Option<String>>("src")?
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| invalid("`src` must be a URL"))?;
+    let mut headers = Vec::new();
+    if let Some(h) = o.get::<_, Option<Object<'_>>>("headers")? {
+        for entry in h.props::<String, Value<'_>>() {
+            let (name, value) = entry?;
+            let value = value
+                .as_string()
+                .map(|s| s.to_string())
+                .transpose()?
+                .ok_or_else(|| invalid("header values must be strings"))?;
+            headers.push((name, value));
+        }
+    }
+    nsh_core::WebLoad::new(src, headers).ok_or_else(|| {
+        invalid("a header name must be an HTTP token and its value have no CR, LF or NUL")
+    })
+}
+
 /// `sendInput`'s argument (`None`: none of its forms, which sends nothing).
 fn web_input(arg: &Value<'_>) -> Option<nsh_core::WebInput> {
     use nsh_core::{WebInput, WebKey};
@@ -327,6 +320,12 @@ fn string(value: &Value<'_>) -> rquickjs::Result<String> {
 
 fn field_f32(obj: &Object<'_>, key: &str) -> rquickjs::Result<Option<f32>> {
     Ok(obj.get::<_, Option<f64>>(key)?.map(|v| v as f32))
+}
+
+/// An image source as `<Image>`'s `src` reads it: a string or an imported
+/// image. `None` for anything else, an empty string among them (no image).
+pub(crate) fn image_source(value: Value<'_>) -> Option<nsh_core::ImageSource> {
+    <nsh_core::ImageSource as HostValue>::decode(&Js(value), &mut HostCx::default())
 }
 
 /// A QuickJS value as host props read it.
@@ -1005,6 +1004,7 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
             easing: nsh_core::js::animation::easing(&Js(c.get::<_, Value>("easing")?))
                 .unwrap_or(Easing::EaseInOut),
             delay_ms: num("delay")?.unwrap_or(0.0),
+            frame_rate: num("frameRate")?,
         },
         "spring" => Driver::Spring {
             to: num("to")?.unwrap_or(0.0),
@@ -1012,6 +1012,7 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
             damping: num("damping")?.unwrap_or(26.0),
             mass: num("mass")?.unwrap_or(1.0),
             velocity: num("velocity")?,
+            frame_rate: num("frameRate")?,
         },
         "decay" => Driver::Decay {
             velocity: num("velocity")?,
@@ -1027,6 +1028,7 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
                 None => None,
             },
             bounce: num("bounce")?.unwrap_or(0.0),
+            frame_rate: num("frameRate")?,
         },
         other => {
             return Err(Exception::throw_type(

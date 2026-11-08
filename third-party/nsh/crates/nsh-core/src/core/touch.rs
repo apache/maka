@@ -33,7 +33,7 @@ pub(super) enum Side {
 #[derive(Default)]
 pub(crate) struct TouchState {
     /// The components' listening nodes around each finger down, innermost
-    /// first. Empty paths still count while a responder owns all contacts.
+    /// first.
     paths: Vec<(u32, Vec<(NodeId, NodeId)>)>,
     responder: Option<(NodeId, NodeId)>,
     /// The responder whose `active:` styles hold until its touches end,
@@ -59,31 +59,6 @@ impl TouchState {
 type Pick = fn(&ResponderEl) -> Option<&Listener<ResponderEvent>>;
 
 impl<M: TextEngine> Core<M> {
-    /// Existing native contacts whose listening owner left the list source.
-    /// Querying this bookkeeping does not call an application listener.
-    pub fn invalid_touch_contacts(&self, contacts: &mut Vec<u32>) {
-        for (contact, path) in &self.components.touch.paths {
-            if path.iter().any(|&(id, _)| !self.accepts_native_input(id)) {
-                contacts.push(*contact);
-            }
-        }
-    }
-
-    /// Forgets a physically cancelled native contact without calling listeners.
-    /// Unknown contacts leave other gestures intact. The last contact releases
-    /// this side's responder and its native scroll block.
-    pub fn cancel_touch(&mut self, contact: u32) {
-        let state = &mut self.components.touch;
-        let before = state.paths.len();
-        state.paths.retain(|(id, _)| *id != contact);
-        if state.paths.len() == before || !state.paths.is_empty() {
-            return;
-        }
-        state.responder = None;
-        state.gesture = PanGesture::default();
-        self.block_native(Side::Rust, None);
-    }
-
     /// A touch event of the surface (`payload` is `touch`): the components'
     /// handlers on the finger's path, the negotiation, the responder's
     /// events.
@@ -106,7 +81,9 @@ impl<M: TextEngine> Core<M> {
                     .collect();
                 let paths = &mut self.components.touch.paths;
                 paths.retain(|(finger, _)| *finger != p.id);
-                paths.push((p.id, path));
+                if !path.is_empty() {
+                    paths.push((p.id, path));
+                }
             }
         }
         let down = touch

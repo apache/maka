@@ -16,12 +16,34 @@ name = "nsh"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["js"]
+default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
-js = ["nsh-engine/js"]
+js = ["nsh-engine/js-core"]
 # Development support: dev server client, log forwarding, error overlay.
-dev = ["js", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+# Shaders (`Shader`, `ShaderEffect`, `ShaderTransition`, the shader transitions
+# of pages and dialogs), on naga and wgpu. Without it they draw nothing.
+shader = ["nsh-engine/shader"]
+# The large parts of `nsh/base`: see `docs/dev/features.md`. An app that imports
+# one its runtime was built without fails at the import, naming it.
+# `Editor` and `DiffView`, with ropey and imara-diff.
+editor = ["nsh-base/editor"]
+# `RichEditor`, its schema, session and plugin classes.
+rich-editor = ["nsh-base/rich-editor"]
+# The charts: `nsh/base/plot`.
+plot = ["nsh-base/plot"]
+# `Terminal` and its emulator: `vte`.
+term = ["nsh-base/term"]
+# Highlighted code in `TextView` and the `Editor` (syntect). Without it, plain.
+highlight = ["nsh-base/highlight"]
+# `TextView`'s formulas typeset natively (RaTeX and the KaTeX fonts). Without
+# it a formula shows as its TeX, or as the app's `renderMath`.
+math = ["nsh-base/math"]
+# The standard JS module `zlib`: deflate, gzip, brotli and zstd.
+zlib = ["js", "nsh-engine/zlib"]
+# The standard JS module `crypto` and the globals of Web Crypto.
+crypto = ["js", "nsh-engine/crypto"]
 
 [dependencies]
 log.workspace = true
@@ -29,8 +51,8 @@ log.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
 nsh-core = { workspace = true, features = ["svg"] }
-nsh-engine = { workspace = true, features = ["shader"] }
-nsh-base = { workspace = true, features = ["highlight", "math"] }
+nsh-engine.workspace = true
+nsh-base.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true
 ttf-parser.workspace = true

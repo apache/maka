@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Tab, Tabs } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Split, ui, controlSize, plainRow, sectionSurface, TabTitle, tabsLook, underlineTabsLook } from "./palette";
 
 // What each section shows: the app switches the content by its own value.
 const sections = [
@@ -38,6 +38,10 @@ const folders = [
   { id: "spam", label: "Spam", count: 3, locked: true },
 ];
 
+/** A pill strip that shares its row (the section switcher) and an underlined one as wide as its labels (the folders). */
+const strip = tabsLook();
+const underline = underlineTabsLook();
+
 function App() {
   const section = signal("overview");
   const folder = signal("inbox");
@@ -52,12 +56,9 @@ function App() {
       </Text>
 
       <Split gap={14} inspector={<Log title={`onPress · ${section()}, ${folder()}`} lines={events()} minHeight={76} />}>
-        {/* A segmented tab list: each tab is a segment, and the list's indicator is the raised one, inside the
-            list's padding, which springs to the tab the app selects. */}
-        <Tabs
-          style={{ flexDirection: "row", gap: 4, padding: 3, borderRadius: 10, ...ui().inset, ...(desktop ? { alignSelf: "flex-start" } : {}) }}
-          indicatorStyle={{ top: 3, bottom: 3, borderRadius: 7, ...ui().raised }}
-        >
+        {/* A tab list on a capsule track: the list's indicator is the raised pill, inside the track's padding, which
+            springs to the tab the app selects. */}
+        <Tabs style={strip.style} indicatorStyle={strip.indicatorStyle}>
           <Each of={sections}>
             {(s) => (
               <Tab
@@ -66,71 +67,48 @@ function App() {
                   section.set(s().id);
                   log(`${s().label} pressed`);
                 }}
-                style={
-                  desktop
-                    ? { height: 26, paddingHorizontal: 14, borderRadius: 7, alignItems: "center", justifyContent: "center" }
-                    : { flex: 1, height: 30, borderRadius: 7, alignItems: "center", justifyContent: "center" }
-                }
-                class="active:opacity-70"
-                hoverStyle={section() === s().id ? undefined : hoverFill()}
-                focusStyle={focusRing()}
+                {...strip.tab({ selected: () => section() === s().id })}
               >
-                <Text style={{ fontSize: 13, fontWeight: "500", color: section() === s().id ? ui().text : ui().muted }}>
-                  {s().label}
-                </Text>
+                <TabTitle name={s().label} selected={section() === s().id} />
               </Tab>
             )}
           </Each>
         </Tabs>
 
         {/* The selected section's content, which the app shows by its value. */}
-        <View style={{ ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        <View style={sectionSurface({ padded: true })}>
           <Each of={current().rows}>
             {(row, i) => (
-              <>
-                {i() > 0 ? <View style={{ height: 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} /> : null}
-                <View
-                  style={
-                    desktop
-                      ? { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, height: size.row }
-                      : { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 }
-                  }
-                >
-                  <Text style={{ flex: 1, fontSize: size.label, color: ui().text }}>{row()[0]}</Text>
-                  <Text style={{ fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], color: ui().muted }}>{row()[1]}</Text>
-                </View>
-              </>
+              <View style={plainRow({ first: i() === 0, dense: true })}>
+                <Text style={{ flex: 1, fontSize: controlSize.label, color: ui().text }}>{row()[0]}</Text>
+                <Text style={{ fontSize: controlSize.label, fontVariant: ["tabular-nums"], color: ui().muted }}>{row()[1]}</Text>
+              </View>
             )}
           </Each>
         </View>
 
-        {/* Tabs with counts: the selected one's own fill, a disabled one dimmed. */}
-        <Tabs style={{ flexDirection: "row", gap: 6 }}>
-          <Each of={folders}>
-            {(f) => (
-              <Tab
-                selected={folder() === f().id}
-                disabled={f().locked}
-                onPress={() => {
-                  folder.set(f().id);
-                  log(`${f().label} pressed`);
-                }}
-                class="active:opacity-70 disabled:opacity-40"
-                hoverStyle={f().locked || folder() === f().id ? undefined : hoverFill()}
-                focusStyle={focusRing()}
-                style={{ flexDirection: "row", alignItems: "center", gap: 6, height: desktop ? size.controlSm : 30, paddingHorizontal: desktop ? 10 : 12, borderRadius: 8 }}
-                selectedStyle={{ backgroundColor: tint(ui().accent, 0.16) }}
-              >
-                <Text style={{ fontSize: 13, fontWeight: "500", color: folder() === f().id ? ui().accent : ui().muted }}>
-                  {f().label}
-                </Text>
-                {f().count > 0 ? (
-                  <Text style={{ fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"], color: ui().faint }}>{f().count}</Text>
-                ) : null}
-              </Tab>
-            )}
-          </Each>
-        </Tabs>
+        {/* Underlined tabs with counts: the line travels and stretches to the selected one; a disabled one dims. */}
+        {/* Pulled out by a tab's padding, so the first label lines up with the content. */}
+        <View style={{ marginHorizontal: -8 }}>
+          <View style={underline.rule} />
+          <Tabs style={underline.style} indicatorStyle={underline.indicatorStyle}>
+            <Each of={folders}>
+              {(f) => (
+                <Tab
+                  selected={folder() === f().id}
+                  disabled={f().locked}
+                  onPress={() => {
+                    folder.set(f().id);
+                    log(`${f().label} pressed`);
+                  }}
+                  {...underline.tab({ selected: () => folder() === f().id, disabled: f().locked })}
+                >
+                  <TabTitle name={f().label} count={f().count > 0 ? f().count : undefined} selected={folder() === f().id} underline />
+                </Tab>
+              )}
+            </Each>
+          </Tabs>
+        </View>
       </Split>
     </View>
   );

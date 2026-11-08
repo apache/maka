@@ -290,7 +290,7 @@ impl NodeView for SkillView {
             .as_str()
             .expect("a skill node's name is text")
             .to_owned();
-        let icon = if is_terminal() {
+        let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
         } else {
             canvas(move || {
@@ -353,14 +353,26 @@ impl PluginSpec for ComposerBehavior {
             return false;
         }
         if let Some(stroke) = keystroke(event) {
-            let apple = event.apple_keyboard.unwrap_or(cfg!(target_os = "macos"));
+            let apple = apple_keys();
+            let ctrl_for_command = apple && key_label("mod+c") == key_label("ctrl+c");
             for binding in self.props.capture_keys.get_untracked() {
                 if binding.fallback && !state.selection().empty() {
                     continue;
                 }
-                if Keystroke::parse_with(&binding.key, apple)
-                    .is_ok_and(|candidate| candidate == stroke)
-                {
+                if Keystroke::parse_with(&binding.key, apple).is_ok_and(|candidate| {
+                    candidate == stroke
+                        || (ctrl_for_command
+                            && candidate.modifiers.ctrl
+                            && !candidate.modifiers.cmd
+                            && Keystroke {
+                                modifiers: Modifiers {
+                                    ctrl: false,
+                                    cmd: true,
+                                    ..candidate.modifiers
+                                },
+                                ..candidate
+                            } == stroke)
+                }) {
                     self.events.flush_state(state);
                     self.events
                         .cx

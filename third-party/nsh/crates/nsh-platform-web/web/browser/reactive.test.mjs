@@ -499,6 +499,52 @@ test("list cells keep their items when items are inserted before them", { skip: 
   close();
 });
 
+test("list header, footer and empty that are one If or Each follow their conditions", { skip: !path }, async () => {
+  const { createLists } = await import("./list.js");
+  const { api, invoke, values, dom, close } = await fixture();
+  const lists = createLists(invoke, values, api, dom, () => true, () => {});
+  const on = api.signal(false), shown = [];
+  const reader = name => () => () => { shown.push(name); return name; };
+  let dispose;
+  api.root(stop => {
+    dispose = stop;
+    lists.render({ each: [], children: () => null,
+      get header() { return dom.rt.cond(() => on(), reader("header")); },
+      get footer() { return dom.rt.each(() => on() ? ["footer"] : [], item => reader(item())()); },
+      get empty() { return dom.rt.cond(() => on(), reader("empty")); } });
+  });
+  assert.deepEqual(shown, []);
+  on.set(true);
+  assert.deepEqual(shown.sort(), ["empty", "footer", "header"]);
+  dispose();
+  close();
+});
+
+test("a list separator that is one If follows its condition after rows move", { skip: !path }, async () => {
+  const { createLists } = await import("./list.js");
+  const { api, invoke, values, dom, close } = await fixture();
+  const lists = createLists(invoke, values, api, dom, () => true, () => {});
+  const on = api.signal(false), data = api.signal(["a", "b", "c"]);
+  let reads = 0, node, dispose;
+  api.root(stop => {
+    dispose = stop;
+    node = lists.render({ get each() { return data(); }, children: item => () => item(),
+      get separator() { return dom.rt.cond(() => on(), () => () => { reads++; return "sep"; }); } });
+  });
+  const id = values.nodeIds.get(node);
+  lists.bind(id, [[0, 0], [1, 1], [2, 2]]);
+  on.set(true);
+  assert.equal(reads, 2);
+  data.set(["z", "a", "b", "c"]);
+  lists.bind(id, [[3, 0]]);
+  on.set(false);
+  reads = 0;
+  on.set(true);
+  assert.equal(reads, 3);
+  dispose();
+  close();
+});
+
 test("resources cancel superseded loads, retain values, and ignore settlement after disposal", { skip: !path }, async () => {
   const { createResource } = await import("./resource.js");
   const { api, invoke, close } = await fixture();
@@ -808,22 +854,6 @@ test("what a component's children read runs them alone, never the expression tha
   seq.set(1); seq.set(2);
   assert.equal(made, 2);
   assert.equal(runs, 6);
-  dispose(); close();
-});
-
-test("functions in a branch's array and in nested arrays stay when a sibling changes", { skip: !path }, async () => {
-  const { api, dom, close } = await fixture();
-  const outer = api.signal(0), inner = api.signal(0);
-  let made = 0, dispose;
-  const child = () => { made++; return "child"; };
-  api.root(stop => {
-    dispose = stop;
-    dom.rt.insert(dom.rt.element("view"), [() => outer(), () => [child, () => inner()]]);
-    dom.rt.insert(dom.rt.element("view"), [[child, () => inner()]]);
-  });
-  assert.equal(made, 2);
-  outer.set(1); inner.set(1);
-  assert.equal(made, 2);
   dispose(); close();
 });
 

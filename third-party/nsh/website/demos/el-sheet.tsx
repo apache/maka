@@ -1,21 +1,8 @@
 import { mount, signal, Text, View } from "nsh";
 import { Sheet } from "nsh/base";
-import { button, buttonText, desktop, Inspector, Log, Panel, size, Stage, ui, wide } from "./palette";
+import { backdrop, button, buttonText, desktop, Inspector, Log, Panel, sheetGrabber, sheetPanel, type SheetSide, Stage, ui, wide } from "./palette";
 
-type Side = "bottom" | "top" | "left" | "right";
-
-/** The panel's corners and size across, by the edge it is on. */
-function panel(side: Side) {
-  const r = 20;
-  const across = side === "left" || side === "right" ? { width: wide() ? 320 : 280 } : {};
-  const corners = {
-    bottom: { borderTopLeftRadius: r, borderTopRightRadius: r, paddingBottom: 32 },
-    top: { borderBottomLeftRadius: r, borderBottomRightRadius: r, paddingTop: 32 },
-    left: { borderTopRightRadius: r, borderBottomRightRadius: r },
-    right: { borderTopLeftRadius: r, borderBottomLeftRadius: r },
-  }[side];
-  return { ...ui().card, padding: 20, gap: 12, ...across, ...corners };
-}
+type Side = SheetSide;
 
 function App() {
   const open = signal(false);
@@ -84,11 +71,14 @@ function App() {
           log(`onOpenChange · ${next ? "opened" : "closed"} · ${reason}`);
         }}
         onCancel={() => log("onCancel")}
-        popupStyle={panel(side())}
-        backdropStyle={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+        popupStyle={sheetPanel(side())}
+        backdropStyle={backdrop()}
       >
-        <Text style={{ fontSize: 17, fontWeight: "700", color: ui().text }}>Filters</Text>
-        <Text style={{ fontSize: 14, color: ui().muted }}>
+        <If when={side() === "bottom"}>
+          <View style={sheetGrabber()} />
+        </If>
+        <Text style={{ fontSize: desktop ? 16 : 18, fontWeight: "600", color: ui().text }}>Filters</Text>
+        <Text style={{ fontSize: desktop ? 13 : 15, lineHeight: desktop ? 19 : 21, color: ui().muted }}>
           A panel at the {side()} edge. {desktop ? "The backdrop and Escape close it." : "The backdrop and Android's back close it."}
         </Text>
         <View

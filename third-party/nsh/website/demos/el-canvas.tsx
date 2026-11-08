@@ -1,7 +1,7 @@
 import { Canvas, mount, signal, Text, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
 import { platform, windowSize } from "nsh";
-import { button, buttonText, tint, ui } from "./palette";
+import { button, buttonText, tint, ui, sectionSurface } from "./palette";
 
 const TAU = Math.PI * 2;
 
@@ -129,7 +129,7 @@ function App() {
           }}
         />
 
-        <View style={{ ...ui().card, borderRadius: 14, padding: 16, gap: 12, alignItems: "center", width: wide() ? 240 : undefined, alignSelf: wide() ? "flex-start" : undefined }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12, alignItems: "center", width: wide() ? 240 : undefined, alignSelf: wide() ? "flex-start" : undefined }}>
           <Canvas
             style={{ width: 120, height: 120 }}
             draw={(cx, { width, height }) => {

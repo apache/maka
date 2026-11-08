@@ -150,7 +150,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
         minHeight: 0,
         gap: 8,
         paddingHorizontal: settingsGutter,
-        paddingTop: platform.isTerminal ? 0 : 4,
+        paddingTop: platform.idiom === 'terminal' ? 0 : 4,
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -168,7 +168,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             ...inputTextStyle,
             flex: 1,
             minWidth: 0,
-            height: platform.isTerminal ? 16 : 32,
+            height: platform.idiom === 'terminal' ? 16 : 32,
             paddingHorizontal: settingsInset,
             color: C.text,
             placeholderColor: C.muted,
@@ -236,7 +236,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             </Text>
           </If>
         }
-        contentStyle={{ paddingRight: platform.isTerminal ? 0 : 8 }}
+        contentStyle={{ paddingRight: platform.idiom === 'terminal' ? 0 : 8 }}
         style={{ flex: 1, minHeight: 0 }}
       >
         {(row) => {
@@ -344,7 +344,7 @@ function ProviderOption(props: {
         style={[
           {
             fontSize: 14,
-            lineHeight: platform.isTerminal ? 16 : 20,
+            lineHeight: platform.idiom === 'terminal' ? 16 : 20,
             color: C.text,
             flex: 1,
             minWidth: 0,

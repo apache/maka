@@ -92,7 +92,7 @@ scroll().horizontal().scrollbar(false).child(
 
 Right to left (see [Device and environment](./device-and-environment.md#right-to-left)), a horizontal scroll view starts at its right end and keeps its distance from it.
 
-Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the browser, the mouse scrolls as in desktop apps: with its wheel (Shift + wheel scrolls horizontally), the touchpad, the keyboard and the scroll indicator, which shows while the mouse moves over the view and drags as a scroll bar; mouse drags go to the app's pans, responders and text selection. Touchscreens on desktops drag scroll views as fingers do. Horizontal views keep their indicator there even with `scrollbar={false}`, since it is how a mouse without a horizontal wheel moves them.
+Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the browser, the mouse scrolls as in desktop apps: with its wheel (Shift + wheel scrolls horizontally), the touchpad, the keyboard and the scroll indicator, which shows while the mouse moves over the view and drags as a scroll bar; mouse drags go to the app's pans, responders and text selection. Touchscreens on desktops drag scroll views as fingers do. `scrollbar={false}` hides the indicator on either axis: a mouse without a horizontal wheel moves a horizontal view with Shift + wheel, with the wheel where nothing around it scrolls vertically, and with the keyboard.
 
 ### Behavior props
 
@@ -101,7 +101,7 @@ Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the bro
 | `horizontal` | `.horizontal()` | `boolean` | `false` | Scrolls sideways. |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll it. Scrolling from code still works. |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Room around the content, scrollable into. |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | Where it starts. |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | the platform's | How fast a fling slows down: `"normal"`, `"fast"`, or the velocity kept per millisecond (`0.998` is normal, `0.99` fast; `0` is the platform's default). |

@@ -78,6 +78,10 @@ pub struct NativeUse {
     /// `element`, and the import is gone), or `transitionShader`, a page's
     /// or a dialog's prop, as a key or a string.
     pub shader: bool,
+    /// It may give a view a scroll bar theme of its own: it spells
+    /// `scrollbar` as a key, a member or a string (`<ScrollView
+    /// scrollbar={theme}>`). `nsh/base`'s core part draws such bars.
+    pub scrollbar_theme: bool,
 }
 
 impl NativeUse {
@@ -107,6 +111,7 @@ impl NativeUse {
         self.global_crypto |= other.global_crypto;
         self.computed_import |= other.computed_import;
         self.shader |= other.shader;
+        self.scrollbar_theme |= other.scrollbar_theme;
     }
 
     fn import(&mut self, specifier: &str) -> &mut Imported {
@@ -140,6 +145,9 @@ impl<F> Finder<'_, F> {
     fn quoted(&mut self, value: &str) {
         if SHADER_TAGS.contains(&value) || value == "transitionShader" {
             self.uses.shader = true;
+        }
+        if value == "scrollbar" {
+            self.uses.scrollbar_theme = true;
         }
     }
 
@@ -228,6 +236,9 @@ impl<'a, F: Fn(&str) -> bool> Visit<'a> for Finder<'_, F> {
         self.spelled(it.name.as_str());
         if it.name == "transitionShader" {
             self.uses.shader = true;
+        }
+        if it.name == "scrollbar" {
+            self.uses.scrollbar_theme = true;
         }
     }
 
@@ -377,6 +388,14 @@ mod tests {
         assert!(uses("_$c(Dialog, { \"transitionShader\": wipe });").shader);
         assert!(!uses("const options = { shader: wipe };").shader);
         assert!(!uses("const shader = view;").shader);
+    }
+
+    #[test]
+    fn a_scrollbar_key_counts_as_a_scrollbar_theme() {
+        assert!(uses("_$c(ScrollView, { scrollbar: theme });").scrollbar_theme);
+        assert!(uses("_$setProp(el, \"scrollbar\", theme);").scrollbar_theme);
+        assert!(uses("view.scrollbar = theme;").scrollbar_theme);
+        assert!(!uses("const bar = view;").scrollbar_theme);
     }
 
     #[test]

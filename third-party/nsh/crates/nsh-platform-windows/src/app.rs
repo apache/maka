@@ -3,13 +3,14 @@
 //! loop).
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     rc::{Rc, Weak},
     sync::{Arc, RwLock},
 };
 
 use nsh_core::{
+    desktop::{Backdrop, MainWindowOptions, WindowMode, WindowPlacement, WindowPosition},
     geometry::{Size, px},
     platform::{Appearance, Locale},
 };
@@ -97,17 +98,11 @@ pub(crate) fn ui_sets() -> Vec<nsh_core::element::Registry> {
 
 /// What [`run_app`] runs.
 #[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "one source per view; keep the public constructor API without allocation"
-)]
 pub enum AppSource {
     /// A Rust app: its root component.
     Rust(Root),
     /// A JS bundle shipped with (or passed to) the app.
     Bundle(Bundle),
-    /// An embedding application's engine configuration.
-    Config(EngineConfig),
     /// A dev server (`ws://host:port/ws`); bundles are pushed on every
     /// rebuild.
     #[cfg(feature = "dev")]
@@ -130,10 +125,28 @@ pub struct AppOptions {
     pub app_id: String,
     /// The window title.
     pub title: String,
+    /// The app's icon, an `.ico` file: the window's (title bar, taskbar,
+    /// Alt+Tab) when the executable has no icon of its own (the
+    /// development host, a runner packaged off Windows), and the one its
+    /// notifications show. The release runner reads `nsh\icon.ico`, which
+    /// `nsh package` writes; the development host takes `--icon`.
+    pub icon: Option<PathBuf>,
     /// The initial window size in points.
     pub size: (i32, i32),
     /// Minimum client area in logical points.
     pub min_size: Option<(i32, i32)>,
+    /// A see-through window (Electron's, Tauri's and winit's
+    /// `transparent`): where the app draws nothing (no root background),
+    /// the desktop shows, and translucent colors blend with it. The
+    /// window has no system frame (title bar, borders, shadow): the app
+    /// draws what it wants of one and moves the window with
+    /// `desktop={{ windowDrag: true }}`. Top-level windows only; set when
+    /// the window is made.
+    pub transparent: bool,
+    /// Keeps the window out of the taskbar from the start (Electron's and
+    /// Tauri's `skipTaskbar`); the app changes it with
+    /// `Window.setSkipTaskbar`.
+    pub skip_taskbar: bool,
     /// The native components apps can use (`nsh/native`); shared by the
     /// views made with these options. See [`AppView::register_component`].
     pub components: crate::native::Components,
@@ -159,11 +172,24 @@ pub struct AppOptions {
     /// The apps' storage (`nsh/storage`), overriding the `storage.json` in
     /// their directory of [`data_dir`](Self::data_dir).
     pub storage: Option<Arc<dyn nsh_engine::StorageBackend>>,
+    /// The app this view runs owns the process's notifications: the process
+    /// takes [`app_id`](Self::app_id) as its AppUserModelID (also what the
+    /// taskbar groups its windows by), registers it with
+    /// [`title`](Self::title) and [`icon`](Self::icon) for toasts and hears
+    /// their presses (`nsh`'s `Notifications`). Without it the permission is
+    /// `unavailable` and nothing shows. [`run_app`] sets it.
+    pub notifications: bool,
     /// The embedding app's channel with the apps the view runs
     /// (`nsh/host`): their launch parameters, events to them and handlers of
     /// their calls and posts ([`AppView::host`]). One for every app the view
     /// loads; a new one by default.
     pub host: nsh_engine::HostChannel,
+    /// The URL schemes the app opens (nsh.json `schemes`, from the
+    /// package's `nsh\app.json`): [`run_app`] registers them for the
+    /// current user, sends the URL it was started with as `EventKind::UrlScheme`
+    /// and keeps one instance, a later launch with a URL handing it to the
+    /// running one. Empty: none of that.
+    pub schemes: Vec<String>,
 }
 
 impl Default for AppOptions {
@@ -174,14 +200,19 @@ impl Default for AppOptions {
             asset_base: None,
             app_id: "com.longbridge.nsh.host".to_owned(),
             title: "nsh".to_owned(),
+            icon: None,
             size: (1200, 800),
             min_size: None,
+            transparent: false,
+            skip_taskbar: false,
             components: Default::default(),
             appearance: Appearance::System,
             limits: Limits::default(),
             data_dir: None,
             cache: Default::default(),
             storage: None,
+            schemes: Vec::new(),
+            notifications: false,
             host: nsh_engine::HostChannel::default(),
         }
     }
@@ -195,8 +226,10 @@ impl Default for AppOptions {
 /// clipboard).
 ///
 /// ```no_run
-/// use nsh_platform_windows::{AppOptions, AppView, AssetBase, Bundle};
-/// use windows::Win32::Foundation::HWND;
+/// use nsh_platform_windows::{
+///     AppOptions, AppView, AssetBase, Bundle, windows::Win32::Foundation::HWND,
+/// };
+///
 /// # fn host(parent: HWND) -> windows::core::Result<()> {
 /// let view = AppView::new(
 ///     Some(parent),
@@ -216,6 +249,8 @@ pub struct AppView {
     surface: Rc<Surface>,
     hwnd: HWND,
     options: RefCell<AppOptions>,
+    /// The mode the main window takes once shown (nsh.json `window`).
+    opening_mode: Cell<Option<WindowMode>>,
     #[cfg(feature = "dev")]
     pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
 }
@@ -224,22 +259,61 @@ impl AppView {
     /// A view with no app yet: a child window of `parent`, or a top-level
     /// window (hidden until [`AppView::show`]) when `None`.
     pub fn new(parent: Option<HWND>, options: AppOptions) -> windows::core::Result<Rc<AppView>> {
+        let composed = options.transparent;
+        AppView::make(parent, options, composed)
+    }
+
+    /// [`AppView::new`]; `composed`: a top-level window is shown by a
+    /// composition (no redirection bitmap) although it has a frame, for a
+    /// system backdrop to show through.
+    fn make(
+        parent: Option<HWND>,
+        options: AppOptions,
+        composed: bool,
+    ) -> windows::core::Result<Rc<AppView>> {
         let surface = Surface::new(initial_environment());
         surface.appearance.set(options.appearance);
-        surface.min_size.set(options.min_size);
+        if options.notifications {
+            crate::notifications::start_app(
+                &options.app_id,
+                &options.title,
+                options.icon.as_deref(),
+            );
+        }
         register_app_components(&options.components);
         surface.native.set_components(options.components.clone());
         surface.native.set_app_id(&options.app_id);
-        let hwnd = crate::window::create(&surface, &options.title, options.size, parent)?;
+        let transparent = options.transparent && parent.is_none();
+        let composed = (composed || transparent) && parent.is_none();
+        let hwnd = crate::window::create(&surface, &options.title, options.size, parent, composed)?;
+        if composed {
+            *surface.base.borrow_mut() = Some(crate::compose::Composition::new(hwnd)?);
+        }
+        if parent.is_none() {
+            crate::window::set_icon(hwnd, options.icon.as_deref());
+            // The main window's attributes: a normal window's, with the
+            // options'.
+            if let Some(shell) = crate::window::shell(hwnd) {
+                let mut attrs = shell.attrs();
+                attrs.transparent = transparent;
+                attrs.taskbar = !options.skip_taskbar;
+                if let Some((w, h)) = options.min_size {
+                    attrs.min_size = Some(Size::new(px(w as f32), px(h as f32)));
+                }
+                shell.set(attrs);
+                crate::shell::sync(&surface, hwnd, None, attrs);
+            }
+        }
         let view = Rc::new(AppView {
             surface,
             hwnd,
             options: RefCell::new(options),
+            opening_mode: Cell::new(None),
             #[cfg(feature = "dev")]
             dev: RefCell::new(None),
         });
         crate::system::watch_environment(&view.surface);
-        if view.options.borrow().fps {
+        if view.options.borrow().fps || nsh_engine::perf::enabled_by_env() {
             view.surface.enable_fps();
         }
         Ok(view)
@@ -250,9 +324,76 @@ impl AppView {
         self.hwnd
     }
 
-    /// Shows a top-level view's window.
+    /// Shows a top-level view's window (in the mode nsh.json `window`
+    /// opens it in).
     pub fn show(&self) {
+        // Composite the window only once its background is drawn: DWM
+        // otherwise shows and animates the default light client surface,
+        // which flashes white on a dark appearance until the first frame.
+        crate::window::set_cloaked(self.hwnd, true);
+        crate::window::fill_background(&self.surface, self.hwnd);
+        self.surface.paint();
         crate::window::show(self.hwnd);
+        crate::window::set_cloaked(self.hwnd, false);
+        if let Some(mode) = self.opening_mode.take() {
+            crate::window_state::set_mode(self.hwnd, mode);
+        }
+    }
+
+    /// Gives the main window what nsh.json `window` sets (`launch`): its
+    /// attributes, content size, position, display and mode, or the
+    /// placement it was left in (`kept`). A window shown already takes the
+    /// mode at once, a hidden one when it shows.
+    pub(crate) fn place_main_window(
+        &self,
+        launch: &MainWindowOptions,
+        kept: Option<WindowPlacement>,
+    ) {
+        let hwnd = self.hwnd;
+        if !crate::window_state::top_level(hwnd) {
+            return;
+        }
+        crate::shell::apply(&self.surface, hwnd, &launch.attributes);
+        let mode = match kept {
+            Some(placement) => {
+                crate::window_state::set_placement(hwnd, placement);
+                placement.mode
+            }
+            None => {
+                let content = launch
+                    .default_size
+                    .filter(|s| s.width.0 >= 1.0 && s.height.0 >= 1.0);
+                match (launch.default_position, launch.display) {
+                    (Some(WindowPosition::At(at)), display) => {
+                        let content = content.or_else(|| content_size(hwnd));
+                        if let Some(content) = content {
+                            crate::window_state::open_at(hwnd, content, Some(at), None, display);
+                        }
+                    }
+                    // The main window has no parent: centered on its display.
+                    (Some(_), display) | (None, display @ Some(_)) => {
+                        if let Some(content) = content.or_else(|| content_size(hwnd)) {
+                            crate::window_state::open_at(hwnd, content, None, None, display);
+                        }
+                    }
+                    (None, None) => {
+                        if let Some(content) = content {
+                            crate::window_state::size_content(hwnd, content);
+                        }
+                    }
+                }
+                launch.default_mode.unwrap_or(WindowMode::Normal)
+            }
+        };
+        // SAFETY: a plain query.
+        let visible =
+            unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() };
+        if visible {
+            crate::window_state::set_mode(hwnd, mode);
+        } else {
+            self.opening_mode
+                .set(Some(mode).filter(|m| *m != WindowMode::Normal));
+        }
     }
 
     /// The channel with the apps this view runs (`nsh/host`;
@@ -297,8 +438,8 @@ impl AppView {
             websocket: None,
             refuse_connections: None,
             filesystem: None,
-            chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
+            chunk_loader: None,
             environment: self.surface.environment.get(),
             // NSH draws no header: a page's `header` sits at its top.
             header_heights: nsh_core::NO_NATIVE_HEADER,
@@ -315,6 +456,8 @@ impl AppView {
             host: options.host.clone(),
             picker: None,
             speech: None,
+            audio: None,
+            windows: None,
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
         self.surface
@@ -413,6 +556,8 @@ fn initial_environment() -> Environment {
         native_focus_scopes: true,
         fallback_key_bindings: true,
         file_requests: true,
+        notifications: true,
+        audio: true,
         ..Environment::default()
     }
 }
@@ -426,14 +571,34 @@ fn initial_environment() -> Environment {
 /// thread-local destructors instead, they would run inside `ExitProcess`,
 /// after the graphics DLLs and their driver threads are gone, and the
 /// process would end with a stray exit code.
-/// The observer follows window activation and receives `false` on shutdown.
-pub fn run_app(
-    source: AppSource,
+pub fn run_app(source: AppSource, mut options: AppOptions) -> std::process::ExitCode {
+    wait_for_replaced_process();
+    options.notifications = true;
+    run(Start::Source(source), options, None)
+}
+
+/// Runs an embedding application's [`EngineConfig`] in a window until it is
+/// closed. `on_active` follows window activation and receives `false` on
+/// shutdown.
+pub fn run_app_with_config(
+    config: EngineConfig,
     options: AppOptions,
     on_active: impl Fn(bool) + Send + 'static,
 ) -> std::process::ExitCode {
-    run(source, options, Box::new(on_active))
+    wait_for_replaced_process();
+    run(
+        Start::Config(Box::new(config)),
+        options,
+        Some(Box::new(on_active)),
+    )
 }
+
+enum Start {
+    Source(AppSource),
+    Config(Box<EngineConfig>),
+}
+
+static RUNNING_UI: std::sync::Mutex<Option<crate::window::UiThread>> = std::sync::Mutex::new(None);
 
 thread_local! {
     static RUNNING_VIEW: RefCell<Weak<AppView>> = const { RefCell::new(Weak::new()) };
@@ -441,14 +606,17 @@ thread_local! {
 
 /// Runs `f` on the standalone Windows window's UI thread while it is open.
 pub fn with_running_view(f: impl FnOnce(&AppView) + Send + 'static) {
-    crate::window::invoke(move || {
-        RUNNING_VIEW.with(|running| {
-            let view = running.borrow().upgrade();
-            if let Some(view) = view {
-                f(&view);
-            }
+    let ui = *RUNNING_UI.lock().unwrap();
+    if let Some(ui) = ui {
+        ui.invoke(move || {
+            RUNNING_VIEW.with(|running| {
+                let view = running.borrow().upgrade();
+                if let Some(view) = view {
+                    f(&view);
+                }
+            });
         });
-    });
+    }
 }
 
 /// Closes the standalone Windows window through its normal close handler.
@@ -468,19 +636,19 @@ pub fn quit_app() {
 }
 
 fn run(
-    source: AppSource,
+    start: Start,
     options: AppOptions,
-    on_active: ActivationHandler,
+    on_active: Option<ActivationHandler>,
 ) -> std::process::ExitCode {
     /// The app, moved to the UI thread.
-    struct Job(AppSource, AppOptions, ActivationHandler);
+    struct Job(Start, AppOptions, Option<ActivationHandler>);
     // SAFETY: the options hold `Rc`s (the native components), so they are
     // not `Send`. They move to the UI thread whole while this thread waits
     // in `join` and never touches them; clones the caller kept are only
     // used again after `join` returns, once the UI thread has ended, so
     // the reference counts are never changed from two threads at once.
     unsafe impl Send for Job {}
-    let job = Job(source, options, on_active);
+    let job = Job(start, options, on_active);
     let ui = std::thread::Builder::new()
         .name("nsh-ui".into())
         // Deep view trees recurse in drawing and hit testing.
@@ -499,12 +667,57 @@ fn run(
     }
 }
 
+thread_local! {
+    /// The standalone app's UI thread ([`run_app`]): what may restart.
+    static STANDALONE: Cell<bool> = const { Cell::new(false) };
+    /// The app asked to start again when its run ends.
+    static RESTART: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the standalone app ([`run_app`]) to start again once its run has
+/// ended ([`nsh_core::restart`]); the caller then quits it. A view embedded
+/// in another app leaves the app's lifecycle to that app: false there, with
+/// nothing marked.
+pub(crate) fn request_restart() -> bool {
+    STANDALONE.get() && {
+        RESTART.set(true);
+        true
+    }
+}
+
+/// Waits, at most [`nsh_core::restart::WAIT_LIMIT`], for the process this
+/// one replaces when the app restarted ([`nsh_core::restart::WAIT_FOR_ENV`]),
+/// so that the two never run side by side.
+fn wait_for_replaced_process() {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+    let Some(pid) = nsh_core::restart::wait_for_pid() else {
+        return;
+    };
+    // Programs the app starts must not wait for it too.
+    // SAFETY: called at the start of `run_app`, before it starts the UI
+    // thread or anything else that reads the environment.
+    unsafe { std::env::remove_var(nsh_core::restart::WAIT_FOR_ENV) };
+    // SAFETY: plain calls; the handle is closed once waited on. A process
+    // that has exited already cannot be opened, and nothing waits.
+    unsafe {
+        if let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            let limit = nsh_core::restart::WAIT_LIMIT.as_millis() as u32;
+            let _ = WaitForSingleObject(process, limit);
+            let _ = CloseHandle(process);
+        }
+    }
+}
+
 /// [`run_app`] on the calling thread.
 fn run_on_this_thread(
-    source: AppSource,
+    start: Start,
     options: AppOptions,
-    on_active: ActivationHandler,
+    on_active: Option<ActivationHandler>,
 ) -> std::process::ExitCode {
+    STANDALONE.set(true);
     // SAFETY: process setup before any window exists: per-monitor DPI
     // (points stay sharp on every monitor) and an OLE apartment for the
     // clipboard, drag and drop and WIC.
@@ -512,39 +725,106 @@ fn run_on_this_thread(
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = OleInitialize(None);
     }
-    crate::system::set_app_id(&options.app_id);
-    let view = match AppView::new(None, options.clone()) {
+    if let crate::linking::Start::Forwarded =
+        crate::linking::start(&options.app_id, &options.title, &options.schemes)
+    {
+        return std::process::ExitCode::SUCCESS;
+    }
+    // The app to run, when it is known now (a dev server's comes later).
+    let app = match &start {
+        Start::Source(AppSource::Rust(root)) => Some(App::Rust(root.clone())),
+        Start::Source(AppSource::Bundle(bundle)) => Some(App::Js(bundle.clone())),
+        #[cfg(feature = "dev")]
+        Start::Source(AppSource::DevServer(_)) => None,
+        Start::Config(config) => Some(config.app.clone()),
+    };
+    // nsh.json `window` (a bundle's, or compiled into a Rust app's root):
+    // known before the window is made, so that its first frame has it.
+    let launch = app
+        .as_ref()
+        .and_then(App::main_window)
+        .cloned()
+        .unwrap_or_default();
+    let mut options = options;
+    if launch.attributes.transparent == Some(true) {
+        options.transparent = true;
+    }
+    // A backdrop shows through a window without a redirection bitmap.
+    let composed = options.transparent
+        || launch
+            .attributes
+            .backdrop
+            .is_some_and(|b| b != Backdrop::None);
+    // `restoreBounds`: where its last run left it (the engine keeps it
+    // as it changes), fitted on the displays there are.
+    let kept = match app {
+        Some(app) if launch.restore_bounds => {
+            let mut config = EngineConfig::new(app);
+            config.data_dir = options.data_dir.clone().or_else(nsh_engine::data_dir);
+            config.storage = options.storage.clone();
+            config.main_window_placement(&crate::window_state::displays())
+        }
+        _ => None,
+    };
+    let view = match AppView::make(None, options.clone(), composed) {
         Ok(view) => view,
         Err(err) => {
             fatal_error(&format!("Cannot open a window: {err}"));
             return std::process::ExitCode::FAILURE;
         }
     };
-    *view.surface.on_activation.borrow_mut() = Some(on_active);
+    *view.surface.on_activation.borrow_mut() = on_active;
     RUNNING_VIEW.with(|running| *running.borrow_mut() = Rc::downgrade(&view));
-    match source {
-        AppSource::Rust(root) => view.load(App::Rust(root)),
-        AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
-        AppSource::Config(config) => view.load_with_config(config),
+    *RUNNING_UI.lock().unwrap() = Some(crate::window::UiThread::current());
+    match start {
+        Start::Source(AppSource::Rust(root)) => view.load(App::Rust(root)),
+        Start::Source(AppSource::Bundle(bundle)) => view.load(App::Js(bundle)),
         #[cfg(feature = "dev")]
-        AppSource::DevServer(url) => crate::dev::start(&view, url),
+        Start::Source(AppSource::DevServer(url)) => crate::dev::start(&view, url),
+        Start::Config(config) => view.load_with_config(*config),
     }
     crate::system::environment_applied(view.surface());
+    crate::linking::attach(view.surface());
     install_shortcuts(&view);
+    view.place_main_window(&launch, kept);
     view.show();
     let code = crate::window::run_loop();
     view.surface.activation_changed(false);
+    *RUNNING_UI.lock().unwrap() = None;
     RUNNING_VIEW.with(|running| *running.borrow_mut() = Weak::new());
     view.stop();
     drop(view);
     // SAFETY: pairs the `OleInitialize` above; nothing on this thread uses
     // OLE afterwards.
     unsafe { windows::Win32::System::Ole::OleUninitialize() };
+    STANDALONE.set(false);
+    // The new process waits for this one to exit ([`wait_for_replaced_process`]).
+    if RESTART.take() {
+        if cfg!(feature = "dev") {
+            // `nsh run` ends with its host and stops the dev server: a host
+            // started again would be cut off from both, so it only quits.
+            log::warn!("a development host quits on restart; restarting runs in a packaged app");
+        } else if let Err(err) = nsh_core::restart::spawn_after_exit() {
+            log::error!("cannot restart the app: {err}");
+        }
+    }
     if code == 0 {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
     }
+}
+
+/// The content size of `hwnd` in points.
+fn content_size(hwnd: HWND) -> Option<Size<nsh_core::Points>> {
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    // SAFETY: a query with a local out value.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }.ok()?;
+    let scale = crate::window::dpi(hwnd) as f32 / 96.0;
+    Some(Size::new(
+        px((rect.right - rect.left) as f32 / scale),
+        px((rect.bottom - rect.top) as f32 / scale),
+    ))
 }
 
 /// The standalone app's window shortcuts: F11 toggles full screen, as in
@@ -587,5 +867,71 @@ pub fn fatal_error(message: &str) {
             &HSTRING::from("nsh"),
             MB_OK | MB_ICONERROR,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, WS_CAPTION,
+        WS_EX_NOREDIRECTIONBITMAP,
+    };
+
+    use super::*;
+
+    fn styles(hwnd: HWND) -> (u32, u32) {
+        // SAFETY: plain reads on a live window.
+        unsafe {
+            (
+                GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
+            )
+        }
+    }
+
+    #[test]
+    fn transparent_window_is_borderless_and_composed() {
+        let view = AppView::new(
+            None,
+            AppOptions {
+                size: (200, 120),
+                transparent: true,
+                skip_taskbar: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (style, ex) = styles(view.hwnd());
+        assert_eq!(style & WS_CAPTION.0, 0, "no system frame");
+        assert_ne!(ex & WS_EX_NOREDIRECTIONBITMAP.0, 0, "no redirection bitmap");
+        let surface = view.surface();
+        assert!(surface.transparent());
+        let shell = crate::window::shell(view.hwnd()).unwrap();
+        assert!(!shell.attrs().taskbar);
+        assert!(shell.attrs().frameless());
+        assert_eq!(
+            crate::system::window_background(surface),
+            nsh_core::Color::TRANSPARENT
+        );
+        crate::render::frame(surface);
+        if crate::gfx::get().is_ok() {
+            let swap = surface.swap.borrow();
+            assert!(swap.as_ref().is_some_and(|s| s.premultiplied()));
+            assert!(surface.base.borrow().as_ref().is_some_and(|c| c.has_base()));
+        }
+        // SAFETY: the test's own window.
+        let _ = unsafe { DestroyWindow(view.hwnd()) };
+    }
+
+    #[test]
+    fn opaque_window_keeps_its_frame() {
+        let view = AppView::new(None, AppOptions::default()).unwrap();
+        let (style, ex) = styles(view.hwnd());
+        assert_ne!(style & WS_CAPTION.0, 0);
+        assert_eq!(ex & WS_EX_NOREDIRECTIONBITMAP.0, 0);
+        assert!(!view.surface().transparent());
+        assert!(crate::window::shell(view.hwnd()).unwrap().attrs().taskbar);
+        // SAFETY: the test's own window.
+        let _ = unsafe { DestroyWindow(view.hwnd()) };
     }
 }

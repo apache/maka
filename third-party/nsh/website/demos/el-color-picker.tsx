@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { type ColorChannel, ColorArea, ColorEyeDropper, ColorField, ColorPicker, ColorSlider, type ColorSpace, ColorSwatch } from "nsh/base";
-import { desktop, field, Icon, Log, Segmented, Split, ui } from "./palette";
+import { desktop, field, Icon, Log, Segmented, Split, ui, sectionSurface } from "./palette";
 
 // `ColorPicker` holds the color; its parts, laid out and styled here, read
 // and change it: the saturation and brightness area, the hue and alpha
@@ -44,7 +44,7 @@ function App() {
 <Log title="onChangeEnd({ value, formatted })" lines={events()} minHeight={92} />
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: 16 }}>
+        <View style={{ ...sectionSurface({ padded: true }) }}>
           <ColorPicker
             value={color()}
             onChange={({ value, formatted }) => {

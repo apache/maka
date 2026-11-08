@@ -10,7 +10,7 @@ test("the index groups the demos and counts them", async () => {
     ["LAYOUT AND LISTS", "4"],
     ["TOUCH AND MOTION", "4"],
     ["DRAWING AND TYPE", "5"],
-    ["PLATFORM", "4"],
+    ["PLATFORM", "5"],
   ]) {
     expect(texts[texts.indexOf(title) + 1]).toBe(count);
   }
@@ -37,7 +37,8 @@ test("every demo opens from the index and goes back to it", async () => {
     ["Text", "Spans and links"],
     ["Images", "Resize modes"],
     ["Components", "Press feedback"],
-    ["Web and video", "Inline HTML, with messages both ways"],
+    ["WebView", "Inline HTML, with messages both ways"],
+    ["Video", "AVPlayer / MediaPlayer"],
     ["System", "Safe area insets"],
     ["Storage", "Stored keys"],
   ]) {

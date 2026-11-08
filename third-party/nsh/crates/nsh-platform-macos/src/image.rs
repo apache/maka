@@ -11,8 +11,8 @@
 //! view shows it ([`Want`]: the size bucket covering its box in device
 //! pixels, never above its natural size) with ImageIO thumbnails
 //! (`CGImageSourceCreateThumbnailAtIndex`); a view that grows past its
-//! bucket loads the next one. A picture's pixels are its CGImages'; Core
-//! Animation draws them from there, so they count once.
+//! bucket loads the next one. The budget reserves page-rounded backing
+//! storage for both the CGImages and Core Animation's display copies.
 //!
 //! A blur (`blurRadius`, `blur()`) and the color matrix of the view's other
 //! filters are baked into the pixels ([`crate::blur`]): such a picture is a
@@ -423,13 +423,41 @@ impl Picture {
         CGImage::width(first).max(CGImage::height(first)) as u32
     }
 
-    /// Bytes its pixels take (4 per pixel, every frame).
+    /// Conservative backing storage, including Core Animation's display copy.
+    /// Reserving it before display also covers prefetched and filtered pictures.
     fn cost(&self) -> usize {
         self.frames
             .iter()
-            .map(|f| CGImage::width(Some(f)) * CGImage::height(Some(f)) * 4)
-            .sum()
+            .map(|f| {
+                backing_cost(
+                    CGImage::bytes_per_row(Some(f)),
+                    CGImage::height(Some(f)),
+                    page_size(),
+                )
+            })
+            .fold(0, usize::saturating_add)
     }
+}
+
+/// ImageIO and Core Animation allocate separate page-rounded stores. Use
+/// the CGImage stride, which includes padding (and higher bit depths),
+/// rather than assuming tightly packed four-byte pixels.
+fn backing_cost(bytes_per_row: usize, height: usize, page: usize) -> usize {
+    let bytes = bytes_per_row.saturating_mul(height);
+    let rounded = bytes.saturating_add(page - 1) / page;
+    rounded.saturating_mul(page).saturating_mul(2)
+}
+
+fn page_size() -> usize {
+    static PAGE: LazyLock<usize> = LazyLock::new(|| {
+        // SAFETY: sysconf reads the process's page size and takes no pointers.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        usize::try_from(page)
+            .ok()
+            .filter(|p| *p > 0)
+            .unwrap_or(16384)
+    });
+    *PAGE
 }
 
 /// What a view's filters bake into a picture's pixels: a blur radius in
@@ -933,6 +961,51 @@ pub(crate) fn load(
     }
 }
 
+/// A menu item's icon, as drawn for the screen.
+pub(crate) struct MenuIcon {
+    pub(crate) image: CFRetained<CGImage>,
+    /// An SVG: a template, which AppKit paints in the menu's text color.
+    pub(crate) template: bool,
+}
+
+/// Loads a menu item's icon off the main thread, at `scale` pixels per
+/// point; `done` runs on the main thread, before this returns when the
+/// icon is in memory. Dropping the load gives up.
+pub(crate) fn load_menu_icon(
+    surface: &Surface,
+    source: &ImageSource,
+    scale: f32,
+    done: impl FnOnce(Result<MenuIcon, String>) + 'static,
+) -> Option<Load> {
+    let want = nsh_core::desktop::menu_icon::want(scale);
+    load_icon(surface, source, want, done)
+}
+
+/// Loads a menu item's or the tray's icon as `want` says.
+pub(crate) fn load_icon(
+    surface: &Surface,
+    source: &ImageSource,
+    want: Want,
+    done: impl FnOnce(Result<MenuIcon, String>) + 'static,
+) -> Option<Load> {
+    let done = move |result: Result<(Picture, Lease), String>| {
+        done(result.map(|(picture, _)| MenuIcon {
+            image: picture.frames[0].clone(),
+            template: matches!(picture.natural, Natural::Vector(_)),
+        }));
+    };
+    fetch(
+        surface,
+        &source.at_pixel_ratio(want.scale),
+        want,
+        Frames::First,
+        Look::default(),
+        Priority::Visible,
+        None,
+        Box::new(done),
+    )
+}
+
 /// The first frame of `picture`, loaded from `uri`, unless it is an SVG.
 fn bitmap(uri: &str, picture: Picture) -> Result<CFRetained<CGImage>, String> {
     match picture.natural {
@@ -1029,7 +1102,7 @@ pub(crate) struct ImageState {
 
 /// Sets up an image view.
 pub(crate) fn create(view: &NshView) {
-    view.state_mut().image = Some(ImageState::default());
+    view.state_mut().image = Some(Box::default());
 }
 
 /// An image view's source changed.
@@ -1044,7 +1117,7 @@ pub(crate) fn set(
         let mut guard = view.state_mut();
         let s = &mut *guard;
         s.decor.set_fit(mode, options.position);
-        let image = s.image.get_or_insert_with(ImageState::default);
+        let image = s.image.get_or_insert_with(Box::default);
         image.surface = surface.key();
         let same_source = image.source.as_ref().map(|i| &i.uri) == source.map(|i| &i.uri);
         let same_look = image.options.placeholder == options.placeholder
@@ -1120,7 +1193,7 @@ fn wait_for_frame(surface: &Rc<Surface>, view: &NshView) {
         return;
     }
     let weak = Weak::from_retained(&Retained::from(&**view as &ViewObj));
-    surface.add_frame_callback(move |surface, _| {
+    surface.add_draw_callback(move |surface, _| {
         if let Some(view) = weak.load().and_then(|v| NshView::from_ns(&v))
             && view.state().image.as_ref().is_some_and(|i| i.pending)
         {
@@ -1494,6 +1567,21 @@ mod tests {
     fn at((w, _, pixels): &(usize, usize, Vec<u8>), x: usize, y: usize) -> [u8; 4] {
         let i = (y * w + x) * 4;
         pixels[i..i + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn backing_storage_counts_stride_pages_and_display_copies() {
+        assert_eq!(backing_cost(4, 1, 16384), 32768);
+        assert_eq!(backing_cost(448, 100, 16384), 98304);
+        assert_eq!(backing_cost(256, 64, 16384), 32768);
+        assert_eq!(backing_cost(256, 65, 16384), 65536);
+        assert_eq!(backing_cost(448, 100, 4096), 90112);
+        assert_eq!(backing_cost(usize::MAX, 2, 16384), usize::MAX);
+        let picture = decoded(&png_pixel(), 0).unwrap();
+        assert!(picture.cost() >= page_size() * 2);
+        let mut animated = picture.clone();
+        animated.frames = vec![picture.frames[0].clone(); 3].into();
+        assert_eq!(animated.cost(), picture.cost() * 3);
     }
 
     #[test]

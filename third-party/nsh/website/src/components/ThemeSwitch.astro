@@ -25,6 +25,8 @@ const icons = {
 </ToggleGroup>
 
 <script>
+  import { playSelect } from '../lib/sound';
+
   const root = document.documentElement;
   for (const group of document.querySelectorAll<HTMLElement>('.theme-switch')) {
     const buttons = [...group.querySelectorAll<HTMLButtonElement>('[data-pref]')];
@@ -36,6 +38,7 @@ const icons = {
       }
     };
     const choose = (pref: string) => {
+      if (pref !== (root.dataset.themePref ?? 'system')) playSelect();
       root.dataset.themePref = pref;
       try {
         if (pref === 'system') localStorage.removeItem('theme');

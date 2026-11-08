@@ -17,6 +17,7 @@
     "@codemirror/language": "6",
     "@codemirror/state": "6",
     "@codemirror/view": "6",
+    "@fontsource-variable/figtree": "^5.3.0",
     "@lezer/highlight": "1",
     "@pagefind/default-ui": "^1.5.2",
     "@tailwindcss/vite": "^4.1.15",

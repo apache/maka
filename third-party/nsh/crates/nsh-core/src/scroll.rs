@@ -36,7 +36,7 @@ use std::f32::consts::PI;
 use crate::{
     Bounds, Command, EventKind, EventPayload, NodeId, Point, Points, ScrollBehavior, Size,
     StickyCell,
-    geometry::{Percentage, Radians, point},
+    geometry::{Axis, Percentage, Radians, point},
 };
 
 /// Below this release speed (points per ms) a drag does not glide.
@@ -378,6 +378,31 @@ pub fn spokes(progress: Percentage, spin: Radians) -> impl Iterator<Item = (Radi
         };
         (Radians(i as f32 * step), fade)
     })
+}
+
+// The reading order.
+
+/// Orders a view's children as they are on screen, the order Tab and
+/// screen readers go through a scroll view's content (and a list's cells,
+/// [`crate::ViewProps::screen_order`]) in: along `axis`, then across it. A
+/// list recycles its cells, so in the view tree they stay in the order
+/// they were made, not their rows'. `origin` is a child's frame origin;
+/// the sort is stable.
+pub fn reading_order<T>(axis: Axis, children: &mut [T], origin: impl Fn(&T) -> Point<Points>) {
+    if children.len() < 2 {
+        return;
+    }
+    let key = |child: &T| {
+        let at = origin(child);
+        match axis {
+            Axis::Horizontal => (at.x.0, at.y.0),
+            Axis::Vertical => (at.y.0, at.x.0),
+        }
+    };
+    children.sort_by(|a, b| {
+        let (a, b) = (key(a), key(b));
+        a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+    });
 }
 
 // The state.
@@ -913,6 +938,39 @@ pub fn stop_motion(host: &impl ScrollHost) {
     report(host);
 }
 
+/// When the view's motion next comes to something (ms, the clock
+/// [`frame`] is given): a glide's or an eased move's end, a mouse wheel's
+/// rest; what a surface that draws no frames (a hidden window) runs
+/// [`frame`] at, so the scroll ends and reports it on time without
+/// frames. `None` while nothing runs that ends by itself (the indicator's
+/// fade and the refresh spinner only draw).
+pub fn deadline(host: &impl ScrollHost, now: f64) -> Option<f64> {
+    let (phase, rate) = host.scroll(|s, _| (s.live.phase, rate(&s.behavior)))?;
+    let end = match phase {
+        Phase::Glide { velocity, last } => {
+            // It slows below `STOP` then, or meets an edge before.
+            let speed = velocity.abs();
+            if speed < STOP || !(0.0..1.0).contains(&rate) {
+                last
+            } else {
+                last + ((STOP / speed).ln() / rate.ln()).max(0.0) as f64
+            }
+        }
+        Phase::Animate {
+            start, duration, ..
+        } => start + duration,
+        Phase::Wheel {
+            last,
+            gesture: false,
+            ..
+        } => last + WHEEL_IDLE,
+        _ => return None,
+    };
+    // A millisecond past it: a frame there finds it ended whatever the
+    // rounding.
+    Some(end.max(now) + 1.0)
+}
+
 /// The view left the window during its frames: it stops (a later move
 /// starts again) and reports where it is.
 pub fn detached(host: &impl ScrollHost) {
@@ -1081,11 +1139,12 @@ pub fn config(
             // Motion coordinates belong to the axis on which they began.
             s.live.phase = Phase::Idle;
         }
-        // A horizontal view keeps its indicator: it is the mouse's scroll
-        // bar, and a mouse without a horizontal wheel has no other way
-        // to move it (mouse drags do not scroll); a built-in bar of the
-        // app's (`replaced`) is the mouse's then.
-        s.indicator = indicator || (horizontal && !replaced);
+        // The view shows its indicator only when it asks to, on either
+        // axis: a mouse without a horizontal wheel still moves a
+        // horizontal view with Shift + wheel, with the vertical wheel
+        // where nothing around scrolls vertically, and with the keys. A
+        // built-in bar of the app's (`replaced`) takes its place.
+        s.indicator = indicator && !replaced;
         if !indicator {
             s.live.alpha = 0.0;
         }
@@ -1731,6 +1790,32 @@ mod tests {
             self.ticks.set(self.ticks.get() + 1);
         }
         fn wake_after(&self, _: u64) {}
+    }
+
+    #[test]
+    fn content_is_read_in_the_order_it_is_on_screen() {
+        // Recycled cells: made for rows 0 to 3, rows 0 and 1 scrolled
+        // away and their cells bound to rows 4 and 5.
+        let cells = [(0, 160.0), (1, 200.0), (2, 80.0), (3, 120.0)];
+        let mut vertical = cells;
+        reading_order(Axis::Vertical, &mut vertical, |c| {
+            point(Points(0.0), Points(c.1))
+        });
+        assert_eq!(vertical.map(|c| c.0), [2, 3, 0, 1]);
+        // Two columns read row by row; a horizontal list column by column.
+        let grid = [
+            (0, (50.0, 0.0)),
+            (1, (0.0, 40.0)),
+            (2, (0.0, 0.0)),
+            (3, (50.0, 40.0)),
+        ];
+        let at = |c: &(i32, (f32, f32))| point(Points(c.1.0), Points(c.1.1));
+        let mut rows = grid;
+        reading_order(Axis::Vertical, &mut rows, at);
+        assert_eq!(rows.map(|c| c.0), [2, 0, 1, 3]);
+        let mut columns = grid;
+        reading_order(Axis::Horizontal, &mut columns, at);
+        assert_eq!(columns.map(|c| c.0), [2, 1, 0, 3]);
     }
 
     fn scroll_state(content: (f32, f32), horizontal: bool) -> ScrollState {
@@ -2445,6 +2530,74 @@ mod tests {
         host.pulse(2200.0);
         assert_eq!(host.state.borrow().live.alpha, 0.0);
         assert_eq!(host.wakes.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_glide_and_an_eased_move_end_at_their_deadlines() {
+        let host = TestHost {
+            state: std::cell::RefCell::new(scroll_state((300.0, 100_000.0), false)),
+            redraws: std::cell::Cell::new(0),
+            wakes: Default::default(),
+            attached: std::cell::Cell::new(true),
+            frames: std::cell::Cell::new(false),
+        };
+        assert_eq!(deadline(&host, 0.0), None);
+        for phase in [
+            Phase::Glide {
+                velocity: 2.0,
+                last: 0.0,
+            },
+            Phase::Animate {
+                from: 0.0,
+                to: 400.0,
+                start: 0.0,
+                duration: ANIMATION,
+                momentum: false,
+                end: true,
+            },
+        ] {
+            host.state.borrow_mut().y = Points(0.0);
+            host.state.borrow_mut().live.phase = phase;
+            let mut now = 0.0;
+            let mut frames = 0;
+            while let Some(next) = deadline(&host, now) {
+                now = next;
+                frame(&host, now);
+                frames += 1;
+                assert!(frames < 5, "{:?}", host.state.borrow().live.phase);
+            }
+            assert!(matches!(host.state.borrow().live.phase, Phase::Idle));
+            let y = host.state.borrow().y.0;
+            match phase {
+                // Where frames would have taken it.
+                Phase::Glide { .. } => assert!(
+                    (y - projected(Points(0.0), 2.0, 0.998).0).abs() < 6.0,
+                    "{y}"
+                ),
+                _ => assert_eq!(y, 400.0),
+            }
+        }
+    }
+
+    #[test]
+    fn indicator_follows_the_view_on_either_axis() {
+        let host = TestHost {
+            state: std::cell::RefCell::new(scroll_state((300.0, 1000.0), false)),
+            redraws: std::cell::Cell::new(0),
+            wakes: Default::default(),
+            attached: std::cell::Cell::new(true),
+            frames: std::cell::Cell::new(false),
+        };
+        for horizontal in [false, true] {
+            config(&host, horizontal, true, false, false);
+            assert!(host.state.borrow().indicator);
+            // `scrollbar={false}` hides it, a horizontal view's too.
+            config(&host, horizontal, false, false, false);
+            assert!(!host.state.borrow().indicator);
+            // A built-in bar of the app's takes its place.
+            config(&host, horizontal, true, true, false);
+            assert!(!host.state.borrow().indicator);
+        }
     }
 
     #[test]

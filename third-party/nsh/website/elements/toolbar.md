@@ -39,7 +39,10 @@ fn formatting() -> impl IntoElement {
                 .size_8()
                 .items_center()
                 .justify_center()
-                .pressed_style(|s| s.bg(move || theme().accent))
+                .border_1()
+                .border_color(transparent_black())
+                .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+                .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
                 .child(text("B")),
         )
 }
@@ -52,12 +55,12 @@ import { Button, Toggle, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/bas
 function App() {
   const bold = signal(false);
   return (
-    <Toolbar accessibilityLabel="Formatting" class="items-center gap-1 self-start rounded-lg bg-muted p-1">
+    <Toolbar accessibilityLabel="Formatting" class="items-center gap-1 self-start rounded-lg border border-border bg-muted p-1">
       <ToolbarGroup accessibilityLabel="History">
-        <Button accessibilityLabel="Undo" class="size-8 items-center justify-center rounded-md hover:bg-accent">
+        <Button accessibilityLabel="Undo" class="size-8 items-center justify-center rounded-md hover:bg-foreground/5">
           <Text>↶</Text>
         </Button>
-        <Button accessibilityLabel="Redo" class="size-8 items-center justify-center rounded-md hover:bg-accent">
+        <Button accessibilityLabel="Redo" class="size-8 items-center justify-center rounded-md hover:bg-foreground/5">
           <Text>↷</Text>
         </Button>
       </ToolbarGroup>
@@ -66,7 +69,7 @@ function App() {
         pressed={bold()}
         accessibilityLabel="Bold"
         onChange={({ pressed }) => bold.set(pressed)}
-        class="size-8 items-center justify-center rounded-md aria-pressed:bg-accent"
+        class="size-8 items-center justify-center rounded-md border border-transparent hover:bg-foreground/5 aria-pressed:border-border aria-pressed:bg-foreground/10"
       >
         <Text>B</Text>
       </Toggle>
@@ -140,14 +143,14 @@ Show the item the keyboard is on with `focus:` styles, and a pressed toggle thro
 A palette of tools is a column: `axis="vertical"` lays the items out top to bottom, and Up and Down move along them.
 
 ```tsx
-<Toolbar axis="vertical" accessibilityLabel="Tools" class="gap-1 self-start rounded-lg bg-muted p-1">
+<Toolbar axis="vertical" accessibilityLabel="Tools" class="gap-1 self-start rounded-lg border border-border bg-muted p-1">
   <Each of={["select", "pen", "shape", "text"]}>
     {(t) => (
       <Toggle
         pressed={tool() === t()}
         accessibilityLabel={t()}
         onChange={({ pressed }) => pressed && tool.set(t())}
-        class="size-8 items-center justify-center rounded-md aria-pressed:bg-accent"
+        class="size-8 items-center justify-center rounded-md border border-transparent hover:bg-foreground/5 aria-pressed:border-border aria-pressed:bg-foreground/10"
       >
         <Text>{t()[0].toUpperCase()}</Text>
       </Toggle>

@@ -7,6 +7,7 @@ import android.view.MotionEvent;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import java.util.Objects;
@@ -16,6 +17,11 @@ import org.json.JSONObject;
  * `<webview>`: an {@code android.webkit.WebView}. Pages reach the app through
  * {@code window.nsh.postMessage};
  * the app's messages arrive as {@code message} events on {@code window}.
+ *
+ * <p>{@code incognito}: Android's WebView keeps cookies and DOM storage in
+ * one store per app, which every web view shares and which stays. An
+ * incognito web view only changes what is its own: it loads without the
+ * HTTP cache and saves no form data.
  */
 @SuppressLint({"ViewConstructor", "SetJavaScriptEnabled"})
 final class WebBox extends WidgetBox {
@@ -90,8 +96,15 @@ final class WebBox extends WidgetBox {
         }
     }
 
+    @SuppressWarnings("deprecation") // setSaveFormData: still honored before Android 8.
     void configure(Object[] source, String injected, String injectedBefore, String userAgent,
-            boolean scrollable, boolean javaScriptEnabled) {
+            boolean scrollable, boolean javaScriptEnabled, boolean incognito) {
+        // Read with the first props: the core keeps it from changing.
+        if (this.source == null && incognito) {
+            WebSettings settings = web.getSettings();
+            settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+            settings.setSaveFormData(false);
+        }
         boolean scriptsChanged = !Objects.equals(injected, this.injected)
                 || !Objects.equals(injectedBefore, this.injectedBefore);
         this.injected = injected;
@@ -128,6 +141,14 @@ final class WebBox extends WidgetBox {
                 break;
             default: break;
         }
+    }
+
+    /**
+     * Command 46 of `Mounter.command` (`load()`): `url` with `headers` on its
+     * own request; WebView sends them with no subresource or later navigation.
+     */
+    void load(String url, java.util.Map<String, String> headers) {
+        web.loadUrl(url, headers);
     }
 
     void destroy() {

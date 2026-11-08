@@ -2,7 +2,9 @@
 //! button over a view, and choosing from (or closing) the menu the app
 //! then shows with `Menu.popup`, as a user does on a desktop.
 
-use nsh_core::{ContextMenuEvent, EventKind, EventPayload, PayloadValue, ROOT_ID, geometry::point};
+use nsh_core::{
+    ContextMenuEvent, EventKind, EventPayload, PayloadValue, PointerType, ROOT_ID, geometry::point,
+};
 
 use super::Headless;
 use crate::{menu, selector::Selector};
@@ -29,16 +31,18 @@ impl Headless {
             .bounds_in_root(target)
             .ok_or_else(|| format!("`{selector}` is not on screen"))?
             .center();
+        self.activate_window_of(target);
         if let Some(id) = self.screen.context_menu_target(target) {
             let origin = self
                 .screen
                 .bounds_in_root(id)
                 .map_or(Default::default(), |b| b.origin);
-            let event = ContextMenuEvent {
-                position: point(at.x - origin.x, at.y - origin.y),
-                page_position: at,
-                modifiers: Default::default(),
-            };
+            let event = ContextMenuEvent::new(
+                point(at.x - origin.x, at.y - origin.y),
+                at,
+                Default::default(),
+                Some(PointerType::Mouse),
+            );
             self.send(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
         }
         self.done()

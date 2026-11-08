@@ -32,8 +32,6 @@ says how.
   which notifies the view.
 - **Input** comes from GPUI's mouse, scroll, key and input method events; hit testing, presses, the responder system,
   scrolling and text editing are the same logic as the Windows backend's.
-- **Scroll bars** stay faintly visible at rest and brighten during scrolling or hover, so their draggable thumbs
-  remain easy to find.
 
 ## Requirements
 
@@ -191,7 +189,8 @@ What draws or behaves differently from the native desktop backends:
   [Requirements](#requirements)); where pages stay black under Xwayland ("Failed to create GBM buffer" in the log),
   run the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. On macOS and Windows clipping ancestors do not cut them and
   failed loads report no `onError`. `baseUrl`, `scrollable` and `allowsBackForwardNavigationGestures` are
-  not supported.
+  not supported. An `incognito` web view keeps its pages' data as the OS's own backend does
+  ([website data](./web-view-and-video.md#website-data)).
 - **Accessibility** goes through AccessKit: screen readers can activate, focus, set values and scroll elements into
   view everywhere; custom actions and the context-menu action are not passed on yet.
 

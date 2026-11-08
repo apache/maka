@@ -18,6 +18,9 @@
 //! - `--keep-window-size` keeps the window at its size when it does not fit
 //!   on its display, where AppKit would shrink it (what `nsh test` passes:
 //!   a test's window is the size the test asks for).
+//! - `--background` runs the app in the background: its window shows, but
+//!   the app never becomes the active one, so the keyboard stays with the
+//!   app in use (what `nsh test` passes unless told `--foreground`).
 //! - `--name <name>` names the app (the menu bar, the window title; `nsh
 //!   run` passes the app's name), "nsh" by default.
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
@@ -103,6 +106,8 @@ pub fn main() -> std::process::ExitCode {
             }
             // A test's window keeps the size it asks for on a shorter display.
             "--keep-window-size" => options.keep_size = true,
+            // A test's app never takes the keyboard from the app in use.
+            "--background" => options.background = true,
             // One-based, as `nsh run` / `nsh test --display` count them.
             "--display" => match args.next().as_deref() {
                 Some("secondary") => options.display = Some(WindowDisplay::Secondary),

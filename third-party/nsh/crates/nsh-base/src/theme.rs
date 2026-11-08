@@ -70,14 +70,25 @@ pub fn theme() -> Arc<Theme> {
 }
 
 /// The tokens of theme file `json` over the default's (`None`: the
-/// default's): how the core reads `nsh.json`'s `"theme"`
-/// ([`nsh_core::element::Registry::tokens_from`]).
+/// default's); what it cannot read is logged and left out.
 pub fn tokens_of(json: Option<&str>) -> Result<Tokens, String> {
+    let (tokens, ignored) = read_tokens(json)?;
+    for what in ignored {
+        log::warn!("theme: {what}, ignored");
+    }
+    Ok(tokens)
+}
+
+/// [`tokens_of`] with what it left out: how the core reads `nsh.json`'s
+/// `"theme"`, and checks one an app sets while it runs (`setTheme`)
+/// ([`nsh_core::element::Registry::tokens_from`]).
+pub(crate) fn read_tokens(json: Option<&str>) -> Result<(Tokens, Vec<String>), String> {
     match json {
-        Some(json) => Theme::from_json(json)
-            .map(Theme::into_tokens)
-            .map_err(|e| e.0),
-        None => Ok(Theme::default().into_tokens()),
+        Some(json) => {
+            let (theme, ignored) = Theme::from_json_lenient(json).map_err(|e| e.0)?;
+            Ok((theme.into_tokens(), ignored))
+        }
+        None => Ok((Theme::default().into_tokens(), Vec::new())),
     }
 }
 
@@ -142,7 +153,8 @@ macro_rules! theme {
 /// default [`Theme`] is made of them).
 static DEFAULT_TOKENS: LazyLock<Tokens> = LazyLock::new(|| {
     let mut tokens = Tokens::default();
-    apply(&mut tokens, DEFAULT_THEME).expect("the default theme parses");
+    let ignored = apply(&mut tokens, DEFAULT_THEME).expect("the default theme parses");
+    debug_assert!(ignored.is_empty(), "the default theme: {ignored:?}");
     tokens
 });
 
@@ -219,11 +231,21 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The default theme with theme file `json` over it.
+    /// The default theme with theme file `json` over it. What it cannot
+    /// read (a section or value of a form it does not know, a color naming
+    /// itself) is left out and the rest applies: a bundle made by a newer
+    /// NSH keeps its theme on an older runtime. Only text that is not JSON
+    /// is an error.
     pub fn from_json(json: &str) -> Result<Self, ThemeError> {
+        Self::from_json_lenient(json).map(|(theme, _)| theme)
+    }
+
+    /// [`Theme::from_json`], with what it left out, which the toolchain
+    /// warns of (a newer NSH's, or a typo) and the runtime logs.
+    pub fn from_json_lenient(json: &str) -> Result<(Self, Vec<String>), ThemeError> {
         let mut tokens = DEFAULT_TOKENS.clone();
-        apply(&mut tokens, json)?;
-        Ok(Self::of(Arc::new(tokens)))
+        let ignored = apply(&mut tokens, json)?;
+        Ok((Self::of(Arc::new(tokens)), ignored))
     }
 
     /// The color named `name` (any the theme sets: shadcn's, the app's).
@@ -295,6 +317,36 @@ fn color(value: &str) -> Option<Hsla> {
     Color::parse(value).map(Hsla::from)
 }
 
+/// Whether `value` is written as a color, which a theme means as one: a hex
+/// color, a CSS color function or a `var()` alone. A value of no kind a
+/// token has (a shadow, a length in `em`) is not.
+fn written_as_color(value: &str) -> bool {
+    let value = value.trim();
+    if value.starts_with('#') {
+        return true;
+    }
+    let Some((function, _)) = value.split_once('(') else {
+        return false;
+    };
+    value.ends_with(')')
+        && matches!(
+            function.trim().to_ascii_lowercase().as_str(),
+            "rgb"
+                | "rgba"
+                | "hsl"
+                | "hsla"
+                | "hwb"
+                | "lab"
+                | "lch"
+                | "oklab"
+                | "oklch"
+                | "color"
+                | "color-mix"
+                | "light-dark"
+                | "var"
+        )
+}
+
 /// A CSS length in points: `0.625rem`, `10px`, `10`.
 fn length(value: &str) -> Option<f32> {
     let value = value.trim();
@@ -338,27 +390,29 @@ fn font_family(value: &str) -> Option<&str> {
 /// (`var(--ring)`) and does not set is the default theme's.
 pub fn theme_overrides(json: &str) -> Result<Tokens, ThemeError> {
     let mut tokens = Tokens::default();
-    apply_onto(&mut tokens, &DEFAULT_TOKENS, json)?;
+    for what in apply_onto(&mut tokens, &DEFAULT_TOKENS, json)? {
+        log::warn!("theme overrides: {what}, ignored");
+    }
     Ok(tokens)
 }
 
 /// Applies theme file `json` (shadcn's `cssVars`) over `tokens`.
-fn apply(tokens: &mut Tokens, json: &str) -> Result<(), ThemeError> {
+fn apply(tokens: &mut Tokens, json: &str) -> Result<Vec<String>, ThemeError> {
     let base = tokens.clone();
     apply_onto(tokens, &base, json)
 }
 
 /// Sets the tokens of theme file `json` in `tokens`; a color it names and
-/// does not set is `base`'s.
-fn apply_onto(tokens: &mut Tokens, base: &Tokens, json: &str) -> Result<(), ThemeError> {
+/// does not set is `base`'s. Returns what it left out.
+fn apply_onto(tokens: &mut Tokens, base: &Tokens, json: &str) -> Result<Vec<String>, ThemeError> {
     let value: JsonValue =
         serde_json::from_str(json).map_err(|e| ThemeError(format!("not JSON: {e}")))?;
-    if let Some(vars) = value.get("cssVars") {
-        return apply_css_vars(tokens, base, vars);
+    let mut ignored = Vec::new();
+    match value.get("cssVars") {
+        Some(vars) => apply_css_vars(tokens, base, vars, &mut ignored),
+        None => ignored.push("no shadcn `{ \"cssVars\": { ... } }`".into()),
     }
-    Err(ThemeError(
-        "expected shadcn's `{ \"cssVars\": { ... } }`".into(),
-    ))
+    Ok(ignored)
 }
 
 /// Applies shadcn's `cssVars`: `theme`'s values in both appearances,
@@ -367,14 +421,17 @@ fn apply_onto(tokens: &mut Tokens, base: &Tokens, json: &str) -> Result<(), Them
 /// (`var(--ring)`, in `color-mix()` too) of the same appearance: the
 /// file's or the one under it. Values of no kind a token has (shadows,
 /// letter spacing) are left out, as they are of no Tailwind utility NSH
-/// draws with a token.
-fn apply_css_vars(tokens: &mut Tokens, base: &Tokens, vars: &JsonValue) -> Result<(), ThemeError> {
-    let section = |name: &str| -> Result<FxHashMap<String, String>, ThemeError> {
+/// draws with a token. A value written as a color that is none is left
+/// out, and one that is no color where the other appearance has a color
+/// gives way to that color; both are listed in `ignored`.
+fn apply_css_vars(tokens: &mut Tokens, base: &Tokens, vars: &JsonValue, ignored: &mut Vec<String>) {
+    let mut section = |name: &str| -> FxHashMap<String, String> {
         let Some(v) = vars.get(name) else {
-            return Ok(FxHashMap::default());
+            return FxHashMap::default();
         };
         let JsonValue::Object(fields) = v else {
-            return Err(ThemeError(format!("cssVars.{name}: expected an object")));
+            ignored.push(format!("cssVars.{name}: expected an object"));
+            return FxHashMap::default();
         };
         let mut out = FxHashMap::default();
         for (key, value) in fields {
@@ -386,16 +443,14 @@ fn apply_css_vars(tokens: &mut Tokens, base: &Tokens, vars: &JsonValue) -> Resul
                 JsonValue::Number(n) => {
                     out.insert(key.clone(), n.to_string());
                 }
-                v => {
-                    return Err(ThemeError(format!(
-                        "cssVars.{name}.{key}: expected a CSS value, got {v}"
-                    )));
-                }
+                v => ignored.push(format!(
+                    "cssVars.{name}.{key}: expected a CSS value, got {v}"
+                )),
             }
         }
-        Ok(out)
+        out
     };
-    let (both, light, dark) = (section("theme")?, section("light")?, section("dark")?);
+    let (both, light, dark) = (section("theme"), section("light"), section("dark"));
     let mut light_vars = both.clone();
     light_vars.extend(light.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut dark_vars = light_vars.clone();
@@ -416,17 +471,44 @@ fn apply_css_vars(tokens: &mut Tokens, base: &Tokens, vars: &JsonValue) -> Resul
         let resolve = |vars: &FxHashMap<String, String>, dark: bool| {
             resolve_color(name, vars, base, dark, &mut FxHashSet::default())
         };
-        match (resolve(&light_vars, false)?, resolve(&dark_vars, true)?) {
-            (Some(l), Some(d)) => tokens.set_color(name, AdaptiveColor { light: l, dark: d }),
-            (Some(c), None) | (None, Some(c)) => tokens.set_color(name, c.into()),
-            (None, None) => {
-                if let Some(n) = length(value) {
-                    tokens.set_number(name, n);
-                }
+        let (light, dark) = match (resolve(&light_vars, false), resolve(&dark_vars, true)) {
+            (Ok(light), Ok(dark)) => (light, dark),
+            (Err(e), _) | (_, Err(e)) => {
+                ignored.push(e.0);
+                continue;
             }
+        };
+        match (light, dark) {
+            (Some(l), Some(d)) => tokens.set_color(name, AdaptiveColor { light: l, dark: d }),
+            (Some(c), None) | (None, Some(c)) => {
+                // Set in one appearance only, the color is both's; given in
+                // the other too, that value is no color.
+                let (other, vars) = match light {
+                    Some(_) => ("dark", &dark_vars),
+                    None => ("light", &light_vars),
+                };
+                if let Some(v) = vars.get(name) {
+                    ignored.push(format!(
+                        "`{name}`: {v} is no color in the {other} appearance"
+                    ));
+                }
+                tokens.set_color(name, c.into());
+            }
+            (None, None) => match length(value) {
+                Some(n) => tokens.set_number(name, n),
+                None => {
+                    let mut given: Vec<&String> = [light_vars.get(name), dark_vars.get(name)]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    given.dedup();
+                    for v in given.into_iter().filter(|v| written_as_color(v)) {
+                        ignored.push(format!("`{name}`: {v} is no color"));
+                    }
+                }
+            },
         }
     }
-    Ok(())
 }
 
 /// The color `name` is in `vars` (of one appearance), with the colors it
@@ -588,11 +670,68 @@ mod tests {
         assert_eq!(theme.tokens().get("shadow-sm"), None);
         // Keys left out keep the default.
         assert_eq!(theme.muted, Theme::default().muted);
-        assert!(
-            Theme::from_json(r#"{ "cssVars": { "light": { "a": "var(--b)", "b": "var(--a)" } } }"#)
-                .is_err()
+        assert!(Theme::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn what_it_cannot_read_is_left_out() {
+        let (theme, mut ignored) = Theme::from_json_lenient(
+            r##"{ "cssVars": {
+                "theme": { "radius": "0.5rem" },
+                "light": { "a": "var(--b)", "b": "var(--a)", "primary": "#e11d48", "odd": [1] },
+                "dark": "nope"
+            } }"##,
+        )
+        .unwrap();
+        assert_eq!(hex(theme.primary.light), 0xe11d48);
+        assert_eq!(theme.color("a"), None);
+        ignored.sort();
+        assert_eq!(
+            ignored,
+            [
+                "`a` names itself",
+                "`b` names itself",
+                "cssVars.dark: expected an object",
+                "cssVars.light.odd: expected a CSS value, got [1]",
+            ]
         );
-        assert!(Theme::from_json(r#"{ "colors": {} }"#).is_err());
+        // Another form of theme (a newer NSH's): the default's tokens.
+        let (theme, ignored) = Theme::from_json_lenient(r#"{ "colors": {} }"#).unwrap();
+        assert_eq!(theme, Theme::default());
+        assert_eq!(ignored.len(), 1);
+    }
+
+    #[test]
+    fn a_color_that_is_none_is_listed() {
+        let (theme, mut ignored) = Theme::from_json_lenient(
+            r##"{ "cssVars": {
+                "theme": { "shadow-sm": "0 1px 2px #0000", "letter-spacing": "0em" },
+                "light": { "brand": "#e11d48", "edge": "#zzz", "glow": "lab(50% 40 59)",
+                           "ink": "var(--nothing)", "accent": "#7c3aed" },
+                "dark": { "brand": "#12", "accent": "oklch(0.7 0.1" }
+            } }"##,
+        )
+        .unwrap();
+        ignored.sort();
+        assert_eq!(
+            ignored,
+            [
+                "`accent`: oklch(0.7 0.1 is no color in the dark appearance",
+                "`brand`: #12 is no color in the dark appearance",
+                "`edge`: #zzz is no color",
+                "`glow`: lab(50% 40 59) is no color",
+                "`ink`: var(--nothing) is no color",
+            ]
+        );
+        // As before: a color given in one appearance only is both's, and
+        // what is none of a token's kinds is left out.
+        let brand = theme.color("brand").unwrap();
+        assert_eq!((hex(brand.light), hex(brand.dark)), (0xe11d48, 0xe11d48));
+        assert_eq!(theme.color("edge"), None);
+        assert_eq!(theme.tokens().get("shadow-sm"), None);
+        // A file read whole lists nothing.
+        let (_, ignored) = read_tokens(Some(DEFAULT_THEME)).unwrap();
+        assert!(ignored.is_empty(), "{ignored:?}");
     }
 
     #[test]
@@ -629,7 +768,7 @@ mod tests {
         // Nothing else: the app's tokens stay.
         assert_eq!(tokens.colors().count(), 3);
         assert_eq!(tokens.color("background"), None);
-        assert!(theme_overrides("{}").is_err());
+        assert_eq!(theme_overrides("{}").unwrap().colors().count(), 0);
         assert!(theme_overrides("not json").is_err());
     }
 }

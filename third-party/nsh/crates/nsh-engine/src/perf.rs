@@ -1,5 +1,6 @@
 //! Performance monitoring: what a surface's frames and commits cost while it
-//! runs, for an on-screen monitor (`--fps`) or the app's own tooling.
+//! runs, for an on-screen monitor (`--fps`, `NSH_FPS=1`, the app's
+//! `setFpsEnabled`) or the app's own tooling.
 //!
 //! A [`PerfMonitor`] is shared by the two threads of a surface:
 //!
@@ -28,6 +29,19 @@
 //! frames to find it), and the first frames, the cold ones, are not counted.
 
 use std::{collections::VecDeque, sync::Mutex, time::Duration};
+
+/// The environment variable that turns the performance monitor on at
+/// launch, whatever started the app (`NSH_FPS=1`), as Metal's
+/// `MTL_HUD_ENABLED=1` does its HUD.
+pub const ENV_VAR: &str = "NSH_FPS";
+
+/// Whether [`ENV_VAR`] asks for the performance monitor: set to anything
+/// but empty, `0` or `false`. The platforms turn their monitor on at launch
+/// when it does, as `--fps` (`AppOptions::fps`) does.
+pub fn enabled_by_env() -> bool {
+    std::env::var_os(ENV_VAR)
+        .is_some_and(|value| !matches!(value.to_str(), Some("" | "0" | "false")))
+}
 
 use nsh_core::time::Instant;
 

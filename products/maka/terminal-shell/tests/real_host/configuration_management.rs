@@ -35,7 +35,7 @@ async fn choose(view: &mut AppView, select: &str, option: &str) {
     )));
     commit_native_events(view).await;
     let shown = |view: &AppView| {
-        let height = view.surface().viewport().height.0;
+        let height = view.viewport().height.0;
         view.accessibility_snapshot().into_iter().find(|node| {
             node.role == nsh_core::AccessibilityRole::Option
                 && node.label == option

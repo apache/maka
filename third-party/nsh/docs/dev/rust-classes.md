@@ -149,7 +149,7 @@ a visibility (`pub fn`, `pub(crate) fn`; the others are the block's helpers):
 - **`async fn`:** a task of the core; it gives a Promise (`Promise<void>` for `()`, resolved when the task ends).
 
 The same holds for a component's ref methods (`docs/dev/components.md`, "Methods"). An op returning `()` is
-`void` because the runtime modules released theirs as `void` (`Window.close`,
+`void` because the runtime modules released theirs as `void` (`WindowRef.close`,
 ...) and a return type never changes (`docs/dev/compatibility.md`); a Rust function that can fail says so with
 `Result<(), E>`, and TS gets a promise to see the error. `FunctionSpec::promises` / `MethodSpec::promises` decide
 it for the declarations and the JS face alike; `-> ()` written out is the same as no return type.

@@ -4,29 +4,21 @@
 //! gallery's `demos/Scrolling.tsx`).
 
 use nsh_base::input;
-use nsh_core::{Bounds, Points, element::View, prelude::*};
+use nsh_core::{
+    Bounds, Points,
+    canvas::{CanvasGradient, LineJoin},
+    element::View,
+    prelude::*,
+};
 
 use crate::ui::{
     Badge, Button, ButtonVariant, DemoPage, Figure, Finish, Finished, IconName, Meter, Section,
-    Segment, SegmentedElement, SegmentedSize, Tone, caption, code, colors, hint, lengths, press,
-    radius, segmented, toggle,
+    Segment, SegmentedElement, SegmentedSize, Tone, caption, code, colors, hint, press, radius,
+    segmented, toggle,
 };
 
 /// The tones cards, tiles and posts cycle through.
 const TONES: [Tone; 5] = [Tone::Accent, Tone::Info, Tone::Warn, Tone::Up, Tone::Danger];
-
-/// A tone's name (TS: the `Tone` string).
-fn tone_name(tone: Tone) -> &'static str {
-    match tone {
-        Tone::Neutral => "neutral",
-        Tone::Accent => "accent",
-        Tone::Info => "info",
-        Tone::Warn => "warn",
-        Tone::Danger => "danger",
-        Tone::Up => "up",
-        Tone::Down => "down",
-    }
-}
 
 /// A switch row; `code` names the prop it sets; `on_change` gets the new
 /// value.
@@ -77,56 +69,48 @@ fn choice(
         .on_change(on_change)
 }
 
-/// A dot matrix with a low-alpha area and a dashed reference line: a
-/// page's backdrop, drawn for its laid out size.
+/// A soft wave along a page's lower part, its fill fading downward: a page's
+/// backdrop, drawn for its laid out size.
 fn backdrop_painter(size: (f32, f32), tone: Tone, seed: f32) -> Painter {
     let (width, height) = size;
-    let mut p = Painter::new().fill_style(color(colors::BORDER));
-    let mut x = 10.0;
-    while x < width {
-        let mut y = 10.0;
-        while y < height {
-            p = p.fill_rect(x, y, 1.5, 1.5);
-            y += 12.0;
-        }
-        x += 12.0;
-    }
-    // A wave, filled faintly below.
+    let stroke = color(tone.color());
     let points: Vec<(f32, f32)> = (0..=24)
         .map(|i| {
             let i = i as f32;
             let x = i / 24.0 * width;
             let y = height
-                * (0.62 - 0.18 * (i * 0.5 + seed).sin() - 0.06 * (i * 1.3 + seed * 2.0).sin());
+                * (0.74 - 0.11 * (i * 0.5 + seed).sin() - 0.035 * (i * 1.3 + seed * 2.0).sin());
             (x, y)
         })
         .collect();
-    p = p.begin_path().move_to(0.0, height);
-    for &(x, y) in &points {
-        p = p.line_to(x, y);
-    }
-    p = p
+    let wave = |mut p: Painter| {
+        p = p.move_to(points[0].0, points[0].1);
+        for pair in points[1..].windows(2) {
+            let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+            p = p.quadratic_curve_to(
+                point(px(x0), px(y0)),
+                point(px((x0 + x1) / 2.0), px((y0 + y1) / 2.0)),
+            );
+        }
+        p.line_to(points[24].0, points[24].1)
+    };
+    let p = wave(Painter::new().begin_path())
         .line_to(width, height)
+        .line_to(0.0, height)
         .close_path()
-        .fill_style(color(tone.tint()))
-        .fill()
-        .begin_path();
-    for (i, &(x, y)) in points.iter().enumerate() {
-        p = if i == 0 {
-            p.move_to(x, y)
-        } else {
-            p.line_to(x, y)
-        };
-    }
-    p.stroke_style(color(tone.color()))
-        .line_width(1.5)
-        .stroke()
-        .line_dash(&lengths([3.0, 4.0]))
-        .stroke_style(color(colors::FAINT))
-        .line_width(1.0)
-        .begin_path()
-        .move_to(0.0, height * 0.5)
-        .line_to(width, height * 0.5)
+        .fill_style(
+            CanvasGradient::linear(
+                point(px(0.0), px(height * 0.55)),
+                point(px(0.0), px(height)),
+            )
+            .add_color_stop(percentage(0.0), stroke.opacity(0.26))
+            .add_color_stop(percentage(1.0), stroke.opacity(0.0)),
+        )
+        .fill();
+    wave(p.begin_path())
+        .stroke_style(stroke)
+        .line_width(1.75)
+        .line_join(LineJoin::Round)
         .stroke()
 }
 
@@ -252,7 +236,7 @@ fn Pager() -> impl IntoElement {
                         .children(
                             PAGES
                                 .iter()
-                                .map(|_| view().size(px(8.0)).rounded(px(4.0)).bg(colors::RAISED)),
+                                .map(|_| view().size(px(8.0)).rounded(px(4.0)).bg(colors::BORDER)),
                         )
                         .child(
                             view()
@@ -299,9 +283,13 @@ fn Cards() -> impl IntoElement {
         view()
             .w(px(CARD))
             .h(px(128.0))
-            .rounded(px(18.0))
+            .rounded(px(radius::CONTROL + 4.0))
             .border_curve(BorderCurve::Continuous)
             .bg(colors::RAISED)
+            .bg_linear(deg(145.0))
+            .gradient_from(move || tone().color().opacity(0.2))
+            .gradient_to(move || tone().color().opacity(0.0))
+            .gradient_to_position(percentage(0.62))
             .finish(Finish::Raised)
             .border_1()
             .border_color(colors::BORDER)
@@ -310,25 +298,22 @@ fn Cards() -> impl IntoElement {
             .overflow_hidden()
             .child(
                 view()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .bottom_0()
-                    .w(px(3.0))
-                    .bg(move || tone().color()),
-            )
-            .child(
-                view()
                     .flex_row()
                     .items_center()
+                    .gap_2()
+                    .child(
+                        view()
+                            .size(px(8.0))
+                            .rounded(px(4.0))
+                            .bg(move || tone().color()),
+                    )
                     .child(
                         text(move || format!("at {} pt", at.index() as f32 * (CARD + GAP)))
                             .flex_1()
                             .text_size(px(13.0))
-                            .text_color(colors::FAINT)
+                            .text_color(colors::MUTED)
                             .tabular_nums(),
-                    )
-                    .child(Badge::new(move || tone_name(tone())).tone(tone)),
+                    ),
             )
             .child(
                 text(move || format!("Card {}", at.index() + 1))
@@ -452,10 +437,10 @@ fn Events() -> impl IntoElement {
             )
             .child(
                 view()
-                    .h(px(4.0))
-                    .rounded(px(2.0))
+                    .h(px(6.0))
+                    .rounded(px(3.0))
                     .w(relative((20 + (i * 37) % 70) as f32 / 100.0))
-                    .bg(colors::RAISED),
+                    .bg(colors::BORDER),
             )
     });
     let figure = Figure::new(move || {
@@ -560,22 +545,30 @@ fn Zoom() -> impl IntoElement {
     // The zoom, as the scroll view reports it.
     let scale = signal(1.0_f32);
     let bounces = signal(true);
-    let tiles = (0..24).map(|i| {
-        let tone = TONES[(i * 7) % TONES.len()];
+    // Tiles fill the box: six to a row where they fit, four on a phone.
+    let width = signal(untracked(window).width.0 - 72.0);
+    let columns = move |width: f32| if width >= 420.0 { 6 } else { 4 };
+    let tile_width = move |width: f32| {
+        let columns = columns(width);
+        ((width - 14.0 - 6.0 * (columns - 1) as f32) / columns as f32).floor()
+    };
+    let tiles = (0..24).map(|i: i32| {
+        // One hue in steps, as a heat map, so the zoom has one thing to read.
+        let heat = 0.5 + 0.5 * (i as f32 * 1.9 + (i as f32 * 0.7).cos() * 2.0).sin();
         view()
-            .w(px(74.0))
+            .w(move || px(tile_width(width.get())))
             .h(px(50.0))
-            .rounded(px(10.0))
+            .rounded(px(8.0))
             .border_curve(BorderCurve::Continuous)
-            .bg(tone.tint())
-            .border_1()
-            .border_color(colors::BORDER)
-            .p(px(6.0))
-            .justify_between()
+            .bg(colors::ACCENT.opacity(0.05 + 0.24 * heat))
+            .p(px(8.0))
+            .justify_end()
             .on_press(move || {
                 // The tile's middle, in the content's (unzoomed) points.
-                let x = 6.0 + (i % 4) as f32 * 80.0 + 37.0;
-                let y = 6.0 + (i / 4) as f32 * 56.0 + 25.0;
+                let box_width = width.get_untracked();
+                let (columns, tile) = (columns(box_width), tile_width(box_width));
+                let x = 6.0 + (i % columns) as f32 * (tile + 6.0) + tile / 2.0;
+                let y = 6.0 + (i / columns) as f32 * 56.0 + 25.0;
                 let to = if scale.get_untracked() < 2.5 {
                     3.0
                 } else {
@@ -583,13 +576,6 @@ fn Zoom() -> impl IntoElement {
                 };
                 scroll_ref.zoom_to(to, Some(point(px(x), px(y))), true);
             })
-            .child(
-                view()
-                    .w(px(12.0))
-                    .h(px(3.0))
-                    .rounded(px(1.5))
-                    .bg(tone.color()),
-            )
             .child(
                 text(format!("Tile {}", i + 1))
                     .text_color(colors::TEXT)
@@ -646,6 +632,7 @@ fn Zoom() -> impl IntoElement {
                 .bounces_zoom(bounces)
                 .center_content(true)
                 .event_throttle(50.0)
+                .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
                 .on_scroll(move |e: &ScrollEvent| scale.set(e.zoom_scale))
                 .element_ref(&scroll_ref)
                 .child(
@@ -662,7 +649,7 @@ fn Zoom() -> impl IntoElement {
                 .flex_row()
                 .gap_2()
                 .child(zoom_button("0.5×", 0.5, ButtonVariant::Secondary))
-                .child(zoom_button("1×", 1.0, ButtonVariant::Primary))
+                .child(zoom_button("1×", 1.0, ButtonVariant::Secondary))
                 .child(zoom_button("2×", 2.0, ButtonVariant::Secondary)),
         )
         .child(switch_row(

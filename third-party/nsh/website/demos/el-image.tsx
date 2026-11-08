@@ -1,10 +1,12 @@
 import { Image, mount, signal, Text, View } from "nsh";
 import { windowSize } from "nsh";
-import { button, buttonText, focusRing, ui } from "./palette";
+import { Toggle } from "nsh/base";
+import { toggleLabel, toggleLook, ui, Log, Segmented, insetSurface } from "./palette";
 
 // The pictures are SVG `data:` URIs, so the demo needs no network. An app
 // would import a file next to it (`import hills from "./hills.png"`) or pass
-// a URL.
+// a URL. Each names its size in a label at its middle, which every
+// `objectFit` keeps in view (`cover` crops the edges).
 const svg = (body: string, width: number, height: number) =>
   `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`)}`;
 
@@ -14,7 +16,8 @@ const landscape = svg(
   <circle cx="880" cy="250" r="90" fill="#fff4c2"/>
   <path d="M0 560 Q 250 380 520 520 T 1200 470 V800 H0Z" fill="#6aa86b"/>
   <path d="M0 650 Q 330 520 700 640 T 1200 610 V800 H0Z" fill="#3f7d4c"/>
-  <text x="40" y="770" font-family="system-ui" font-size="40" fill="#ffffff">1200 × 800</text>`,
+  <rect x="430" y="362" width="340" height="76" rx="38" fill="#000000" fill-opacity="0.32"/>
+  <text x="600" y="415" text-anchor="middle" font-family="system-ui" font-size="44" font-weight="600" fill="#ffffff">1200 × 800</text>`,
   1200,
   800,
 );
@@ -25,7 +28,8 @@ const portrait = svg(
   <circle cx="300" cy="260" r="120" fill="#f4f1ff"/>
   <circle cx="350" cy="230" r="110" fill="#2a2f55"/>
   <path d="M0 700 L 180 520 L 330 660 L 450 560 L 600 700 V900 H0Z" fill="#141629"/>
-  <text x="30" y="870" font-family="system-ui" font-size="36" fill="#ffffff">600 × 900</text>`,
+  <rect x="150" y="512" width="300" height="76" rx="38" fill="#000000" fill-opacity="0.32"/>
+  <text x="300" y="565" text-anchor="middle" font-family="system-ui" font-size="44" font-weight="600" fill="#ffffff">600 × 900</text>`,
   600,
   900,
 );
@@ -44,37 +48,6 @@ const sources = { landscape, portrait, missing: "asset:/missing.png" } as const;
 type Source = keyof typeof sources;
 const modes = ["cover", "contain", "fill", "none"] as const;
 type Mode = (typeof modes)[number];
-
-function Segments<T extends string>(props: { options: readonly T[]; value: T; onChange: (v: T) => void }) {
-  return (
-    <View style={{ ...ui().inset, flexDirection: "row", padding: 3, borderRadius: 10 }}>
-      <Each of={props.options}>
-        {(option) => {
-          const on = () => props.value === option();
-          return (
-            <View
-              onPress={() => props.onChange(option())}
-              style={{
-                flex: 1,
-                alignItems: "center",
-                paddingVertical: 6,
-                borderRadius: 8,
-                backgroundColor: on() ? ui().raised.backgroundColor : "transparent",
-                backgroundImage: on() ? ui().raised.backgroundImage : "none",
-                boxShadow: on() ? ui().raised.boxShadow : "none",
-              }}
-              hoverStyle={{ opacity: 0.88 }}
-              focusStyle={focusRing()}
-              activeStyle={{ opacity: 0.7 }}
-            >
-              <Text style={{ fontWeight: "600", color: on() ? ui().text : ui().muted }}>{option()}</Text>
-            </View>
-          );
-        }}
-      </Each>
-    </View>
-  );
-}
 
 function App() {
   const source = signal<Source>("landscape");
@@ -97,27 +70,20 @@ function App() {
           onLoad={({ size }) => log(`onLoad ${Math.round(size.width)} × ${Math.round(size.height)}`)}
           onError={(e) => log(`onError ${e.message}`)}
           onLoadEnd={() => log("onLoadEnd")}
-          style={{ ...ui().inset, flex: 1, minHeight: 180, borderRadius: 14, objectFit: mode() }}
+          style={{ ...insetSurface(), flex: 1, minHeight: 180, objectFit: mode() }}
         />
         <View style={{ gap: 12, width: wide() ? 320 : undefined }}>
-          <Text style={{ color: ui().muted }}>src</Text>
-          <Segments options={Object.keys(sources) as Source[]} value={source()} onChange={(s) => source.set(s)} />
-          <Text style={{ color: ui().muted }}>objectFit</Text>
-          <Segments options={modes} value={mode()} onChange={(m) => mode.set(m)} />
+          <Segmented label="src" options={Object.keys(sources) as Source[]} value={source()} onChange={(s) => source.set(s)} />
+          <Segmented label="objectFit" options={modes} value={mode()} onChange={(m) => mode.set(m)} />
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <View onPress={() => blur.set(!blur())} {...button("secondary", { on: blur })}>
-              <Text style={buttonText("secondary", { on: blur })}>blurRadius {blur() ? 12 : 0}</Text>
-            </View>
+            <Toggle pressed={blur()} onChange={({ pressed }) => blur.set(pressed)} {...toggleLook({ variant: "outline", text: true })}>
+              <Text style={toggleLabel(blur, { text: true })}>blurRadius {blur() ? 12 : 0}</Text>
+            </Toggle>
             <Text style={{ color: ui().muted }}>tintColor</Text>
             <Image src={star} style={{ width: 24, height: 24, tintColor: ui().accent }} />
             <Image src={star} style={{ width: 24, height: 24, tintColor: ui().info }} />
           </View>
-          <View style={{ ...ui().card, borderRadius: 12, padding: 12, gap: 4 }}>
-            <Text style={{ color: ui().muted, fontSize: 12 }}>Events, newest first</Text>
-            <Each of={events()}>
-              {(line) => <Text style={{ color: ui().text, fontFamily: "monospace", fontSize: 13 }}>{line()}</Text>}
-            </Each>
-          </View>
+          <Log title="Events, newest first" lines={events()} minHeight={92} />
         </View>
       </View>
     </View>

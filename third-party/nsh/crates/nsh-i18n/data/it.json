@@ -1,0 +1,51 @@
+{
+  "numbers": {
+    "decimal": ",",
+    "group": ".",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": false,
+    "currencySpace": " ",
+    "compactShort": [[6, " Mln"], [9, " Mrd"], [12, " Bln"]],
+    "compactLong": [[3, " mila"], [6, " milioni"], [9, " miliardi"], [12, " mila miliardi"]]
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": " ",
+    "dateTimeSep": ", ",
+    "names": {
+      "months": [
+        "gennaio",
+        "febbraio",
+        "marzo",
+        "aprile",
+        "maggio",
+        "giugno",
+        "luglio",
+        "agosto",
+        "settembre",
+        "ottobre",
+        "novembre",
+        "dicembre"
+      ],
+      "monthsShort": ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"],
+      "weekdays": ["domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"],
+      "weekdaysShort": ["dom", "lun", "mar", "mer", "gio", "ven", "sab"]
+    },
+    "cjk": false
+  },
+  "regions": {"CH": {"numbers": {"group": "’", "decimal": ".", "currencyBefore": true, "currencySpace": " "}}}
+}

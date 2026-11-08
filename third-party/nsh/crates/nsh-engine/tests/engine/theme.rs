@@ -1,6 +1,7 @@
 //! The embedding app's theme: sent before the start it is in the first
 //! frame, sent later it updates what read the theme, and it wins over the
-//! app's own theme until cleared.
+//! app's own theme until cleared. The app's own theme set while it runs
+//! (`setTheme`).
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -60,6 +61,8 @@ fn start(app_theme: Option<Theme>, host_theme: Option<Theme>) -> (Engine, Receiv
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let engine = Engine::start_with(
         config,
@@ -163,6 +166,8 @@ fn a_tsx_apps_token_classes_follow_the_host_theme() {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(backgrounds(&rx), vec![default_primary()]);
@@ -248,7 +253,9 @@ fn a_hosts_theme_overrides_win_over_the_apps_tokens_they_set_and_keep_the_rest()
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
         cache: Default::default(),
+        windows: None,
     };
     // A brand's primary, light and dark, set before the app runs.
     let overrides = nsh_base::theme_overrides(
@@ -365,7 +372,9 @@ fn start_branded(
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
         cache: Default::default(),
+        windows: None,
     };
     let engine = Engine::start_with(
         config,
@@ -408,4 +417,106 @@ fn the_host_tokens_win_in_the_first_render_and_reads_follow_their_changes() {
     assert_eq!(last_text(&rx).as_deref(), Some("#abcdefff #00ff00ff"));
     engine.control().set_tokens(None);
     assert_eq!(last_text(&rx).as_deref(), Some("#abcdefff #123456ff"));
+}
+
+/// A TSX app that sets its theme while it runs: a step every 100 ms, each
+/// showing what `token("brand")` reads right after it, and a view drawn
+/// with `bg-brand`.
+const SET_THEME: &str = r##"import { effect, mount, setColorScheme, setTheme, signal, Text, token, View } from "nsh";
+
+const status = signal("start");
+let runs = 0;
+const steps = [
+  () => {
+    setTheme({ cssVars: { light: { brand: "#00ff00" }, dark: { brand: "#003300" } } });
+    return `set ${token("brand")}`;
+  },
+  () => {
+    setColorScheme("dark");
+    return `dark ${token("brand")}`;
+  },
+  () => {
+    setColorScheme("light");
+    try {
+      setTheme({ cssVars: { light: { brand: "#0000ff" }, dark: { brand: "#zz" } } });
+      return "taken";
+    } catch (e) {
+      return `${e.name}: ${e.message}; kept ${token("brand")}`;
+    }
+  },
+  () => {
+    setTheme(null);
+    return `back ${token("brand")}`;
+  },
+  () => `runs ${runs}`,
+];
+steps.forEach((step, i) => setTimeout(() => status.set(step()), 100 * (i + 1)));
+
+function App() {
+  effect(() => {
+    token("brand");
+    runs += 1;
+  });
+  return (
+    <View>
+      <View class="h-4 bg-brand" />
+      <Text>{status()}</Text>
+    </View>
+  );
+}
+
+mount(() => <App />);
+"##;
+
+/// `setTheme` replaces the app's theme while it runs: `token()` reads it in
+/// the same turn and the classes naming its tokens follow, in each
+/// appearance; a theme with a value NSH cannot read throws a `TypeError`
+/// naming it and changes nothing; `null` gives back `nsh.json`'s. Each
+/// change runs what read a token once.
+#[test]
+fn set_theme_replaces_the_apps_theme_while_it_runs() {
+    let config = r##"{ "theme": { "cssVars": { "light": { "brand": "#123456" }, "dark": { "brand": "#654321" } } } }"##;
+    let (_engine, rx) =
+        crate::components::start_with(SET_THEME, Environment::default(), None, Some(config));
+    let batches = crate::components::until(&rx, |b| crate::components::shows(b, "runs 5"));
+    let texts: Vec<&str> = batches
+        .iter()
+        .flat_map(|b| &b.items)
+        .filter_map(|item| match item {
+            MountItem::Text { text, .. } => Some(&*text.text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "start",
+            "set #00ff00ff",
+            "dark #003300ff",
+            "TypeError: setTheme: `brand`: #zz is no color in the dark appearance; kept #00ff00ff",
+            "back #123456ff",
+            "runs 5",
+        ]
+    );
+    let mut backgrounds: Vec<Color> = batches
+        .iter()
+        .flat_map(|b| &b.items)
+        .filter_map(|item| match item {
+            MountItem::ViewStyle { style, .. } if style.background_color.0 & 0xff != 0 => {
+                Some(style.background_color)
+            }
+            _ => None,
+        })
+        .collect();
+    backgrounds.dedup();
+    assert_eq!(
+        backgrounds,
+        [
+            Color(0x123456ff),
+            Color(0x00ff00ff),
+            Color(0x003300ff),
+            Color(0x00ff00ff),
+            Color(0x123456ff),
+        ]
+    );
 }

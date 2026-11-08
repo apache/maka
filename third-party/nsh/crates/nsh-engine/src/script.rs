@@ -10,6 +10,9 @@ pub(crate) struct SystemConfig {
     pub(crate) websocket: Option<std::sync::Arc<dyn nsh_core::websocket::WebSocketTransport>>,
     pub(crate) refuse_connections: Option<nsh_core::element::RefuseConnections>,
     pub(crate) filesystem: Option<std::sync::Arc<dyn nsh_core::filesystem::FileSystem>>,
+    /// Read by QuickJS's host only: nothing updates on the web (`nsh/updater`).
+    #[cfg_attr(not(feature = "js-core"), allow(dead_code))]
+    pub(crate) updater: Option<std::sync::Arc<dyn nsh_core::runtime::UpdaterHost>>,
     pub(crate) data_dir: Option<std::path::PathBuf>,
     pub(crate) paths: nsh_core::access::TrustedPaths,
     pub(crate) wake: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -61,6 +64,8 @@ mod imp {
         stop: Arc<AtomicBool>,
         /// The package the bundle came from, named in its errors.
         package: Option<Arc<PackageInfo>>,
+        /// Told of fatal errors ([`Bundle::trial`]).
+        trial: Option<Arc<dyn crate::Trial>>,
     }
 
     impl Script {
@@ -77,6 +82,7 @@ mod imp {
             ui_sets: &[nsh_core::element::Registry],
             posts: nsh_core::element::Posts,
             environment: &Environment,
+            displays: &[nsh_core::desktop::Display],
             tokens: Arc<nsh_core::element::Tokens>,
             theme: nsh_core::element::ThemeTokens,
             text_engine: Rc<M>,
@@ -95,10 +101,12 @@ mod imp {
                 Ok(host) => host,
                 Err(err) => {
                     log::error!("failed to start JS: {err}");
-                    sink.report(
-                        &AppError::new(AppErrorKind::Load, &err.message)
-                            .with_package(bundle.package.clone()),
-                    );
+                    let error = AppError::new(AppErrorKind::Load, &err.message)
+                        .with_package(bundle.package.clone());
+                    if let Some(trial) = &bundle.trial {
+                        trial.failed(&error);
+                    }
+                    sink.report(&error);
                     return None;
                 }
             };
@@ -107,6 +115,7 @@ mod imp {
             host.set_websocket_transport(system.websocket);
             host.set_refuse_connections(system.refuse_connections);
             host.set_filesystem(system.filesystem);
+            host.set_updater(system.updater);
             host.set_system_wake(system.wake);
             host.set_host_bridge(system.host);
             host.set_stop_flag(stop.clone());
@@ -141,6 +150,7 @@ mod imp {
                 nsh_core::canvas::measure_line(&*text_engine, font, text)
             }));
             host.set_environment(environment);
+            host.set_displays(displays);
             host.set_tokens(tokens);
             host.set_theme_tokens(theme);
             let script = Script {
@@ -149,6 +159,7 @@ mod imp {
                 symbolicator,
                 stop,
                 package: bundle.package.clone(),
+                trial: bundle.trial.clone(),
             };
             // The chunks that come with the bundle: the entry may import
             // them statically, `import()` without waiting.
@@ -180,7 +191,13 @@ mod imp {
             }
             let message = self.symbolicator.borrow_mut().rewrite(message);
             log::error!(target: "js", "{what}: {message}");
-            sink.report(&AppError::new(kind, &message).with_package(self.package.clone()));
+            let error = AppError::new(kind, &message).with_package(self.package.clone());
+            if let Some(trial) = &self.trial
+                && error.is_fatal()
+            {
+                trial.failed(&error);
+            }
+            sink.report(&error);
         }
 
         /// Gives the VM a chunk it imports, or tells it the chunk could not
@@ -243,18 +260,6 @@ mod imp {
             self.host.deliver(event);
         }
 
-        pub(crate) fn cancel_touch(&self, contact: u32) {
-            self.host.cancel_touch(contact);
-        }
-
-        pub(crate) fn invalid_touch_contacts(
-            &self,
-            accepts: impl FnMut(NodeId) -> bool,
-            contacts: &mut Vec<u32>,
-        ) {
-            self.host.invalid_touch_contacts(accepts, contacts);
-        }
-
         pub(crate) fn bind_list(&self, list: NodeId, binds: &[(u32, u32)]) {
             self.host.bind_list(list, binds);
         }
@@ -315,6 +320,14 @@ mod imp {
 
         pub(crate) fn set_focus_path(&self, path: &[NodeId]) {
             self.host.set_focus_path(path);
+        }
+
+        pub(crate) fn set_displays(&self, displays: &[nsh_core::desktop::Display]) {
+            self.host.set_displays(displays);
+        }
+
+        pub(crate) fn set_fps_enabled(&self, enabled: bool) {
+            self.host.set_fps_enabled(enabled);
         }
 
         pub(crate) fn set_tokens(&self, tokens: Arc<nsh_core::element::Tokens>) {
@@ -388,6 +401,7 @@ mod stub {
             _: &[nsh_core::element::Registry],
             _: nsh_core::element::Posts,
             _: &Environment,
+            _: &[nsh_core::desktop::Display],
             _: Arc<nsh_core::element::Tokens>,
             _: nsh_core::element::ThemeTokens,
             _: Rc<M>,
@@ -422,18 +436,6 @@ mod stub {
         }
 
         pub(crate) fn deliver(&self, _: nsh_core::element::JsEvent) {
-            match *self {}
-        }
-
-        pub(crate) fn cancel_touch(&self, _: u32) {
-            match *self {}
-        }
-
-        pub(crate) fn invalid_touch_contacts(
-            &self,
-            _: impl FnMut(NodeId) -> bool,
-            _: &mut Vec<u32>,
-        ) {
             match *self {}
         }
 
@@ -490,6 +492,14 @@ mod stub {
         }
 
         pub(crate) fn set_focus_path(&self, _: &[NodeId]) {
+            match *self {}
+        }
+
+        pub(crate) fn set_displays(&self, _: &[nsh_core::desktop::Display]) {
+            match *self {}
+        }
+
+        pub(crate) fn set_fps_enabled(&self, _: bool) {
             match *self {}
         }
 

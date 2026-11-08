@@ -8,12 +8,12 @@
 //! commits 20 js 0.30/… core 0.50/… items 42 engine 3% cpu 24% mem 92.4 MB`:
 //! frames shown in the second over the display's rate, the main thread's
 //! time per shown frame (the ticker's work, batches applied and the tree
-//! drawn: waiting for the vertical blank in `Present` is not work), the gaps
+//! drawn: presenting is not counted as work), the gaps
 //! between shown frames (one refresh while something moves) and the share
 //! of frames over one refresh; its phases: `tick` (the compositor-paced
 //! ticker: animations, frame callbacks), `drain` (batches applied as they
 //! arrived), `paint` (Direct2D drawing the tree, canvases included),
-//! `present` (the swap chain's `Present`, which waits for the blank) and
+//! `present` (the swap chain's `Present`, which queues the frame) and
 //! `canvas` (the canvases' share of `paint`: recording and replaying their
 //! drawing, per frame that drew any); the engine's commits with their JS
 //! and core time, mount items per commit, the engine thread's busy share,

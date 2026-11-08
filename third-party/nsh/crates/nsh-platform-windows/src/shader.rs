@@ -3,8 +3,8 @@
 //!
 //! The surface opens the GPU device the first time a shader is mounted
 //! ([`Surface::shader_renderer`]). Each shader view renders on the
-//! surface's frame ticker ([`Surface::on_frame`]) while it has a frame to
-//! render or collect ([`ShaderView::wants_frame`]: its uniforms, size or
+//! surface's frame ticker ([`Surface::on_draw_frame`]) while it has a frame
+//! to render or collect ([`ShaderView::wants_frame`]: its uniforms, size or
 //! pictures changed, it reads `nsh.time`, or a transition runs), at the
 //! window's scale; a frame that comes back is copied into the view's
 //! Direct2D bitmap when the view is drawn (made again after a device loss)
@@ -565,7 +565,7 @@ fn tick(view: &NshView) {
         surface
     };
     let id = view.id();
-    surface.on_frame(move |surface, _now| {
+    surface.on_draw_frame(move |surface, _now| {
         let Some(view) = surface.view(id) else {
             return false;
         };

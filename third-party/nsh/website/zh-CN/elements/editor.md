@@ -103,7 +103,7 @@ fn native(registry: &mut Registry) {
 
 编辑器的工作方式与代码编辑器相同：
 
-- **多光标。** Alt 点击（Option 点击）添加一个光标，`mod+d` 选中选区的下一处出现，`mod+shift+l` 选中全部出现，添加光标的按键在上一行或下一行添加一个。输入、删除、移动和每个命令都在每个光标处执行；Escape 回到一个。`undoSelection`（`cmd+u`、`ctrl+u`）回到上一次移动之前的选区。
+- **多光标。** Alt 点击（Option 点击）添加一个光标，`mod+d` 选中选区的下一处出现，`mod+shift+l` 选中全部出现，添加光标的按键在上一行或下一行添加一个。输入、删除、移动和每个命令都在每个光标处执行；Escape 回到一个。`undoSelection`（`cmd+u`、`ctrl+u`）回到上一次移动之前的选区。编辑器有焦点时光标闪烁；在 Linux 上，十秒内没有编辑、移动光标或焦点变化后，光标保持显示、不再闪烁（GTK 的默认值），直到下一次操作。
 - **选区扩展。** `expandSelection`（`ctrl+shift+cmd+right`、`shift+alt+right`）按单位扩大选区：单词、字符串的内容和整个字符串、一对括号的内容和这对括号、整行、全文；`shrinkSelection` 按原路缩回。`splitSelectionIntoLines`（`shift+alt+i`）把跨多行的选区拆成每行一个选区。
 - **缩进。** 新行保持当前行的缩进，在左括号（Python 的 `:`、Ruby 的 `do` 等）之后再加一级；在一对括号之间按 Enter，右括号单独放到下一行。Tab 和 Shift+Tab 缩进和反缩进所选的行；在行首空格中按 Backspace 回到上一个缩进位置。`autoIndent` 关闭这些行为。
 - **括号和引号** 在输入时自动闭合，包住选区，再次输入闭合符号时跳过它（`autoClose`）。光标处的括号和与它配对的括号会加上边框。
@@ -661,7 +661,7 @@ let editor!: EditorRef;
 | `scrollBeyondLastLine` | `.scroll_beyond_last_line(..)` | `boolean \| number` | `true` | 文本可以滚动到最后一行之后：最多一屏（`true`）、完全不（`false`）或若干行。 |
 | `fontFamily` | `.font_family(..)` | `string` | 主题的 `font-mono` | 绘制和测量文本所用的字体。 |
 | `fontSize` | `.font_size(..)` | `number` | `13` | 字号，单位为点。 |
-| `lineHeight` | `.line_height(..)` | `number` | `20` | 一行的高度，单位为点。 |
+| `lineHeight` | `.line_height(..)` | `number` | `20` | 一行的高度，单位为点；在终端里一行就是一个 Cell。 |
 | `search` | `.search(..)` | `EditorSearch` | | 要查找的内容（[查找与替换](#find-and-replace)）。 |
 | `diagnostics` | `.diagnostics(..)` | `EditorDiagnostic[]` | `[]` | 要标记的问题（[诊断](#diagnostics)）。 |
 | `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | 应用设置样式的范围（[装饰](#decorations)）。 |

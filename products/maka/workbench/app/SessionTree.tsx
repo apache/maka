@@ -216,7 +216,7 @@ export function SessionTree(props: {
         style={{
           width: '100%',
           maxWidth: 720,
-          height: '100%',
+          flex: 1,
           maxHeight: 640,
           minHeight: 0,
           padding: 16,
@@ -256,7 +256,7 @@ export function SessionTree(props: {
             estimatedItemSize={48}
             role="tree"
             accessibilityLabel={tr('Child conversations')}
-            style={{ width: contentWidth(), flex: 1, minHeight: 0 }}
+            style={{ width: contentWidth(), height: '100%', flex: 1, minHeight: 0 }}
           >
             {(item) => (
               <Each of={[item()]} key={(key) => key}>

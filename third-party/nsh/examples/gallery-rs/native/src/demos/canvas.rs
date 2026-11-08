@@ -369,6 +369,7 @@ fn spring(stiffness: f32, damping: f32) -> Spring {
         damping,
         mass: 1.0,
         velocity: None,
+        frame_rate: None,
     }
 }
 
@@ -580,19 +581,27 @@ fn ridges() -> Vec<Vec<f32>> {
         .collect()
 }
 
+/// Day `d`'s color, its hue around the wheel from the theme's citrus.
+fn day_color(d: usize, dark: bool) -> Hsla {
+    const HUES: [f32; 7] = [78.0, 140.0, 175.0, 205.0, 232.0, 268.0, 322.0];
+    let (saturation, lightness) = if dark { (0.78, 0.68) } else { (0.62, 0.40) };
+    hsla(HUES[d] / 360.0, saturation, lightness, 1.0)
+}
+
 /// The ridgeline, its curves clipped to `sweep`.
 fn draw_ridges(c: Palette, width: f32, height: f32, sweep: &AnimatedValue) -> Painter {
     let font = sans(11.0, 400);
     let measure = |s: &str| measure_text(&font, s).0;
     let left = measure("Mon") + 10.0;
-    let bottom = 18.0;
-    let step = (height - bottom - 30.0) / (DAYS.len() - 1) as f32;
+    let bottom = 22.0;
+    let amp = 40.0;
+    let top = amp + 6.0;
+    let step = (height - bottom - top) / (DAYS.len() - 1) as f32;
     let x = |h: f32| left + h / 24.0 * (width - left);
-    // Peak window and hour labels.
-    let mut p = Painter::new().font(&font);
-    p = dashed(p, (x(12.0), 0.0), (x(12.0), height - bottom), c.border);
-    p = dashed(p, (x(14.0), 0.0), (x(14.0), height - bottom), c.border);
-    p = p
+    let ridges = ridges();
+    let peak = ridges.iter().flatten().copied().fold(0.0, f32::max);
+    let mut p = Painter::new()
+        .font(&font)
         .fill_color(c.faint)
         .text_baseline(CanvasTextBaseline::Alphabetic);
     for h in [0, 6, 12, 18, 24] {
@@ -606,41 +615,59 @@ fn draw_ridges(c: Palette, width: f32, height: f32, sweep: &AnimatedValue) -> Pa
     }
     p = p.save().begin_path();
     p = rect_of(p, 0.0, 0.0, &sweep.mul(width), height).clip();
-    for (d, series) in ridges().iter().enumerate() {
-        let base = 30.0 + d as f32 * step;
-        let y = |v: f32| base - v * 46.0;
-        p = p
-            .begin_path()
-            .move_to(x(0.0), base)
-            .line_to(x(0.0), y(series[0]));
-        for h in 1..series.len() {
-            let (x0, x1) = (x(h as f32 - 1.0), x(h as f32));
-            p = p.quadratic_curve_to(
-                pt(x0, y(series[h - 1])),
-                pt((x0 + x1) / 2.0, (y(series[h - 1]) + y(series[h])) / 2.0),
-            );
-        }
-        let weekend = d >= 5;
-        // Occlude the ridge behind, then a low-alpha fill and the line.
-        p = p
-            .line_to(x(24.0), y(series[24]))
+    for (d, series) in ridges.iter().enumerate() {
+        let base = top + d as f32 * step;
+        let y = |v: f32| base - v / peak * amp;
+        // The curve alone: the fill closes it, the line stays open.
+        let curve = |mut p: Painter| {
+            p = p.move_to(x(0.0), y(series[0]));
+            for h in 1..series.len() {
+                let (x0, x1) = (x(h as f32 - 1.0), x(h as f32));
+                p = p.quadratic_curve_to(
+                    pt(x0, y(series[h - 1])),
+                    pt((x0 + x1) / 2.0, (y(series[h - 1]) + y(series[h])) / 2.0),
+                );
+            }
+            p.line_to(x(24.0), y(series[24]))
+        };
+        let tone = day_color(d, c.dark);
+        // Occlude the ridge behind, then a fill that fades to the baseline.
+        p = curve(p.begin_path())
             .line_to(x(24.0), base)
+            .line_to(x(0.0), base)
             .close_path()
             .fill_color(c.inset)
             .fill()
-            .fill_color(if weekend {
-                alpha(c.info, 0.18)
-            } else {
-                alpha(c.accent, 0.1 + d as f32 * 0.025)
-            })
+            .fill_style(
+                // A short fade below the crests, so the curves stay what reads.
+                CanvasGradient::linear(pt(0.0, base - amp), pt(0.0, base - amp * 0.3))
+                    .add_color_stop(percentage(0.0), alpha(tone, 0.34))
+                    .add_color_stop(percentage(1.0), alpha(tone, 0.0)),
+            )
             .fill()
-            .stroke_color(if weekend { c.info } else { c.accent })
-            .line_width(1.25)
-            .stroke();
+            .stroke_color(tone)
+            .line_width(1.5)
+            .line_join(LineJoin::Round);
+        p = curve(p.begin_path()).stroke();
     }
-    p = p.restore().fill_color(c.muted);
+    // The peak window, over the ridges so it reads as one band.
+    p = dashed(
+        p,
+        (x(12.0), 0.0),
+        (x(12.0), height - bottom),
+        alpha(c.muted, 0.35),
+    );
+    p = dashed(
+        p,
+        (x(14.0), 0.0),
+        (x(14.0), height - bottom),
+        alpha(c.muted, 0.35),
+    );
+    p = p.restore();
     for (d, day) in DAYS.iter().enumerate() {
-        p = p.fill_text(day, 0.0, 30.0 + d as f32 * step - 2.0);
+        p = p
+            .fill_color(day_color(d, c.dark))
+            .fill_text(day, 0.0, top + d as f32 * step - 2.0);
     }
     p
 }
@@ -649,7 +676,7 @@ fn draw_ridges(c: Palette, width: f32, height: f32, sweep: &AnimatedValue) -> Pa
 #[component]
 fn Ridgeline() -> impl IntoElement {
     let sweep = reveal(1400.0);
-    let height = 210.0;
+    let height = 230.0;
     Card::new()
         .icon(IconName::Animation)
         .title("Footfall by hour")
@@ -661,10 +688,6 @@ fn Ridgeline() -> impl IntoElement {
         .child(measured(height, move |c, width| {
             draw_ridges(c, width, height, &sweep)
         }))
-        .child(legends([
-            (colors::ACCENT, "Weekday"),
-            (colors::INFO, "Weekend"),
-        ]))
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,69 +1053,125 @@ fn Glyphs() -> impl IntoElement {
 /// The compositing samples.
 fn draw_compositing(c: Palette, width: f32, height: f32) -> Painter {
     let cy = height / 2.0;
-    // An image clipped to a circle, with a ring.
+    let shade = if c.dark {
+        alpha(rgb(0x000000), 0.55)
+    } else {
+        alpha(rgb(0x14140a), 0.2)
+    };
+    // An image clipped to a disc: larger than the disc, so the clip shows.
+    let c1 = width / 6.0;
     let p = Painter::new()
         .save()
-        .begin_path()
-        .arc(46.0, cy, 42.0, 0.0, TAU)
-        .clip()
+        .shadow(shade, px(16.0), pt(0.0, 6.0))
         .fill_color(c.raised)
-        .fill_rect(0.0, 0.0, 92.0, height)
-        .draw_image(crate::assets::LOGO.url, rect(10.0, cy - 36.0, 72.0, 72.0))
+        .begin_path()
+        .arc(c1, cy, 40.0, 0.0, TAU)
+        .fill()
         .restore()
-        .stroke_color(c.border)
+        .save()
+        .begin_path()
+        .arc(c1, cy, 40.0, 0.0, TAU)
+        .clip()
+        .fill_style(
+            CanvasGradient::linear(pt(c1 - 40.0, cy - 40.0), pt(c1 + 40.0, cy + 40.0))
+                .add_color_stop(percentage(0.0), c.raised)
+                .add_color_stop(percentage(1.0), c.inset),
+        )
+        .fill_rect(c1 - 40.0, cy - 40.0, 80.0, 80.0)
+        .draw_image(
+            crate::assets::LOGO.url,
+            rect(c1 - 46.0, cy - 46.0, 92.0, 92.0),
+        )
+        .restore()
+        .stroke_color(alpha(c.accent, 0.55))
         .line_width(1.5)
         .begin_path()
-        .arc(46.0, cy, 42.0, 0.0, TAU)
+        .arc(c1, cy, 44.0, 0.0, TAU)
         .stroke();
-    // A shadowed card with a hole punched through (destination-out).
-    let cx = width / 2.0;
-    let shade = if c.dark {
-        rgba(0x0000_00b3).into()
-    } else {
-        alpha(rgb(0x14140a), 0.25)
-    };
+    // A ticket with a shadow; its notches and hole are cut out
+    // (destination-out).
+    let c2 = width / 2.0;
     let p = p
         .save()
-        .shadow(shade, px(14.0), pt(0.0, 6.0))
+        .shadow(shade, px(16.0), pt(0.0, 6.0))
         .fill_style(
-            CanvasGradient::linear(pt(cx - 46.0, 0.0), pt(cx + 46.0, height))
+            CanvasGradient::linear(pt(c2 - 52.0, cy - 36.0), pt(c2 + 52.0, cy + 36.0))
                 .add_color_stop(percentage(0.0), c.accent_fill)
                 .add_color_stop(percentage(1.0), rgb(0x7fbf3a)),
         )
         .begin_path()
-        .round_rect(rect(cx - 46.0, cy - 40.0, 92.0, 80.0), px(16.0))
+        .round_rect(rect(c2 - 52.0, cy - 36.0, 104.0, 72.0), px(14.0))
         .fill()
         .restore()
         .composite(Composite::DestinationOut)
         .begin_path()
-        .arc(cx, cy, 18.0, 0.0, TAU)
+        .arc(c2 + 20.0, cy - 36.0, 8.0, 0.0, TAU)
         .fill()
+        .begin_path()
+        .arc(c2 + 20.0, cy + 36.0, 8.0, 0.0, TAU)
+        .fill()
+        .begin_path()
+        .arc(c2 - 16.0, cy, 13.0, 0.0, TAU)
+        .fill()
+        .line_dash(&lengths([4.0, 4.0]))
+        .line_width(2.0)
+        .begin_path()
+        .move_to(c2 + 20.0, cy - 26.0)
+        .line_to(c2 + 20.0, cy + 26.0)
+        .stroke()
+        .line_dash(&lengths([]))
         .composite(Composite::SourceOver);
-    // A radial gradient with a dashed outline.
-    let rx = width - 46.0;
+    // A lit sphere in its glow, a dashed orbit and a small moon.
+    let c3 = 5.0 * width / 6.0;
+    let moon = -0.7_f32;
     p.fill_style(
-        CanvasGradient::radial(pt(rx - 10.0, cy - 12.0), px(4.0), pt(rx, cy), px(40.0))
-            .add_color_stop(percentage(0.0), rgb(0xffe2a8))
-            .add_color_stop(percentage(0.55), c.warn)
-            .add_color_stop(percentage(1.0), alpha(c.danger, 0.2)),
+        CanvasGradient::radial(pt(c3, cy), px(22.0), pt(c3, cy), px(52.0))
+            .add_color_stop(percentage(0.0), alpha(c.warn, 0.32))
+            .add_color_stop(percentage(1.0), alpha(c.warn, 0.0)),
     )
     .begin_path()
-    .arc(rx, cy, 38.0, 0.0, TAU)
+    .arc(c3, cy, 52.0, 0.0, TAU)
     .fill()
-    .line_dash(&lengths([5.0, 5.0]))
-    .stroke_color(c.warn)
-    .line_width(1.5)
+    .fill_style(
+        CanvasGradient::radial(pt(c3 - 10.0, cy - 12.0), px(2.0), pt(c3, cy), px(30.0))
+            .add_color_stop(percentage(0.0), rgb(0xfff3d6))
+            .add_color_stop(percentage(0.35), rgb(0xffc05c))
+            .add_color_stop(percentage(0.75), rgb(0xe8743b))
+            .add_color_stop(percentage(1.0), rgb(0xa93f2c)),
+    )
     .begin_path()
-    .arc(rx, cy, 43.0, 0.0, TAU)
+    .arc(c3, cy, 30.0, 0.0, TAU)
+    .fill()
+    .line_dash(&lengths([3.0, 5.0]))
+    .stroke_color(alpha(c.warn, 0.6))
+    .line_width(1.25)
+    .begin_path()
+    .arc(c3, cy, 42.0, 0.0, TAU)
     .stroke()
+    .line_dash(&lengths([]))
+    .fill_color(rgb(0xffe2a8))
+    .begin_path()
+    .arc(
+        c3 + 42.0 * moon.cos(),
+        cy + 42.0 * moon.sin(),
+        4.0,
+        0.0,
+        TAU,
+    )
+    .fill()
 }
 
 /// The compositing card.
 #[component]
 fn Compositing() -> impl IntoElement {
-    let height = 120.0;
-    let label = |s: &'static str| text(s).text_size(px(13.0)).text_color(colors::MUTED);
+    let height = 132.0;
+    let label = |s: &'static str| {
+        text(s)
+            .flex_1()
+            .text_size(px(13.0))
+            .text_color(colors::MUTED)
+            .text_center()
+    };
     Card::new()
         .icon(IconName::Image)
         .title("Compositing")
@@ -1103,7 +1182,6 @@ fn Compositing() -> impl IntoElement {
         .child(
             view()
                 .flex_row()
-                .justify_between()
                 .child(label("Clipped image"))
                 .child(label("Cut-out"))
                 .child(label("Radial gradient")),
@@ -1114,8 +1192,44 @@ fn Compositing() -> impl IntoElement {
 // Touch drawing: each move draws again. The canvas claims the touches and
 // keeps them: the page around it does not scroll while drawing.
 
-/// The sketch over its dot grid, `width` wide (0 before its layout).
-fn draw_sketch(c: Palette, width: f32, height: f32, strokes: &[Vec<(f32, f32)>]) -> Painter {
+/// "NSH" as strokes: a letter's index and points, each a fraction of the
+/// letter's box.
+const SAMPLE: [(f32, &[(f32, f32)]); 5] = [
+    (0.0, &[(0.0, 1.0), (0.0, 0.0), (1.0, 1.0), (1.0, 0.0)]),
+    (
+        1.0,
+        &[
+            (0.95, 0.16),
+            (0.8, 0.05),
+            (0.55, 0.0),
+            (0.3, 0.02),
+            (0.1, 0.12),
+            (0.05, 0.26),
+            (0.15, 0.4),
+            (0.4, 0.49),
+            (0.7, 0.57),
+            (0.92, 0.7),
+            (0.95, 0.84),
+            (0.8, 0.95),
+            (0.5, 1.0),
+            (0.22, 0.97),
+            (0.05, 0.84),
+        ],
+    ),
+    (2.0, &[(0.0, 0.0), (0.0, 1.0)]),
+    (2.0, &[(1.0, 0.0), (1.0, 1.0)]),
+    (2.0, &[(0.0, 0.5), (1.0, 0.5)]),
+];
+
+/// The sketch over its dot grid, `width` wide (0 before its layout), with
+/// the sample while it is not cleared.
+fn draw_sketch(
+    c: Palette,
+    width: f32,
+    height: f32,
+    sample: bool,
+    strokes: &[Vec<(f32, f32)>],
+) -> Painter {
     // A dot grid to draw on.
     let mut p = Painter::new().fill_color(c.border);
     let mut x = 8.0;
@@ -1127,7 +1241,7 @@ fn draw_sketch(c: Palette, width: f32, height: f32, strokes: &[Vec<(f32, f32)>])
         }
         x += 16.0;
     }
-    if strokes.is_empty() && width > 0.0 {
+    if !sample && strokes.is_empty() && width > 0.0 {
         p = p
             .font(&sans(14.0, 400))
             .fill_color(c.faint)
@@ -1140,6 +1254,31 @@ fn draw_sketch(c: Palette, width: f32, height: f32, strokes: &[Vec<(f32, f32)>])
         .line_width(3.0)
         .line_cap(LineCap::Round)
         .line_join(LineJoin::Round);
+    if sample && width > 0.0 {
+        let (w, h, gap) = (50.0, 72.0, 24.0);
+        let x0 = (width - (3.0 * w + 2.0 * gap)) / 2.0;
+        let y0 = (height - h) / 2.0;
+        for (letter, points) in SAMPLE {
+            let at = |(x, y): (f32, f32)| (x0 + letter * (w + gap) + x * w, y0 + y * h);
+            let (sx, sy) = at(points[0]);
+            p = p.begin_path().move_to(sx, sy);
+            // The S is a curve through its points; the rest are straight lines.
+            if points.len() > 4 {
+                for pair in points[1..].windows(2) {
+                    let ((ax, ay), (bx, by)) = (at(pair[0]), at(pair[1]));
+                    p = p.quadratic_curve_to(pt(ax, ay), pt((ax + bx) / 2.0, (ay + by) / 2.0));
+                }
+                let (ex, ey) = at(points[points.len() - 1]);
+                p = p.line_to(ex, ey);
+            } else {
+                for &point in &points[1..] {
+                    let (x, y) = at(point);
+                    p = p.line_to(x, y);
+                }
+            }
+            p = p.stroke();
+        }
+    }
     for stroke in strokes {
         p = p.begin_path();
         for (i, &(x, y)) in stroke.iter().enumerate() {
@@ -1158,10 +1297,12 @@ fn draw_sketch(c: Palette, width: f32, height: f32, strokes: &[Vec<(f32, f32)>])
 #[component]
 fn Sketch() -> impl IntoElement {
     let strokes = signal(Vec::<Vec<(f32, f32)>>::new());
+    let sample = signal(true);
     let width = signal(0.0_f32);
     let height = 200.0;
     let sketch = canvas(move || {
-        strokes.with(|strokes| draw_sketch(Palette::now(), width.get(), height, strokes))
+        strokes
+            .with(|strokes| draw_sketch(Palette::now(), width.get(), height, sample.get(), strokes))
     })
     .h(px(height))
     .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
@@ -1184,16 +1325,26 @@ fn Sketch() -> impl IntoElement {
         .title("Sketch")
         .subtitle(hint("Touch → draw from Rust", "Drag → draw from Rust"))
         .right(
-            header_button("Clear", move |_: &()| strokes.set(Vec::new()))
-                .disabled(Prop::bind(move || strokes.with(Vec::is_empty))),
+            header_button("Clear", move |_: &()| {
+                sample.set(false);
+                strokes.set(Vec::new());
+            })
+            .disabled(Prop::bind(move || {
+                !sample.get() && strokes.with(Vec::is_empty)
+            })),
         )
         .child(sketch)
         .child(caption(
             "Strokes",
             Some(move || {
                 strokes.with(|strokes| {
-                    let points: usize = strokes.iter().map(Vec::len).sum();
-                    format!("{} · {points} points", strokes.len())
+                    let (mut count, mut points) =
+                        (strokes.len(), strokes.iter().map(Vec::len).sum::<usize>());
+                    if sample.get() {
+                        count += SAMPLE.len();
+                        points += SAMPLE.iter().map(|(_, s)| s.len()).sum::<usize>();
+                    }
+                    format!("{count} · {points} points")
                 })
             }),
         ))

@@ -55,7 +55,13 @@ fn crate_assets(span: Span) -> syn::Result<(PathBuf, String)> {
         .ok_or_else(|| syn::Error::new(span, "assets are read in crates built by Cargo"))?;
     let package = std::env::var("CARGO_PKG_NAME")
         .map_err(|_| syn::Error::new(span, "assets are read in crates built by Cargo"))?;
-    Ok((PathBuf::from(dir).join("assets"), package))
+    // A crate `nsh` builds from a manifest it wrote for another version of
+    // nsh (`nsh-cli` `rust_app.rs`) keeps its files where they are.
+    let dir = PathBuf::from(dir);
+    let dir = std::fs::read_to_string(dir.join("nsh-source-dir"))
+        .map(PathBuf::from)
+        .unwrap_or(dir);
+    Ok((dir.join("assets"), package))
 }
 
 /// `logo@2x.png` -> 2.0: the pixel density encoded in the file name.

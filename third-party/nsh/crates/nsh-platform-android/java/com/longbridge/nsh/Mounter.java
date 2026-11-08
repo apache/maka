@@ -61,13 +61,11 @@ final class Mounter {
     private static final int OVERFLOW = 31;
     private static final int ACCESSIBILITY_LABEL = 32;
     private static final int APPEARANCE = 33;
-    private static final int RETIRE_LIST_CELL = 34;
-    private static final int PROJECT_ROOT = 35;
-    private static final int COMPONENT_PROP_SLOTS = 36;
-    private static final int SHADER = 37;
-    private static final int SHADER_TRANSITION = 38;
-    private static final int SHADER_INPUT = 39;
-    private static final int NAV_SHADER = 40;
+    private static final int COMPONENT_PROP_SLOTS = 34;
+    private static final int SHADER = 35;
+    private static final int SHADER_TRANSITION = 36;
+    private static final int SHADER_INPUT = 37;
+    private static final int NAV_SHADER = 38;
     /** The surface lays out right to left: native widgets mirror. */
     boolean rtl;
     /** The app's appearance (`nsh_core::platform::Appearance`): 0 the system's, 1 light, 2 dark. */
@@ -227,7 +225,6 @@ final class Mounter {
         };
         root = new Box(context, this, 1);
         views.put(1, root);
-        observeFocus(root);
     }
 
     /** Whether the running app's web views may navigate to {@code url} (its capabilities). */
@@ -266,24 +263,9 @@ final class Mounter {
             switch (op) {
                 case CREATE: create(b.getInt(), b.getInt()); break;
                 case INSERT: insert(b.getInt(), b.getInt(), b.getInt()); break;
-                case PROJECT_ROOT: {
-                    int parent = b.getInt(), id = b.getInt();
-                    int[] following = new int[b.getInt()];
-                    for (int i = 0; i < following.length; i++) following[i] = b.getInt();
-                    projectRoot(parent, id, following);
-                    break;
-                }
                 case REMOVE: {
                     int id = b.getInt();
                     if (!removeHosted(id)) remove(id);
-                    break;
-                }
-                case RETIRE_LIST_CELL: {
-                    int id = b.getInt();
-                    long request = b.getLong();
-                    int[] roots = new int[b.getInt()];
-                    for (int i = 0; i < roots.length; i++) roots[i] = b.getInt();
-                    retireListCell(id, request, seq, roots);
                     break;
                 }
                 case DELETE: delete(b.getInt()); break;
@@ -729,10 +711,23 @@ final class Mounter {
      * again.
      */
     void destroyComponents() {
+        Notifications.forget(this);
+        if (audio != null) {
+            audio.release();
+            audio = null;
+        }
         for (int i = 0; i < views.size(); i++) {
             View v = views.valueAt(i);
             if (v instanceof ComponentBox) ((ComponentBox) v).destroy();
         }
+    }
+
+    /** The app's sounds and players (one per engine), made at its first audio command. UI thread. */
+    private Audio audio;
+
+    private Audio audio() {
+        if (audio == null) audio = new Audio(this);
+        return audio;
     }
 
     /**
@@ -802,132 +797,10 @@ final class Mounter {
         if (parent instanceof ScrollBox && ((ScrollBox) parent).hasSticky()) ((ScrollBox) parent).frontSticky();
     }
 
-    private void projectRoot(int parentId, int id, int[] following) {
-        View parent = views.get(parentId), child = views.get(id);
-        ModalHost modal = modals.get(id);
-        if (modal != null) {
-            if (hosts.get(id, -1) == parentId && modal.root.isShown() && modal.shown()) return;
-            insert(parentId, id, -1);
-            return;
-        }
-        ViewGroup group;
-        if (child instanceof StackBox.ScreenBox && parent instanceof StackBox) group = (StackBox) parent;
-        else if (headerItem(id) && parent instanceof StackBox.ScreenBox) group = ((StackBox.ScreenBox) parent).toolbar;
-        else group = container(parent);
-        int before = -1;
-        if (group != null) {
-            for (int candidate : following) {
-                View view = views.get(candidate);
-                if (child instanceof StackBox.ScreenBox && !(view instanceof StackBox.ScreenBox)) continue;
-                if (view != null && view.getParent() == group && group.indexOfChild(view) >= 0) {
-                    before = candidate;
-                    break;
-                }
-            }
-            int index = group.indexOfChild(child);
-            int at = before >= 0 ? group.indexOfChild(views.get(before)) : group.getChildCount();
-            boolean hosted = child instanceof StackBox.ScreenBox || headerItem(id);
-            if (index >= 0 && index + 1 == at && layoutAnimators.get(id) == null
-                    && (!hosted || hosts.get(id, -1) == parentId)) return;
-        }
-        insert(parentId, id, before);
-    }
-
     private static void detach(View v) {
         if (v == null) return;
         ViewParent p = v.getParent();
         if (p instanceof ViewGroup) ((ViewGroup) p).removeView(v);
-    }
-
-    void observeFocus(View view) {
-        view.getViewTreeObserver().addOnGlobalFocusChangeListener((old, focused) -> publishFocusPath());
-    }
-
-    void publishFocusPath() {
-        if (handle() != 0) Native.focusPath(handle(), focusPath());
-    }
-
-    private int[] focusPath(View focused) {
-        java.util.ArrayList<Integer> path = new java.util.ArrayList<>();
-        for (View view = focused; view != null; ) {
-            if (view instanceof Node) {
-                int id = ((Node) view).nodeId();
-                if (views.get(id) == view) path.add(id);
-            }
-            ViewParent parent = view.getParent();
-            view = parent instanceof View ? (View) parent : null;
-        }
-        int[] result = new int[path.size()];
-        for (int i = 0; i < result.length; i++) result[i] = path.get(i);
-        return result;
-    }
-
-    private int[] focusPath() {
-        for (int i = modals.size() - 1; i >= 0; i--) {
-            ModalHost modal = modals.valueAt(i);
-            if (modal.root.isShown() && modal.root.hasWindowFocus()) {
-                View focused = modal.root.findFocus();
-                return focusPath(focused != null ? focused : modal.root);
-            }
-        }
-        return focusPath(host.hasWindowFocus() ? host.findFocus() : null);
-    }
-
-    private void retireListCell(int id, long request, long seq, int[] roots) {
-        int[] path = focusPath();
-        for (int node : path) {
-            for (int root : roots) {
-                if (node == root) {
-                    Native.retireListCell(handle(), seq, id, request, false, path);
-                    return;
-                }
-            }
-        }
-        for (int root : roots) {
-            View view = views.get(root);
-            if (view == null) continue;
-            for (TouchTracker tracker : touchTrackers) tracker.cancelWithin(view);
-            android.view.MotionEvent cancel = android.view.MotionEvent.obtain(
-                    0, android.os.SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_CANCEL, 0, 0, 0);
-            view.dispatchTouchEvent(cancel);
-            cancel.recycle();
-            cancelRetiredInput(view);
-            ModalHost modal = modals.get(root);
-            if (modal != null) {
-                dirtyModals.remove(root);
-                modal.park();
-            } else if (view instanceof StackBox.ScreenBox) {
-                View parent = views.get(hosts.get(root, -1));
-                if (parent instanceof StackBox) ((StackBox) parent).park((StackBox.ScreenBox) view);
-                else detach(view);
-            } else {
-                if (headerItem(root)) {
-                    int parent = hosts.get(root, -1);
-                    hosts.delete(root);
-                    if (parent >= 0) dirtyScreens.add(parent);
-                }
-                detach(view);
-            }
-        }
-        Native.retireListCell(handle(), seq, id, request, true, focusPath());
-    }
-
-    private void cancelRetiredInput(View view) {
-        if (view instanceof InputBox) ((InputBox) view).cancelAutoFocus();
-        if (view instanceof ScrollBox) ((ScrollBox) view).cancelPendingScroll();
-        view.cancelPendingInputEvents();
-        if (view instanceof Node) {
-            int id = ((Node) view).nodeId();
-            Animator animation = views.get(id) == view ? layoutAnimators.get(id) : null;
-            if (animation != null) {
-                layoutAnimators.remove(id);
-                animation.cancel();
-            }
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) cancelRetiredInput(group.getChildAt(i));
-        }
     }
 
     /** Removes a view from its parent, fading it out under a layout animation. */
@@ -1018,7 +891,7 @@ final class Mounter {
         if (v instanceof StackBox) stacks.remove(v);
         SelectableView area = selectableViews.get(id);
         if (area != null) {
-            area.clear();
+            area.remove();
             selectableViews.remove(id);
         }
         screenOptions.remove(id);
@@ -1026,6 +899,7 @@ final class Mounter {
         if (v instanceof Box) ((Box) v).dropShader();
         Animator running = layoutAnimators.get(id);
         if (running != null) running.cancel();
+        stopEffects(id);
         detach(v);
         if (v instanceof ImageBox) cancelImage((ImageBox) v);
         if (v instanceof WebBox) ((WebBox) v).destroy();
@@ -1160,6 +1034,9 @@ final class Mounter {
                 decor.borderWidths[i] = borderWidths[i] * density;
                 decor.borderColors[i] = borderColors[i];
             }
+            // A RippleDrawable rasterizes its mask once; a shape change here
+            // would leave the ripple clipped to the stale (pre-change) shape.
+            rippleMaskDirty(id);
             decor.borderStyle = borderStyle;
             decor.continuous = continuous;
             decor.originX = originXFraction ? originX : originX * density;
@@ -1171,6 +1048,7 @@ final class Mounter {
             decor.boxShadows = fx.shadows;
             decor.boxShadowColors = fx.shadowColors;
             decor.gradients = fx.gradients;
+            decor.masks = fx.masks;
             decor.outlineWidth = fx.outlineWidth;
             decor.outlineColor = fx.outlineColor;
             decor.outlineStyle = fx.outlineStyle;
@@ -1235,13 +1113,25 @@ final class Mounter {
         }
     }
 
+    /**
+     * Interpolates two colors in premultiplied ARGB, as CSS and the core's
+     * `lerp_color` (`transition.rs`) do, so that transparent ends do not pass
+     * through black. The progress is clamped: an overshooting easing (a bouncy
+     * spring's projection) must not carry a channel past its ends, where the
+     * packed byte would wrap into a garbage color for a frame.
+     */
     static int lerpColor(int a, int b, float t) {
-        int r = 0;
-        for (int shift = 0; shift < 32; shift += 8) {
-            int ca = (a >>> shift) & 0xff, cb = (b >>> shift) & 0xff;
-            r |= Math.round(ca + (cb - ca) * t) << shift;
+        if (a == b) return a;
+        t = Math.max(0f, Math.min(1f, t));
+        float alphaA = (a >>> 24) & 0xff, alphaB = (b >>> 24) & 0xff;
+        float alpha = alphaA + (alphaB - alphaA) * t;
+        int out = Math.round(Math.max(0, Math.min(255, alpha))) << 24;
+        if (alpha <= 0) return out;
+        for (int shift = 0; shift <= 16; shift += 8) {
+            float x = ((a >>> shift) & 0xff) * alphaA, y = ((b >>> shift) & 0xff) * alphaB;
+            out |= Math.round(Math.max(0, Math.min(255, (x + (y - x) * t) / alpha))) << shift;
         }
-        return r;
+        return out;
     }
 
     /** Animates the style change of `v` from `from` to the values just set. */
@@ -1271,6 +1161,9 @@ final class Mounter {
                         decor.radii[i] = from.radii[i] + (radii[i] - from.radii[i]) * t;
                         decor.borderWidths[i] = from.borderWidths[i] + (widths[i] - from.borderWidths[i]) * t;
                     }
+                    // Same as above: the ripple's cached mask must follow the
+                    // animated shape (e.g. the press corner morph).
+                    rippleMaskDirty(id);
                 }
             }
             now.opacity = opacity ? from.opacity + (to.opacity - from.opacity) * t : to.opacity;
@@ -1283,6 +1176,12 @@ final class Mounter {
             now.rotateY = to.rotateY;
             now.perspective = to.perspective;
             now.background = decor != null ? decor.fill : to.background;
+            // The frame's border colors are what the decor now carries; a
+            // fresh Dynamic's all-transparent array would have applyDynamic
+            // "restore" them to transparent every frame (an outlined view's
+            // border vanished after its first transition and never came
+            // back).
+            if (decor != null) System.arraycopy(decor.borderColors, 0, now.borderColors, 0, 4);
             applyDynamic(v, now);
             v.invalidate();
         });
@@ -1299,6 +1198,40 @@ final class Mounter {
             System.arraycopy(from.borderColors, 0, decor.borderColors, 0, 4);
         }
         a.start();
+    }
+
+    /**
+     * Stops the transition and keyframe animation of `id`, which is gone: an
+     * endless keyframe animation (a pulsing placeholder) would otherwise run
+     * on unseen, and the animation handler keep its view and this mounter.
+     */
+    private void stopEffects(int id) {
+        ValueAnimator transition = transitions.get(id);
+        transitions.remove(id);
+        if (transition != null) transition.cancel();
+        ValueAnimator keyframes = keyframeAnimators.get(id);
+        keyframeAnimators.remove(id);
+        motions.remove(id);
+        if (keyframes != null) keyframes.cancel();
+    }
+
+    /**
+     * The app stopped: its running animations stop too, since no
+     * {@code DELETE} follows for their views. The animation handler is the
+     * UI thread's and holds an animation until it ends, so an endless one
+     * would keep this mounter, its views and their activity forever.
+     */
+    void cancelAnimations() {
+        java.util.ArrayList<Animator> running = new java.util.ArrayList<>();
+        for (int i = 0; i < layoutAnimators.size(); i++) running.add(layoutAnimators.valueAt(i));
+        for (int i = 0; i < transitions.size(); i++) running.add(transitions.valueAt(i));
+        for (int i = 0; i < keyframeAnimators.size(); i++) running.add(keyframeAnimators.valueAt(i));
+        // Their end listeners remove them from these maps: clear first.
+        layoutAnimators.clear();
+        transitions.clear();
+        keyframeAnimators.clear();
+        motions.clear();
+        for (Animator a : running) a.cancel();
     }
 
     /** Starts (or stops) the keyframe animation of `v`. */
@@ -1498,6 +1431,17 @@ final class Mounter {
     }
 
     /**
+     * Drops the cached mask of the ripple of view {@code id}: a
+     * RippleDrawable rasterizes its mask once and reuses it until told
+     * otherwise, so any corner-radius change under an active (or later)
+     * ripple must invalidate it for the mask to follow the new shape.
+     */
+    private void rippleMaskDirty(int id) {
+        Feedback f = feedback.get(id);
+        if (f != null && f.ripple != null) f.ripple.invalidateSelf();
+    }
+
+    /**
      * Whether presses on {@code id} show feedback. A view that also handles
      * presses shows it itself; for one that does not, the root's
      * `TouchTracker` does, and the view stays unclickable.
@@ -1625,11 +1569,13 @@ final class Mounter {
             panActivations.remove(id);
         }
         boolean selectableView = b.getInt() != 0;
+        boolean continuesText = b.getInt() != 0;
         if (v == null) return;
+        if (v instanceof TextBox) ((TextBox) v).continuesText = continuesText;
         SelectableView area = selectableViews.get(id);
         if (selectableView && (area == null || area.view != v)) {
             if (area != null) area.clear();
-            selectableViews.put(id, new SelectableView(this, v));
+            selectableViews.put(id, new SelectableView(this, v, id));
         } else if (!selectableView && area != null) {
             area.clear();
             selectableViews.remove(id);
@@ -1776,7 +1722,6 @@ final class Mounter {
         View parent = views.get(parentId), child = views.get(childId);
         if (child instanceof StackBox.ScreenBox && parent instanceof StackBox) {
             StackBox stack = (StackBox) parent;
-            ((StackBox.ScreenBox) child).parked = false;
             stack.screens.remove((Integer) childId);
             int pos = beforeId >= 0 ? stack.screens.indexOf(beforeId) : -1;
             stack.screens.add(pos >= 0 ? pos : stack.screens.size(), childId);
@@ -1800,10 +1745,6 @@ final class Mounter {
 
     private boolean headerItem(int id) {
         return headerItems.contains(id);
-    }
-
-    boolean headerMounted(int id, int screen) {
-        return hosts.get(id, -1) == screen;
     }
 
     private boolean removeHosted(int id) {
@@ -1931,6 +1872,16 @@ final class Mounter {
 
     boolean hasShownModal() {
         return !shownModals.isEmpty();
+    }
+
+    /** The windows of the dialogs shown, bottom to top (the test agent's screenshots). */
+    java.util.List<android.view.Window> modalWindows() {
+        java.util.ArrayList<android.view.Window> windows = new java.util.ArrayList<>();
+        for (ModalHost m : shownModals) {
+            android.view.Window window = m.dialogWindow();
+            if (window != null) windows.add(window);
+        }
+        return windows;
     }
 
     /** The window of the topmost dialog shown, or null. */
@@ -2181,6 +2132,17 @@ final class Mounter {
                 if (v instanceof WebBox) ((WebBox) v).command(kind, text);
                 break;
             }
+            case 46: {
+                String url = (String) objects[b.getInt()];
+                int count = b.getInt();
+                java.util.Map<String, String> headers = new java.util.LinkedHashMap<>();
+                for (int i = 0; i < count; i++) {
+                    String name = (String) objects[b.getInt()];
+                    headers.put(name, (String) objects[b.getInt()]);
+                }
+                if (v instanceof WebBox) ((WebBox) v).load(url, headers);
+                break;
+            }
             case 10: {
                 float seconds = b.getFloat();
                 if (v instanceof VideoBox) ((VideoBox) v).seek(seconds);
@@ -2262,8 +2224,48 @@ final class Mounter {
                 Picker.show(context, request);
                 break;
             }
+            case 45: {
+                Picker.Request request = new Picker.Request();
+                request.id = b.getInt();
+                request.limit = b.getInt();
+                String extensions = (String) objects[b.getInt()];
+                request.extensions = extensions.isEmpty() ? new String[0] : extensions.split(",");
+                request.maxBytes = b.getInt();
+                request.files = true;
+                request.view = host;
+                Picker.show(context, request);
+                break;
+            }
             case 27: {
                 for (int i = 0; i < dialogColors.length; i++) dialogColors[i] = b.getInt();
+                break;
+            }
+            case 28: {
+                int request = b.getInt();
+                String path = (String) objects[b.getInt()];
+                boolean opened = SystemUi.openPath(context, path);
+                if (opened) {
+                    eventMap(1, Native.FILE_REQUEST, new String[] {"id"}, new Object[] {(double) request});
+                } else {
+                    eventMap(1, Native.FILE_REQUEST, new String[] {"id", "error"},
+                            new Object[] {(double) request, "no app opened the file"});
+                }
+                break;
+            }
+            case 30: {
+                // A file request with no Android implementation: fail it so
+                // the waiting call returns instead of hanging.
+                int request = b.getInt();
+                eventMap(1, Native.FILE_REQUEST, new String[] {"id", "error"},
+                        new Object[] {(double) request, "not supported on Android"});
+                break;
+            }
+            case 44: {
+                Notifications.command(this, b, objects);
+                break;
+            }
+            case 47: {
+                audio().command(b, objects);
                 break;
             }
             case 26: {
@@ -2341,8 +2343,8 @@ final class Mounter {
                     default: source = new Object[] {0};
                 }
                 String injected = optString(b, objects), before = optString(b, objects), ua = optString(b, objects);
-                boolean scroll = b.getInt() != 0, js = b.getInt() != 0;
-                if (v instanceof WebBox) ((WebBox) v).configure(source, injected, before, ua, scroll, js);
+                boolean scroll = b.getInt() != 0, js = b.getInt() != 0, incognito = b.getInt() != 0;
+                if (v instanceof WebBox) ((WebBox) v).configure(source, injected, before, ua, scroll, js, incognito);
                 break;
             }
             case 4: {

@@ -30,7 +30,7 @@
 // by asset class that moves to a year ago, and a
 // watchlist whose sparklines come with their rows as its list scrolls and
 // show each period.
-import { beforeEach, expect, open, test } from "nsh/test";
+import { expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
 let app: App;
@@ -39,8 +39,31 @@ const start = async (reducedMotion = false) => {
   app = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {}, reducedMotion });
   await app.press("role:button[Plot]");
   await app.waitFor("Live price");
+  // The page makes its charts as they scroll near: down until the last one
+  // (the watchlist) is made, then back to the top, so every test finds its
+  // chart. The page's first screen is made with it.
+  expect(app.shows("id:watchlist")).toBe(false);
+  let pages = 0;
+  while (!app.shows("id:watchlist")) {
+    expect(++pages).toBeLessThan(12);
+    await app.scroll("Live price", 1200);
+  }
+  await app.scroll("Live price", -1200 * pages);
 };
-beforeEach(() => start());
+/**
+ * A test of the Charts page as `start` opens it. The keyboard's tests open
+ * it themselves, with reduced motion (`tabTo`), so it is not opened twice.
+ * Opening it has its own 30 s, as a `beforeEach` would.
+ */
+const pageTest = (name: string, body: () => Promise<void>, timeout = 30_000) =>
+  test(
+    name,
+    async () => {
+      await start();
+      await body();
+    },
+    timeout + 30_000,
+  );
 
 /** The live price's figure: the text right after the stream's state. */
 const price = () => {
@@ -68,11 +91,11 @@ const tabTo = async (shown: string) => {
   }
 };
 
-test("each chart is one image for screen readers", async () => {
+pageTest("each chart is one image for screen readers", async () => {
   expect(app.count("role:image")).toBeGreaterThan(6);
 });
 
-test("the live price ticks every second until it is paused", async () => {
+pageTest("the live price ticks every second until it is paused", async () => {
   const first = price();
   await app.clock!.runFor(3000);
   expect(price()).not.toBe(first);
@@ -85,7 +108,7 @@ test("the live price ticks every second until it is paused", async () => {
   await app.waitFor("LIVE");
 });
 
-test("the live price writes its window's high over it and tags its last price", async () => {
+pageTest("the live price writes its window's high over it and tags its last price", async () => {
   const after = (label: string) => {
     const texts = app.texts();
     return texts[texts.indexOf(label) + 1];
@@ -101,7 +124,7 @@ test("the live price writes its window's high over it and tags its last price", 
   expect(app.texts().filter((t) => t === now).length).toBeGreaterThanOrEqual(2);
 });
 
-test("the depth reads out the side under the pointer and changes its range", async () => {
+pageTest("the depth reads out the side under the pointer and changes its range", async () => {
   // The ends' prices under the plot: its axis' labels, which the app writes.
   await app.waitFor("99.58");
   await app.hover("label:/^Order book depth within 20 ticks/");
@@ -111,7 +134,7 @@ test("the depth reads out the side under the pointer and changes its range", asy
   await app.waitFor("99.18");
 });
 
-test("the drawdown reads out the day under the pointer on either plot", async () => {
+pageTest("the drawdown reads out the day under the pointer on either plot", async () => {
   expect(app.texts()).toContain("DAY 120");
   expect(app.texts()).toContain("at a high");
   await app.hover("label:/^Drawdown from the high/");
@@ -134,14 +157,14 @@ test("Tab reaches the drawdown, whose arrow keys move the day it reads out", asy
   expect(app.texts()).toContain("DAY 120");
 }, 120000);
 
-test("the capacity rings show each period's load", async () => {
+pageTest("the capacity rings show each period's load", async () => {
   expect(app.texts()).toContain("49%");
   await app.press("role:tab[7d peak]");
   await app.waitFor("88%");
   expect(app.texts()).toContain("92%");
 });
 
-test("a donut reports the slice under the pointer, none in its hole", async () => {
+pageTest("a donut reports the slice under the pointer, none in its hole", async () => {
   const pie = "role:image[Revenue by region, $1.24M in all; largest North America at 38.9%]";
   // The middle of the donut is its hole: no slice, the total in it.
   await app.hover(pie);
@@ -155,7 +178,7 @@ test("a donut reports the slice under the pointer, none in its hole", async () =
   await app.waitFor("text:/^(NORTH AMERICA|EMEA|APAC|LATIN AMERICA|OTHER)$/");
 });
 
-test("as a pie, the revenue's shares are written outside its ring", async () => {
+pageTest("as a pie, the revenue's shares are written outside its ring", async () => {
   // The donut has none: its shares are in the legend, to a tenth.
   expect(app.texts()).not.toContain("39%");
   await app.press("Show as pie");
@@ -180,7 +203,7 @@ test("the donut's slices step with the arrow keys once Tab reaches it", async ()
   await app.waitFor("TOTAL");
 }, 120000);
 
-test("bars stand in bands side by side or stacked, a value over each", async () => {
+pageTest("bars stand in bands side by side or stacked, a value over each", async () => {
   // A value over each bar, the last month's total in the readout.
   expect(app.texts()).toContain("63");
   expect(app.texts()).toContain("33");
@@ -195,7 +218,7 @@ test("bars stand in bands side by side or stacked, a value over each", async () 
   expect(app.texts()).not.toContain("63");
 });
 
-test("the profit bridge writes each step's change at its end and moves into another quarter", async () => {
+pageTest("the profit bridge writes each step's change at its end and moves into another quarter", async () => {
   // 4Q26: revenue down to net profit, the totals' levels and the other steps' signed changes on the bars.
   expect(app.count("role:image[Profit bridge, 4Q26: $142.7M revenue to $33.1M net profit, a net margin of 23.2%]")).toBe(1);
   expect(app.texts()).toContain("NET PROFIT");
@@ -225,7 +248,7 @@ test("the profit bridge reads out the step the arrow keys move to", async () => 
   await app.waitFor("23.2% net margin");
 }, 120000);
 
-test("the funnel reads out the stage under the pointer and changes its channel", async () => {
+pageTest("the funnel reads out the stage under the pointer and changes its channel", async () => {
   // Every channel's visits to first trades: each stage's name over its
   // count, what it keeps of the stage before, what is lost in each gap.
   expect(app.texts()).toContain("VISITS TO FIRST TRADE");
@@ -248,7 +271,7 @@ test("the funnel reads out the stage under the pointer and changes its channel",
   expect(app.count("label:/^Conversion funnel, Web: 87,400 visits to 2,410 first trades, 2.8%/")).toBe(1);
 });
 
-test("the candles read out the day under the pointer on either plot and change their period", async () => {
+pageTest("the candles read out the day under the pointer on either plot and change their period", async () => {
   // Two months of days, the last one read out: its date, close and range.
   expect(app.count("label:/^NSHL daily candles, 2M: 177.59 to 196.62, /")).toBe(1);
   expect(app.texts()).toContain("OCT 30");
@@ -270,7 +293,7 @@ test("the candles read out the day under the pointer on either plot and change t
   expect(app.texts()).toContain("177.87");
 });
 
-test("the risk-return bubbles read out the holding under the pointer and move with the period", async () => {
+pageTest("the risk-return bubbles read out the holding under the pointer and move with the period", async () => {
   // Nothing hovered: the holdings' means over three years, the best Sharpe
   // ratio and how many beat the index's under the plot.
   expect(app.count("label:/^Risk and return of 17 holdings, 3Y: best Sharpe LLY, 3 ahead of the S&P 500/")).toBe(1);
@@ -343,7 +366,7 @@ test("the price targets read out the stock the arrow keys step to and change the
   expect(app.count("label:/^Analysts' price targets, Banks: a median upside of \\+9\\.0%, the most for C at \\+14\\.3%/")).toBe(1);
 }, 120000);
 
-test("volume and price read out both values on scales aligned in the same steps, and change their period", async () => {
+pageTest("volume and price read out both values on scales aligned in the same steps, and change their period", async () => {
   // Six months by week, the last one read out; neither scale names a
   // domain, so both take the same steps: four ticks on each side.
   expect(app.count("label:/^ORBX volume and close, 6M: \\+30\\.3%/")).toBe(1);
@@ -363,7 +386,7 @@ test("volume and price read out both values on scales aligned in the same steps,
   for (const t of ["500M", "1B", "1.5B", "100", "150", "250", "AVG / MONTH"]) expect(texts).toContain(t);
 });
 
-test("revenue and margin put zero on one line for a segment that loses money, and move to another segment", async () => {
+pageTest("revenue and margin put zero on one line for a segment that loses money, and move to another segment", async () => {
   // Devices: losses below zero on the right scale, zero on the same grid
   // line on the left one, which writes no value under it.
   let texts = app.texts();
@@ -382,7 +405,7 @@ test("revenue and margin put zero on one line for a segment that loses money, an
   for (const t of ["18%", "28%", "0 / 8", "+27.1%"]) expect(texts).toContain(t);
 });
 
-test("the correlation matrix reads out the pair under the pointer and glides to another lookback", async () => {
+pageTest("the correlation matrix reads out the pair under the pointer and glides to another lookback", async () => {
   // Nothing hovered: the mean of the 28 pairs over a year, the closest
   // pair and the best hedge under the matrix.
   expect(app.count("label:/^Correlation of 8 holdings over 1Y: closest NVDA and AMD at 0\\.83, best hedge MSFT and GLD at −0\\.18/")).toBe(1);
@@ -432,7 +455,7 @@ test("the correlation matrix's arrow keys step across its grid", async () => {
   await app.waitFor("8 HOLDINGS · 1Y");
 }, 120000);
 
-test("the monthly returns read out the month under the pointer and change their symbol", async () => {
+pageTest("the monthly returns read out the month under the pointer and change their symbol", async () => {
   // Nothing hovered: the S&P 500's months compounded, its best and worst
   // months and how many were up; each year's return beside its line, the
   // ramp's ends the largest move either way.
@@ -497,7 +520,7 @@ test("the trading activity's arrow keys step across the week and its market chan
   expect(app.count("label:/^Trades per half hour in HK: busiest Fri at 9:30 with 23\\.7k, quietest Thu at 14:00/")).toBe(1);
 }, 120000);
 
-test("the radar reads out the factor nearest the pointer and changes its benchmark", async () => {
+pageTest("the radar reads out the factor nearest the pointer and changes its benchmark", async () => {
   // Nothing hovered: the means of all six, the portfolio's (362 / 6) a
   // figure of its own, and its spread over the index's (327 / 6 = 54.5).
   expect(app.texts()).toContain("ALL SIX FACTORS");
@@ -513,7 +536,7 @@ test("the radar reads out the factor nearest the pointer and changes its benchma
   await app.waitFor("text:/^(VALUE|MOMENTUM|QUALITY|SIZE|LOW VOL|YIELD)$/");
 }, 120000);
 
-test("the radar reads out the factor nearest the pointer and changes its benchmark", async () => {
+pageTest("the radar reads out the factor nearest the pointer and changes its benchmark", async () => {
   // Nothing hovered: the means of all six, the portfolio's (362 / 6) a
   // figure of its own, and its spread over the index's (327 / 6 = 54.5).
   expect(app.texts()).toContain("ALL SIX FACTORS");
@@ -529,7 +552,7 @@ test("the radar reads out the factor nearest the pointer and changes its benchma
   await app.waitFor("text:/^(VALUE|MOMENTUM|QUALITY|SIZE|LOW VOL|YIELD)$/");
 }, 120000);
 
-test("a quarter's income flows from its segments to net income, and into the next quarter's", async () => {
+pageTest("a quarter's income flows from its segments to net income, and into the next quarter's", async () => {
   // The flows are one image, named with what they show; each account named beside its node (once they have drawn in), the margins under them.
   expect(app.count("role:image[Income flows, Q3: $85.5B revenue, $19.9B net income, a net margin of 23.3%]")).toBe(1);
   await app.clock!.runFor(1500);
@@ -556,7 +579,7 @@ test("the flows read out the account the arrow keys step to", async () => {
   expect(app.texts()).not.toContain("TAX");
 }, 120000);
 
-test("the market map reads out the stock or sector under the pointer and recolors with the period", async () => {
+pageTest("the market map reads out the stock or sector under the pointer and recolors with the period", async () => {
   // Nothing hovered: the cap-weighted change of the day and how many rose.
   expect(app.count("label:/^Market map of 32 stocks in 6 sectors, 1D: 15 up/")).toBe(1);
   let texts = app.texts();
@@ -589,7 +612,7 @@ test("the market map steps across its stocks with the arrow keys", async () => {
   await app.waitFor("S&P 500 · TOP 32 · 1D");
 }, 120000);
 
-test("the allocation names its asset classes over their positions and moves to a year ago", async () => {
+pageTest("the allocation names its asset classes over their positions and moves to a year ago", async () => {
   expect(app.count("label:/^Allocation of \\$620k across 4 asset classes/")).toBe(1);
   let texts = app.texts();
   // The classes' weights over the map, their names in their bands, the positions' weights on them.
@@ -610,7 +633,7 @@ test("the allocation names its asset classes over their positions and moves to a
   expect(texts).not.toContain("TLT");
 });
 
-test("the watchlist's sparklines come with their rows and show each period", async () => {
+pageTest("the watchlist's sparklines come with their rows and show each period", async () => {
   await app.waitFor("label:/^AAPL, 1D: /");
   // Down to the last symbols and back: the list makes their rows, each
   // with its sparkline, as they scroll in.

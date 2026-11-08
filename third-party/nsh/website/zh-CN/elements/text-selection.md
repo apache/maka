@@ -81,18 +81,81 @@ import { TextView } from "nsh/base";
 </Scroll>
 ```
 
+## 读取选中的文字
+
+在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start }`，即复制会得到的内容及其在整个视图文字中的起始位置；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在内容变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    view()
+        .selectable(true)
+        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
+        .child(nsh_base::text_view().markdown(markdown))
+}
+```
+
+```tsx tabs
+import { signal, View } from "nsh";
+import { TextView } from "nsh/base";
+
+const quote = signal("");
+
+<View selectable onSelectionChange={({ text }) => quote.set(text)}>
+  <TextView markdown={reply} />
+</View>
+```
+
+### 读取为 Markdown 或 HTML
+
+设置了 `selectable` 的 `TextView` 可以通过 ref 在需要时读取选区：`selectedText({ format })` 返回选中的文字（`"plain"`，默认值，与复制得到的相同），或把选中的那部分文档按 `"markdown"`、`"html"` 返回。内容由选区覆盖的节点重新生成，所以周围的强调、链接、列表项和代码块都会保留（有序列表保留编号，表格的行保留表头）。选中全部时，若文档本来就是这种格式，则原样返回源文。没有选中内容时返回 `""`。Rust 中为 `TextViewApi::selected_text`，传入 `TextSelectionOptions::format(TextSelectionFormat::Markdown)`。
+
+```rust tabs
+use nsh_base::{TextSelectionFormat, TextSelectionOptions, TextView, TextViewApi, text_view};
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    let doc = component_ref::<TextView>();
+    text_view()
+        .markdown(markdown)
+        .selectable(true)
+        .component_ref(&doc)
+        .on_selection_change(move |_| {
+            if let Some(api) = doc.api::<TextViewApi>() {
+                let options = TextSelectionOptions::format(TextSelectionFormat::Markdown);
+                quote.set(api.selected_text(Some(options)));
+            }
+        })
+}
+```
+
+```tsx tabs
+import { signal } from "nsh";
+import { TextView, type TextViewRef } from "nsh/base";
+
+let doc: TextViewRef | undefined;
+const quote = signal("");
+
+<TextView
+  ref={(r) => (doc = r)}
+  selectable
+  markdown={reply}
+  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
+/>
+```
+
+它读取的是该视图持有的选区：可选择视图嵌套时选区由外层视图持有，内层 `TextView` 的 ref 返回 `""`。
+
+[`Input`](./input.md) 的 `onSelectionChange` 是它自己的：输入框文字中的光标和选区（`{ start, end }`）。
+
 ## 如何选择
 
 | 平台 | 如何选择 |
 |---|---|
 | macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。 |
-| 终端 | 拖动可跨越文本节点和多行文本；Shift+点击扩展选区。按住指针拖出 Scroll 边缘时会自动滚动。Ctrl+A 全选区域，Ctrl+C 或 Ctrl+Insert 复制，Esc 清除非空选区，在区域外按下也会清除选区。 |
 | iOS、Android | 长按选择一个词；平台的选择手柄可以扩展它，编辑菜单中有拷贝和全选。 |
 | Web | 浏览器自己的选择，以及它的手势、菜单和快捷键。 |
-
-在终端界面中，已保留的背景选区只接收当前活动输入作用域内的按键。模态界面或获得焦点的弹出层会暂停其键盘
-操作；关闭弹出层后，原选区可以再次接收操作。复制沿用其他剪贴板写入所用的
-[宿主剪贴板服务与 OSC 52 输出](../docs/tui.md#键盘与鼠标)。
 
 ## 选择的范围
 
@@ -101,6 +164,7 @@ import { TextView } from "nsh/base";
 - **TextView**：设置了 `selectable` 的 [`TextView`](./text-view.md) 自己作为一体选择：它的段落、列表项、单元格和代码块一起选择。放在可选择视图中时，它加入外层的选区。
 - **单独的文字**：不在任何可选择视图中、设置了 `userSelect: "text"` 的文字单独选择，见 [Text](./text.md#属性)。
 - **外观**是平台的高亮，颜色为每段文字的 `selectionColor`（`selection:text-*`）。
+- **分成多段文字的一行**：把一行排成多段文字的 Rust 组件（软换行的代码行）给后面的各段设置 `.continues_text(true)`；复制时这一行完整给出，断开处没有换行，三击会选中它的所有部分。[`DiffView`](./diff-view.md) 的换行就是这样处理的。
 - **列表**：在虚拟化的 [List](./list.md) 中，选区覆盖已挂载的行；回收到视野之外的行会离开选区。
 
 ## 相关内容

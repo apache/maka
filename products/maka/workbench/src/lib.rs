@@ -90,7 +90,7 @@ mod tests {
     use nsh_core::{
         Size,
         element::Instance,
-        platform::{Environment, Os, Renderer},
+        platform::{Environment, Os},
         prelude::px,
     };
 
@@ -123,7 +123,6 @@ mod tests {
             viewport: Size::new(px(480.0), px(200.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer: Renderer::Native,
                 ..Environment::default()
             },
             ui_sets: sets,
@@ -160,7 +159,6 @@ mod tests {
             viewport: Size::new(px(640.0), px(480.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer: Renderer::Native,
                 ..Environment::default()
             },
             ui_sets: sets,

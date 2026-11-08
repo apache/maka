@@ -1,6 +1,6 @@
 ---
 title: 字体
-description: 系统字体与通用字体族、回退列表、从 Rust crate 的资源或 TSX 导入发布 .ttf、.otf、.woff 和 .woff2 文件、含多个字重和斜体的字体族，以及在类型化样式和 Tailwind 类中使用字体。
+description: 系统字体与通用字体族、回退列表、从 Rust crate 的资源或 TSX 导入发布 .ttf、.otf、.woff 和 .woff2 文件、在应用运行时注册字体、含多个字重和斜体的字体族，以及在类型化样式和 Tailwind 类中使用字体。
 order: 37
 group: ui
 ---
@@ -66,6 +66,34 @@ text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
 ```
 
 各平台都用自己的字体机制保持列表的顺序：iOS 和 macOS 上的级联列表、Windows 上的字体回退（每段一个：取段落第一个样式的列表）、Linux 上的 Pango 字体族列表、Web 上浏览器的列表、GPUI 的回退字体。在 Android 上，文字用它拥有的第一个字体族排版；该字体族是应用注册的字体时，列表中排在它之后的已注册字体是它的回退字体（Android 10 及更高版本）。
+
+## 在应用运行时注册字体
+
+应用发布时还不知道的字体（用户从字体目录中挑选的、服务器随文档发送的、应用自己生成的）在应用运行时注册：Rust 中为 `register_font(data)`，TSX 中为 `registerFont(source)`。它接受 TrueType、OpenType、WOFF 或 WOFF2 数据（在 TSX 中为 `Uint8Array`，或字体文件的 URL：应用自己的文件 `asset:/...`，或网络上的文件，按 `fetch` 的方式读取，因此适用 `network` 权限），并解析为字体的字体族名（在 TSX 中为 `{ family }`）。此后，使用该字体族的文字都会用它排版，字体到达之前已显示的文字也会重新排版：
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let family = signal(String::new());
+spawn(async move {
+    let Ok(response) = fetch("https://fonts.example.com/Brand.woff2").await else { return };
+    if let Ok(name) = register_font(response.body).await {
+        family.set(name);
+    }
+});
+text("Branded").font_family(move || family.get())
+```
+
+```tsx tabs
+import { registerFont, signal, Text } from "nsh";
+
+const family = signal("");
+registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
+
+<Text style={{ fontFamily: family() }}>Branded</Text>
+```
+
+URL 无法加载或数据不是字体时，`registerFont` 以 `Error` 拒绝；`network` 权限不允许该 URL 或它的重定向时，该 `Error` 的 `code` 为 `"ERR_ACCESS_DENIED"`；Rust 的 `register_font` 解析为原因。再次注册同一字体没有影响。与导入的字体一样，注册的字体只属于该应用，不会安装到设备上。
 
 ## 字重与斜体
 
@@ -140,6 +168,10 @@ import "./fonts/Inter-Bold.ttf";
 ```
 
 不在主题中登记也可以使用任意字体族：`font-[Pacifico]`。字重类（`font-light`、`font-semibold`、`font-bold` 等）与 `fontWeight` 一样选择字形。视图上的文字样式会传给其内部的文字，因此视图上的 `.font_family(INTER.family)` 或 `<View class="font-body">` 可以为整个页面设置字体族。
+
+## 宿主注册的字体
+
+嵌入 NSH 的应用也可以自己注册这些文件，一次即可供它加载的每个 bundle 使用：Android 的 `NshView.registerFont` 和 iOS 的 `NshAppView.registerFont` 接收字体文件的字节。应用在 `fontFamily` 里写文件里的字体族名（即导入该文件时得到的名字），不再导入文件，因此文件不会打进每个 bundle。加载前注册的字体在该应用的第一帧就可用。
 
 ## 应用的默认字体
 

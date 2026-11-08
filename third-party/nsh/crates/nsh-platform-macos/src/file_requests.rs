@@ -12,6 +12,7 @@ use block2::RcBlock;
 use nsh_core::{
     EventKind, EventPayload, ROOT_ID,
     file_dialog::{self, FileFilter, FileRequest, OpenDialog, SaveDialog},
+    picker::{FilePickRequest, read_picked_files},
 };
 use nsh_engine::EngineControl;
 use objc2::{
@@ -137,7 +138,7 @@ unsafe fn begin(surface: &Surface, panel: &AnyObject, handler: impl Fn(isize) + 
     let handler = RcBlock::new(handler);
     // SAFETY: AppKit's documented NSSavePanel API, as the caller promises.
     unsafe {
-        match surface.root.ns().window() {
+        match crate::window::sheet_window(surface) {
             Some(window) => {
                 let _: () = msg_send![panel, beginSheetModalForWindow: &*window, completionHandler: &*handler];
             }
@@ -181,13 +182,59 @@ fn pick_paths(surface: &Rc<Surface>, id: u32, request: &OpenDialog) {
     let Some(control) = control(surface) else {
         return;
     };
-    let Some(class) = AnyClass::get(c"NSOpenPanel") else {
+    let answer = control.clone();
+    let shown = open_panel(surface, request, move |paths| {
+        answer.dispatch_event(
+            ROOT_ID,
+            EventKind::FileRequest,
+            EventPayload::file_answer(id, paths),
+        );
+    });
+    if !shown {
         control.dispatch_event(
             ROOT_ID,
             EventKind::FileRequest,
             EventPayload::file_failed(id, "no NSOpenPanel"),
         );
+    }
+}
+
+/// `Picker.pickFiles`: the open panel for `request`; the files picked are
+/// read on a thread of their own and answer pick `id` as a root `Pick`
+/// event.
+pub(crate) fn pick_files(surface: &Rc<Surface>, id: u32, request: &FilePickRequest) {
+    let Some(control) = control(surface) else {
         return;
+    };
+    let answer = move |control: EngineControl, files| {
+        control.dispatch_event(ROOT_ID, EventKind::Pick, EventPayload::Picked { id, files });
+    };
+    let picked = control.clone();
+    let asked = request.clone();
+    let shown = open_panel(surface, &request.dialog(), move |paths| {
+        let control = picked.clone();
+        let asked = asked.clone();
+        let spawned = std::thread::Builder::new()
+            .name("nsh-picker".into())
+            .spawn(move || answer(control, read_picked_files(&paths, &asked)));
+        if let Err(e) = spawned {
+            log::warn!("cannot read the picked files: {e}");
+        }
+    });
+    if !shown {
+        answer(control, Vec::new());
+    }
+}
+
+/// Shows the open panel `request` says; `picked` gets the paths chosen (none
+/// when cancelled). `false` when AppKit has no panel to show.
+fn open_panel(
+    surface: &Rc<Surface>,
+    request: &OpenDialog,
+    picked: impl Fn(Vec<PathBuf>) + 'static,
+) -> bool {
+    let Some(class) = AnyClass::get(c"NSOpenPanel") else {
+        return false;
     };
     let filters: &[FileFilter] = if request.picks_files() {
         &request.filters
@@ -217,13 +264,10 @@ fn pick_paths(surface: &Rc<Surface>, id: u32, request: &OpenDialog) {
             } else {
                 Vec::new()
             };
-            control.dispatch_event(
-                ROOT_ID,
-                EventKind::FileRequest,
-                EventPayload::file_answer(id, paths),
-            );
+            picked(paths);
         });
     }
+    true
 }
 
 fn pick_save_path(surface: &Rc<Surface>, id: u32, request: &SaveDialog) {

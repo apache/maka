@@ -1,8 +1,8 @@
-import { type Bounds, Canvas, type CanvasRenderingContext2D, cleanup, Scroll, signal, Text, View } from "nsh";
+import { type Bounds, Canvas, type CanvasRenderingContext2D, cleanup, type JSX, Scroll, signal, Text, View } from "nsh";
 import { Animated, type AnimatedNode, type CompositeAnimation, createAnimatedValue, createMotion, Easing, LayoutAnimation, type LayoutAnimationConfig, type MotionName, type MotionPreset, type MotionSpec, motions } from "nsh";
 import { Button as BaseButton, Tab, Tabs } from "nsh/base";
 import { Icon } from "../icons";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, Legend, mono, type Palette, radius, Segmented, tabPress, tints } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, Legend, mono, type Palette, radius, Segmented, tabPress, TERMINAL_GAP, terminal, tints } from "../ui";
 
 /** The tones of the demos' dots and tiles (call in a reactive scope). */
 const tones = () => [colors.accent, colors.info, colors.warn, colors.danger, colors.up];
@@ -178,9 +178,11 @@ function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: st
     <BaseButton
       onPress={press}
       accessibilityLabel={props.name}
+      // In a terminal a tile is its name in a column of names, not grown,
+      // so the rows line up: no card or icon to center it in.
       style={{
         flexBasis: "30%",
-        flexGrow: 1,
+        flexGrow: terminal ? 0 : 1,
         borderRadius: 14,
         borderCurve: "continuous",
         backgroundColor: colors.raised,
@@ -196,7 +198,7 @@ function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: st
       <View
         style={{
           height: 92,
-          alignItems: "center",
+          alignItems: terminal ? "flex-start" : "center",
           justifyContent: "center",
           gap: 12,
         }}
@@ -231,8 +233,7 @@ function MotionPresets() {
   const names = () => presetNames.filter((n) => motions[n].kind === kind());
   return (
     <Card icon="spark" title="Motion presets" subtitle={`${presetNames.length} ready-made motions, played natively`} right={<Badge label={status()} tone="accent" />}>
-      <Scroll horizontal scrollbar={false}>
-        <Tabs style={{ flexDirection: "row", gap: 8 }}>
+      <ChipRow>
           <Each of={kinds}>
             {(k) => (
               <Chip
@@ -245,8 +246,7 @@ function MotionPresets() {
               />
             )}
           </Each>
-        </Tabs>
-      </Scroll>
+      </ChipRow>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Each of={names()}>{(name, i) => <PresetTile name={name()} tone={tones()[i() % tones().length]} onPlay={(s) => status.set(s)} />}</Each>
       </View>
@@ -646,9 +646,14 @@ function EasingPlot() {
           const b = height - 8;
           const y = (v: number) => b - ((v - lo) / (hi - lo)) * (b - t);
           const x = (v: number) => l + v * (r - l);
-          // Zones outside 0..1: where a curve overshoots.
-          hatch(cx, l, t, r - l, y(1) - t);
-          hatch(cx, l, y(0), r - l, b - y(0));
+          // Zones outside 0..1: where a curve overshoots. A terminal draws
+          // a texture this faint as hairlines at full dot strength, so the
+          // hatching would fill both zones with dots; the dashed lines at
+          // 0 and 1 mark them there.
+          if (!terminal) {
+            hatch(cx, l, t, r - l, y(1) - t);
+            hatch(cx, l, y(0), r - l, b - y(0));
+          }
           cx.strokeStyle = colors.line;
           cx.lineWidth = 1;
           for (const q of [0.25, 0.5, 0.75]) {
@@ -719,8 +724,7 @@ function EasingPlot() {
           cx.fill();
         }}
       />
-      <Scroll horizontal scrollbar={false}>
-        <Tabs style={{ flexDirection: "row", gap: 8 }}>
+      <ChipRow>
           <Each of={curves}>
             {(c, i) => (
               <Chip
@@ -733,8 +737,7 @@ function EasingPlot() {
               />
             )}
           </Each>
-        </Tabs>
-      </Scroll>
+      </ChipRow>
       <Button label="Play" icon="play" onPress={play} />
     </Card>
   );
@@ -784,6 +787,17 @@ function EasingRace() {
 }
 
 /** A selectable capsule, a tab of the curves (36 pt, with hit slop up to 44). */
+/** A row of chips: scrolled sideways, or wrapped in a terminal, whose
+ * columns would cut the last chips off. */
+function ChipRow(props: { children: JSX.Element }) {
+  if (terminal) return <Tabs style={{ flexDirection: "row", flexWrap: "wrap", columnGap: TERMINAL_GAP }}>{props.children}</Tabs>;
+  return (
+    <Scroll horizontal scrollbar={false}>
+      <Tabs style={{ flexDirection: "row", gap: 8 }}>{props.children}</Tabs>
+    </Scroll>
+  );
+}
+
 function Chip(props: { label: string; active?: boolean; onPress: () => void }) {
   return (
     <Tab
@@ -849,6 +863,11 @@ function Composition() {
     state.set({ label: `${name} running`, tone: "info" });
     a.start().then(({ finished }) => state.set({ label: `${name} ${finished ? "finished" : "stopped"}`, tone: finished ? "accent" : "warn" }));
   };
+  const staggerButton = () => <Button label="Stagger" variant="secondary" onPress={run("stagger", stagger)} />;
+  const sequenceButton = () => <Button label="Sequence" variant="secondary" onPress={run("sequence", sequence)} />;
+  const loopButton = () => <Button label="Loop" variant="secondary" onPress={run("loop", pulse)} />;
+  const stopButton = () => <Button label="Stop" variant="ghost" icon="pause" onPress={() => all.forEach((a) => a.stop())} />;
+  const resetButton = () => <Button label="Reset" variant="ghost" onPress={() => all.forEach((a) => a.reset())} />;
   return (
     <Card icon="components" title="Composition" subtitle="Each step starts as the last one ends" right={<Badge label={state().label} tone={state().tone} />}>
       <View style={{ height: 116, flexDirection: "row", justifyContent: "center", alignItems: "flex-end", gap: 12, paddingBottom: 14 }}>
@@ -872,25 +891,32 @@ function Composition() {
           )}
         </Each>
       </View>
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <View style={{ flex: 1 }}>
-          <Button label="Stagger" variant="secondary" onPress={run("stagger", stagger)} />
+      {/* A terminal's buttons are their labels: one row of them, where
+          two rows of equal shares would stagger them. */}
+      <If
+        when={terminal}
+        else={
+          <>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <View style={{ flex: 1 }}>{staggerButton()}</View>
+              <View style={{ flex: 1 }}>{sequenceButton()}</View>
+              <View style={{ flex: 1 }}>{loopButton()}</View>
+            </View>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <View style={{ flex: 1 }}>{stopButton()}</View>
+              <View style={{ flex: 1 }}>{resetButton()}</View>
+            </View>
+          </>
+        }
+      >
+        <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: TERMINAL_GAP }}>
+          {staggerButton()}
+          {sequenceButton()}
+          {loopButton()}
+          {stopButton()}
+          {resetButton()}
         </View>
-        <View style={{ flex: 1 }}>
-          <Button label="Sequence" variant="secondary" onPress={run("sequence", sequence)} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Button label="Loop" variant="secondary" onPress={run("loop", pulse)} />
-        </View>
-      </View>
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <View style={{ flex: 1 }}>
-          <Button label="Stop" variant="ghost" icon="pause" onPress={() => all.forEach((a) => a.stop())} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Button label="Reset" variant="ghost" onPress={() => all.forEach((a) => a.reset())} />
-        </View>
-      </View>
+      </If>
     </Card>
   );
 }

@@ -125,23 +125,25 @@ export function MarkdownBody(props: {
               borderRadius: props.compact ? 8 : 12,
             },
             codeBlockCode: { ...codeTextStyle, color: color() },
-            codeBlockHeader: platform.isTerminal
-              ? { color: C.muted }
-              : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
+            codeBlockHeader:
+              platform.idiom === 'terminal'
+                ? { color: C.muted }
+                : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
             // The desktop starts the language where the code starts.
-            codeBlockLanguage: platform.isTerminal
-              ? secondaryTextStyle
-              : { ...secondaryTextStyle, paddingLeft: 4 },
+            codeBlockLanguage:
+              platform.idiom === 'terminal'
+                ? secondaryTextStyle
+                : { ...secondaryTextStyle, paddingLeft: 4 },
             // The desktop starts a table's text where a code block's starts.
             tableCell: {
               ...readingStyle,
-              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
               color: color(),
               borderColor: C.line,
             },
             tableHeaderCell: {
               ...readingStyle,
-              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
               color: color(),
               fontWeight: '600',
               borderColor: C.line,

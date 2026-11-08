@@ -12,6 +12,11 @@
 //! (and so pauses the manager's timeouts, which the app passes as
 //! `paused`), and a toast's `accessibility_label` is read as it shows.
 //!
+//! A terminal has its own interaction: the stack shows only its newest
+//! toast, on the status line (`crate::status_line`, the bottom row it
+//! shares with tooltips, a toast first), and a newer one replaces it there;
+//! nothing stacks, expands or animates.
+//!
 //! The imperative layer (`toast("Copied")` from anywhere, with a title, a
 //! description and an action) is a styled library's, as `gpui-component`'s
 //! notifications are: an app builds it on these (the gallery's

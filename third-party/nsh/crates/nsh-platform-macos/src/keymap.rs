@@ -26,7 +26,7 @@ use std::{cell::RefCell, ptr::NonNull, rc::Rc, sync::Arc};
 use block2::RcBlock;
 use nsh_core::{
     EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
+    keymap::{Key, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
 use objc2::{rc::Retained, runtime::AnyObject};
@@ -113,32 +113,32 @@ fn install(key: u64) -> Option<Retained<AnyObject>> {
 
 /// What the monitor does with key-down `event`, for a key given to a
 /// window that is not the key window (`nsh test`'s, whose events the
-/// monitor never sees): whether it fired a binding (then it is reported to
-/// JS, and the window must not get it).
+/// monitor never sees): whether a binding consumed it (then the window
+/// must not get it; a binding passing it through is reported and the
+/// window gets it).
 #[cfg(any(feature = "dev", feature = "terminal"))]
 pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     fires_now(surface, event)
 }
 
-/// Whether key-down `event` fired one of the surface's ordinary bindings
-/// without re-checking the focus-settle fence.
+/// Whether key-down `event` is consumed by one of the surface's ordinary
+/// bindings without re-checking the focus-settle fence.
 pub(crate) fn fires_now(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     *surface.keymap.key.borrow_mut() = Some(event.into());
     crate::input::control_activation_target(surface, event).is_none()
         && matched(surface, event, false)
 }
 
-/// Whether key-down `event` was held by an unsettled focus fence or fired
-/// one of the surface's ordinary bindings.
+/// Whether key-down `event` was held by an unsettled focus fence or consumed
+/// by one of the surface's ordinary bindings.
 fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     if crate::text_input::is_replaying(surface) {
         return false;
     }
-    let Some(window) = surface.root.ns().window() else {
+    let Some(window) = event.window(surface.mtm) else {
         return false;
     };
-    if event.window(surface.mtm).as_deref() != Some(&*window) || editing(surface, &window).is_none()
-    {
+    if crate::window::root_in(surface, &window).is_none() || editing(surface, &window).is_none() {
         return false;
     }
     crate::text_input::hold_nsevent(surface, event) || fires_now(surface, event)
@@ -161,12 +161,19 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     let Some(table) = surface.keymap.table.borrow().clone() else {
         return false;
     };
-    let Some(window) = surface.root.ns().window() else {
+    // The monitor sees the key before any view: the window it is in (the
+    // main one or a window of the app's own) is the one picked in.
+    let Some(window) = event.window(surface.mtm) else {
         return false;
     };
-    if event.window(surface.mtm).as_deref() != Some(&*window) {
+    let Some(root) = crate::window::root_in(surface, &window) else {
+        return false;
+    };
+    let own = root.ns() != surface.root.ns();
+    if crate::window::blocked(surface, own.then_some(&root)) {
         return false;
     }
+    crate::input::enter(surface, own.then_some(root));
     let Some(editing) = editing(surface, &window) else {
         return false;
     };
@@ -188,13 +195,13 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     } else {
         table.find_with(keystroke, editing, repeat, within)
     };
-    if let KeyMatch::Fire(id) = found {
+    if let Some(id) = found.fired() {
         surface.event(
             ROOT_ID,
             EventKind::KeyCommand,
             EventPayload::Value(PayloadValue::Number(id as f64)),
         );
-        if keystroke.key != Key::Escape {
+        if keystroke.key != Key::Escape && found.consumed() {
             crate::text_input::arm(surface);
         }
     }
@@ -212,7 +219,8 @@ fn editing(surface: &Surface, window: &NSWindow) -> Option<bool> {
     let Some(view) = responder.downcast_ref::<NSView>() else {
         return Some(false);
     };
-    let root = surface.root.ns();
+    let root = crate::input::event_root(surface);
+    let root = root.ns();
     if !view.isDescendantOf(root) {
         return None;
     }
@@ -270,12 +278,22 @@ fn character(event: &NSEvent, shift: bool) -> Option<char> {
     }
 }
 
+/// The virtual key codes of F1 to F20.
+const FUNCTION_KEYS: [u16; 20] = [
+    122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+];
+
 /// F1 to F20, by virtual key code.
 pub(crate) fn function_key(code: u16) -> Option<u8> {
-    const KEYS: [u16; 20] = [
-        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
-    ];
-    KEYS.iter().position(|&k| k == code).map(|i| i as u8 + 1)
+    FUNCTION_KEYS
+        .iter()
+        .position(|&k| k == code)
+        .map(|i| i as u8 + 1)
+}
+
+/// The virtual key code of F`n` (macOS's keyboards end at F20).
+pub(crate) fn function_key_code(n: u8) -> Option<u16> {
+    FUNCTION_KEYS.get(usize::from(n).checked_sub(1)?).copied()
 }
 
 #[cfg(test)]
@@ -286,5 +304,9 @@ mod tests {
         assert_eq!(super::function_key(96), Some(5));
         assert_eq!(super::function_key(90), Some(20));
         assert_eq!(super::function_key(0), None);
+        assert_eq!(super::function_key_code(1), Some(122));
+        assert_eq!(super::function_key_code(20), Some(90));
+        assert_eq!(super::function_key_code(0), None);
+        assert_eq!(super::function_key_code(21), None);
     }
 }

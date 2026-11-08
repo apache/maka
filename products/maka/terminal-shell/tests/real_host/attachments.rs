@@ -75,10 +75,8 @@ async fn directory_path_paste_remains_text_in_an_existing_composer() {
         fixture.client().await,
         tokio::runtime::Handle::current(),
     );
-    let mut view = AppView::new(nsh_platform_tui::AppOptions {
-        size: (120, 36),
-        ..Default::default()
-    });
+    let mut view = AppView::new(nsh_platform_tui::AppOptions::default());
+    view.resize(120, 36);
     let source = format!(
         r#"
 import {{ mount, signal, Text }} from 'nsh';

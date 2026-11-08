@@ -363,6 +363,7 @@ view().h_4().w_40().rounded(px(4.0)).bg(ZINC.shade(200)).animate_pulse()
 | `animationDelay` | `KeyframeAnimation::delay(ms)` | `number \| "200ms" \| …` | Before it starts. |
 | `animationTimingFunction` | `KeyframeAnimation::easing([x1, y1, x2, y2])` | as `transitionTimingFunction` | The curve. |
 | `animationIterationCount` | `KeyframeAnimation::iterations(n)` | `number \| "infinite"` | Default `"infinite"`. |
+| `animationFrameRate` | `KeyframeAnimation::frame_rate(hz)` | `number` | The highest frame rate it needs, in Hz ([Frame rate](#frame-rate)). Default: the screen's highest. |
 
 Tailwind: `animate-spin`, `animate-ping`, `animate-pulse`, `animate-bounce`, `animate-none`.
 
@@ -459,9 +460,9 @@ The value is kept alive by the views bound to it and by the component that made 
 | `setOffset(offset)` | `set_offset(offset)` | Adds `offset` to what the value shows: bindings see value + offset, while `set`, animations and drags move the value. |
 | `flattenOffset()` | `flatten_offset()` | Adds the offset to the value and makes the offset 0. |
 | `extractOffset()` | `extract_offset()` | Moves the value into the offset and makes the value 0: a drag then starts from 0, on top of where the last one left it. |
-| `timing(to, { duration?, easing?, delay? })` | `timing(to, ms, easing)`, `timing_with(to, Timing { .. })` | Animates to `to` over `duration` ms (default 300, easing `"easeInOut"`). |
-| `spring(to, { stiffness?, damping?, mass?, velocity? })` | `spring(to, Spring { .. })` | Springs to `to` (defaults: stiffness 170, damping 26, mass 1). |
-| `decay({ velocity?, deceleration?, clamp?, bounce? })` | `decay(velocity, deceleration)`, `decay_within(velocity, deceleration, (min, max), bounce)` | Coasts from `velocity` (units per second) and slows down (deceleration 0.998 per ms by default). With a clamp of `[min, max]` it stops at a bound, or bounces back from it keeping `bounce` (0..1) of its speed. |
+| `timing(to, { duration?, easing?, delay?, frameRate? })` | `timing(to, ms, easing)`, `timing_with(to, Timing { .. })` | Animates to `to` over `duration` ms (default 300, easing `"easeInOut"`). |
+| `spring(to, { stiffness?, damping?, mass?, velocity?, frameRate? })` | `spring(to, Spring { .. })` | Springs to `to` (defaults: stiffness 170, damping 26, mass 1). |
+| `decay({ velocity?, deceleration?, clamp?, bounce?, frameRate? })` | `decay(velocity, deceleration)`, `decay_within(velocity, deceleration, (min, max), bounce)` | Coasts from `velocity` (units per second) and slows down (deceleration 0.998 per ms by default). With a clamp of `[min, max]` it stops at a bound, or bounces back from it keeping `bounce` (0..1) of its speed. |
 
 Each animation gives an answer you can await, whether it finished: `true` when it played to the end, `false` when something stopped it (`stop()`, `set()`, or a new animation on the same value). It is a `Promise<{ finished: boolean }>` in TSX and an `AnimationEnd` in Rust, which a task awaits for the `bool`. Starting a new animation on a moving value interrupts the old one smoothly: a spring or decay without a velocity continues with the value's current velocity.
 
@@ -840,7 +841,39 @@ view()
 
 Reach for `requestAnimationFrame` (a global in TSX, following the display) only for what cannot be described ahead of time, such as a physics simulation in your code. Anything that can be an animated value should be one.
 
+## Frame rate
+
+Every animation runs at the screen's highest frame rate by default: 120 Hz on a ProMotion display. A small or slow motion, such as a spinner or a gentle pulse, looks the same at a lower rate, and asking for one lets the screen refresh less often while it is all that moves, which saves power. `frameRate` is the highest rate, in Hz, an animation needs: in the options of `timing`, `spring` and `decay`, of `Animated.*` steps, keyframes and motions (`play`), and as `animationFrameRate` beside a keyframe animation's other style keys.
+
+```rust tabs
+// A spinner that needs 30 frames a second.
+view().size(px(16.0)).animation(KeyframeAnimation::new(Keyframes::Spin).frame_rate(30.0))
+
+// A slow fade, at most 30 Hz.
+opacity.timing_with(1.0, Timing::new(600.0, Easing::Linear).frame_rate(30.0));
+// A loop of keyframes at 24 Hz.
+glow.keyframes([Keyframe::new(0.4), Keyframe::new(1.0), Keyframe::new(0.4)], KeyframeTiming::new(1600.0).infinite().frame_rate(24.0));
+```
+
+```tsx tabs
+// A spinner that needs 30 frames a second.
+<View style={{ width: 16, height: 16, animationName: "spin", animationFrameRate: 30 }} />
+
+// A slow fade, at most 30 Hz.
+opacity.timing(1, { duration: 600, easing: Easing.linear, frameRate: 30 });
+// A loop of keyframes at 24 Hz.
+glow.keyframes([0.4, 1, 0.4], { duration: 1600, iterations: "infinite", frameRate: 24 });
+```
+
+The screen runs at the highest rate anything on it needs: an animation without `frameRate`, a transition, a scroll, a gesture or a `requestAnimationFrame` loop brings it back to the full rate while it runs, and a composite runs at the highest rate of its steps. The animation's timing is the same at any rate: it ends when it would at the full rate. macOS and iOS lower the screen's rate for these requests; the other platforms run every animation at the screen's rate.
+
 ## Reduced motion
+
+On the terminal target (`--target tui`), the host advances animated values and composites on its frames and
+delivers their completion callbacks. Opacity, colors and two-dimensional transforms project to the Cell grid;
+text keeps upright terminal glyphs, and canvas paths use braille dots. The terminal reports reduced motion:
+motions, navigation, modal, layout and style transitions settle immediately, while explicit animated-value
+drivers and `Animated` composites play as written.
 
 When the user asks for less motion (iOS "Reduce Motion", Android "Remove animations"), `reduce_motion()` in Rust and `reduceMotion()` from `nsh` in TSX are `true`, and the `motion-reduce:` / `motion-safe:` Tailwind variants apply.
 

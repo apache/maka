@@ -128,6 +128,19 @@ impl ImageSrc {
         self.uri.is_empty()
     }
 
+    /// The source of a menu item's icon; `None` for an empty URL.
+    pub(crate) fn menu_icon(&self) -> Option<crate::ImageSource> {
+        (!self.is_empty()).then(|| {
+            crate::ImageSource {
+                uri: self.uri.to_arc(),
+                size: self.size.map(|(w, h)| crate::geometry::size_pt(w, h)),
+                scales: self.scales,
+                data: self.data.clone(),
+            }
+            .inline()
+        })
+    }
+
     /// The SVG document `markup` itself as a source ([`super::svg`],
     /// [`super::image`]): its markup is the image, as an `<svg>` written
     /// inline in a web page is.

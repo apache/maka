@@ -188,7 +188,7 @@ view()
 - **Widths and colors** per side: `borderTopWidth`, `borderRightWidth`, ..., `borderTopColor`, ..., which keep their side in either direction; and `borderStartWidth`, `borderEndWidth`, `borderStartColor`, `borderEndColor`, which follow the [layout direction](./layout.md#right-to-left) (`.border_t(..)`, `.border_t_color(..)`, `.border_s(..)`, `.border_e_color(..)`, ... in Rust).
 - **The color** of a side whose width is set and whose color is not is the text color, as CSS's `currentColor`: `{ borderWidth: 1, color: "#0969da" }` draws a blue border.
 - **Radii** per corner: `borderTopLeftRadius`, `borderTopRightRadius`, `borderBottomRightRadius`, `borderBottomLeftRadius`, and `borderTopStartRadius` / `borderTopEndRadius` / `borderBottomStartRadius` / `borderBottomEndRadius` (top start, top end, bottom start, bottom end), which follow the [layout direction](./layout.md#right-to-left) (`.rounded_tl(..)`, ..., `.rounded_ss(..)`, `.rounded_se(..)`, `.rounded_es(..)`, `.rounded_ee(..)` in Rust, and the presets `.rounded_lg()`, `.rounded_full()`, ...).
-- **`borderCurve: "continuous"`** (`.border_curve(BorderCurve::Continuous)`) draws corners whose curvature eases into the edges, like iOS app icons, on both platforms. A pill (`borderRadius` of half the height) stays a pill.
+- **`borderCurve: "continuous"`** (`.border_curve(BorderCurve::Continuous)`, the class `corner-squircle`) draws superellipse corners, whose curvature eases into the edges, like iOS app icons: on iOS, Android, macOS and Linux, and on the web where the browser has CSS `corner-shape` (Chromium); elsewhere circular corners of the same radius. A pill (`borderRadius` of half the height) stays a pill.
 - **`overflow: "hidden"`** (`.overflow_hidden()`) clips children to the rounded shape. What it clips away is clipped in layout too: it does not reach an enclosing scroll view's content size, so a box that lays a child out wider than itself and scales it down with a `transform` (transforms do not affect layout) leaves the scroll view alone.
 
 Radii larger than half the side are clamped, so `borderRadius: 9999` (`.rounded_full()`) makes a circle or a pill.
@@ -262,6 +262,7 @@ Text elements do not draw gradients on iOS.
 | `filter` | CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()` (without a color, in the text color, as in CSS); several separated by spaces | `.brightness(n)`, `.contrast(n)`, `.grayscale(n)`, `.hue_rotate(angle)`, `.invert(n)`, `.saturate(n)`, `.sepia(n)`, `.blur(px(..))` |
 | `backdropFilter` | Filters of what is behind the view: `"blur(10px)"` (frosted glass) | `.backdrop_blur(px(10.0))`, `.backdrop_saturate(n)`, ... |
 | `glassEffect` | `"regular"` or `"clear"` for Apple's Liquid Glass on iOS 26 and macOS 26 and later; `"none"` (the default) uses `backdropFilter` | `.glass_effect(GlassEffect::Regular)` |
+| `glassTintColor` | On iOS 26 and macOS 26, a color the glass takes on; `null` (the default) restores the system's own | `.glass_tint_color(color)` / `.glass_tint_color(None)` |
 | `mixBlendMode` | How the view blends with what is behind it: `"multiply"`, `"screen"`, `"overlay"`, ... | `.mix_blend_mode(BlendMode::Multiply)` |
 
 ```rust tabs
@@ -312,9 +313,71 @@ view().backdrop_blur(px(30.0)).backdrop_material(BackdropMaterial::Regular)
 `"clear"` takes less color from the background. Pair it with `backdropFilter` for the blur shown on earlier iOS
 versions and other platforms. The glass follows the view's size and rounded corners.
 
-```tsx
-<View style={{ height: 80, borderRadius: 16, backdropFilter: "blur(12px)", glassEffect: "regular" }} />
+`glassTintColor` tints that glass on iOS 26 and macOS 26: `null` (or removing the key) restores the system's default.
+An explicit transparent color is a tint, not a reset. It draws nothing without `glassEffect`, and the blur fallback
+on earlier systems is unchanged. Rust accepts static colors directly or a `Signal<Option<AdaptiveColor>>`:
+
+```rust
+let tint = signal(Some(AdaptiveColor::rgb(0xffd278, 0xffd278)));
+let panel = view().glass_effect(GlassEffect::Regular).glass_tint_color(tint);
+// In the corresponding UI actions:
+tint.set(None); // restore the native default
+tint.set(Some(AdaptiveColor::rgb(0x5080ff, 0x5080ff)));
 ```
+
+```tsx
+<View style={{ height: 80, borderRadius: 16, backdropFilter: "blur(12px)", glassEffect: "regular", glassTintColor: "rgba(255, 210, 120, 0.35)" }} />
+```
+
+On macOS, `macos={{ backdrop: { material, blending, state } }}` selects an `NSVisualEffectView` material of its
+own, with or without a blur. `material` is one of `"titlebar"`, `"selection"`, `"menu"`, `"popover"` (the
+default), `"sidebar"`, `"headerView"`, `"sheet"`, `"windowBackground"`, `"hudWindow"`,
+`"fullScreenUI"`, `"toolTip"`, `"contentBackground"`, `"underWindowBackground"` or
+`"underPageBackground"`; `blending` is `"withinWindow"` (the default) or `"behindWindow"`; `state` is
+`"followsWindowActiveState"`, `"active"` (the default) or `"inactive"`. An explicit backdrop wins over
+`glassEffect` and `backdropFilter`; without it, macOS keeps the glass on macOS 26 and later and the blur
+elsewhere. Rust uses `.macos_backdrop(backdrop)` with a `MacOsBackdrop` (the struct is `#[non_exhaustive]`: start from
+`MacOsBackdrop::default()` and set `material`, `blending` and `state`); `None` (the default) leaves the fallback.
+`"behindWindow"` shows what is behind the window only in a transparent one. Window attributes can request this;
+a custom Rust host can also use `AppOptions { transparent: true, .. }` as an initial default, overridden by explicit
+main-window attributes and later window updates. Standard hosts default to opaque windows, and a view's blending
+never enables transparency. An embedded `AppView` leaves its host window unchanged.
+
+```tsx
+<View macos={{ backdrop: { material: "hudWindow", blending: "behindWindow" } }} style={{ height: 64 }} />
+```
+
+### Progressive blur
+
+A blur that grows along an edge, as under a header or over a photo's caption, is layers of `backdropFilter`, each stronger than the last and masked in further along with `maskImage`. Five layers doubling their radius hide the steps:
+
+```tsx
+const LAYERS = 5;
+
+function ProgressiveBlur(props: { radius: number; style: ViewStyle }) {
+  return (
+    <View style={{ pointerEvents: "none", ...props.style }}>
+      <Each of={Array.from({ length: LAYERS }, (_, i) => i)}>
+        {(i) => (
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backdropFilter: `blur(${props.radius / 2 ** (LAYERS - 1 - i())}px)`,
+              maskImage: `linear-gradient(to bottom, transparent ${(i() / LAYERS) * 100}%, black ${((i() + 1) / LAYERS) * 100}%)`,
+            }}
+          />
+        )}
+      </Each>
+    </View>
+  );
+}
+```
+
+A masked `backdropFilter` draws the blur alone, without the system material's tint, at its exact radius, on iOS and macOS too. Each layer blurs what the window shows on every frame, so keep the layers few and the area small. Linux and GPUI draw no `backdropFilter`, so give the region a fading `backgroundImage` where the text over it must stay readable.
 
 ## Outlines, opacity and visibility
 
@@ -437,6 +500,7 @@ These keys and classes carry what native platforms do beyond CSS:
 | `tintColor` | `tint-*` | Recolors an `<Image>`'s opaque pixels (template images, icons) |
 | `borderCurve` | | `"continuous"`: corners that ease into the edges, as the system's own (Apple's continuous corners) |
 | `glassEffect` | | Apple's Liquid Glass behind the view on iOS 26 and macOS 26, the `backdropFilter` elsewhere |
+| `glassTintColor` | | The tint of that glass on iOS 26 and macOS 26; `null` restores the native default |
 | `writingDirection` | | A text's base direction, `"auto"` (the default: from its content, as the platforms' text views do), `"ltr"` or `"rtl"`; `direction` sets the layout's |
 | `textAlignVertical` | | Where text shorter than its `<Text>` box sits: `"top"` (the default), `"center"` or `"bottom"` |
 | `textAlign: "auto"` | | The text's natural side, by its direction (the default) |

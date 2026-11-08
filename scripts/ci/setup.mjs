@@ -121,6 +121,10 @@ async function main(action) {
     const headless = [
       'bubblewrap',
       'libgtk-4-dev',
+      'libgstreamer1.0-dev',
+      'libgstreamer-plugins-base1.0-dev',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
       'xvfb',
       'ripgrep',
       'libx11-dev',

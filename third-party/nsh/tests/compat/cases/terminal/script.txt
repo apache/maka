@@ -1,0 +1,18 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+platform linux terminal
+# mod-device-terminal
+tap id:case-mod-device-terminal
+expect OS: linux
+expect Idiom: terminal
+expect Select: desktop
+prop id:bar desktop.windowDrag true
+covers [nsh] platform
+# base-select-placeholder
+tap id:case-base-select-placeholder
+# Nothing chosen and no `trigger`: the terminal's trigger says the app's
+# placeholder, and screen readers hear it as the trigger's value.
+expect Choose a team
+prop label:Team accessibilityValue text=Choose a team
+# The app's `trigger` is shown as the app made it.
+expect Owner: Build team
+covers [props] placeholder

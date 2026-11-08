@@ -1,29 +1,55 @@
-name: Terminal
+name: TUI
+
+# Lints and tests the terminal backend, whose tests run its views through
+# the shared crates: a change there can break it without touching it.
 
 on:
   push:
-    branches: [main, "tui/**"]
+    branches: [main]
     paths:
-      - "crates/**"
-      - "examples/terminal-workbench/**"
-      - "tests/compat/cases/layout/fonts/**"
-      - "third-party/icy_sixel/**"
+      - "crates/nsh-base/**"
+      - "crates/nsh-bundler/**"
+      - "crates/nsh-core/**"
+      - "crates/nsh-dev/**"
+      - "crates/nsh-engine/**"
+      - "crates/nsh-i18n/**"
+      - "crates/nsh-js/**"
+      - "crates/nsh-macros/**"
+      - "crates/nsh-package/**"
+      - "crates/nsh-platform-tui/**"
+      - "crates/nsh-testing/**"
+      - "crates/nsh-updater/**"
+      - "examples/counter/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".cargo/**"
       - "rust-toolchain.toml"
       - ".github/workflows/tui.yml"
+      - ".github/actions/cargo/**"
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
-      - "crates/**"
-      - "examples/terminal-workbench/**"
-      - "tests/compat/cases/layout/fonts/**"
-      - "third-party/icy_sixel/**"
+      - "crates/nsh-base/**"
+      - "crates/nsh-bundler/**"
+      - "crates/nsh-core/**"
+      - "crates/nsh-dev/**"
+      - "crates/nsh-engine/**"
+      - "crates/nsh-i18n/**"
+      - "crates/nsh-js/**"
+      - "crates/nsh-macros/**"
+      - "crates/nsh-package/**"
+      - "crates/nsh-platform-tui/**"
+      - "crates/nsh-testing/**"
+      - "crates/nsh-updater/**"
+      - "examples/counter/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".cargo/**"
       - "rust-toolchain.toml"
       - ".github/workflows/tui.yml"
+      - ".github/actions/cargo/**"
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -32,67 +58,59 @@ permissions:
   contents: read
 
 concurrency:
-  group: tui-${{ github.ref }}
+  group: tui-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  # CI builds each crate once: no incremental state and no debug info
+  # (faster builds, smaller caches; panics still name their file and line).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The toolchain file's iOS and Android targets are only the release's.
+  RUSTUP_TOOLCHAIN: stable
 
 jobs:
   check:
+    # Nothing for drafts or a pull request being closed.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-latest]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      NSH_EXE_SUFFIX: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
     steps:
       - uses: actions/checkout@v4
-      # QuickJS and its generated bindings need a C compiler and libclang.
-      # The terminal crates build independently of the GUI toolkits.
+
+      # QuickJS is C (bindgen needs libclang).
       - name: Install clang
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
-      - name: Configure Windows compiler
-        if: runner.os == 'Windows'
-        run: |
-          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-          echo 'RUST_MIN_STACK=268435456' >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: actions/cache@v4
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-tui-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-tui-
+          cache: tui
+
       - name: Clippy
-        run: cargo clippy --locked --all-targets -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app -- -D warnings
+        run: cargo clippy -p nsh-platform-tui --all-targets -- -D warnings
+
       - name: Test
-        run: cargo test --locked -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app
-      - name: Check the Rust runtime
-        run: cargo check --locked -p nsh-platform-tui --no-default-features
-      - name: Build the operations workbench
+        run: cargo test -p nsh-platform-tui
+
+      # Workspace builds unify `math` into nsh-base; test both forms.
+      - name: Formula rendering with and without math
         run: |
-          cargo build --locked -p nsh-cli -p nsh-tui-host
-          ./target/debug/nsh${NSH_EXE_SUFFIX} build examples/terminal-workbench -o target/terminal-workbench
-      - name: Exercise Unicode, filters, deployment and resize
-        run: |
-          ./target/debug/nsh-tui-host${NSH_EXE_SUFFIX} --bundle target/terminal-workbench/bundle.nshc --size 160x50 \
-            --script "wait 300; expect Operations workbench; expect-focus; shot target/terminal-workbench-home.txt; type 王宁; expect 12 services; key Ctrl+a; type gateway; expect 2 services; key Tab; key Tab; key Tab; key Enter; expect No matching services; key Shift+Tab; key Shift+Tab; key Enter; expect 2 services; tap 40 13; expect Selected: edge-gateway; tap 148 1; expect Deploy service; key Ctrl+a; type Canary · 安全发布 👩‍💻; key Tab; key Tab; key Enter; expect Deployment queued; wait 300; expect v2.19.0; shot target/terminal-workbench-deployed.txt; tap 8 9; expect Active incidents; tap 8 11; expect Release history; resize 120 34; expect Release history; expect Traffic overview; resize 100 30; expect Release history; expect-focus; shot target/terminal-workbench-compact.txt; quit"
-      - name: Exercise effects, popup menus and the HTML runbook
-        run: |
-          ./target/debug/nsh-tui-host${NSH_EXE_SUFFIX} --bundle target/terminal-workbench/bundle.nshc --size 160x50 \
-            --script "wait 700; tap 142 5; wait 800; expect Surface effects; expect Canvas lettering; shot target/terminal-workbench-effects.txt; tap 151 6; expect Soft focus; key Enter; wait 500; expect Soft focus / 3pt; tap 153 5; wait 1000; expect Rollout checklist; expect Runbook ready; shot target/terminal-workbench-runbook.txt; tap 153 6; wait 500; expect Runbook ready; tap 132 5; expect Activity timeline; quit"
-      - name: Upload terminal snapshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: terminal-snapshots-${{ runner.os }}
-          path: target/terminal-workbench-*.txt
-          if-no-files-found: ignore
+          cargo test -p nsh-base --test base terminal::a_terminal_reads_a_formula_as_text_not_its_tex
+          cargo test -p nsh-base --features math --test base terminal::a_terminal_reads_a_formula_as_text_not_its_tex

@@ -1,32 +1,13 @@
-import { type JSX, mount, signal, Text, View } from "nsh";
+import { mount, signal, Text, View } from "nsh";
 import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu } from "nsh/base";
-import { button, buttonText, desktop, Inspector, MenuMark, menuIndicator, Panel, PopIn, type PopupSide, Stage, tint, ui, wide } from "./palette";
-
-/** A sheet at the bottom on phones; on desktops the popup's box keeps no
- * look, its `Items` have it. */
-const surface = () =>
-  desktop ? undefined : { ...ui().card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 30 };
-
-/** A menu's items: on desktops on a surface that grows out of the trigger's
- * side each time it opens (`PopIn`), on phones in the sheet that slides up. */
-function Items(props: { side?: PopupSide; children: JSX.Element }) {
-  if (!desktop) return props.children;
-  return (
-    <PopIn side={props.side} style={{ ...ui().card, borderRadius: 12, padding: 5, minWidth: 210 }}>
-      {props.children}
-    </PopIn>
-  );
-}
-
-const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
-const rowHeight = () => (desktop ? 32 : 46);
-const row = () => ({ flexDirection: "row" as const, alignItems: "center" as const, gap: 8, height: rowHeight(), paddingHorizontal: 10, borderRadius: 8 });
+import { backdrop, button, buttonText, desktop, Inspector, MenuLabel, MenuMark, MenuPanel, menuIndicator, menuItemLabel, menuItemLook, menuItemSize, menuSeparator, menuSheet, Panel, Stage, SubmenuBack, SubmenuRow, ui, wide } from "./palette";
 
 /**
- * One row. A checkable row (`checked`) leads with its mark: a check for a
- * setting, a dot for one choice of a group (`radio`), which fades in as the
- * app checks the item; rows of the same menu keep the mark's room so their
- * labels line up (`inset`).
+ * One row (`menuItemLook`: the hover and the keyboard's highlight alike).
+ * A checkable row (`checked`) leads with its mark: a check for a setting, a
+ * dot for one choice of a group (`radio`), which fades in as the app checks
+ * the item; rows of the same menu keep the mark's room so their labels line
+ * up (`inset`).
  */
 function Item(props: { label: string; onSelect?: () => void; checked?: boolean; radio?: boolean; inset?: boolean; disabled?: boolean; keepOpen?: boolean; danger?: boolean }) {
   return (
@@ -36,53 +17,28 @@ function Item(props: { label: string; onSelect?: () => void; checked?: boolean; 
       checked={props.checked}
       role={props.radio ? "menuitemradio" : undefined}
       indicatorClass={menuIndicator}
-      indicator={props.checked === undefined ? undefined : <MenuMark kind={props.radio ? "dot" : "check"} tint={ui().accent} />}
+      indicator={props.checked === undefined ? undefined : <MenuMark kind={props.radio ? "dot" : "check"} size={menuItemSize.icon} tint={ui().accent} />}
       closeOnSelect={!props.keepOpen}
-      hoverStyle={{ backgroundColor: tint(ui().accent, 0.08), borderColor: tint(ui().accent, 0.24) }}
-      activeStyle={{ backgroundColor: tint(ui().accent, 0.14), borderColor: tint(ui().accent, 0.34) }}
-      disabledStyle={{ opacity: 0.35 }}
-      style={{ ...row(), borderWidth: 1, borderColor: "transparent" }}
+      {...menuItemLook()}
     >
       <If when={props.inset}>
-        <View style={{ width: 16 }} />
+        <View style={{ width: menuItemSize.icon }} />
       </If>
-      <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: 14, color: props.danger ? ui().down : ui().text }}>{props.label}</Text>
+      <Text style={menuItemLabel({ danger: props.danger })}>{props.label}</Text>
     </MenuItem>
   );
 }
 
-function Separator() {
-  return <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 6, backgroundColor: ui().border }} />;
-}
-
 function Share(props: { onSelect: (what: string) => void }) {
   return (
-    <Submenu
-      offset={4}
-      trigger={
-        <View hoverStyle={{ backgroundColor: tint(ui().accent, 0.08), borderColor: tint(ui().accent, 0.24) }} activeStyle={{ backgroundColor: tint(ui().accent, 0.14), borderColor: tint(ui().accent, 0.34) }} style={{ ...row(), borderWidth: 1, borderColor: "transparent" }}>
-          <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: 14, color: ui().text }}>Share</Text>
-          <Text style={{ fontSize: 14, color: ui().faint }}>›</Text>
-        </View>
-      }
-      back={
-        <View activeStyle={{ backgroundColor: tint(ui().accent, 0.14), borderColor: tint(ui().accent, 0.34) }} style={{ ...row(), borderWidth: 1, borderColor: "transparent" }}>
-          <Text style={{ fontSize: 14, fontWeight: "600", color: ui().accent }}>‹ Share</Text>
-        </View>
-      }
-    >
-      <Items side="right">
+    <Submenu offset={4} trigger={<SubmenuRow label="Share" />} back={<SubmenuBack label="Share" />}>
+      <MenuPanel side="right">
         <Item label="Mail" onSelect={() => props.onSelect("Mail")} />
         <Item label="Messages" onSelect={() => props.onSelect("Messages")} />
         <Item label="Copy link" onSelect={() => props.onSelect("Copy link")} />
-      </Items>
+      </MenuPanel>
     </Submenu>
   );
-}
-
-/** A group's title: not an item, nothing to press. */
-function Label(props: { text: string }) {
-  return <Text style={{ fontSize: 12, fontWeight: "600", color: ui().faint, paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2 }}>{props.text}</Text>;
 }
 
 const SORTS = ["Name", "Date modified", "Size"];
@@ -102,8 +58,8 @@ function App() {
     <Menu
       offset={4}
       margin={8}
-      popupStyle={surface()}
-      backdropStyle={backdrop}
+      popupStyle={menuSheet()}
+      backdropStyle={backdrop()}
       onOpenChange={changed("File")}
       trigger={
         <View {...button("secondary", { align: "flex-start" })}>
@@ -111,23 +67,23 @@ function App() {
         </View>
       }
     >
-      <Items>
+      <MenuPanel>
         <Item label="New" onSelect={() => choose("New")} />
         <Item label="Open…" onSelect={() => choose("Open…")} />
         <Item label="Paste" disabled />
-        <Separator />
+        <MenuSeparator style={menuSeparator()} />
         <Share onSelect={(what) => choose(`Share › ${what}`)} />
-        <Separator />
+        <MenuSeparator style={menuSeparator()} />
         <Item label="Delete" danger onSelect={() => choose("Delete")} />
-      </Items>
+      </MenuPanel>
     </Menu>
   );
   const view = () => (
     <Menu
       offset={4}
       margin={8}
-      popupStyle={surface()}
-      backdropStyle={backdrop}
+      popupStyle={menuSheet()}
+      backdropStyle={backdrop()}
       onOpenChange={changed("View")}
       trigger={
         <View {...button("secondary", { align: "flex-start" })}>
@@ -135,23 +91,23 @@ function App() {
         </View>
       }
     >
-      <Items>
+      <MenuPanel>
         {/* Settings keep the menu open: each shows its new value at once. */}
         <Item label="Show sidebar" checked={sidebar()} keepOpen onSelect={() => sidebar.set(!sidebar())} />
         <Item label="Show minimap" checked={minimap()} keepOpen onSelect={() => minimap.set(!minimap())} />
         <Item label="Show hidden files" checked={hidden()} keepOpen onSelect={() => hidden.set(!hidden())} />
-        <Separator />
-        <Label text="Sort by" />
+        <MenuSeparator style={menuSeparator()} />
+        <MenuLabel text="Sort by" />
         {/* One choice of a group: choosing closes the menu. */}
         <Each of={SORTS}>{(by) => <Item label={by()} radio checked={sort() === by()} onSelect={() => sort.set(by())} />}</Each>
-      </Items>
+      </MenuPanel>
     </Menu>
   );
   const context = () => (
     <ContextMenu
       margin={8}
-      popupStyle={surface()}
-      backdropStyle={backdrop}
+      popupStyle={menuSheet()}
+      backdropStyle={backdrop()}
       onOpenChange={changed("Context")}
       trigger={
         <View
@@ -171,13 +127,13 @@ function App() {
         </View>
       }
     >
-      <Items>
+      <MenuPanel>
         <Item label="Pinned" checked={pinned()} onSelect={() => pinned.set(!pinned())} />
         <Item label="Copy" inset onSelect={() => choose("Copy")} />
         <Item label="Rename" inset onSelect={() => choose("Rename")} />
-        <Separator />
+        <MenuSeparator style={menuSeparator()} />
         <Item label="Delete" inset danger onSelect={() => choose("Delete")} />
-      </Items>
+      </MenuPanel>
     </ContextMenu>
   );
   const panels = () => (

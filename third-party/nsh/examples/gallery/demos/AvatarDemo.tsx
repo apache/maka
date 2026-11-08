@@ -38,8 +38,10 @@ const fade = (ms: number) => (reduceMotion() ? "" : `transition-opacity duration
  * An avatar in the gallery's look: `side` points round, the initials on a
  * tint of the person's hue (their size a third of the side), the picture
  * round over them. `ring` draws a ring of the card's surface around it, as
- * stacked avatars and a profile's picture have. Its children (a presence
- * dot, a badge) sit over the picture, unclipped.
+ * stacked avatars and a profile's picture have: the surface showing round
+ * the avatar, not a border of it, since a border draws over what is inside
+ * and its arc would cross a badge. Its children (a presence dot, a badge)
+ * sit over the picture and the ring, unclipped.
  */
 function Person(props: {
   name?: string;
@@ -56,38 +58,45 @@ function Person(props: {
   const id = () => avatarIdentity(props.name ?? "");
   const round = () => `rounded-full overflow-hidden`;
   return (
+    <View
+      style={{
+        width: props.side,
+        height: props.side,
+        flexShrink: 0,
+        ...(props.ring ? { borderRadius: props.side / 2, padding: 2, backgroundColor: colors.surface } : {}),
+      }}
+    >
     <Avatar
       src={props.src}
       name={props.name}
       accessibilityLabel={props.label}
       fallbackDelay={props.delay}
       onStatusChange={({ status }) => props.onStatus?.(status)}
-      style={{
-        width: props.side,
-        height: props.side,
-        flexShrink: 0,
-        ...(props.ring ? { borderRadius: props.side / 2, borderWidth: 2, borderColor: colors.surface, backgroundColor: colors.surface } : {}),
-      }}
+      style={{ flex: 1 }}
       imageClass={`${round()} ${props.fadeIn ? fade(300) : ""}`}
       fallbackClass={`${round()} items-center justify-center font-semibold text-[${Math.round(props.side / 2.8)}px] text-[${id().foreground}]`}
       fallbackStyle={{ backgroundColor: id().background, borderWidth: 1, borderColor: id().border }}
       fallback={props.fallback}
-    >
+    />
       {props.children}
-    </Avatar>
+    </View>
   );
 }
 
-/** A presence dot at the avatar's bottom-right, ringed by the card's surface. */
+/** A presence dot at the avatar's bottom-right, ringed by the card's surface:
+ * placed by the circle, not the square around it, its center just inside
+ * the picture's edge (0.62 of the radius down and right of the middle), so
+ * it reads as on the picture rather than beside it. */
 function Dot(props: { presence: Presence; side: number }) {
   const d = () => Math.max(8, Math.round(props.side / 4));
+  const inset = () => Math.round((props.side / 2) * (1 - 0.62) - d() / 2);
   return (
     <View
       class={reduceMotion() ? "" : "transition-colors duration-200"}
       style={{
         position: "absolute",
-        right: -1,
-        bottom: -1,
+        right: inset(),
+        bottom: inset(),
         width: d(),
         height: d(),
         borderRadius: d() / 2,
@@ -122,19 +131,21 @@ function UserGlyph(props: { size: number; tint: string }) {
   );
 }
 
-const TEAM: { name: string; role: string; presence: Presence; picture: boolean }[] = [
-  { name: "Ada Lovelace", role: "Engineering lead", presence: "online", picture: true },
-  { name: "Grace Hopper", role: "Compilers", presence: "busy", picture: true },
-  { name: "Alan Turing", role: "Research", presence: "away", picture: false },
-  { name: "Katherine Johnson", role: "Trajectories", presence: "online", picture: true },
-  { name: "Edsger Dijkstra", role: "Reviews", presence: "offline", picture: false },
+// NSH's maintainers come first and have their GitHub pictures (`avatarPortrait`); everyone
+// else shows initials.
+const TEAM: { name: string; role: string; presence: Presence }[] = [
+  { name: "Jason Lee", role: "Design & Platforms", presence: "online" },
+  { name: "Sunli", role: "Runtime & VM", presence: "busy" },
+  { name: "Floyd Wang", role: "Components", presence: "online" },
+  { name: "Alan Turing", role: "Research", presence: "away" },
+  { name: "Edsger Dijkstra", role: "Reviews", presence: "offline" },
 ];
 
 const MEMBERS = [
-  "Ada Lovelace",
-  "Grace Hopper",
+  "Jason Lee",
+  "Sunli",
+  "Floyd Wang",
   "Alan Turing",
-  "Katherine Johnson",
   "Edsger Dijkstra",
   "Barbara Liskov",
   "Donald Knuth",
@@ -188,7 +199,7 @@ export function AvatarDemo() {
                   activeStyle={{ backgroundColor: alpha(colors.text, 0.08) }}
                   focusStyle={focusRing()}
                 >
-                  <Person name={m().name} side={row} src={m().picture ? avatarPortrait(m().name) : undefined} label={`${m().name}, ${p()}`}>
+                  <Person name={m().name} side={row} src={avatarPortrait(m().name)} label={`${m().name}, ${p()}`}>
                     <Dot presence={p()} side={row} />
                   </Person>
                   <View style={{ flex: 1, gap: 2 }}>
@@ -227,7 +238,7 @@ export function AvatarDemo() {
             <Each of={people()}>
               {(name, i) => (
                 <View style={{ marginLeft: i() === 0 ? 0 : -side / 4 }}>
-                  <Person name={name()} side={side} ring src={i() % 3 === 2 ? undefined : avatarPortrait(name())} />
+                  <Person name={name()} side={side} ring src={avatarPortrait(name())} />
                 </View>
               )}
             </Each>
@@ -262,7 +273,7 @@ export function AvatarDemo() {
           overflowAccessibilityLabel="1,281 more viewers"
           overflow={<Text style={{ fontSize: 11, fontWeight: "600", color: colors.muted, fontVariant: ["tabular-nums"] }}>+1.3k</Text>}
         >
-          <Each of={MEMBERS.slice(6, 9)}>
+          <Each of={["Jason Lee", "Sunli", "Floyd Wang"]}>
             {(name, i) => (
               <View style={{ marginLeft: i() === 0 ? 0 : -6 }}>
                 <Person name={name()} side={28} ring src={avatarPortrait(name())} label="" />
@@ -276,7 +287,7 @@ export function AvatarDemo() {
 
   function Thread() {
     const comments = [
-      { name: "Grace Hopper", time: "2h", text: "The compiler change is in. Benchmarks look steady.", src: avatarPortrait("Grace Hopper"), reply: false },
+      { name: "Sunli", time: "2h", text: "The compiler change is in. Benchmarks look steady.", src: avatarPortrait("Sunli"), reply: false },
       { name: "Alan Turing", time: "1h", text: "Did the cold start move? The last run was noisy.", src: AVATAR_BROKEN, reply: true },
       { name: "Barbara Liskov", time: "40m", text: "Same as before within a millisecond.", src: undefined, reply: true },
     ];
@@ -303,7 +314,7 @@ export function AvatarDemo() {
   }
 
   function Profile() {
-    const pictures = ["Margaret Hamilton", "Radia Perlman", "Frances Allen"];
+    const pictures = ["Jason Lee", "Sunli", "Floyd Wang"];
     const picture = signal<number | null>(0);
     const status = signal("—");
     const side = pointer ? 64 : 76;
@@ -311,7 +322,7 @@ export function AvatarDemo() {
       <Card title="Profile header" subtitle="A large picture that fades in when it changes, initials without one" right={<Badge label={status()} tone={status() === "loaded" ? "up" : "neutral"} />}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
           <Person
-            name="Margaret Hamilton"
+            name="Jason Lee"
             side={side}
             ring
             fadeIn
@@ -339,9 +350,9 @@ export function AvatarDemo() {
             </View>
           </Person>
           <View style={{ flex: 1, gap: 3 }}>
-            <Text style={{ fontSize: pointer ? 17 : 19, fontWeight: "600", color: colors.text }}>Margaret Hamilton</Text>
-            <Text style={{ fontSize: note, color: colors.muted }}>@margaret · Flight software</Text>
-            <Text style={{ fontSize: note, color: colors.faint, fontVariant: ["tabular-nums"] }}>128 following · 4.2k followers</Text>
+            <Text style={{ fontSize: pointer ? 17 : 19, fontWeight: "600", color: colors.text }}>Jason Lee</Text>
+            <Text style={{ fontSize: note, color: colors.muted }}>@huacnlee · Native Shell</Text>
+            <Text style={{ fontSize: note, color: colors.faint, }}>github.com/huacnlee</Text>
           </View>
         </View>
         <View style={{ flexDirection: "row", gap: 8 }}>
@@ -375,7 +386,7 @@ export function AvatarDemo() {
     const round = signal(0);
     const statuses = signal<Record<string, string>>({});
     const cases = [
-      { key: "loads", title: "Loads", name: "Katherine Johnson", src: avatarPortrait("Katherine Johnson") },
+      { key: "loads", title: "Loads", name: "Floyd Wang", src: avatarPortrait("Floyd Wang") },
       { key: "fails", title: "Fails", name: "Alan Turing", src: AVATAR_BROKEN },
       { key: "none", title: "No picture", name: "Donald Knuth", src: undefined },
       { key: "anon", title: "No name", name: undefined, src: undefined },
@@ -432,11 +443,11 @@ export function AvatarDemo() {
             {() => (
             <>
             <View style={{ alignItems: "center", gap: 6 }}>
-              <Person name="Claude Shannon" side={side} src={avatarPortrait("Claude Shannon")} onStatus={report("no delay")} />
+              <Person name="Sunli" side={side} src={avatarPortrait("Sunli")} onStatus={report("no delay")} />
               <Text style={{ fontSize: note, color: colors.muted }}>No delay</Text>
             </View>
             <View style={{ alignItems: "center", gap: 6 }}>
-              <Person name="Claude Shannon" side={side} src={avatarPortrait("Claude Shannon")} delay={400} fadeIn onStatus={report("400 ms")} />
+              <Person name="Sunli" side={side} src={avatarPortrait("Sunli")} delay={400} fadeIn onStatus={report("400 ms")} />
               <Text style={{ fontSize: note, color: colors.muted }}>400 ms, fades in</Text>
             </View>
             </>

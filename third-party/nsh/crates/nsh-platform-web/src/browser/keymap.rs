@@ -51,7 +51,8 @@ pub(super) fn call(host: &Bindings, op: u32, args: &Value) -> Result<Value, Prop
                 ));
             }
         };
-        bindings.push(KeyBinding::new(id, key, when, entry.index(3)?.truthy()));
+        let binding = KeyBinding::new(id, key, when, entry.index(3)?.truthy());
+        bindings.push(binding.passing_through(entry.index(4)?.truthy()));
     }
     host.ops.borrow_mut().push(Op::SetProp {
         id: ROOT_ID,

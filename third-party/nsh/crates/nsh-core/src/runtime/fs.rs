@@ -790,7 +790,7 @@ fn exceeded(name: &str) -> JsError {
 /// Runs `work` off the engine thread (on the tasks' runtime's blocking
 /// threads, else a thread of its own).
 #[cfg(not(target_arch = "wasm32"))]
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, JsError> + Send + 'static,
 ) -> Result<T, JsError> {
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {

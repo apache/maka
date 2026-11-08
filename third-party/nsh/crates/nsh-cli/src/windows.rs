@@ -2,9 +2,14 @@
 //! renamed after the app, its icon embedded as the executable's icon
 //! resource, and the bundle next to it; and the same as a `.zip`. Needs no
 //! tools: the icon is written into the copied executable with Windows'
-//! resource update API.
+//! resource update API. The icon also goes next to the bundle as
+//! `nsh\icon.ico`, which the runner shows on its windows when the
+//! executable has none (packaged off Windows) and registers for its
+//! notifications; the development host gets one made the same way
+//! ([`host_args`]).
 
 use std::{
+    ffi::OsString,
     fs,
     io::Write as _,
     path::Path,
@@ -42,6 +47,13 @@ pub(crate) fn package(
     built: &crate::build::Built,
 ) -> anyhow::Result<()> {
     let runner = runtime::file(Platform::Windows, true)?;
+    // A runner built for another system would package fine and then not
+    // start on Windows ("not a valid application").
+    let mut magic = [0; 2];
+    let is_pe = fs::File::open(&runner)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
+        .is_ok_and(|()| magic == *b"MZ");
+    anyhow::ensure!(is_pe, "{} is not a Windows executable", ui::path(&runner));
     let dir = options.out.join(name);
     let step = ui::Step::start(format!("packaging {}", ui::path(&dir)));
     if dir.exists() {
@@ -74,11 +86,13 @@ pub(crate) fn package(
     fs::write(resources.join("app.json"), info.to_string())?;
     if let Some(icon) = &config.icon {
         let images = icon_images(icon)?;
+        fs::write(resources.join("icon.ico"), icon_file(&images))?;
         set_icon(&exe, &images)
             .with_context(|| format!("embed {} in {}", icon.display(), exe.display()))?;
     }
     let archive = options.out.join(format!("{name}.zip"));
     zip_dir(&dir, name, &archive).with_context(|| format!("create {}", archive.display()))?;
+    crate::updater::copy_archive(config, name, &archive, options.out)?;
     step.done(format!(
         "packaged {} and {}",
         ui::path(&dir),
@@ -114,10 +128,37 @@ fn file_stem(name: &str) -> String {
     }
 }
 
+/// The development host's arguments for the app `entry`: its name
+/// (`--name`) and its icon (`--icon`), `nsh.json` `"icon"` made an `.ico`
+/// in `work` (`.nsh`). A broken icon
+/// warns and leaves the host's.
+pub(crate) fn host_args(entry: &Path, work: &Path) -> Vec<OsString> {
+    let config = crate::package::read_config(entry).unwrap_or_default();
+    let (name, _) = crate::package::name_and_id(entry, &config);
+    let mut args = vec!["--name".into(), name.into()];
+    if let Some(icon) = &config.icon {
+        let ico = work.join("windows").join("icon.ico");
+        match host_icon(icon, &ico) {
+            Ok(()) => args.extend(["--icon".into(), ico.into_os_string()]),
+            Err(err) => ui::warn(format!("the app's icon: {err:#}")),
+        }
+    }
+    args
+}
+
+/// Writes the currently selected `icon` as the `.ico` file `ico`.
+fn host_icon(icon: &Path, ico: &Path) -> anyhow::Result<()> {
+    // Source timestamps cannot identify the selected image: switching to an
+    // older file (or restoring one) must also update the host's icon.
+    let images = icon_images(icon)?;
+    if let Some(dir) = ico.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(ico, icon_file(&images)).with_context(|| format!("write {}", ico.display()))
+}
+
 /// One image of an icon: its size and its data as an `RT_ICON` resource
-/// holds it (a DIB, or a PNG for 256 pixels). Only written on Windows:
-/// elsewhere the images are made and dropped.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+/// and an `.ico` file hold it (a DIB, or a PNG for 256 pixels).
 struct IconImage {
     size: u32,
     data: Vec<u8>,
@@ -172,6 +213,37 @@ fn dib(rgba: &image::RgbaImage) -> Vec<u8> {
     }
     data.resize(data.len() + (mask_row * height) as usize, 0);
     data
+}
+
+/// An `.ico` file of `images`: an `ICONDIR`, an `ICONDIRENTRY` per image
+/// (the group resource's entries, with the image's offset in the file in
+/// place of its resource id), then the images.
+fn icon_file(images: &[IconImage]) -> Vec<u8> {
+    let header = 6 + 16 * images.len();
+    let size = header + images.iter().map(|i| i.data.len()).sum::<usize>();
+    let mut file = Vec::with_capacity(size);
+    file.extend_from_slice(&0u16.to_le_bytes());
+    file.extend_from_slice(&1u16.to_le_bytes()); // icons
+    file.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = header;
+    for image in images {
+        // 0 stands for 256.
+        let side = if image.size >= 256 {
+            0
+        } else {
+            image.size as u8
+        };
+        file.extend_from_slice(&[side, side, 0, 0]);
+        file.extend_from_slice(&1u16.to_le_bytes()); // planes
+        file.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        file.extend_from_slice(&(image.data.len() as u32).to_le_bytes());
+        file.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += image.data.len();
+    }
+    for image in images {
+        file.extend_from_slice(&image.data);
+    }
+    file
 }
 
 /// The `RT_GROUP_ICON` resource of `images`, whose `RT_ICON` resources
@@ -255,12 +327,12 @@ fn set_icon(exe: &Path, images: &[IconImage]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Off Windows there is no API to write the resources: the app keeps the
-/// runner's icon.
+/// Off Windows there is no API to write the resources: Explorer shows the
+/// executable with the default icon, and its windows show `nsh\icon.ico`.
 #[cfg(not(windows))]
 fn set_icon(exe: &Path, _images: &[IconImage]) -> anyhow::Result<()> {
     ui::warn(format!(
-        "{} keeps the default icon: icons are embedded when packaging on Windows",
+        "{} has the default icon in Explorer: icons are embedded when packaging on Windows (its windows and notifications show the app's)",
         ui::path(exe)
     ));
     Ok(())
@@ -330,6 +402,32 @@ mod tests {
     }
 
     #[test]
+    fn icon_files_point_at_their_images() {
+        let images = [
+            IconImage {
+                size: 16,
+                data: vec![1; 10],
+            },
+            IconImage {
+                size: 256,
+                data: vec![2; 300],
+            },
+        ];
+        let file = icon_file(&images);
+        let header = 6 + 16 * 2;
+        assert_eq!(file.len(), header + 10 + 300);
+        assert_eq!(&file[..6], &[0, 0, 1, 0, 2, 0]);
+        assert_eq!(&file[6..10], &[16, 16, 0, 0]);
+        assert_eq!(&file[14..18], &10u32.to_le_bytes());
+        assert_eq!(&file[18..22], &(header as u32).to_le_bytes());
+        // 256 is written as 0.
+        assert_eq!(&file[22..26], &[0, 0, 0, 0]);
+        assert_eq!(&file[34..38], &((header + 10) as u32).to_le_bytes());
+        assert_eq!(file[header], 1);
+        assert_eq!(file[header + 10], 2);
+    }
+
+    #[test]
     fn dibs_hold_the_image_and_its_mask() {
         let image = image::RgbaImage::from_pixel(16, 16, image::Rgba([1, 2, 3, 4]));
         let data = dib(&image);
@@ -337,6 +435,39 @@ mod tests {
         assert_eq!(data.len(), 40 + 16 * 16 * 4 + 16 * 4);
         assert_eq!(&data[8..12], &32i32.to_le_bytes());
         assert_eq!(&data[40..44], &[3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn host_icon_changes_when_the_config_selects_an_older_file() {
+        let dir = std::env::temp_dir().join(format!("nsh-icon-switch-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let red = dir.join("red.png");
+        let blue = dir.join("blue.png");
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([255, 0, 0, 255]))
+            .save(&red)
+            .unwrap();
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 255, 255]))
+            .save(&blue)
+            .unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for source in [&red, &blue] {
+            fs::File::options()
+                .write(true)
+                .open(source)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        let ico = dir.join("icon.ico");
+        host_icon(&red, &ico).unwrap();
+        let first = fs::read(&ico).unwrap();
+        host_icon(&blue, &ico).unwrap();
+        let second = fs::read(&ico).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            first != second,
+            "selecting a different existing icon must regenerate the ICO"
+        );
     }
 
     #[test]
@@ -349,7 +480,10 @@ mod tests {
         let archive = dir.join("Demo.zip");
         zip_dir(&app, "Demo", &archive).unwrap();
         let mut zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
-        let mut names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+        let mut names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect();
         names.sort_unstable();
         assert_eq!(
             names,

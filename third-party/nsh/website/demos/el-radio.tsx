@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Radio, RadioGroup } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, size, Split, ui } from "./palette";
+import { desktop, Log, Split, ui, controlSize, RadioRing, RowDivider, RowLabel, sectionSurface, segmentedLook, listRow } from "./palette";
 
 const plans = [
   { id: "starter", label: "Starter", detail: "1 project · 5 GB", price: "Free" },
@@ -8,6 +8,9 @@ const plans = [
   { id: "team", label: "Team", detail: "Shared workspace · 1 TB", price: "$40", locked: true },
 ];
 const cycles = ["Monthly", "Yearly"];
+
+/** A segmented control's look: the group is the track, `thumbStyle` raises the checked radio. */
+const segments = segmentedLook();
 
 function App() {
   const plan = signal("pro");
@@ -23,7 +26,7 @@ function App() {
 
       <Split gap={14} inspector={<Log title={`onChange({ checked }) · ${plan()}, ${cycle()}`} lines={events()} minHeight={76} />}>
         {/* A segmented choice: each radio is a segment, `checkedStyle` raises the checked one. */}
-        <RadioGroup style={{ flexDirection: "row", gap: 4, padding: 3, borderRadius: 10, ...ui().inset, ...(desktop ? { alignSelf: "flex-start" } : {}) }}>
+        <RadioGroup style={segments.style}>
           <Each of={cycles}>
             {(c) => (
               <Radio
@@ -32,63 +35,34 @@ function App() {
                   cycle.set(c());
                   log(`${c()} → ${checked}`);
                 }}
-                style={
-                  desktop
-                    ? { height: 26, paddingHorizontal: 14, borderRadius: 7, alignItems: "center", justifyContent: "center" }
-                    : { flex: 1, height: 30, borderRadius: 7, alignItems: "center", justifyContent: "center" }
-                }
-                class="active:opacity-70"
-                hoverStyle={cycle() === c() ? undefined : hoverFill()}
-                focusStyle={focusRing()}
-                checkedStyle={ui().raised}
+                {...segments.segment({ selected: () => cycle() === c() })}
+                checkedStyle={segments.thumbStyle}
               >
-                <Text style={{ fontSize: 13, fontWeight: "500", color: cycle() === c() ? ui().text : ui().muted }}>{c()}</Text>
+                <Text style={segments.label(cycle() === c())}>{c()}</Text>
               </Radio>
             )}
           </Each>
         </RadioGroup>
 
-        {/* A list of options: a ring with a dot, which `group-checked:` grows in (in place with reduced motion). */}
-        <RadioGroup style={{ ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        {/* A list of options, each row the radio: a ring that lights up, its dot growing in (in place with reduced motion). */}
+        <RadioGroup style={sectionSurface({ padded: true })}>
           <Each of={plans}>
             {(item, i) => (
-              <>
-                {i() > 0 ? <View style={{ height: 1, marginLeft: desktop ? 40 : 48, backgroundColor: ui().line }} /> : null}
-                <Radio
-                  checked={plan() === item().id}
-                  disabled={item().locked}
-                  onChange={({ checked }) => {
-                    plan.set(item().id);
-                    log(`${item().label} → ${checked}`);
-                  }}
-                  class={`group flex-row items-center gap-3 ${desktop ? "px-3 py-2" : "px-4 py-3"} active:opacity-70 disabled:opacity-40`}
-                  hoverStyle={item().locked ? undefined : hoverFill()}
-                  focusStyle={focusRing()}
-                >
-                  <View
-                    class="transition-colors motion-reduce:transition-none"
-                    style={{
-                      width: desktop ? 16 : 20,
-                      height: desktop ? 16 : 20,
-                      borderRadius: desktop ? 8 : 10,
-                      borderWidth: 2,
-                      borderColor: plan() === item().id ? ui().accent : ui().faint,
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <View
-                      class="opacity-0 scale-50 transition duration-150 ease-out motion-reduce:transition-none group-checked:opacity-100 group-checked:scale-100"
-                      style={{ width: desktop ? 8 : 10, height: desktop ? 8 : 10, borderRadius: desktop ? 4 : 5, backgroundColor: ui().accent }}
-                    />
-                  </View>
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text style={{ fontSize: size.label, fontWeight: "500", color: ui().text }}>{item().label}</Text>
-                    <Text style={{ fontSize: size.detail, color: ui().muted }}>{item().detail}</Text>
-                  </View>
-                  <Text style={{ fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], color: ui().text }}>{item().price}</Text>
-                </Radio>
-              </>
+              <Radio
+                checked={plan() === item().id}
+                disabled={item().locked}
+                onChange={({ checked }) => {
+                  plan.set(item().id);
+                  log(`${item().label} → ${checked}`);
+                }}
+                class="group"
+                {...listRow({ first: i() === 0, disabled: item().locked })}
+              >
+                <RowDivider show={i() > 0} />
+                <RadioRing on={plan() === item().id} />
+                <RowLabel label={item().label} detail={item().detail} />
+                <Text style={{ fontSize: controlSize.label, fontVariant: ["tabular-nums"], color: plan() === item().id ? ui().text : ui().muted }}>{item().price}</Text>
+              </Radio>
             )}
           </Each>
         </RadioGroup>

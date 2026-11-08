@@ -51,6 +51,8 @@ mod storage;
 mod trace;
 #[cfg(feature = "js")]
 mod values;
+#[cfg(any(feature = "agent", feature = "js"))]
+mod window_json;
 
 #[cfg(feature = "bundle")]
 use std::{path::Path, sync::Arc};
@@ -66,8 +68,8 @@ use nsh_engine::{Bundle, EngineConfig};
 pub use self::headless::UreqNetwork;
 #[cfg(not(target_arch = "wasm32"))]
 pub use self::headless::{
-    DialogAnswer, DirectoryAssets, Headless, RecordingNetwork, StubHandler, StubNetwork, StubReply,
-    StubResponse, StubRoute, WAIT, default_answer, print_batch, start,
+    AudioCall, DialogAnswer, DirectoryAssets, Headless, RecordingNetwork, StubHandler, StubNetwork,
+    StubReply, StubResponse, StubRoute, WAIT, default_answer, print_batch, start,
 };
 #[cfg(feature = "js")]
 #[allow(deprecated)]
@@ -133,7 +135,9 @@ fn build(entry: &Path, ui_sets: &[Registry]) -> Result<(Bundle, Option<String>),
     // SAFETY: compiled by this runtime just now, from the app's sources.
     let app = unsafe { Bundle::bytecode(bytecode) }
         .with_capabilities_json(capabilities.as_deref())
-        .map_err(|e| format!("{}: {e}", entry.display()))?;
+        .map_err(|e| format!("{}: {e}", entry.display()))?
+        // The schemes it claims, as a packaged app's runner reads them.
+        .with_url_schemes(bundle.url_schemes);
     Ok((app, bundle.source_map))
 }
 

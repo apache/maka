@@ -6,7 +6,10 @@
 
 use nsh_core::{geometry::Axis, prelude::*};
 
-use crate::roving::{Bar, Pattern, Roving, bar, nested_bar, provide_bar};
+use crate::{
+    roving::{Bar, Pattern, Roving, bar, nested_bar, provide_bar},
+    terminal::{DIVIDER_VERTICAL, cell_height, cell_width, is_terminal, rule_line},
+};
 
 /// The props of [`Toolbar`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -109,8 +112,31 @@ pub struct ToolbarSeparatorProps {}
 
 /// A line between runs of a [`Toolbar`]'s items: a view the app styles
 /// (`class`, `style`: a hairline across a row, `w-px h-5 bg-border`), never
-/// a stop of the keyboard focus.
+/// a stop of the keyboard focus. In a terminal, where a hairline takes no
+/// Cell, it is the terminal's own line in the theme's border color: a `│`
+/// between the items of a horizontal toolbar, a row of `─` across a
+/// vertical one, and nothing at the start of a wrapped toolbar's row.
 #[component]
 pub fn ToolbarSeparator(_props: ToolbarSeparatorProps, _cx: Scope<NoEvent>) -> impl IntoElement {
-    view().focusable(false)
+    let vertical = bar().and_then(|outer| outer.axis) == Some(Axis::Vertical);
+    // A wrapped toolbar's row that starts with the separator has nothing
+    // to set apart there: the separator is invisible, its place kept, so
+    // the layout stays as it is.
+    let leading = signal(false);
+    view()
+        .focusable(false)
+        // At least a Cell across the line, whatever hairline the app gives it.
+        .when(is_terminal(), |v| match vertical {
+            true => v.min_h(cell_height()).child(rule_line()),
+            false => v
+                .min_w(cell_width())
+                .on_layout(move |frame: &Bounds<Points>| {
+                    let start = frame.origin.x < cell_width() * 2.0;
+                    if leading.get_untracked() != start {
+                        leading.set(start);
+                    }
+                })
+                .style_when(move || leading.get(), |s| s.invisible())
+                .child(text(DIVIDER_VERTICAL.to_string()).text_color(crate::theme::theme().border)),
+        })
 }

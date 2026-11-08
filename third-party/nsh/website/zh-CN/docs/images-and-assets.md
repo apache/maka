@@ -44,7 +44,7 @@ fn native(registry: &mut Registry) {
 ```tsx tabs
 import logo from "./assets/logo@2x.png";
 
-logo; // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
+logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
 ```
 
 支持的文件：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`，以及 `.svg`（[SVG 图片](#svg-图片)）。
@@ -53,10 +53,10 @@ logo; // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height
 
 **自然尺寸。** 当样式没有指定宽度或高度时，来自资源的图片按自然尺寸布局，所以 `image(LOGO)` 和 `<Image src={logo} />` 不需要任何样式。若要改变大小，设置其中一边加宽高比，或同时设置两边。
 
-在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，即使资源在入口目录以外也会打包。编译后的 `url` 使用 `asset:/imports/<digest>/<文件名>`；摘要包含整个资源族的文件名和内容，像素密度变体保留同目录的文件名关系，不受 checkout 位置影响。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
+在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，其 `url` 相对于应用根目录（入口文件所在目录）。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
 
 > [!TIP]
-> 在 TSX 中，`src` 也接受 `asset:/path` 字符串，被导入的文件才保证会被发布。从未导入的路径在开发服务器下可以使用（它提供整个应用目录），在打包后的应用中却会缺失。请导入你用到的每一张图片。Rust crate 通过 `assets!()` 发布整个 `assets/` 目录。
+> 在 TSX 中，`src` 也接受 `asset:/path` 字符串，被导入的文件才保证会被发布。从未导入的路径在开发服务器下可以使用（仅限应用目录中隐藏目录以外的图片、字体、音频和视频），在打包后的应用中却会缺失。请导入你用到的每一张图片。Rust crate 通过 `assets!()` 发布整个 `assets/` 目录。
 
 ### 像素密度
 
@@ -78,7 +78,7 @@ const LOGO: ImageAsset = asset!("logo.png");
 ```tsx tabs
 import logo from "./assets/logo.png";
 
-logo; // { url: "asset:/imports/<digest>/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
+logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
 ```
 
 - 对不带后缀的图片，`asset!` 和打包器会查找它的 `@1.5x`、`@2x`、`@3x` 和 `@4x` 同名文件。`scales` 列出它们，其中 1 表示指定的文件本身；没有同名文件的图片没有 scales（在 TSX 中导入为 `{ url, size }`）。打包器发布找到的同名文件，`assets!()` 发布整个目录。
@@ -92,15 +92,13 @@ logo; // { url: "asset:/imports/<digest>/logo.png", size: { width: 64, height: 6
 
 ## SVG 图片
 
-终端后端暂不支持 SVG 图片源，请使用位图图片。
-
 像导入其他图片一样导入 `.svg` 文件。它的尺寸（以点为单位）取自 `width` 和 `height`（只给出其中一个时，另一个按 `viewBox` 的宽高比算出），否则取自 `viewBox`：SVG 中的一个 CSS 像素就是一个点，文件名中的 `@2x` 后缀对 SVG 文件不起作用。
 
 ```tsx
 import logo from "./assets/logo.svg"; // <svg width="120" height="40" …>
 import star from "./assets/star.svg"; // <svg viewBox="0 0 24 24" …>
 
-logo; // { url: "asset:/imports/<digest>/logo.svg", size: { width: 120, height: 40 } }
+logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 
 <Image src={logo} />
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />
@@ -352,6 +350,7 @@ function RemoteImage(props: { url: string }) {
 | 文件 | Rust（`asset!`） | TSX 导入 | 页面 |
 |---|---|---|---|
 | `.ttf`、`.otf`、`.woff`、`.woff2` | 带字体族名的 `FontAsset` | 字体的字体族名 | [字体](./fonts.md) |
+| `.wav`、`.m4a`、`.aac`、`.mp3` | 带 URI 的 `FileAsset` | 文件的 `asset:/` URL | [声音](../modules/nsh.md#sound) |
 | `.json` 及其他文件 | 带 URI 的 `FileAsset` | `.json`：解析后的值，打包进脚本 | [项目结构](./project-structure.md#模块) |
 
 两种方式下，字体都在第一帧之前注册。
@@ -382,7 +381,7 @@ import flag from "./images/flag.png";
 const bytes = await (await fetch(flag.url)).bytes();
 ```
 
-引擎在自身线程之外从应用的文件中读取该文件（`nsh run` 期间从开发服务器读取），无需任何能力授权：这些是应用自己的文件。Web 应用会从页面提供资源的位置下载页面未预加载的文件。响应状态为 `200`，带有文件的字节、`Content-Length` 以及由扩展名给出的 `Content-Type`（`image/png`、`application/json` 等），无论文件以何种方式到达，其 `url` 都是该 `asset:/` URL；应用没有随附的文件会以指明该文件的网络错误拒绝。URL 以文件在应用文件中的路径来指明它，请求以 `GET`（或 `HEAD`）读取它：路径离开应用文件的 URL（`..`、绝对路径）和使用其他方法的请求都会以同样的方式拒绝，且不会读取或下载任何内容。
+引擎在自身线程之外从应用的文件中读取该文件（`nsh run` 期间从开发服务器读取），无需任何能力授权：这些是应用自己的文件。Web 应用会从页面提供资源的位置下载页面未预加载的文件。响应状态为 `200`，带有文件的字节、`Content-Length` 以及由扩展名给出的 `Content-Type`（`image/png`、`application/json` 等），无论文件以何种方式到达，其 `url` 都是所请求的 `asset:/` URL（不含片段）；应用没有随附的文件会以指明该文件的网络错误拒绝。URL 以文件在应用文件中的路径来指明它，在每个平台上都一样：scheme 不区分大小写，与 URL 的 scheme 一样；查询或片段不改变所指的文件（`asset:/locales/en.json?v=2` 读取 `locales/en.json`）。请求以 `GET`（或 `HEAD`）读取文件：路径离开应用文件的 URL（`..`、绝对路径）和使用其他方法的请求都会以同样的方式拒绝，且不会读取或下载任何内容。
 
 ### 模块自身的 URL
 

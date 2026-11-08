@@ -17,7 +17,7 @@ use super::{
     market::{self, BLOCK, BUCKETS, TAPE, TAPE_HELD, Trade, compact, price, time},
     parts::{Block, Col, GRID, head, spring_bar},
 };
-use crate::ui::{colors, legend, rect, tints};
+use crate::ui::{TERMINAL_COLUMN, TERMINAL_ROW, colors, legend, rect, terminal, tints};
 
 /// Rows shown.
 const SHOWN: usize = 8;
@@ -125,16 +125,82 @@ pub(crate) fn Tape(props: StockProps) -> impl IntoElement {
             }
         });
     }
+    if terminal() {
+        return terminal_tape(shown, decimals).into_element();
+    }
     let width = signal(0.0_f32);
-    view().child(
-        canvas(move || {
-            let width = width.get();
-            shown.with(|s| draw_tape(s, width, decimals, &offset))
-        })
-        .h(px(SHOWN as f32 * ROW))
-        .label("Recent trades")
-        .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0)),
-    )
+    view()
+        .child(
+            canvas(move || {
+                let width = width.get();
+                shown.with(|s| draw_tape(s, width, decimals, &offset))
+            })
+            .h(px(SHOWN as f32 * ROW))
+            .label("Recent trades")
+            .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0)),
+        )
+        .into_element()
+}
+
+/// The tape in the terminal, where a canvas's rows and rules would fall
+/// between the text's: a row of text per trade under its columns' heads,
+/// the price in the side's color, blocks marked and their size in the
+/// accent.
+fn terminal_tape(shown: Memo<Vec<Trade>>, decimals: u32) -> impl IntoElement {
+    let gap = px(2.0 * TERMINAL_COLUMN);
+    let narrow = px(8.0 * TERMINAL_COLUMN);
+    view().children((0..SHOWN).map(move |i| {
+        let trade = move || shown.with(|s| s.get(i).copied());
+        let block = move || trade().is_some_and(|t| t.size >= BLOCK);
+        view()
+            .h(px(TERMINAL_ROW))
+            .flex_row()
+            .gap(gap)
+            .child(
+                text(move || trade().map(|t| time(t.t, true)).unwrap_or_default())
+                    .w(narrow)
+                    .text_size(px(12.0))
+                    .text_color(colors::FAINT)
+                    .tabular_nums(),
+            )
+            .child(
+                text(move || {
+                    trade()
+                        .map(|t| price(t.price, decimals))
+                        .unwrap_or_default()
+                })
+                .flex_1()
+                .text_size(px(14.0))
+                .tabular_nums()
+                .text_color(move || {
+                    if trade().is_some_and(|t| t.side > 0.0) {
+                        colors::UP
+                    } else {
+                        colors::DOWN
+                    }
+                }),
+            )
+            .child(
+                text(move || if block() { "BLOCK" } else { "" })
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors::ACCENT),
+            )
+            .child(
+                text(move || trade().map(|t| compact(t.size)).unwrap_or_default())
+                    .w(narrow)
+                    .text_right()
+                    .text_size(px(14.0))
+                    .tabular_nums()
+                    .text_color(move || {
+                        if block() {
+                            colors::ACCENT
+                        } else {
+                            colors::TEXT
+                        }
+                    }),
+            )
+    }))
 }
 
 /// The tape's section of stock `index`: its totals (every tick), the
@@ -167,7 +233,7 @@ pub(crate) fn tape_block(live: &Live, index: usize) -> Block {
                 .flex_row()
                 .flex_wrap()
                 .gap_x(px(16.0))
-                .gap_y(px(6.0))
+                .gap_y(px(if terminal() { 0.0 } else { 6.0 }))
                 .child(legend(
                     colors::UP,
                     "At ask",
@@ -184,15 +250,23 @@ pub(crate) fn tape_block(live: &Live, index: usize) -> Block {
                     Some(move || totals.get().2.to_string()),
                 )),
         )
-        .child(
+        .child(if terminal() {
+            view()
+                .flex_row()
+                .mt(px(TERMINAL_ROW))
+                .gap(px(2.0 * TERMINAL_COLUMN))
+                .child(head("TIME", Col::Fixed(8.0 * TERMINAL_COLUMN), false))
+                .child(head("PRICE", Col::Flex, false))
+                .child(head("SIZE", Col::Fixed(8.0 * TERMINAL_COLUMN), true))
+        } else {
             view()
                 .flex_row()
                 .gap(px(10.0))
                 .px_2()
                 .child(head("TIME", Col::Fixed(80.0), false))
                 .child(head("PRICE", Col::Flex, false))
-                .child(head("SIZE", Col::Auto, true)),
-        )
+                .child(head("SIZE", Col::Auto, true))
+        })
         .child(tape().stock(index as u32))
 }
 

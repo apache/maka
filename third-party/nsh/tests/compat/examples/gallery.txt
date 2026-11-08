@@ -49,17 +49,9 @@ tap text:Shader
 expect Soft orbs of light that blend
 expect Sums of sines through a cosine palette
 back
-tap text:WebView and Video
+tap text:WebView
 expect Inline HTML, with messages both ways
 expect Post to the page
-back
-tap text:Overlay
-expect A box that clips its content, with an overlay anchored inside it
-tap text:Open the overlay
-expect Outside the clipped box, on top of the page.
-tap text:Close
-absent Outside the clipped box, on top of the page.
-expect Open the overlay
 back
 tap text:Button
 expect One main action; the others quieter
@@ -139,6 +131,8 @@ expect Media and alerts
 back
 tap text:Plot
 expect Each side summed out from the spread, as steps
+# The page makes its charts as they scroll near.
+scroll scroll:text:"Live price" 0 2400
 expect Bars per month, side by side or stacked
 back
 tap text:NavStack

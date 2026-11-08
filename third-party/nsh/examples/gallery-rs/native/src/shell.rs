@@ -19,7 +19,10 @@ use crate::{
     assets::LOGO,
     demos::{self, Demo, GROUPS},
     nav::{self, Route},
-    ui::{Badge, IconTile, MONO, SIDEBAR, colors, desktop, icon, radius},
+    ui::{
+        Badge, IconTile, MONO, TERMINAL_COLUMN, TERMINAL_ROW, colors, desktop, icon, radius,
+        sidebar_width, terminal,
+    },
 };
 
 /// The storage key of the demo open (its name).
@@ -175,10 +178,40 @@ fn select(demo: &'static Demo) {
 }
 
 /// A demo in the sidebar: an accent bar and a raised fill when selected,
-/// a fill under the pointer otherwise.
+/// a fill under the pointer otherwise. One row of text in the terminal,
+/// which shows the selection as a band of its own.
 fn sidebar_row(demo: &'static Demo) -> AnyElement {
     let selected = global::<Selected>();
     let active = move || selected.with(|s| ptr::eq(s.0, demo));
+    if terminal() {
+        return view()
+            .h(px(TERMINAL_ROW))
+            .flex_row()
+            .items_center()
+            .px(px(TERMINAL_COLUMN))
+            .role(AccessibilityRole::Button)
+            .label(demo.name)
+            .accessibility_state(move || AccessibilityState {
+                selected: active(),
+                ..AccessibilityState::default()
+            })
+            .on_press(move || select(demo))
+            .child(
+                text(demo.name)
+                    .number_of_lines(1)
+                    .flex_1()
+                    .text_size(px(14.0))
+                    .style_when(active, |s| s.font_weight(FontWeight::SEMIBOLD))
+                    .text_color(move || {
+                        if active() {
+                            colors::TEXT
+                        } else {
+                            colors::MUTED
+                        }
+                    }),
+            )
+            .into_element();
+    }
     // TS: `bg-accent` when selected, `hover:bg-hover active:bg-accent`
     // otherwise (the gallery theme's tokens).
     let fill = AdaptiveColor::new(colors::BORDER.light, colors::RAISED.dark);
@@ -238,6 +271,9 @@ fn sidebar_row(demo: &'static Demo) -> AnyElement {
 
 /// The desktop layout's sidebar: the app, the demos by group, the window.
 fn sidebar() -> AnyElement {
+    if terminal() {
+        return terminal_sidebar();
+    }
     let groups = GROUPS.iter().map(|group| {
         view()
             .gap(px(2.0))
@@ -254,7 +290,7 @@ fn sidebar() -> AnyElement {
             .children(group.demos.iter().map(sidebar_row))
     });
     view()
-        .w(px(SIDEBAR))
+        .w(px(sidebar_width()))
         .bg(colors::INSET)
         .border_r_1()
         .border_r_color(colors::LINE)
@@ -314,13 +350,101 @@ fn sidebar() -> AnyElement {
         .into_element()
 }
 
-/// The selected demo under a toolbar with its name and what it shows.
+/// The terminal's sidebar (as the TSX gallery's): the app's name, the
+/// demos by group a row each, the window's size; no logo, icons or hint.
+fn terminal_sidebar() -> AnyElement {
+    let groups = GROUPS.iter().map(|group| {
+        view()
+            .child(
+                text(group.title.to_uppercase())
+                    .h(px(TERMINAL_ROW))
+                    .px(px(TERMINAL_COLUMN))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors::FAINT),
+            )
+            .children(group.demos.iter().map(sidebar_row))
+    });
+    view()
+        .w(px(sidebar_width()))
+        .bg(colors::INSET)
+        .border_r_1()
+        .border_r_color(colors::LINE)
+        .child(
+            text("Rust Gallery")
+                .h(px(TERMINAL_ROW))
+                .px(px(TERMINAL_COLUMN))
+                .mb(px(TERMINAL_ROW))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors::TEXT),
+        )
+        .child(scroll().flex_1().child(view().children(groups)))
+        .child(
+            // The rule takes a whole row: the rest of it is padding.
+            view()
+                .pt(px(TERMINAL_ROW - 1.0))
+                .px(px(TERMINAL_COLUMN))
+                .border_t_1()
+                .border_t_color(colors::LINE)
+                .child(
+                    text(move || {
+                        let size = window();
+                        format!("{} × {} pt", size.width.0.round(), size.height.0.round())
+                    })
+                    .text_color(colors::MUTED),
+                ),
+        )
+        .into_element()
+}
+
+/// The selected demo under a toolbar with its name and what it shows. The
+/// terminal's toolbar is its group and name on one row, then the rule on
+/// a row of its own.
 fn demo_pane() -> AnyElement {
     let selected = global::<Selected>();
     let demo = move || selected.get().0;
+    let toolbar = if terminal() {
+        view()
+            .h(px(2.0 * TERMINAL_ROW))
+            .border_b_1()
+            .border_b_color(colors::LINE)
+            .child(
+                view()
+                    .h(px(TERMINAL_ROW))
+                    .flex_row()
+                    .items_center()
+                    .gap(px(TERMINAL_COLUMN))
+                    .px(px(TERMINAL_COLUMN))
+                    .child(text(move || demo().group()).text_color(colors::MUTED))
+                    .child(text("›").text_color(colors::FAINT))
+                    .child(
+                        text(move || demo().name)
+                            .number_of_lines(1)
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors::TEXT),
+                    ),
+            )
+            .into_element()
+    } else {
+        gui_toolbar(demo)
+    };
     view()
         .flex_1()
         .bg(colors::BACKGROUND)
+        .child(toolbar)
+        // A new demo when another is selected.
+        .child(view().flex_1().child(dynamic(move || {
+            let content = demo().content;
+            untracked(content)
+        })))
+        .into_element()
+}
+
+/// The toolbar of the desktop layout's pane: the demo's icon, name, what
+/// it shows and its group.
+fn gui_toolbar(demo: impl Fn() -> &'static Demo + Copy + 'static) -> AnyElement {
+    view()
         .child(
             view()
                 .h(px(64.0))
@@ -351,11 +475,6 @@ fn demo_pane() -> AnyElement {
                 )
                 .child(Badge::new(move || demo().group())),
         )
-        // A new demo when another is selected.
-        .child(view().flex_1().child(dynamic(move || {
-            let content = demo().content;
-            untracked(content)
-        })))
         .into_element()
 }
 

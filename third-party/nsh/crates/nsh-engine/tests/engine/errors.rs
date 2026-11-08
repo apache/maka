@@ -57,6 +57,8 @@ fn config(bundle: Bundle, limits: nsh_engine::Limits) -> EngineConfig {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     }
 }
 
@@ -143,6 +145,8 @@ fn first_error(bundle: Bundle) -> String {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, sink).unwrap();
     rx.recv_timeout(Duration::from_secs(5))
@@ -289,4 +293,33 @@ fn a_ref_naming_a_const_object_says_what_to_write() {
         "{error}"
     );
     assert!(error.contains("App.tsx:3:"), "{error}");
+}
+
+/// What a runtime built without a feature reports for an app importing what
+/// that feature serves (`docs/dev/features.md`).
+#[test]
+fn an_import_the_runtime_was_built_without_names_it() {
+    for (import, named) in [
+        ("import { Editor } from \"nsh/base\";", "'Editor'"),
+        ("import { RichEditor } from \"nsh/base\";", "'RichEditor'"),
+        (
+            "import { BarChart } from \"nsh/base/plot\";",
+            "nsh/base/plot",
+        ),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let sink = Sink {
+            errors: Arc::new(Mutex::new(tx)),
+        };
+        let core = nsh_base::parts::core as nsh_base::parts::Part;
+        let config = EngineConfig {
+            ui_sets: vec![nsh_base::registry_of([core])],
+            ..EngineConfig::new(nsh_engine::App::Js(Bundle::source(import.to_owned())))
+        };
+        let _engine = Engine::start(config, || ApproxTextEngine, sink).unwrap();
+        let error = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("error reported");
+        assert!(error.contains(named), "{error}");
+    }
 }

@@ -8,25 +8,23 @@ use nsh_core::{
     prelude::*,
 };
 
+use super::spacex;
 use crate::{
     assets::{BOUNCE, LOGO, SPINNER},
     ui::{
-        Badge, Button, ButtonVariant, Card, DemoPage, Finish, Finished, IconName, MONO, Meter,
-        Tone, appear, caption, colors, radius,
+        Badge, Button, ButtonVariant, Card, DemoPage, IconName, MONO, Meter, Tone, appear, caption,
+        colors, radius,
     },
 };
 
-/// A fixed photo (in color), large enough to stay sharp at 3x.
-const WIDE: &str = "https://picsum.photos/id/1015/1200/600";
-
-/// Photo `id` at `w` × `h` pixels.
-fn photo(id: u32, w: u32, h: u32) -> String {
-    format!("https://picsum.photos/id/{id}/{w}/{h}")
+/// The one picture the demos of a single image compare themselves on.
+fn launch() -> String {
+    spacex::url(spacex::ARC, "medium")
 }
 
 /// A large photo (`image_size`, `prefetch_image`, progress).
 fn big() -> String {
-    photo(1018, 2400, 1600)
+    spacex::url(spacex::BOOSTER, "4096x4096")
 }
 
 /// Every photo's frame: rounded, a hairline border, a raised fill while it
@@ -63,10 +61,9 @@ fn tile(note_text: &str, code: bool, height: f32, content: impl IntoElement) -> 
                 .h(px(height))
                 .rounded(px(radius::CONTROL))
                 .border_curve(BorderCurve::Continuous)
-                .bg(colors::RAISED)
-                .finish(Finish::Raised)
+                .bg(colors::INSET)
                 .border_1()
-                .border_color(colors::BORDER)
+                .border_color(colors::LINE)
                 .items_center()
                 .justify_center()
                 .child(content),
@@ -75,7 +72,7 @@ fn tile(note_text: &str, code: bool, height: f32, content: impl IntoElement) -> 
         .into_element()
 }
 
-/// A 2:1 image in squares, one per resize mode.
+/// A portrait photo in wide frames, one per resize mode.
 fn resize_modes() -> AnyElement {
     let rows = [
         [
@@ -92,22 +89,23 @@ fn resize_modes() -> AnyElement {
             view()
                 .flex_1()
                 .gap_2()
-                .child(frame(image(WIDE).object_fit(mode)).h(px(140.0)))
+                .child(frame(image(launch()).object_fit(mode)).h(px(150.0)))
                 .child(note(name, true))
         }))
     });
     Card::new()
         .icon(IconName::Image)
         .title("Resize modes")
-        .subtitle("A 2:1 image in square frames")
+        .subtitle("A portrait photo in wide frames")
         .children(rows)
         .into_element()
 }
 
 fn corners() -> AnyElement {
-    let square = || frame(image(WIDE)).size(px(88.0));
+    let square = |id: &str| frame(image(spacex::url(id, "medium"))).size(px(88.0));
     let item = |image: Image, label: &'static str| {
         view()
+            .flex_1()
             .items_center()
             .gap_2()
             .child(image)
@@ -120,17 +118,16 @@ fn corners() -> AnyElement {
         .child(
             view()
                 .flex_row()
-                .justify_between()
-                .child(item(square().rounded(px(44.0)), "Circle"))
+                .child(item(square(spacex::SILVER).rounded(px(44.0)), "Circle"))
                 .child(item(
-                    square()
+                    square(spacex::RAYS)
                         .rounded(px(18.0))
                         .border_2()
                         .border_color(colors::ACCENT),
                     "Border",
                 ))
                 .child(item(
-                    square()
+                    square(spacex::DAY)
                         .rounded(px(0.0))
                         .rounded_tl(px(40.0))
                         .rounded_br(px(40.0)),
@@ -171,13 +168,21 @@ fn animated() -> AnyElement {
             view()
                 .flex_row()
                 .gap_3()
-                .child(tile("bounce.gif", true, 96.0, image(BOUNCE)))
-                .child(tile("spinner.webp", true, 96.0, image(SPINNER)))
+                .child(tile("bounce.gif", true, 96.0, image(BOUNCE).size(px(64.0))))
+                .child(tile(
+                    "spinner.webp",
+                    true,
+                    96.0,
+                    image(SPINNER).size(px(64.0)),
+                ))
                 .child(tile(
                     "Scaled, round",
                     false,
                     96.0,
-                    image(BOUNCE).size(px(48.0)).rounded(px(24.0)),
+                    image(BOUNCE)
+                        .size(px(56.0))
+                        .rounded(px(28.0))
+                        .bg(colors::ACCENT.opacity(0.14)),
                 )),
         )
         .into_element()
@@ -186,20 +191,23 @@ fn animated() -> AnyElement {
 /// Network images behind a placeholder, fading in; "Reload" asks for
 /// images that are not cached yet (`seed` counts the loads).
 fn placeholders(seed: Signal<u32>) -> AnyElement {
-    // A new size per reload: a URL not in the cache yet.
-    let images = [(1043, 0u32), (1080, 300), (1069, 1000)].map(|(id, ms)| {
+    // Another size per reload: a URL not in the cache yet.
+    const SIZES: [&str; 5] = ["medium", "small", "900x900", "large", "360x360"];
+    let images = [
+        (spacex::DRAGON, 0u32),
+        (spacex::TRANSPORTER, 300),
+        (spacex::MOON, 1000),
+    ]
+    .map(|(id, ms)| {
         view()
             .flex_1()
             .gap_2()
             .child(
                 frame(
-                    image(move || {
-                        let side = 600 + seed.get();
-                        photo(id, side, side)
-                    })
-                    .placeholder(LOGO)
-                    .fade_duration(ms as f32)
-                    .object_fit(ResizeMode::Cover),
+                    image(move || spacex::url(id, SIZES[(seed.get() as usize - 1) % SIZES.len()]))
+                        .placeholder(LOGO)
+                        .fade_duration(ms as f32)
+                        .object_fit(ResizeMode::Cover),
                 )
                 .h(px(100.0)),
             )
@@ -221,7 +229,7 @@ fn blur() -> AnyElement {
         view()
             .flex_1()
             .gap_2()
-            .child(frame(image(WIDE).blur_radius(r as f32)).h(px(76.0)))
+            .child(frame(image(launch()).blur_radius(r as f32)).h(px(76.0)))
             .child(note(
                 if r == 0 {
                     "None".to_owned()
@@ -363,7 +371,7 @@ fn events() -> AnyElement {
     let failed = signal(SharedString::from("Loading…"));
     let log = move |line: &'static str| move |_: &()| events.update(|e| e.push(line));
     let thumb = |image: Image| frame(image).w(px(96.0)).h(px(64.0));
-    let loads = thumb(image(photo(1084, 600, 400)))
+    let loads = thumb(image(spacex::url(spacex::LIFTOFF, "medium")))
         .on_load_start(log("onLoadStart"))
         .on_load(move |size: &Size<DevicePixels>| {
             events.update(|e| e.push("onLoad"));
@@ -415,7 +423,7 @@ fn events() -> AnyElement {
                 .items_center()
                 .child(loads)
                 .child(label(
-                    "picsum.photos",
+                    "pbs.twimg.com",
                     text(move || format!("Loaded, {} px", loaded.get()))
                         .text_size(px(13.0))
                         .text_color(colors::UP)

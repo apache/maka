@@ -72,6 +72,58 @@ fn value(layer: &CALayer, key: &NSString) -> Option<Retained<AnyObject>> {
     unsafe { msg_send![layer, valueForKey: key] }
 }
 
+/// One property's change as an animation from `from` to `to`.
+fn change(
+    key: &NSString,
+    from: &AnyObject,
+    to: &AnyObject,
+    duration: f64,
+    timing: Option<&CAMediaTimingFunction>,
+) -> Retained<CABasicAnimation> {
+    let a = CABasicAnimation::animationWithKeyPath(Some(key));
+    // SAFETY: values read from the property this animation drives.
+    unsafe {
+        a.setFromValue(Some(from));
+        a.setToValue(Some(to));
+    }
+    a.setDuration(duration);
+    a.setTimingFunction(timing);
+    a
+}
+
+/// Runs `apply`, which sets geometry `layer` draws itself with, so that it
+/// animates along the current transaction: paths (a box shadow's
+/// `shadowPath`, a mask's `path`) and the corners of UIKit's own layers have
+/// no implicit action, so they would otherwise jump while the radius next to
+/// them transitions.
+pub(crate) fn animate_geometry(layer: &CALayer, key: &NSString, apply: impl FnOnce()) {
+    if CATransaction::disableActions() {
+        apply();
+        return;
+    }
+    // From what is on screen now, mid-animation included.
+    // SAFETY: the presentation layer is only read.
+    let presented = unsafe { layer.presentationLayer() };
+    let from = value(presented.as_deref().unwrap_or(layer), key);
+    apply();
+    let (Some(from), Some(to)) = (from, value(layer, key)) else {
+        return;
+    };
+    // SAFETY: `isEqual:` of NSObject.
+    let same: bool = unsafe { msg_send![&*from, isEqual: &*to] };
+    if same {
+        return;
+    }
+    let animation = change(
+        key,
+        &from,
+        &to,
+        CATransaction::animationDuration(),
+        CATransaction::animationTimingFunction().as_deref(),
+    );
+    layer.addAnimation_forKey(&animation, Some(key));
+}
+
 /// Runs `apply` (which restyles the view) so that the changes animate
 /// along `t`: the view's own layer through explicit animations from its
 /// current (presented) values, its sublayers through implicit ones.
@@ -100,12 +152,7 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
         if same {
             continue;
         }
-        let a = CABasicAnimation::animationWithKeyPath(Some(key));
-        // SAFETY: values read from the same property, as the animation
-        // expects.
-        unsafe { a.setFromValue(Some(&from)) };
-        a.setDuration(duration);
-        a.setTimingFunction(Some(&timing(t.easing)));
+        let a = change(key, &from, &to, duration, Some(&timing(t.easing)));
         if t.delay > 0.0 {
             a.setBeginTime(now + t.delay as f64 / 1000.0);
             // SAFETY: an immutable Core Animation constant.
@@ -264,6 +311,9 @@ pub(crate) fn keyframes(layer: &CALayer, animation: Option<&KeyframeAnimation>, 
     if a.delay > 0.0 {
         // SAFETY: a plain clock read.
         animation.setBeginTime(objc2_quartz_core::CACurrentMediaTime() + a.delay as f64 / 1000.0);
+    }
+    if let Some(hz) = a.frame_rate.filter(|hz| hz.is_finite() && *hz > 0.0) {
+        animation.setPreferredFrameRateRange(crate::animation::rate_range(Some(hz)));
     }
     // Keeps running when the view leaves the window and comes back.
     animation.setRemovedOnCompletion(false);

@@ -67,3 +67,6 @@ next.forEach((p) => Image.prefetch(p.url).catch(() => {})); // 之后由 <Image>
 
 > [!NOTE]
 > 如果应用在 `nsh.json` 中声明了 `capabilities`，对远程 URL 调用 `getSize` 和 `prefetch` 需要像 `fetch` 一样在 `network` 中允许。范围之外的 URL 不会被请求：Promise 以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"network"`，`resource` 为该 URL。见[沙箱与权限](../docs/sandbox-and-capabilities.md)。
+
+> [!NOTE]
+> 终端显示的是文字，因此在终端应用中 `getSize` 和 `prefetch` 会立即结束：Promise 以一个 `Error` reject，其 `code` 为 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`。

@@ -1,0 +1,50 @@
+{
+  "numbers": {
+    "decimal": ",",
+    "group": ".",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": " ",
+    "compactShort": [[3, "K"], [6, " mln."], [9, " mld."], [12, " bln."]],
+    "compactLong": [[3, " duizend"], [6, " miljoen"], [9, " miljard"], [12, " biljoen"]]
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "-"], ["month", "-"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": " ",
+    "dateTimeSep": ", ",
+    "names": {
+      "months": [
+        "januari",
+        "februari",
+        "maart",
+        "april",
+        "mei",
+        "juni",
+        "juli",
+        "augustus",
+        "september",
+        "oktober",
+        "november",
+        "december"
+      ],
+      "monthsShort": ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"],
+      "weekdays": ["zondag", "maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag"],
+      "weekdaysShort": ["zo", "ma", "di", "wo", "do", "vr", "za"]
+    },
+    "cjk": false
+  }
+}

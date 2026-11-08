@@ -17,7 +17,7 @@
  * under the License.
  */
 import { effect, mount, View, host as shell } from 'nsh';
-import { Window } from 'nsh/desktop';
+import { currentWindow } from 'nsh/desktop';
 import type { LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createHost, HostProvider, uiHost } from './host';
 import { initializeAppearance } from './appearance';
@@ -39,8 +39,9 @@ function ComputerPermissionSetupEntry() {
   const owner = params.systemPermission;
   if (!owner?.sessionId || !owner.requestId)
     throw new Error('Missing system permission request identity.');
+  const win = currentWindow();
   effect(() => {
-    Window.setTitle(tr('permissionSetup.title'));
+    win.set({ title: tr('permissionSetup.title') });
   });
   return (
     <HostProvider value={host}>

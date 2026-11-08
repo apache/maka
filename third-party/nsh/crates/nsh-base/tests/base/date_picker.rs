@@ -20,7 +20,10 @@ use nsh_base::{
     TimeFieldSegmentEntry, TimePrecision, date_picker,
 };
 use nsh_core::{
-    AccessibilityRole, MountItem, NodeId, Size, ViewKind, element::Root, platform::Os, prelude::*,
+    AccessibilityRole, MountItem, NodeId, Size, ViewKind,
+    element::Root,
+    platform::{Environment, Idiom, Os},
+    prelude::*,
     time::Clock,
 };
 use nsh_engine::EngineConfig;
@@ -556,4 +559,129 @@ fn on_a_phone_the_calendar_spans_the_sheet() {
     assert_eq!(seen.frames[&week].size.width, px(800.0));
     let width = seen.frames[&day].size.width;
     assert!((width.0 - 800.0 / 7.0).abs() <= 1.0, "a day {width:?} wide");
+}
+
+/// A date picker with a date chosen, cleanable, its trigger `Deadline` on
+/// a band 14 Cells wide, which leaves six Cells free at its end for the
+/// terminal's marks, a slot of three each. The band's width is its own (a
+/// terminal keeps two Cells at most of a padding, so padding cannot leave
+/// six), and the page holds it at that width rather than the window's.
+#[component]
+fn ClearableDate() -> impl IntoElement {
+    view().items_start().child(
+        date_picker()
+            .accessibility_label("Deadline")
+            .default_value(DateTime::Single(Some(
+                d(2026, 11, 6).and_hms_opt(0, 0, 0).unwrap(),
+            )))
+            .cleanable(true)
+            .clear_button(text("Clear"))
+            .trigger(
+                view()
+                    .flex_row()
+                    .w(px(112.0))
+                    .bg(nsh_core::color::rgb(0x333333))
+                    .child(text("Deadline")),
+            ),
+    )
+}
+
+#[test]
+fn a_terminals_date_picker_shows_its_clear_and_arrow_at_its_band_s_end() {
+    let viewport = Size::new(px(390.0), px(844.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            window: viewport,
+            os: Os::Linux,
+            idiom: Idiom::Terminal,
+            cell: Some(Size::new(px(8.0), px(16.0))),
+            ..Environment::default()
+        },
+        ..EngineConfig::new(Root::of::<ClearableDate>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    // The texts, frames and parents the batches set.
+    #[derive(Default)]
+    struct Seen {
+        texts: HashMap<NodeId, String>,
+        frames: HashMap<NodeId, Bounds<Points>>,
+        parents: HashMap<NodeId, NodeId>,
+    }
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Text { id, text, .. } => {
+                    seen.texts.insert(*id, text.text.to_string());
+                }
+                MountItem::Frame { id, frame } => {
+                    seen.frames.insert(*id, *frame);
+                }
+                MountItem::Insert { parent, child, .. } => {
+                    seen.parents.insert(*child, *parent);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let seen = seen.lock().unwrap();
+    // Where the text `t` starts in the window.
+    let at = |t: &str| {
+        let (id, _) = seen
+            .texts
+            .iter()
+            .find(|(_, s)| s.as_str() == t)
+            .unwrap_or_else(|| panic!("no {t} in {:?}", seen.texts));
+        let mut id = *id;
+        let (mut x, mut y) = (0.0, 0.0);
+        loop {
+            if let Some(f) = seen.frames.get(&id) {
+                x += f.origin.x.0;
+                y += f.origin.y.0;
+            }
+            match seen.parents.get(&id) {
+                Some(parent) => id = *parent,
+                None => return (x, y),
+            }
+        }
+    };
+    // The terminal's own marks in place of the app's `Clear`, on the
+    // band's row: `× ▾`, each the middle of a slot of three Cells, `▾` on
+    // the Cell before the band's last (`Deadline` is 8 Cells, the band 14).
+    assert!(
+        !seen.texts.values().any(|t| t == "Clear"),
+        "the terminal's × in place of the app's clear button: {:?}",
+        seen.texts
+    );
+    let (value, clear, arrow) = (at("Deadline"), at("×"), at("▾"));
+    // The bounds of each and of the views around them, for a failure.
+    let chain = |t: &str| {
+        let (id, _) = seen.texts.iter().find(|(_, s)| s.as_str() == t).unwrap();
+        let mut id = *id;
+        let mut out = format!("{t}:");
+        loop {
+            out += &format!(" {id:?}={:?}", seen.frames.get(&id));
+            match seen.parents.get(&id) {
+                Some(parent) => id = *parent,
+                None => return out,
+            }
+        }
+    };
+    let bounds = format!("{}\n{}\n{}", chain("Deadline"), chain("×"), chain("▾"));
+    assert_eq!(clear.1, value.1, "one row: {value:?} {clear:?}");
+    assert_eq!(arrow.1, value.1, "one row: {value:?} {arrow:?}");
+    assert_eq!(
+        arrow.0 - value.0,
+        12.0 * 8.0,
+        "▾ before the band's last Cell\n{bounds}"
+    );
+    assert_eq!(
+        arrow.0 - clear.0,
+        3.0 * 8.0,
+        "× three Cells before ▾\n{bounds}"
+    );
 }

@@ -36,7 +36,7 @@ function App() {
   );
   const notesField = () => (
     <Input
-      {...field({ style: { height: wide() ? 80 : 100 } })}
+      {...field({ multiline: true, style: { height: wide() ? 80 : 100 } })}
       multiline
       value={notes()}
       onChange={({ value }) => notes.set(value)}
@@ -44,7 +44,7 @@ function App() {
     />
   );
   const signInButton = () => (
-    <View onPress={signIn} disabled={password().length === 0} {...button("primary", { style: { marginTop: 4 } })}>
+    <View onPress={signIn} disabled={password().length === 0} {...button("primary", { disabled: () => password().length === 0, style: { marginTop: 4 } })}>
       <Text style={buttonText("primary")}>Sign in</Text>
     </View>
   );

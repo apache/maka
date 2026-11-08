@@ -4,12 +4,14 @@ import { colorScheme, fontScale, windowSize } from "nsh";
 import { AlertDialog, type AlertDialogAction, Dialog, type StatusBarForeground } from "nsh/base";
 import { keyboardFrame, safeArea } from "nsh";
 import { Menu } from "nsh/desktop";
-import { keymap } from "nsh";
-import { Icon, type IconName } from "../icons";
+import { fpsEnabled, keymap, platform, setFpsEnabled } from "nsh";
+import { Icon, type IconName, lucideSvg } from "../icons";
 import { toast } from "../toast";
 import { Appear, Badge, Button, Caption, Card, colors, DemoPage, Figure, finish, IconTile, isDark, Inset, Legend, Meter, mono, Press, Row, Segmented, Stat, tints, Toggle, type Tone, toneColor } from "../ui";
 
 /** The window drawn to scale, with the safe area insets shaded. */
+const terminal = platform.idiom === "terminal";
+
 function SafeAreaDiagram() {
   const width = 76;
   const scale = () => width / Math.max(1, windowSize().width);
@@ -58,19 +60,28 @@ function Environment() {
             <Stat label="Font scale" value={`${fontScale().toFixed(2)}×`} width="50%" />
           </View>
         </View>
-        <SafeAreaDiagram />
+        {/* A drawing the terminal's Cells would not hold; its figures are below. */}
+        <If when={!terminal}>
+          <SafeAreaDiagram />
+        </If>
       </View>
       <View style={{ height: 1, backgroundColor: colors.line }} />
       <View style={{ gap: 4 }}>
-        <Caption label="Safe area insets" note="pt" />
+        {/* The terminal's figures carry their unit, as the keyboard's does. */}
+        <Caption label="Safe area insets" note={terminal ? undefined : "pt"} />
         <View style={{ flexDirection: "row" }}>
-          <Each of={insets()}>{(inset) => <Stat label={inset().label} value={String(Math.round(inset().value))} width="25%" />}</Each>
+          <Each of={insets()}>
+            {(inset) => <Stat label={inset().label} value={`${Math.round(inset().value)}${terminal ? " pt" : ""}`} width="25%" />}
+          </Each>
         </View>
       </View>
       <View style={{ height: 1, backgroundColor: colors.line }} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
-        <Legend color={colors.info} label="Safe area" />
-        <Legend color={colors.warn} label="Keyboard" />
+        {/* The legend is the drawing's, which the terminal leaves out. */}
+        <If when={!terminal}>
+          <Legend color={colors.info} label="Safe area" />
+          <Legend color={colors.warn} label="Keyboard" />
+        </If>
         <View style={{ flex: 1 }} />
         <Badge label={colorScheme() === "dark" ? "Dark scheme" : "Light scheme"} tone={colorScheme() === "dark" ? "info" : "warn"} outline />
       </View>
@@ -301,6 +312,13 @@ function FramesAndTimers() {
         <Meter value={running() ? fps() / 120 : 0} tone="up" marker={0.5} />
       </View>
       <Button label={running() ? "Stop counting frames" : "Count frames"} icon={running() ? "pause" : "play"} onPress={toggle} />
+      <Row>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ fontSize: 15, color: colors.text }}>Performance monitor</Text>
+          <Text style={{ fontSize: 12, color: colors.muted }}>{platform.os === "macos" ? "Frame and commit costs, CPU and memory" : "Frame and commit costs in the log"}</Text>
+        </View>
+        <Toggle value={fpsEnabled()} onChange={(on) => setFpsEnabled(on)} label="Performance monitor" />
+      </Row>
     </Card>
   );
 }
@@ -330,7 +348,7 @@ function Shortcuts() {
     [keymap.label("mod+backspace"), "Resets (not while typing)"],
   ];
   return (
-    <Card icon="bell" title="Keyboard shortcuts" subtitle="nsh · desktop">
+    <Card icon="bell" title="Keyboard shortcuts" subtitle="nsh/keymap · desktop">
       <View>
         <Each of={keys}>
           {(key, i) => (
@@ -341,7 +359,8 @@ function Shortcuts() {
           )}
         </Each>
       </View>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      {/* A terminal's badge is its text: a wider gap keeps it apart from the count. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? 24 : 8 }}>
         <Badge label={on() ? "Light on" : "Light off"} tone={on() ? "up" : "neutral"} />
         <View style={{ flex: 1 }}>
           <Caption label={`Counted ${count()}`} note={last() || "–"} />
@@ -356,9 +375,13 @@ function ContextMenu() {
   const chosen = signal("");
   const menu = () =>
     Menu.popup([
-      { label: "Copy", onSelect: () => chosen.set("Copy") },
-      { label: "Paste", disabled: true },
-      { label: "Share", submenu: [{ label: "Mail", onSelect: () => chosen.set("Share > Mail") }] },
+      { label: "Copy", icon: lucideSvg("copy"), onSelect: () => chosen.set("Copy") },
+      { label: "Paste", icon: lucideSvg("clipboard-paste"), disabled: true },
+      {
+        label: "Share",
+        icon: lucideSvg("share-2"),
+        submenu: [{ label: "Mail", icon: lucideSvg("mail"), onSelect: () => chosen.set("Share > Mail") }],
+      },
     ]);
   return (
     <Card icon="bell" title="Context menu" subtitle="nsh/desktop · right click">

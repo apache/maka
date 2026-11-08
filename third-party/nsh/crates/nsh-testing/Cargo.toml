@@ -31,7 +31,8 @@ bundle = ["js", "dep:nsh-bundler", "dep:nsh-js"]
 
 [dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"], optional = true }
-nsh-core.workspace = true
+# Tests compile shaders.
+nsh-core = { workspace = true, features = ["shader"] }
 nsh-engine.workspace = true
 nsh-js = { workspace = true, optional = true, features = ["zlib", "crypto"] }
 nsh-dev = { workspace = true, optional = true }
@@ -54,9 +55,11 @@ ureq = { workspace = true, optional = true }
 nsh-dev = { workspace = true, optional = true, features = ["client"] }
 
 [dev-dependencies]
+# `every_export_is_documented` reads the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
 # The fetch tests drive a VM's network by hand (`headless/net_fetch_tests.rs`).
 nsh-js = { workspace = true, features = ["zlib", "crypto"] }
-nsh-base.workspace = true
+nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }
 
 [[test]]
 name = "testing"

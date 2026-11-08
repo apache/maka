@@ -56,8 +56,9 @@ dist\nsh\runtime\windows\nsh-windows-host --bundle build\bundle.nshc --window-si
 
 ### Performance monitor
 
-`--fps` (`nsh run App.tsx --target windows --fps`, `nsh test --target windows --fps`, the host's `--fps`, or
-`AppOptions { fps: true, .. }` in a Rust app's `run_app`) logs the performance monitor's readings once a second
+`--fps` (`nsh run App.tsx --target windows --fps`, `nsh test --target windows --fps`, the host's `--fps`,
+`AppOptions { fps: true, .. }` in a Rust app's `run_app`, the environment variable `NSH_FPS=1`, or the app's own
+`setFpsEnabled(true)`) logs the performance monitor's readings once a second
 (target `nsh::perf`): frames shown over the display's rate, the main thread's time per frame and its phases (`tick`,
 `drain`, `paint`, `present`, `canvas`), the engine's commits, CPU and memory, in the shape the other desktops log
 (milliseconds as mean/p50/p95/max). `nsh test --fps -v` shows them and `examples/gallery/tools/perf.py` reads them
@@ -135,9 +136,13 @@ parent resizes. Make it on the thread of the window it is in: its lifecycle foll
 window, the one it was made under. `AppView::load` replaces whatever ran; `stop` (or destroying the window) ends the app. `asset_base`
 tells it where `asset:/` URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`bundle.nshc`)
 load with `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input, so
-only load it from your own app's files. A standalone window is `nsh_platform_windows::run_app(source, options, on_active)`, with
+only load it from your own app's files. A standalone window is `nsh_platform_windows::run_app(source, options)`, with
 `AppSource::Rust(root)` or `AppSource::Bundle(bundle)`. `Root::tokens` gives a root its [theme](./rust.md#theme) and
 `Root::app_id` the id its data is kept under.
+
+`AppOptions::notifications` hands the process's [notifications](../modules/nsh.md#notifications) to the app the view runs:
+its banners, presses and badge. It is off by default, so an embedded app's notifications are `unavailable` and your
+app's stay yours; `run_app` sets it.
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
 [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
@@ -167,6 +172,11 @@ effects setting and the locale the user's regional format. See [Device and envir
 The `cursor` style follows updates while the mouse rests over a view. When a batch changes the cursor,
 Windows applies the new shape or `"none"` after the whole batch, using the view under the pointer.
 The title bar and resize borders keep their system cursors.
+
+An app opens windows of its own with [`<Window>` and `Window.open`](../modules/nsh-desktop.md#windows): each is a
+top-level window drawn by the app's engine and running in its one JS runtime, so it shares the app's signals and
+modules directly. A normal window has its own taskbar button; dialogs, panels and popups are owned by their parent
+window. Closing the main window closes them and ends the app.
 
 ### Keyboard
 

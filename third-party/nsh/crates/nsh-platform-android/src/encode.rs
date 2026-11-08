@@ -24,6 +24,7 @@ use nsh_core::{
     ModalPresentation, MountBatch, MountItem, NativeProps, PointerEvents, ResizeMode,
     ReturnKeyType, ScreenAnimation, ScreenConfig, SnapAlignment, StatusBarStyle, SubmitBehavior,
     TextAlign, ViewKind, ViewProps, ViewStyle, WebSource,
+    audio::AudioCommand,
     geometry::{DefiniteLength, REM_SIZE},
 };
 
@@ -66,17 +67,17 @@ const COMPONENT_PROPS: i32 = 30;
 const OVERFLOW: i32 = 31;
 const ACCESSIBILITY_LABEL: i32 = 32;
 const APPEARANCE: i32 = 33;
-const RETIRE_LIST_CELL: i32 = 34;
-const PROJECT_ROOT: i32 = 35;
-const COMPONENT_PROP_SLOTS: i32 = 36;
-const SHADER: i32 = 37;
-const SHADER_TRANSITION: i32 = 38;
-const SHADER_INPUT: i32 = 39;
-const NAV_SHADER: i32 = 40;
+const COMPONENT_PROP_SLOTS: i32 = 34;
+const SHADER: i32 = 35;
+const SHADER_TRANSITION: i32 = 36;
+const SHADER_INPUT: i32 = 37;
+const NAV_SHADER: i32 = 38;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
     Str(String),
+    /// A sound's bytes (`Audio.java`), a `byte[]` on the Java side.
+    Bytes(nsh_core::image::ImageData),
     Layout(GlobalRef),
 }
 
@@ -130,6 +131,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
     };
     for item in batch.items {
         match item {
+            MountItem::TreeOrder(_) | MountItem::ProjectStates { .. } => {}
             MountItem::Create { id, kind } => {
                 e.int(CREATE);
                 e.int(id as i32);
@@ -162,33 +164,10 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 e.int(child as i32);
                 e.int(before.map_or(-1, |b| b as i32));
             }
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
-            } => {
-                e.int(PROJECT_ROOT);
-                e.int(parent as i32);
-                e.int(id as i32);
-                e.int(following.len() as i32);
-                for sibling in following {
-                    e.int(sibling as i32);
-                }
-            }
             MountItem::Remove { id } => {
                 e.int(REMOVE);
                 e.int(id as i32);
             }
-            MountItem::RetireListCell { id, request, roots } => {
-                e.int(RETIRE_LIST_CELL);
-                e.int(id as i32);
-                e.bytes.extend_from_slice(&request.to_le_bytes());
-                e.int(roots.len() as i32);
-                for root in roots {
-                    e.int(root as i32);
-                }
-            }
-            MountItem::ListCellRetired { .. } => {}
             MountItem::Delete { id } => {
                 e.int(DELETE);
                 e.int(id as i32);
@@ -595,6 +574,17 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                         e.int(9);
                         e.string(data);
                     }
+                    // `WebBox.load`: the URL, then the headers' count and
+                    // each name and value.
+                    Command::Load(load) => {
+                        e.int(46);
+                        e.string(load.src);
+                        e.int(load.headers.len() as i32);
+                        for (name, value) in load.headers {
+                            e.string(name);
+                            e.string(value);
+                        }
+                    }
                     Command::Seek(seconds) => {
                         e.int(10);
                         e.float(seconds as f32);
@@ -693,13 +683,22 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                         e.float(request.quality.map_or(-1.0, |q| q.0));
                         e.bool(request.format == nsh_core::picker::PickFormat::Current);
                     }
+                    // `Picker.java`: the request, the limit, the extensions
+                    // offered (comma-separated; empty: any file) and the
+                    // largest file read.
+                    Command::PickFiles { id, request } => {
+                        e.int(45);
+                        e.int(id as i32);
+                        e.int(request.limit as i32);
+                        e.string(nsh_core::file_dialog::extensions(&request.filters).join(","));
+                        e.int(nsh_core::picker::MAX_PICKED_FILE_BYTES as i32);
+                    }
                     // Turned into a mount item / `ScrollTo` by the core.
                     Command::LayoutAnimation(_)
                     | Command::SetStatusBar(_)
                     | Command::ScrollToIndex { .. }
                     | Command::Measure { .. }
                     | Command::ScrollToEnd { .. }
-                    | Command::ReplaceRange { .. }
                     // Desktops only.
                     | Command::Desktop(_)
                     // No host answers `nsh/host` here (`Environment::host`):
@@ -707,15 +706,68 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     | Command::HostCall { .. }
                     // No eyedropper (`Environment::screen_color`): the core
                     // answers no color first.
-                    | Command::PickScreenColor { .. }
-                    // No file dialogs (`Environment::file_requests`): the
-                    // core answers first.
-                    | Command::FileRequest { .. }
+                    | Command::PickScreenColor { .. } => e.int(-1),
+                    // `SystemUi.openPath`: the file at the path, a `content:`
+                    // URI the app's FilesProvider serves, to the system's
+                    // viewer (`ACTION_VIEW`). `OpenPath` alone; the dialogs
+                    // have no answer on Android.
+                    Command::FileRequest { id, request } => match *request {
+                        nsh_core::file_dialog::FileRequest::OpenPath(path) => {
+                            e.int(28);
+                            e.int(id as i32);
+                            e.string(path.to_string_lossy().into_owned());
+                        }
+                        // Every other file request has no Android
+                        // implementation. The environment says file
+                        // requests exist, so the core waits for an answer:
+                        // fail it now (op 30), or the call would hang.
+                        _ => {
+                            e.int(30);
+                            e.int(id as i32);
+                        }
+                    },
                     // No speech recognizer (`Environment::speech`): the core
                     // ends the sessions first.
                     | Command::Speech(_)
                     // Trusted web view input is macOS's for now.
-                    | Command::SendInput(_) => e.int(-1),
+                    | Command::SendInput(_)
+                    // No performance monitor on Android yet.
+                    | Command::PerfMonitor(_) => e.int(-1),
+                    // `Audio.java`: the sub-opcode, then the command's
+                    // fields (see `audio_command`).
+                    Command::Audio(command) => {
+                        e.int(47);
+                        audio_command(&mut e, command);
+                    }
+                    Command::Notification(command) => {
+                        use nsh_core::notifications::NotificationCommand as N;
+                        e.int(44);
+                        match command {
+                            N::Permission { id, ask } => {
+                                e.int(0);
+                                e.int(id as i32);
+                                e.bool(ask);
+                            }
+                            N::Show { id, notification } => {
+                                e.int(1);
+                                e.int(id as i32);
+                                e.string(notification.id);
+                                e.string(notification.title);
+                                e.string(notification.body);
+                                e.bool(notification.silent);
+                            }
+                            N::Close(id) => {
+                                e.int(2);
+                                e.string(id);
+                            }
+                            N::Listen => e.int(3),
+                            N::SetBadge(count) => {
+                                e.int(4);
+                                e.int(count as i32);
+                            }
+                            _ => e.int(-1),
+                        }
+                    }
                     // `SystemUi.dialog` draws alerts and action sheets in
                     // them: each of `DIALOG_TOKENS`, light then dark (0: the
                     // system's). An app without a theme of its own (its
@@ -747,6 +799,87 @@ const DIALOG_TOKENS: [&str; 5] = [
     "primary",
     "destructive",
 ];
+
+/// An audio command after its opcode (47), as `Audio.command` reads it:
+/// 0 load (id, bytes, hint, max duration in ms), 1 load from a URL (id),
+/// 2 play (id, volume, rate), 3 stop (id), 4 unload (id), 5 open (id, src,
+/// volume, rate, loop), 6 preload (id), 7 resume (id), 8 pause (id), 9 seek
+/// (id, ms), 10 set (id, volume, rate, loop), 11 close (id).
+fn audio_command(e: &mut Encoded, command: AudioCommand) {
+    let ms = |d: std::time::Duration| d.as_millis().min(i32::MAX as u128) as i32;
+    match command {
+        AudioCommand::Load {
+            id,
+            bytes,
+            hint,
+            max_duration,
+        } => {
+            e.int(0);
+            e.int(id as i32);
+            let index = e.objects.len() as i32;
+            e.objects.push(Obj::Bytes(bytes));
+            e.int(index);
+            e.string(hint);
+            e.int(ms(max_duration));
+        }
+        AudioCommand::LoadUrl { id, .. } => {
+            e.int(1);
+            e.int(id as i32);
+        }
+        AudioCommand::Play { id, volume, rate } => {
+            e.int(2);
+            e.int(id as i32);
+            e.float(volume);
+            e.float(rate);
+        }
+        AudioCommand::Stop { id } => {
+            e.int(3);
+            e.int(id as i32);
+        }
+        AudioCommand::Unload { id } => {
+            e.int(4);
+            e.int(id as i32);
+        }
+        AudioCommand::Open { id, src, settings } => {
+            e.int(5);
+            e.int(id as i32);
+            e.string(src);
+            e.float(settings.volume);
+            e.float(settings.rate);
+            e.bool(settings.looped);
+        }
+        AudioCommand::Preload { id } => {
+            e.int(6);
+            e.int(id as i32);
+        }
+        AudioCommand::Resume { id } => {
+            e.int(7);
+            e.int(id as i32);
+        }
+        AudioCommand::Pause { id } => {
+            e.int(8);
+            e.int(id as i32);
+        }
+        AudioCommand::Seek { id, position } => {
+            e.int(9);
+            e.int(id as i32);
+            e.int(ms(position));
+        }
+        AudioCommand::Set { id, settings } => {
+            e.int(10);
+            e.int(id as i32);
+            e.float(settings.volume);
+            e.float(settings.rate);
+            e.bool(settings.looped);
+        }
+        AudioCommand::Close { id } => {
+            e.int(11);
+            e.int(id as i32);
+        }
+        // A command a newer core adds: nothing to do here.
+        _ => e.int(-1),
+    }
+}
 
 /// The event kind with index `index` (`EventKind as u8`, the order of the
 /// constants in `Native.java`).
@@ -807,24 +940,13 @@ fn degrees(a: nsh_core::geometry::Radians) -> f32 {
     (a.to_degrees() * 1e4).round() / 1e4
 }
 
-/// The effects of `Mounter.java` `style`: shadows, gradients, filters,
-/// blend mode, outline, visibility, cursor, transition, animation.
-fn effects(e: &mut Encoded, s: &ViewStyle) {
+/// A list of gradients, as `Effects.java`'s `gradients` reads it.
+fn gradients(e: &mut Encoded, gradients: &[nsh_core::Gradient]) {
     use nsh_core::{
-        BlendMode, Cursor, Filter, GradientKind, GradientSize, Keyframes,
+        GradientKind, GradientSize,
         geometry::{DefiniteLength, REM_SIZE, Size},
     };
-    let fx = s.effects.as_deref();
-    let shadows = fx.map_or(&[][..], |f| &f.box_shadows[..]);
-    e.int(shadows.len() as i32);
-    for sh in shadows {
-        for v in [sh.offset_x, sh.offset_y, sh.blur, sh.spread] {
-            e.float(v.0);
-        }
-        e.int(argb(sh.color));
-        e.bool(sh.inset);
-    }
-    let gradients = fx.map_or(&[][..], |f| &f.background_images[..]);
+
     e.int(gradients.len() as i32);
     for g in gradients {
         match g.kind {
@@ -887,6 +1009,24 @@ fn effects(e: &mut Encoded, s: &ViewStyle) {
             }
         }
     }
+}
+
+/// The effects of `Mounter.java` `style`: shadows, gradients, filters,
+/// blend mode, outline, visibility, cursor, transition, animation.
+fn effects(e: &mut Encoded, s: &ViewStyle) {
+    use nsh_core::{BlendMode, Cursor, Filter, Keyframes};
+    let fx = s.effects.as_deref();
+    let shadows = fx.map_or(&[][..], |f| &f.box_shadows[..]);
+    e.int(shadows.len() as i32);
+    for sh in shadows {
+        for v in [sh.offset_x, sh.offset_y, sh.blur, sh.spread] {
+            e.float(v.0);
+        }
+        e.int(argb(sh.color));
+        e.bool(sh.inset);
+    }
+    gradients(e, fx.map_or(&[][..], |f| &f.background_images[..]));
+    gradients(e, fx.map_or(&[][..], |f| &f.mask_images[..]));
     let filter_list = |e: &mut Encoded, list: &[Filter]| {
         // Color filters as one composed matrix, then blur, then the drop
         // shadow (what Android's render effects take): the widest of the
@@ -1046,6 +1186,7 @@ fn native_props(e: &mut Encoded, p: &NativeProps) {
             e.opt_string(w.user_agent.as_deref());
             e.bool(w.scrollable);
             e.bool(w.javascript_enabled);
+            e.bool(w.incognito);
         }
         NativeProps::Video(v) => {
             e.int(4);
@@ -1200,6 +1341,7 @@ fn view_props(e: &mut Encoded, p: &ViewProps) {
         None => e.int(0),
     }
     e.bool(p.selectable_view);
+    e.bool(p.continues_text);
 }
 
 /// Index of `role` in `A11y.java`'s class name table.
@@ -1695,6 +1837,54 @@ fn paint(e: &mut Encoded, p: &nsh_core::canvas::Paint) {
                 e.float(offset.0);
                 e.int(argb(*color));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::file_dialog::{self, FileRequest};
+
+    use super::*;
+
+    /// The ints a batch of one file request is encoded as.
+    fn ints(request: FileRequest) -> Vec<i32> {
+        let batch = MountBatch {
+            items: vec![MountItem::Command {
+                id: 3,
+                command: Command::FileRequest {
+                    id: 7,
+                    request: Box::new(request),
+                },
+            }],
+        };
+        encode(batch)
+            .bytes
+            .chunks_exact(4)
+            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn open_path_is_sent_and_the_other_file_requests_fail() {
+        // `COMMAND`, the view id, op 28, the request id, the path's
+        // object index: `Mounter.java` opens the file and answers.
+        assert_eq!(
+            ints(FileRequest::OpenPath("/data/user/0/app/files/a.pdf".into())),
+            vec![COMMAND, 3, 28, 7, 0]
+        );
+
+        // `Environment::file_requests` is set, so the core waits for an
+        // answer to every request: op 30 fails the rest instead of leaving
+        // `pick_paths`, `pick_save_path`, `reveal_path` and `move_to_trash`
+        // pending forever.
+        for request in [
+            FileRequest::OpenDialog(file_dialog::OpenDialog::default()),
+            FileRequest::SaveDialog(file_dialog::SaveDialog::default()),
+            FileRequest::RevealPath("a".into()),
+            FileRequest::MoveToTrash("a".into()),
+        ] {
+            assert_eq!(ints(request), vec![COMMAND, 3, 30, 7]);
         }
     }
 }

@@ -192,7 +192,7 @@ NSH 为用 AI 编写的软件而设计，完整的应用和生成的界面都是
 
 - **每个平台一套应用模型。** 模型只需学会一种编写界面的方式，结果就能运行在手机、桌面和 Web 上；NSH 按平台适配交互，不需要把同一个界面生成六遍。
 - **按任务选择 Rust 或 TSX。** 完整应用和性能关键的模块用 Rust，界面、插件和按请求生成的界面用 TSX——运行在同一个引擎上。
-- **精确、自动生成的契约。** 每个元素、属性、样式键和模块都有从 Rust 源码生成的 TypeScript 声明（`.nsh/types`），Rust API 本身是类型化的，因此生成的代码都由编译器检查。这些文档也以纯文本形式提供给模型（[`llms.txt`](/llms.txt)、[`llms-full.txt`](/llms-full.txt)）。
+- **精确、自动生成的契约。** 每个元素、属性、样式键和模块都有从 Rust 源码生成的 TypeScript 声明（`.nsh/types`），Rust API 本身是类型化的，因此生成的代码都由编译器检查。这些文档也以纯文本形式提供给模型（[`llms.txt`](/llms.txt)、[`llms-full.txt`](/llms-full.txt)），`npx skills add longbridge/nsh` 则把编码指南和设计指南安装为编程智能体的技能。
 - **一个命令行覆盖整个循环。** Agent 通过 `nsh` 创建应用、构建、在目标平台上运行、执行测试、读取结果、修复并打包。`nsh test` 无需设备、无界面地运行，并报告错误和生成的视图；编译器还能在进程内（`nsh_bundler::compile_module`）和浏览器里运行（[Playground](/playground)）。
 - **不可信也能安全运行。** 运行时下发的生成代码是不可信代码：它带着签名到达，运行在有限制的虚拟机里，只能使用宿主授予的能力。
 
@@ -206,6 +206,7 @@ NSH 为用 AI 编写的软件而设计，完整的应用和生成的界面都是
 | [Windows](./windows.md) | Windows 10 1809+ | Win32、Direct2D | `AppView` |
 | [Linux](./linux.md) | GTK 4.14+ | GTK 4 | `AppView` |
 | [Web](./web.md) | 现代浏览器 | HTML | `createPlayer`、iframe |
+| [TUI](./tui.md) | macOS、Windows、Linux 上的终端 | ratatui | `AppView`（ratatui 区域） |
 | [GPUI](./gpui.md) | 桌面平台 | GPUI | `AppView`（GPUI、GPUI Kit 应用） |
 | Mac Catalyst | macOS | UIKit | 开发用（`--target catalyst`） |
 

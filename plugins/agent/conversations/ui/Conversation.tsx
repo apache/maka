@@ -330,7 +330,7 @@ const readingColumn = {
   maxWidth: 800,
   alignSelf: 'center',
   paddingLeft: 16,
-  paddingRight: platform.isTerminal ? 24 : 16,
+  paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
 
 export function Conversation(props: ConversationProps) {
@@ -705,9 +705,9 @@ export function Conversation(props: ConversationProps) {
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
-            (!platform.isTerminal || turnOutcome(turn) === 'completed'))) &&
+            (platform.idiom !== 'terminal' || turnOutcome(turn) === 'completed'))) &&
         !summaries.has(turn.turnId) &&
-        (!platform.isTerminal || turnOutcome(turn) !== null)
+        (platform.idiom !== 'terminal' || turnOutcome(turn) !== null)
       ) {
         summaries.add(turn.turnId);
         result.push({
@@ -2849,7 +2849,7 @@ export function Conversation(props: ConversationProps) {
 
   const railShown = () => ready() && navigationItems().length > 1;
   // The desktop rail's width, kept on both sides so the reading column stays centered.
-  const railInset = () => (!platform.isTerminal && railShown() ? railWidth() + 8 : 0);
+  const railInset = () => (platform.idiom !== 'terminal' && railShown() ? railWidth() + 8 : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
@@ -2906,7 +2906,7 @@ export function Conversation(props: ConversationProps) {
           ) : undefined
         }
         views={
-          platform.isTerminal || ownHandle.empty() ? undefined : (
+          platform.idiom === 'terminal' || ownHandle.empty() ? undefined : (
             <View role="tablist" style={{ flexDirection: 'row', gap: 2 }}>
               <ViewSegment
                 label={tr('Chat')}
@@ -2949,7 +2949,7 @@ export function Conversation(props: ConversationProps) {
       <View
         style={{
           // The desktop's header holds these views.
-          display: ownHandle.empty() || !platform.isTerminal ? 'none' : 'flex',
+          display: ownHandle.empty() || platform.idiom !== 'terminal' ? 'none' : 'flex',
           flexDirection: 'row',
           flexWrap: 'wrap',
           paddingHorizontal: 16,
@@ -3056,7 +3056,7 @@ export function Conversation(props: ConversationProps) {
               // column centered in the window.
               contentStyle={{
                 paddingLeft: railInset(),
-                paddingBottom: platform.isTerminal ? 0 : 16,
+                paddingBottom: platform.idiom === 'terminal' ? 0 : 16,
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
@@ -3296,7 +3296,7 @@ export function Conversation(props: ConversationProps) {
                               fork={props.fork}
                               menu={menu}
                               extra={
-                                !platform.isTerminal && props.edit ? (
+                                platform.idiom !== 'terminal' && props.edit ? (
                                   <MessageEdit
                                     regenerate
                                     row={() => loadedOpening(row().turnId)}
@@ -3311,7 +3311,7 @@ export function Conversation(props: ConversationProps) {
                             />
                           )}
                           failureActions={
-                            platform.isTerminal
+                            platform.idiom === 'terminal'
                               ? undefined
                               : (row) => (
                                   // Only where the conversation ends in this failure.
@@ -3335,7 +3335,7 @@ export function Conversation(props: ConversationProps) {
                                 )
                           }
                           editMessage={
-                            !platform.isTerminal && props.edit
+                            platform.idiom !== 'terminal' && props.edit
                               ? (row, ownerKey, menu) => (
                                   <MessageEdit
                                     row={row}
@@ -3356,7 +3356,7 @@ export function Conversation(props: ConversationProps) {
                 </View>
               )}
             </List>
-            <If when={platform.isTerminal && railShown()}>{rail()}</If>
+            <If when={platform.idiom === 'terminal' && railShown()}>{rail()}</If>
             <View
               style={[
                 {
@@ -3389,7 +3389,7 @@ export function Conversation(props: ConversationProps) {
             )}
           </Each>
         </View>
-        <If when={!platform.isTerminal && railShown()}>
+        <If when={platform.idiom !== 'terminal' && railShown()}>
           <View
             style={{
               position: 'absolute',

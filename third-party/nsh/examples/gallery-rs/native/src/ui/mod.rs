@@ -12,7 +12,7 @@
 //!   [`caption`], [`legend`], [`code`], [`header`].
 //! - The device's input: [`hint`] (touch or pointer wording), [`bind_refresh`]
 //!   (a desktop's refresh key).
-//! - The desktop layout of wide windows: [`SIDEBAR`], [`desktop`],
+//! - The desktop layout of wide windows: [`sidebar_width`], [`desktop`],
 //!   [`pane_width`], [`columns_for`]; [`DemoPage`], a demo's cards in
 //!   columns.
 
@@ -32,7 +32,9 @@ pub(crate) use self::{
     controls::{Segment, SegmentedElement, SegmentedSize, segmented, toggle},
     device::{bind_refresh, hint},
     icons::{IconName, Tint, icon},
-    layout::{SIDEBAR, columns_for, desktop, pane_width},
+    layout::{
+        TERMINAL_COLUMN, TERMINAL_ROW, columns_for, desktop, pane_width, sidebar_width, terminal,
+    },
     page::DemoPage,
     parts::{
         Badge, Button, ButtonVariant, Card, Figure, IconTile, Inset, Meter, PageHeader,

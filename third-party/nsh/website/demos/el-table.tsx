@@ -1,6 +1,6 @@
 import { mount, Text, View } from "nsh";
 import { Table, TableBody, TableCaption, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "nsh/base";
-import { size, Stage, ui } from "./palette";
+import { size, Stage, ui, sectionSurface } from "./palette";
 
 // A few rows the app writes out: the parts give screen readers a table, the
 // classes and the palette give it its look.
@@ -27,7 +27,7 @@ function App() {
   const total = invoices.reduce((sum, i) => sum + i.amount, 0);
   return (
     <Stage width={520}>
-      <View style={{ ...ui().card, borderRadius: 12, overflow: "hidden" }}>
+      <View style={{ ...sectionSurface(), overflow: "hidden" }}>
         <Table accessibilityLabel="Recent invoices">
           <TableHeader>
             <TableRow style={line}>

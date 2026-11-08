@@ -81,7 +81,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           <AppearanceRows />
         </If>
         {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
-        <If when={uiScale.supported || platform.isTerminal}>
+        <If when={uiScale.supported || platform.idiom === 'terminal'}>
           <UiScaleSettings />
         </If>
         <If when={facts()}>

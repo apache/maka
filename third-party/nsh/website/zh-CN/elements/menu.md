@@ -12,7 +12,10 @@ demo: el-menu
 - 在桌面平台和桌面浏览器中，它是触发元素处的弹出层；指针移到 `Submenu` 的条目上或按下它时，子菜单在条目旁级联展开。
 - 在手机和平板上，它是屏幕底部、覆盖在背景层之上的 sheet；`Submenu` 在 sheet 中就地显示它的条目，取代菜单的条目，并由你提供的一行返回上一级。
 
-选择一个条目、外部按压、Escape、Android 返回键和 VoiceOver 的退出手势都会关闭它。`ContextMenu` 是同样的菜单，由辅助按键（右键单击）在指针处打开，或在触摸屏上由手指按住触发元素打开。
+选择一个条目、外部按压、Escape、Android 返回键和 VoiceOver 的退出手势都会关闭它。`ContextMenu` 是同样的菜单，由辅助按键（右键单击）在指针处打开，在触摸屏上由手指按住触发元素打开，或在触发元素下方由浏览器和 Linux 上的键盘、macOS 和 Windows 上的读屏软件打开。
+
+在获得焦点的触发元素上按 Return、Space 或 Down 键打开菜单时，键盘焦点落在第一个可用的条目上；按 Up 键打开时落在最后一个上，之后用方向键在条目间移动。按压打开时不聚焦任何条目。
+在桌面和终端中，在 `Submenu` 的条目上按 Right、Return 或 Space 键打开它，键盘焦点落在它第一个可用的条目上；在它的条目上按 Left 键或按 Escape 键关闭它，焦点回到它的条目上。
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, submenu};
@@ -110,6 +113,8 @@ import { ContextMenu, MenuItem } from "nsh/base";
 ```
 
 在桌面平台上，辅助按键在指针所在处打开它。在触摸屏上，手指按住触发元素会以 sheet 的形式打开它；触发元素自己的按压和周围的滚动视图照常工作，移动手指会取消这次按住。
+
+键盘和读屏用户同样可以打开它。在浏览器和 Linux 上，触发元素获得焦点时按 Shift+F10 或菜单键即可打开。在 macOS 上，VoiceOver 的「显示菜单」操作（VO-Shift-M）可以打开它；在 Windows 上，读屏软件通过 UI Automation 的「显示上下文菜单」操作也可以打开它。这样打开时，菜单出现在触发元素下方、从它的起始边开始，键盘焦点落在第一个可用的条目上，与 WAI-ARIA 对上下文菜单的描述一致。给触发元素设置 `focusable`，键盘才能到达它。视图自己的 `onContextMenu` 可以通过 `pointerType` 区分这类打开方式：此时它为 `null`。
 
 <a id="checkable-items"></a>
 
@@ -223,6 +228,23 @@ function ViewMenu() {
 
 没有 `open` 时，菜单自己保存状态（`Menu` 的初始值为 `defaultOpen`）。有 `open` 时，状态由应用持有，并在 `onOpenChange({ open, reason })` 中修改它，原因为 `"triggerPress"`、`"select"`、`"pressOutside"`、`"backdropPress"`、`"cancel"`、`"contextMenu"` 或 `"longPress"`。
 
+`Submenu` 自己保存状态，并在 `onOpenChange({ open, reason })` 中报告用户引起的每次打开和关闭：`"hover"`（指针移到它的条目上，或移到所在菜单的另一个条目上）、`"triggerPress"`（按下它的条目，或在条目上按右方向键、Return 或空格）、`"cancel"`（左方向键、Escape、返回键或它的 `back` 行），整个菜单关闭时则是菜单的原因（`"select"`、`"pressOutside"` 等）。它的条目在打开时才创建，因此应用可以在第一次打开时才开始加载条目，加载到后再显示。应用自己关闭菜单时不会报告。
+
+```tsx
+const recent = signal<string[] | null>(null);
+
+<Submenu
+  trigger={<Text>Open Recent</Text>}
+  onOpenChange={({ open }) => {
+    if (open && recent() === null) loadRecent().then((names) => recent.set(names));
+  }}
+>
+  <Each of={recent() ?? []}>
+    {(name) => <MenuItem onSelect={() => openFile(name())}><Text>{name()}</Text></MenuItem>}
+  </Each>
+</Submenu>
+```
+
 <a id="props"></a>
 
 ## 属性
@@ -250,7 +272,7 @@ function ViewMenu() {
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `disabled` | `.disabled(..)` | `boolean` | `false` | 辅助按键和按住的手指都不起作用。 |
+| `disabled` | `.disabled(..)` | `boolean` | `false` | 什么都打不开它：辅助按键、按住的手指、键盘和读屏软件都不起作用。 |
 | `offset` | `.offset(..)` | `number` | `0` | 桌面：指针与弹出层之间的间距。 |
 | `margin` | `.margin(..)` | `number` | `0` | 桌面：它与安全区边缘保持的距离。 |
 
@@ -292,6 +314,7 @@ function ViewMenu() {
 | `onPosition`（`Menu`、`ContextMenu`） | `.on_position(\|e\| ..)` | 桌面：弹出层已放置：`placement`（它所在的一侧）、`bounds`、`available`。 |
 | `onCancel`（`Menu`、`ContextMenu`） | `.on_cancel(\|\| ..)` | 用户没有选择条目就尝试关闭它（Escape 或返回键、外部按压或按下背景层）。 |
 | `onSelect`（`MenuItem`） | `.on_select(\|\| ..)` | 条目被选择；可勾选的条目请求它的另一个值。 |
+| `onOpenChange`（`Submenu`） | `.on_open_change(\|e\| ..)` | 它按用户的操作打开或关闭了，附带原因。 |
 
 <a id="accessibility"></a>
 

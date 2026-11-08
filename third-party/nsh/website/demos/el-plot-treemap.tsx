@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Plot, Treemap } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, tint, ui, sectionSurface, categoryColors } from "./palette";
 
 // A `Treemap` of the plot's rows: each row a node, its `id` and the
 // `parent` it names making the tree, each leaf's area its `value` and each
@@ -104,7 +104,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
           <View class="flex-row items-baseline gap-3">
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>
@@ -123,7 +123,7 @@ function App() {
             colorScale={
               chart() === "market"
                 ? { type: "diverging", domain: [-3, 3], range: [ui().down, tint(ui().text, 0.1), ui().up] }
-                : { type: "ordinal", domain: ["eng", "ops"], range: [ui().info, ui().warn] }
+                : { type: "ordinal", domain: ["eng", "ops"], range: categoryColors().slice(0, 2) }
             }
             accessibilityLabel={chart() === "market" ? "Market map of 16 stocks in 4 sectors" : "Budget of two teams in three levels"}
             accessibilityValue={{ text: shown() && path(rows(), shown()!) }}

@@ -45,6 +45,8 @@ fn config(app: App) -> EngineConfig {
         picker: None,
         speech: None,
         chunk_loader: None,
+        audio: None,
+        windows: None,
     }
 }
 
@@ -361,6 +363,84 @@ fn a_file_answers_with_its_url_and_type_however_it_arrives() {
     );
 }
 
+/// Asks for one file by URLs that spell its scheme in other cases and add a
+/// query or a fragment, showing the URL, the type and the text each answers
+/// with.
+#[component]
+fn ReadSpellings() -> impl IntoElement {
+    let text_shown = signal(String::from("reading"));
+    spawn(async move {
+        let mut lines = Vec::new();
+        for uri in [
+            "ASSET:/@app/locales/en.json",
+            "asset:/@app/locales/en.json?v=2#top",
+            "Asset:/@app/locales/en.json#top",
+        ] {
+            lines.push(match fetch(uri).await {
+                Ok(response) => format!(
+                    "{} {} {}",
+                    response.head.url,
+                    response.header("content-type").unwrap_or("none"),
+                    response.text()
+                ),
+                Err(error) => format!("failed: {error}"),
+            });
+        }
+        text_shown.set(lines.join("; "));
+    });
+    view().child(text(move || text_shown.get()))
+}
+
+/// What [`ReadSpellings`] shows when the file holds `text`.
+fn spellings_read(text: &str) -> String {
+    [
+        format!("asset:/@app/locales/en.json application/json {text}"),
+        format!("asset:/@app/locales/en.json?v=2 application/json {text}"),
+        format!("asset:/@app/locales/en.json application/json {text}"),
+    ]
+    .join("; ")
+}
+
+#[test]
+fn urls_name_one_file_whatever_their_scheme_case_query_or_fragment() {
+    // Read from the host's files: it is asked for the file by its path
+    // alone, as every host reads it, and the response answers at the URL
+    // asked for without its fragment, the scheme in lower case.
+    let read = Arc::new(Mutex::new(Vec::new()));
+    let (_engine, rx) = start(
+        App::Rust(Root::of::<ReadSpellings>()),
+        Some(Arc::new(LocaleAssets(read.clone()))),
+        None,
+    );
+    let expected = spellings_read(r#"{"hello":"Hello"}"#);
+    assert_eq!(until(&rx, &expected).last(), Some(&expected));
+    assert_eq!(
+        *read.lock().unwrap(),
+        ["asset:/@app/locales/en.json on nsh-tasks"; 3]
+    );
+    // Downloaded from where the host serves it: the same file, the same
+    // answers.
+    let (looked_up, urls) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let (_engine, rx) = start(
+        App::Rust(Root::of::<ReadSpellings>()),
+        Some(Arc::new(ServedAssets(looked_up.clone()))),
+        Some(Arc::new(AssetServer(urls.clone()))),
+    );
+    let expected = spellings_read(r#"{"hello":"Hi"}"#);
+    assert_eq!(until(&rx, &expected).last(), Some(&expected));
+    assert_eq!(
+        *looked_up.lock().unwrap(),
+        ["asset:/@app/locales/en.json"; 3]
+    );
+    assert_eq!(
+        *urls.lock().unwrap(),
+        ["https://assets.test/@app/locales/en.json"; 3]
+    );
+}
+
 /// Asks a host that serves its files for one outside them and for one by
 /// another method than GET, then for one it serves.
 #[component]
@@ -412,8 +492,11 @@ const read = (url) =>
       `${r.status} ${r.headers.get("content-length")} ${r.headers.get("content-type")} ${r.url} ${await r.text()}`,
     (e) => `${e.name}: ${e.message}`,
   );
-Promise.all([read("asset:/@app/locales/en.json"), read("asset:/@app/missing.json")])
-  .then(([found, missing]) => shown.set(`${found}; ${missing}`));
+Promise.all([
+  read("asset:/@app/locales/en.json"),
+  read("Asset:/@app/locales/en.json?v=2#top"),
+  read("asset:/@app/missing.json"),
+]).then((lines) => shown.set(lines.join("; ")));
 mount(() => <Text>{shown()}</Text>);
 "#;
 
@@ -438,9 +521,17 @@ fn js_reads_the_files_the_app_ships_with_fetch() {
     let (_engine, rx) = start(app, Some(Arc::new(LocaleAssets(read.clone()))), None);
     let expected = concat!(
         r#"200 17 application/json asset:/@app/locales/en.json {"hello":"Hello"}; "#,
+        r#"200 17 application/json asset:/@app/locales/en.json?v=2 {"hello":"Hello"}; "#,
         "TypeError: Network request failed: asset:/@app/missing.json is not bundled"
     );
     let texts = until(&rx, expected);
     assert_eq!(texts.last().map(String::as_str), Some(expected));
-    assert_eq!(read.lock().unwrap().len(), 2);
+    let read = read.lock().unwrap();
+    assert_eq!(read.len(), 3);
+    assert_eq!(
+        read.iter()
+            .filter(|r| r.starts_with("asset:/@app/locales/en.json on "))
+            .count(),
+        2
+    );
 }

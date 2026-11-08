@@ -51,6 +51,12 @@ and offsets the table scrolls to (`scrollToRow`, revealing the selection) land o
 way on the horizontal axis. On touch devices drags move the content one to one; on the desktops dragging the bar
 reaches the whole content.
 
+In a terminal a body row is one Cell, whatever `rowHeight` is (`terminal::row_height`): rows on another step
+would land on the Cell grid unevenly. So is a title row, whatever `headerHeight` is: the titles stand apart by their
+band and type, right over the first row (a face is its fill or its line, so a row for their rule would be blank). A
+title's sort is one glyph there (`▲`, `▼`, a faint `↕` unsorted, the sort parts' own), and its column's resize handle
+draws no line until the pointer is on it (`PointerOnly`), so columns stand apart by their spaces.
+
 ## Columns' own classes, fitting, bounce
 
 A column's `cellClass` and `headerClass` come after the part's classes (`column_parts`, `view.rs`). Two presses of a
@@ -98,8 +104,10 @@ frame, and scrolling while they tick holds 143 of 144 frames, ~3 ms a frame.
 
 The table is one stop of Tab, as gpui-component's (a `tab_stop` focus handle): its hit layer's content box, whose
 `onFocus` / `onBlur` set the table's focus (`Dt::set_focus`), which binds its keys; its rows, titles and sort buttons
-are `focusable(false)`. While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
-back. A press, `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS
+are `focusable(false)`, and so are its columns' resize handles in a terminal, where a lone `ResizeHandle` is a stop
+(`PointerOnly`, provided around them: resizing is the mouse's, as gpui-component's). While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
+back; in a terminal Tab and Shift+Tab are not bound and move the focus on, out of the table, the arrows moving
+between the columns (`docs/dev/tui.md` "Interaction"). A press, `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS
 and the web (`ViewProps::focus_stop`).
 
 ## Compared with gpui-component
@@ -124,3 +132,4 @@ methods the ref's. Deliberate differences:
   `rowClasses`, data beside `data`, is `render_tr`'s per-row look without a call into JS per row.
 - A fit measures the cells' texts natively; `fitPadding` adds what the app's drawing adds to them (gpui-component
   asks its delegate to measure).
+

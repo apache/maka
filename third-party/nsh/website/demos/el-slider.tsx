@@ -1,6 +1,6 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
 import { Slider, type SliderValue } from "nsh/base";
-import { desktop, Log, Panel, size, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, Split, ui } from "./palette";
+import { desktop, Log, Panel, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, Split, ui, controlSize, plainRow, RowLabel, sectionSurface } from "./palette";
 
 // The look is the shared layer's `sliderLook` and `sliderFill` (BJORK UI's
 // slider in the palette's tones): an 8-point rail, a fill that deepens at its
@@ -13,12 +13,13 @@ const show = (v: SliderValue) => (typeof v === "number" ? `${v}` : `${v[0]}–${
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds) % 60).padStart(2, "0")}`;
 const LENGTH = 225;
 
-function Row(props: { label: string; value?: string; children: JSX.Element }) {
+/** A level: its label and value over the slider, a hairline above all but the first (`plainRow`). */
+function Row(props: { label: string; value?: string; first?: boolean; children: JSX.Element }) {
   return (
-    <View class={desktop ? "gap-2 px-3 py-3" : "gap-2 px-4 py-4"}>
-      <View class="flex-row items-baseline gap-3">
-        <Text style={{ flex: 1, fontSize: size.label, fontWeight: "500", color: ui().text }}>{props.label}</Text>
-        <Text style={{ fontSize: size.label, color: ui().muted, fontVariant: ["tabular-nums"] }}>{props.value ?? ""}</Text>
+    <View style={{ ...plainRow({ first: props.first }), flexDirection: "column", alignItems: "stretch", gap: controlSize.padding }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: controlSize.gap }}>
+        <RowLabel label={props.label} />
+        <Text style={{ fontSize: controlSize.label, color: ui().muted, fontVariant: ["tabular-nums"] }}>{props.value ?? ""}</Text>
       </View>
       {props.children}
     </View>
@@ -32,7 +33,6 @@ function App() {
   const bands = [signal(0), signal(3), signal(-2)];
   const events = signal<string[]>([]);
   const log = (name: string) => ({ value: next }: { value: SliderValue }) => events.set([`${name} → ${show(next)}`, ...events()].slice(0, 5));
-  const line = () => <View style={{ height: 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} />;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>slider</Text>
@@ -56,8 +56,8 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, overflow: "hidden" }}>
-          <Row label="Option strength">
+        <View style={sectionSurface({ padded: true })}>
+          <Row first label="Option strength">
             <Slider
               value={strength()}
               onChange={({ value }) => strength.set(value as number)}
@@ -69,7 +69,6 @@ function App() {
               <Text class={sliderValueClass} style={sliderValueStyle()}>{`${strength()}%`}</Text>
             </Slider>
           </Row>
-          {line()}
           <Row label="Playback position" value={`${clock(position())} / ${clock(LENGTH)}`}>
             <Slider
               value={position()}
@@ -81,7 +80,6 @@ function App() {
               {...sliderLook()}
             />
           </Row>
-          {line()}
           <Row label="Price" value={`$${price()[0]} – $${price()[1]}`}>
             <Slider
               value={price()}
@@ -96,13 +94,11 @@ function App() {
               {...sliderLook()}
             />
           </Row>
-          {line()}
           <Row label="Locked intensity">
             <Slider value={72} disabled accessibilityLabel="Locked intensity" rangeStyle={sliderFill(0, 0.72)} {...sliderLook({ value: true })}>
               <Text class={sliderValueClass} style={sliderValueStyle()}>72%</Text>
             </Slider>
           </Row>
-          {line()}
           <Row label="Equalizer" value="dB">
             <View class="flex-row justify-around pt-1">
               {["Bass", "Mid", "Treble"].map((name, i) => (
@@ -118,7 +114,7 @@ function App() {
                     rangeStyle={sliderFill(0, (bands[i]() + 12) / 24, true)}
                     {...sliderLook({ vertical: true })}
                   />
-                  <Text style={{ fontSize: size.detail, color: ui().muted, fontVariant: ["tabular-nums"] }}>
+                  <Text style={{ fontSize: controlSize.detail, color: ui().muted, fontVariant: ["tabular-nums"] }}>
                     {`${name} ${bands[i]() > 0 ? "+" : ""}${bands[i]()}`}
                   </Text>
                 </View>

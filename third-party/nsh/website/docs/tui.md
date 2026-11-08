@@ -1,314 +1,363 @@
 ---
-title: Terminal
-description: Run Native Shell apps in a terminal, package console applications, and embed an independent NSH surface in a Ratatui app.
-order: 15.75
+title: TUI
+description: "Run Rust and TSX NSH apps in a terminal: the Cell layout, keyboard and mouse input, the terminal's colors, how components and popups look on the grid, detecting the terminal in app code, testing, and embedding AppView in a ratatui app."
+order: 16.5
 group: platforms
 ---
 
-# Terminal
+# TUI
 
-Native Shell renders apps in terminals on macOS, Windows and Linux with Ratatui and Crossterm. The same TSX and
-Rust components, reactive graph, Taffy flex and grid layout, virtualized lists, networking and sandbox run behind
-the terminal view. A terminal application can embed an independent `AppView` in any rectangular region it owns.
+NSH apps also run in a terminal. The terminal backend draws an app on the terminal's grid of character Cells with
+[ratatui](https://ratatui.rs), in the terminal's own font and colors, and takes its input from the keyboard and the
+mouse. The core, the reactive graph, the renderer, the components and the native modules are the same as on every
+other platform, so the app that runs in a window runs in a terminal too: the gallery's demos are the same code here
+as on a phone.
+
+The terminal is a device form of its own, as a phone and a desktop are: `idiom()` is `Idiom::Terminal`
+(`nsh_core::platform::Idiom`; `platform.idiom` is `"terminal"` in TSX), and `os()` (`platform.os`) is the machine's own system, macOS, Windows or
+Linux, so `fs/promises` and `process` work as on that desktop. Desktop behavior applies: `desktop={{…}}` props,
+`platform.select`'s `desktop` key, `platform.desktop`, keyboard shortcuts, hover, tooltips and context menus. The
+application menu (`Menu.setApplicationMenu`) is a menu bar on the top row, as in mc and htop: F10 or a click on a title
+opens its menu, and its items' shortcuts work with the bar closed.
 
 ## Running an app
 
 ```sh
-nsh run my-app --target tui
+nsh run App.tsx --target tui        # a TSX app
+nsh run --target tui                # a Rust app, from its directory
 ```
 
-The host uses the terminal's alternate screen, keyboard, mouse and bracketed paste, and restores the terminal when
-the app closes. TSX edits arrive through the same development server as on graphical platforms. Ctrl+Q closes the
-app. The distributed host is in `runtime/tui/`; a checkout builds `nsh-tui-host` on demand.
+The app fills the terminal it was started in, with hot updates on save; a Rust app's root runs in a terminal
+development host built with its crate, rebuilt and restarted when its Rust code changes. In a checkout, `nsh run`
+builds the development host (`nsh-tui-host`) first.
 
-The operations workbench combines sidebar navigation,
-search and status filters, service metrics, a detail inspector, canvas charts, an activity timeline and a deployment
-dialog. Its compact 120×34 layout shows seven complete service rows with metrics and a chart; 160×50 also shows
-the inspector and activity timeline. At 140 columns and wider, the inspector offers Details, Effects and Guide
-tabs. Effects combines a local image, blur, blend modes, an animated layer, bundled Pacifico canvas lettering and
-a popup menu; Guide opens a local HTML runbook in readable mode. Shorter terminals fold away secondary content to
-keep the fleet visible:
+During startup, the CLI shows build progress, and the crate being compiled when a development host is built; `-v` streams the tools’ output.
+Once the app opens, the terminal shows the app alone. Diagnostics (the CLI's output, the host's logs, `console.log`) go to the app's
+`.nsh/tui.log`, and `C-h e` (Ctrl+H, then E) opens them in a panel over the app: the arrows and Page Up / Page Down
+scroll it, `r` reloads the latest build, and Escape, `C-g` or `q` closes it. An error in the app opens the panel by
+itself, and the next update closes it. Ctrl+C copies a text selection, and otherwise quits; the terminal is restored
+as it was.
+
+`--fps` shows a performance line in the top right corner (frame rate, frame times, the bytes and Cells each frame
+writes); `C-h p` shows and hides it.
 
 ```sh
-nsh run examples/terminal-workbench --target tui
+nsh run App.tsx --target tui --fps
+nsh run App.tsx --target tui --points-per-cell 10x20
 ```
 
-The host can also load a built bundle directly:
+## Cells
 
-```sh
-nsh build my-app --release -o build
-dist/nsh/runtime/tui/nsh-tui-host --bundle build/bundle.nshc --size 120x34
+The core lays the app out in points, as everywhere, and the terminal maps points to Cells: one Cell is **8 × 16
+points** by default. Set another size in `nsh.json`, or for one run with `--points-per-cell`, which wins:
+
+```json
+{ "tui": { "pointsPerCell": "10x20" } }
 ```
 
-`--size` uses columns and rows. In an interactive session the current terminal size determines the viewport;
-scripts use the supplied size as their initial viewport.
+In a terminal the core lays out with an algorithm made for the grid, the way terminal apps lay themselves out: every
+frame is whole Cells, and spacing designed in points for a screen becomes the Cells a terminal can give it.
 
-## Layout and drawing
+- **Spacing.** A gap in a row is one column, two from 24 points. In a column, gaps and margins of 16 points or more
+  are one blank row. Horizontal padding is one Cell from 8 points and two from 24 points; vertical padding is a row
+  from 24 points.
+- **Borders.** A card (a container padded 12 points or more, or around two or more rows of content) keeps its border,
+  one Cell on each side that has one, drawn in box-drawing lines: `─` and `│`, rounded corners `╭╮╰╯` where a radius
+  is set, square ones `┌┐└┘` otherwise, dashed `╌╎` and dotted `┈┊`. A control (a button, a tab, a text field) is its
+  label row.
+- **Flex and grid.** `flexDirection`, `flexGrow`, `justifyContent`, `alignItems`, `flexWrap`, grid templates and spans
+  divide whole Cells. When a row is short of room, gaps give first, then the texts wrap.
+- **Text** is one row per line in the terminal's font at any font size, weight 600 and above bold, with italic,
+  underline and strike-through kept. Wide characters (CJK, emoji) take two Cells and grapheme clusters stay whole.
+  `numberOfLines` and ellipses work as elsewhere, the ellipsis taking one Cell.
+- **Layouts** report points: frames, `onLayout`, hit testing, overlays and scroll offsets work as on other
+  platforms.
 
-NSH keeps layout in points. By default, one terminal cell represents **8×16 points**, so a 120×40 terminal supplies
-a 960×640-point viewport to Taffy. Padding, flex and grid, scroll offsets, image sizes and pointer hit testing
-share that coordinate system. Resizing the terminal relays the new viewport to the engine and reflows the app.
+## Keyboard
 
-Text wraps by terminal column width: Chinese and many emoji occupy two columns, and combining sequences stay
-together. Text spans preserve colors, bold and italic, underlines and strikethrough; bidirectional paragraphs
-reorder their runs for display. The terminal's font determines the face and glyph size. Explicit line height and
-letter spacing are rounded to terminal rows and columns.
+Every control is reachable from the keyboard. Tab and Shift+Tab visit pressable and editable views in document order,
+as on the desktops; the arrows move to the nearest control in that direction, scrolling to reach it. A control
+scrolled into view by the keyboard is centered in its scroll view. While a dialog or a sheet is open over its
+backdrop, Tab stays in it, and closing it gives the focus back to the control it came from. Tab always moves to the
+next control: in a `DataTable` it leaves the table, and the arrows move between its columns. A click gives the focus
+to the control it is on, or the one around it, and Tab goes on from there.
 
-Backgrounds, borders and clipping follow the retained view tree. Transforms project complete view subtrees, with
-pointer hit testing following the transformed geometry. Rounded descendant clipping, group opacity, blend modes,
-ordered filters and backdrop filters are composited on the graphics worker.
-
-On startup, the interactive host detects image protocols and the terminal's physical cell dimensions. Images and
-recorded canvas drawings use
-[`ratatui-image`](https://docs.rs/ratatui-image/11.1.0/ratatui_image/) with Kitty, Sixel or iTerm2 graphics when
-available. Encoding runs on the graphics worker. Colored half and quadrant blocks provide a portable drawing
-path and preserve composition where text or overlays overlap a graphic. Each cell selects the lower-error block
-but still has only two colors. The terminal controls glyph shapes and how RGB colors map to its palette.
-
-`NSH_IMAGE_PROTOCOL` selects `auto` (the default), `halfblocks`, `kitty`, `sixel` or `iterm2`. `halfblocks` starts
-directly with ordinary text rendering. Selecting a graphics protocol uses the terminal's reported pixel dimensions.
-Headless scripts render reproducible text snapshots. An embedding host selects its protocol explicitly through
-`AppView::set_image_protocol`; creating an embedded view leaves terminal IO with its host.
-
-The existing [`nsh/base`](../modules/nsh-base.md) components render through these primitives. Give each
-interactive row enough height to occupy at least one terminal row, use clear color contrast and keep important
-labels legible at the terminal's column width.
-
-Canvas paths, gradients, clipping, transforms, compositing and image drawing are rasterized on a worker. Canvas
-text uses shaped outlines from fonts registered with the surface and system fallback fonts; `measureText` uses
-the same shaping and font selection as drawing. Registered TrueType, OpenType and font-collection faces belong to
-that surface. Ordinary `Text` uses the terminal's font and cell geometry; transformed or effected text groups
-rasterize font outlines fitted to the measured cell geometry.
-
-Images support PNG, JPEG, GIF and WebP, including animated GIF and WebP within the decoder's resource bounds.
-`objectPosition` places an image within its box after `objectFit` sizes it, for both cell and pixel graphics.
-`placeholder` remains visible during loading and after a load error. `blurRadius` runs on the worker and
-`fadeDuration` sets the loaded image's fade over its placeholder; the terminal default is 0 ms. Download progress
-arrives at most once every 100 ms and on completion.
-
-Page stacks and dialogs apply slide, fade or immediate transitions. Apps supply page headers, dialog backdrops,
-cards and close controls. Dialogs occupy the viewport, and back or close actions follow the mounted props.
-Hosts can select reduced motion with `AppOptions::reduce_motion` or `AppView::set_reduce_motion`.
-
-## Keyboard and mouse
-
-| Keys | Action |
+| Keys | Do |
 |---|---|
-| Tab, Shift+Tab | Focus the next or previous input, pressable or scroll view, within the newest modal |
-| Enter, Space | Activate the focused pressable |
-| Escape | Leave an input; otherwise go back or request modal dismissal |
-| Arrows, Page Up / Down, Home / End | Scroll the focused scroll view or a scrollable ancestor |
-| Ctrl+wheel, Ctrl++ / Ctrl+- | Zoom a scroll view within its configured limits |
-| Ctrl+0 | Reset the scroll view's zoom |
-| F10 | Open the application menu |
-| Ctrl+Q | Close the terminal host |
-| Ctrl+C | Copy an input or selectable-text selection; otherwise close the host |
+| Tab, Ctrl+N / Shift+Tab, Ctrl+P | The next / previous control, wrapping at the ends |
+| Down / Up | The nearest control below / above, scrolling to reach it |
+| Right, Ctrl+F / Left, Ctrl+B | The nearest control to the right / left on the same row |
+| Enter, Space | Press the focused control |
+| Escape, Ctrl+G | Leave the focused field; otherwise go back: the app's `onBackPress`, then the newest dialog or the navigation stack |
+| Page Down, Ctrl+V / Page Up, Alt+V | Scroll the scroll view around the focused control by a page |
+| Home, Alt+< / End, Alt+> | The first / last control of that scroll view |
+| Ctrl+S / Ctrl+R | Search the text on screen forward / backward |
+| Ctrl+C | Copy the selection (so do Ctrl+Shift+C, Cmd+C, Ctrl+Insert and Alt+W); with none, quit |
+| Ctrl+A, Cmd+A | With text selected, select all the text of its selectable view |
+| F10 | The application menu's bar: Left / Right between the titles, Down, Enter or a title's initial opens its menu, Escape closes it, then leaves the bar |
 
-Click to focus or activate controls while keeping their current scroll position. Keyboard navigation and
-programmatic focus scroll the chosen control into view. Newly mounted list controls are revealed at their
-completed layout position; an explicit scroll or zoom issued afterward takes priority for that scroll view.
-The mouse wheel scrolls vertically; Shift+wheel scrolls horizontally. Pointer
-positions are converted from cells into the same virtual points used by layout. Middle-button dragging pans scroll
-content with inertia, bounce and pull-to-refresh according to its props. Drag a scrollbar thumb with the left
-button, or click its track to page. Zoom honors the scroll view's zoom and gesture props; paging, snap offsets,
-right-to-left layout and animated scroll commands use the same native scroll state.
+The app's own shortcuts ([`keymap`](../modules/nsh.md#keymap)) come first, and so do the keys a focused component
+binds (a slider's arrows, a list's), so a component gets its keys before they move the focus. Terminals that speak
+the kitty keyboard protocol report Ctrl+I, Ctrl+M and Ctrl+[ apart from Tab, Enter and Escape, key repeats and
+releases, and Super as Cmd, so `cmd+` shortcuts work there; on macOS terminals without it, a Ctrl shortcut that no
+binding takes is tried again as Cmd, and menus and hints (`keymap.label`, `Command`) show those shortcuts with
+Ctrl, the key to press there (`⌃O` for `mod+o`).
 
-The terminal reports hover entry and exit, but does not emit continuous `onHoverMove` or `onMouseMove` callbacks.
-The scripted `hover` step moves the pointer without adding those callbacks.
+**Search.** Ctrl+S and Ctrl+R search the text on screen as you type, as readline and Emacs do. The query shows on the
+bottom row after `/` (forward) or `?` (backward), the match is highlighted and focus moves to the control it belongs
+to. Ctrl+S / Ctrl+R go to the next / previous match, Backspace or Ctrl+H takes back the last key, Enter ends the
+search there, and Escape or Ctrl+G puts focus and scrolling back as they were.
 
-Inputs support grapheme-aware cursor movement and deletion, Shift selection, word movement with Ctrl/Alt+arrows,
-Home / End, Ctrl+Home / End, select all, undo and redo. Ctrl+A/C/X/V select, copy, cut and paste; Ctrl+Z and
-Ctrl+Shift+Z or Ctrl+Y undo and redo. Secure fields mask their contents and protect
-copy and cut. Terminal keys and bracketed paste preserve their literal text. Input methods enter committed text
-through the terminal; bracketed paste enters text as one edit. Enter follows `submitBehavior`, and Shift/Alt+Enter
-inserts a newline into a multiline input.
+**Text fields** take readline's keys as well as the desktop's:
 
-The interactive standalone host connects copying and pasting to the operating system clipboard through its
-clipboard helpers, with OSC 52 as a copy fallback. Embedded views and scripts start with a surface-local clipboard;
-an embedding host can connect its own clipboard through `HostServices`. NSH transfers the complete text;
-the operating system helper or terminal handles clipboard acceptance.
+| Keys in a field | Do |
+|---|---|
+| Ctrl+A / Ctrl+E, Home / End | Start / end of the line |
+| Ctrl+Home / Ctrl+End, Alt+< / Alt+> | Start / end of the text |
+| Ctrl+F / Ctrl+B, Alt+F / Alt+B | A character, a word forward / back |
+| Ctrl+Right / Ctrl+Left, Alt+Right / Alt+Left | A word forward / back, as on the desktops |
+| Ctrl+N / Ctrl+P, Down / Up | The next / previous line of a multiline field |
+| Ctrl+K / Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D | Kill to the end / start of the line, a word back, a word forward |
+| Ctrl+Y | Insert the last killed text |
+| Ctrl+T | Swap the characters beside the caret |
+| Ctrl+D, Delete / Ctrl+H, Backspace | Delete forward / back |
+| Ctrl+Delete / Ctrl+Backspace | Delete a word forward / back |
+| Shift with the movement keys | Extend the selection |
+| Ctrl+Shift+A, Cmd+A | Select all |
+| Ctrl+Z / Ctrl+Shift+Z, Cmd+Z / Cmd+Shift+Z | Undo / redo |
+| Ctrl+Shift+C, Cmd+C, Ctrl+Insert, Alt+W | Copy |
+| Ctrl+Shift+X, Cmd+X, Shift+Delete | Cut |
+| Ctrl+V, Ctrl+Shift+V, Cmd+V, Shift+Insert | Paste |
+| Enter | What `submitBehavior` says: submit, submit and leave, or a new line |
+| Shift+Enter, Alt+Enter | A new line in a multiline field that submits on Enter |
+| Escape, Ctrl+G | Leave the field |
 
-The app's [`keymap`](../modules/nsh.md#keymap) bindings run before default handling. Terminal emulators decide
-which keys and modifiers reach an app; choose shortcuts that your supported terminal forwards.
+While a field is edited, the terminal's cursor is a bar at the caret. Input methods compose in the terminal
+emulator, and the committed text enters the field; a paste is one insertion. Copied text goes to the system clipboard
+through the terminal (OSC 52, over SSH too, where the terminal allows it).
 
-Selectable text supports mouse selection, and inline text links activate through pointer hit testing.
-[`View selectable`](../elements/text-selection.md) extends a selection across text nodes, lines and `TextView`
-blocks. Drag or Shift+click to extend it; dragging beyond a Scroll edge scrolls while held. Ctrl+A selects the
-area, Ctrl+C or Ctrl+Insert copies, and Escape clears a nonempty selection. Text with `style={{ userSelect: "none" }}`
-stays out, so labels and control captions need not enter a copy. Copy uses the underlying text, including its
-line breaks and Unicode content, through the same host clipboard and OSC 52 path described above.
-A modal or focused popup suspends keyboard handling for a retained background selection; closing the overlay
-makes that selection available again. Native alert and action-sheet overlays use Tab or the arrows to choose
-a button and Enter to activate it.
+## Mouse
 
-[`nsh/desktop`](../modules/nsh-desktop.md) is available on terminal surfaces for titles and menus.
-`platform.isTerminal` identifies this presentation while `platform.idiom === "desktop" && !platform.isTerminal` identifies graphical desktop surfaces.
-F10 opens the application menu; arrows navigate, Enter or Space selects, and Escape closes it. Application and
-popup menus include submenus, checkmarks, disabled items and shortcuts. Window titles update through sanitized
-OSC 2 output in the standalone host.
+The terminal reports the mouse at Cell precision, and NSH turns each Cell into the point at its middle.
 
-## Readable pages and video
+- **Clicks** press what is under the pointer; double and triple clicks select a word and a line in fields and
+  selectable text, and a drag after them extends by words or lines. A right click opens the context menu
+  (`onContextMenu`) of the nearest view that listens for one.
+- **The wheel** scrolls the scroll view under the pointer by three rows (six columns sideways; Shift turns a vertical
+  wheel sideways), and leaves the keyboard focus where it is.
+- **Hover** tracks the pointer Cell by Cell: the view under it and its ancestors take `hover:` styles and
+  `onMouseEnter` / `onMouseMove` / `onMouseLeave`, a hovered control stands on a lighter band, and tooltips and hover
+  cards open on the views under it. Leaving the terminal, or the terminal losing focus, clears hover.
+- **Dragging** follows the pointer Cell by Cell:
+  - a `Slider` (and a `ColorSlider` or `ColorArea`): a press on the track moves the nearest thumb there, and a drag
+    moves it with the pointer; a range slider's thumbs stay within each other;
+  - a scroll bar: a press on the track jumps the thumb there, and a held thumb follows the pointer;
+  - the handle lines of a `ResizablePanelGroup` or `DockArea` resize their panes, and a `DockArea` tab dragged over a
+    group outlines where it lands;
+  - text in selectable views and fields is selected; Shift+click extends the selection, and Ctrl+C, Ctrl+Shift+C or
+    Cmd+C copies it; a selection held past the edge of its scroll view (or on the terminal's own edge row) scrolls it
+    row by row, faster the farther past the pointer is;
+  - content that nothing else claims scrolls with the drag, and the app's gestures (`panActivation`, the responder
+    system) get every move; a drag keeps its target while the pointer is outside the app.
 
-`WebView` presents HTML as a readable terminal page with headings, paragraphs, lists, preformatted blocks and
-basic tables. Both inline HTML and remote URI sources use this mode. URI navigation follows the app's `webview`
-capabilities and checks redirects against those grants. Links have numbered references: Tab selects a link and
-scrolls it into view, and Enter follows it. Alt+Left and Alt+Right navigate history; reload, stop and scrolling
-commands operate on the reader.
+  A drag never presses what it started on.
 
-`Video` presents picture playback through FFmpeg, with pause, seek, playback rate, repeat and load/progress events.
-Install `ffmpeg` and `ffprobe` on the executable search path, or select them with `NSH_FFMPEG` and `NSH_FFPROBE`.
-Embedding hosts can supply native components for audio output, browser execution or platform-specific media
-presentations.
+## Colors and themes
 
-## App data
+The app is drawn in the terminal's own theme. When it starts, the host asks the terminal for its default foreground
+and background, and the app's light or dark mode follows the background (dark when the terminal does not say). The
+color depth comes from the environment: `COLORTERM=truecolor` (or a terminal known for 24-bit color) is true color, a
+`TERM` with `256color` is 256 colors, and anything else is the 16 standard colors. `NO_COLOR` draws without colors:
+states are shown with reverse video, underlines, bold and strike-through. `NSH_TUI_COLORS=truecolor`, `256`, `16`
+or `mono` sets it.
 
-[`nsh`](../modules/nsh-storage.md) keeps string values across launches and development reloads. Each
-application's `nsh.json` `id` names its own `storage.json` directory under the system data directory: Application
-Support on macOS, `%APPDATA%` on Windows and `$XDG_DATA_HOME` (or `~/.local/share`) on Linux. Bundles and Rust roots
-carry the same app identity, so both entries use the same data. Releases declare their own `id` in `nsh.json`.
+The app's colors are read as meanings, so an app designed for screens reads well on any terminal theme:
 
-## Packaging
+- a saturated color (a primary button, an error, a link) is the terminal's accent of its hue: red, yellow, green,
+  cyan, blue or magenta;
+- a neutral color is the terminal's foreground, and a low-contrast one (secondary text, placeholders, separators) a
+  fade of it;
+- canvases, color swatches and syntax highlighting keep their own colors, at the terminal's color depth.
+
+With 256 colors or more and a known background, fills are **surfaces**: steps of the terminal's own background mixed
+toward its foreground, so a card, a sidebar or a selected row stands on a band a shade lighter or darker than what is
+around it, and the page itself is the terminal's background, transparency included. On a 16-color terminal the same
+app, laid out the same, is drawn in lines, bold, dim and reverse video, and its small fills in the standard colors:
+a chip or a tag on the dark gray, a primary button in its color; panels and cards are set apart by their space.
+
+The terminal shows state in its own way: a selected row and a focused control are a highlighted band and bold, a
+hovered control a lighter band, a disabled one faint; the selected row of the pane that has the focus is in the
+accent. The app's focus styles still apply on top.
+
+## Components and popups
+
+`nsh/base`'s controls take the terminal's own forms, one row each, with the app's labels, values and events:
+
+| Component | In the terminal |
+|---|---|
+| `Checkbox` | `[✓]`, `[ ]` or `[–]`, then its label |
+| `Radio` | `(●)` or `( )`, then its label |
+| `Switch` | `[✓]` on, `[ ]` off, as a checkbox |
+| `Slider` | a row of `─`, filled with `━` up to the value, a `●` per thumb |
+| `Progress` | a heavy line `━` in the indicator's color, then a light `─` in the line color |
+| `Select`, `Combobox`, `DatePicker` | the value (a `Select`'s `placeholder` while none is chosen, or the app's `trigger`) with `▾` near the right end of its band, a blank Cell after it as before the text, and `×` before it while there is a value to clear, muted, in the accent while focused or open; the list opens under it. An app's own `trigger` leaves the band's last three Cells free for them (six with `×`) |
+| `Tabs` | the tabs in a row, the selected one bold |
+| `Calendar`, `DatePicker` | `cal`'s month: the days' numbers right-aligned in columns, today bold, the selected days banded; the months and the years to pick centered in the month's width |
+| `OtpInput` | the cells in a row, the terminal's cursor in the middle of the cell that takes the next digit; an empty cell shows `·`, muted, a masked digit `●`; a cell with a border and no fill is a framed box (`┌───┐`), its digit in the middle, the next cell's line in the accent |
+| `Pagination` | Previous, the pages, `…` and Next as words in a row, the current page banded |
+| `MenuItem`, `Submenu` | the title from the row's start; `✓` at the row's end on a checked item (`●` on a radio item), ` ›` on a submenu's trigger |
+| `Select`, `Combobox` lists | each title from the row's start, `✓` at the end of the chosen row |
+| `Accordion`, `Collapsible`, `Tree` | `▸` closed, `▾` open |
+| `Scrollbar` | the terminal's own scroll bar |
+| `TextView` | a terminal reader's document: blocks a blank row apart, headings without `#` in bold (h1 ruled), quotes behind `▎`, code in a band under its language, alerts as one tinted band with their icon, tables in box lines fitted to the view, tasks `☐` / `☑` |
+
+**Popups** (popovers, menus, a select's list, a command palette) open beside their anchor, framed by a
+rounded line, with the label of their first surface as a title in the top border (`╭─ Title ─`). With surfaces they
+stand raised on a band and cast a one-Cell shadow; the item under the keyboard or the pointer is a full-row band in
+the accent. **Dialogs** center a framed box and fade what is behind them; focus stays inside the newest one, Escape
+asks it to close, and closing it gives the focus back to the control that opened it. `AlertDialog` is drawn
+the same way, its buttons `Cancel  OK` in a row (`< Cancel >  < OK >` on 16 colors).
+
+**Toasts** show on the status line, the screen's bottom row, one at a time: the newest toast's content in a row, and a
+new toast takes the line from the last. Nothing stacks or animates; Escape closes the toast there, as its own buttons
+and its timeout do. A tooltip shares the line and shows there while no toast does.
+
+**Scroll views** that overflow show a one-Cell scroll bar, `│` with a `┃` thumb, on their inner edge, or on the line of
+the pane they fill. **Canvases** draw in braille dots, two across and four down per Cell, with text on whole Cells;
+chart demos and drawings keep their shapes. An **icon button** (a button whose content is an icon) shows its
+accessibility label as its text, and a popup's trigger shows `▾`.
+
+**Marks you press** (a trigger's `▾`, a clear `×`, a stepper's `−` / `+`) each take a slot of three Cells with the
+mark in the middle, ` ▾ `, and a press anywhere in the slot counts. Slots sit side by side (` ×  ▾ `), so the mark at a
+band's end has a blank Cell after it. The mark is muted and turns the accent while its control is focused or open,
+while it is pressed and while the pointer is over its slot. For a mark of your own, make a pressable `View`
+three Cells wide and one Cell high (24 × 16 points at the default size) with the glyph centered. With `controlsRight`,
+`NumberInput` sets its steppers side by side in a terminal, the decrement first (` −  + `).
+
+**Media elements keep their space in the layout.** An `Image`, `Video`, `WebView` or shader view larger than an icon
+keeps its box, so the text and controls around it stay where the design puts them; the terminal shows text and
+lines, so the box is blank Cells. Images, videos, web views, shaders and canvases of icon size (48 × 48 points or
+smaller) give their room to the content around them. With surfaces, a view in the image role whose background is a color (a color
+swatch) shows that color.
+
+## Laying out for the terminal
+
+Most apps need no change: desktop behavior applies, and the layout rules above fit a desktop design to the grid.
+Where the terminal should get a layout of its own, the idiom says so:
+
+```rust tabs
+use nsh_core::{platform::Idiom, prelude::*};
+
+#[component]
+pub fn Shell() -> impl IntoElement {
+    // The terminal gets one compact column; windows get a sidebar.
+    view()
+        .flex_1()
+        .child(if idiom() == Idiom::Terminal { compact_layout() } else { sidebar_layout() })
+}
+
+fn compact_layout() -> AnyElement {
+    view().flex_1().flex_col().into_element()
+}
+
+fn sidebar_layout() -> AnyElement {
+    view().flex_1().flex_row().into_element()
+}
+```
+
+```tsx tabs
+import { View, platform } from "nsh";
+
+export function Shell() {
+  // The terminal gets one compact column; windows get a sidebar.
+  return (
+    <View class="flex-1">
+      {platform.idiom === "terminal" ? <CompactLayout /> : <SidebarLayout />}
+    </View>
+  );
+}
+
+function CompactLayout() {
+  return <View class="flex-1 flex-col" />;
+}
+
+function SidebarLayout() {
+  return <View class="flex-1 flex-row" />;
+}
+```
+
+`platform.desktop` is `true` in a terminal, and `platform.idiom === "desktop"` matches windows and desktop browsers,
+so code that asks for a pointer and a wide window with the idiom keeps the terminal on its own branch. Window chrome
+an app draws itself for `nsh/desktop` (a title bar of its own) is the app's content in a terminal; leave it out for
+`platform.idiom === "terminal"`. The environment reports reduced motion: navigation and layout transitions take their
+final state at once, and the app's own animations run as written. The safe area and the keyboard height are 0.
+
+## Testing
 
 ```sh
-nsh package my-app --target tui
-nsh package my-app --target tui --run
+nsh test --target tui
 ```
 
-The console runner and its resources travel together:
+runs the app's tests through the terminal development host, on an in-memory terminal, so it needs no terminal of its
+own and runs in CI. The steps press, type and scroll with the terminal's input; `open(entry, { width, height })` sets
+the viewport in points (390 × 844 by default), rounded up to whole Cells. `app.screenshot("cells.json")` returns the
+screen as UTF-8 JSON, one entry per Cell with its symbol, colors and modifiers, so a test can compare renders exactly
+([Testing](./testing-and-trace.md#on-a-real-platform)).
 
-```text
-out/<Name>/
-  <Name>                 executable; <Name>.exe on Windows
-  nsh/bundle.nshc        compiled TSX application
-  nsh/assets/…           imported assets
-  nsh/app.json           application metadata
-  nsh/capabilities.json  application capabilities, when configured
+## Running a bundle
+
+The development host also runs a built bundle on its own, or connects to a development server you start yourself:
+
+```sh
+nsh build my-app --out build
+nsh-tui-host --bundle build/bundle.js                       # in a checkout: target/debug/nsh-tui-host
+nsh-tui-host --dev-server ws://127.0.0.1:8790/ws
 ```
 
-The same directory is archived as `<Name>.tar.gz` on macOS and Linux and `<Name>.zip` on Windows. Package on the
-operating system where the executable will run. Keep the `nsh/` directory beside the executable. The terminal
-runtime uses Rust libraries and the operating system's console facilities. `--run` launches it in the current
-terminal and waits until it closes. Rust root applications use the same package layout with their root compiled
-into the runner.
+| Option | Does |
+|---|---|
+| `--points-per-cell <WIDTHxHEIGHT>` | The size of one Cell in points (`8x16` by default) |
+| `--no-mouse` | Leaves the mouse to the terminal emulator and its own text selection; the keyboard works as above |
+| `--fps` | Shows the performance line (`C-h p` toggles it) |
+| `--log-file <PATH>` | Where diagnostics go (by default a file in the system's temporary directory, shown by `C-h e`) |
+| `--data-dir <PATH>` | Where the app keeps its data |
+| `--trace` | Adds the engine's timings to the log |
 
-## Embedding in a Ratatui app
+The bundle's assets are read from the `assets/` directory next to it.
 
-`nsh-platform-tui` exposes an `AppView` with its own engine, retained surface and input state. Use
-`view.load_with_config(config)` to run a shared `nsh_engine::EngineConfig`, retaining its UI registries, asset
-reader, module loader, runtime and host context. The view supplies its actual terminal viewport and environment.
-Your host owns the
-terminal, event loop and other Ratatui widgets. Load a bundle, then poll commits, advance animations, forward
-events and draw into the region assigned to the view:
+## Embedding in a terminal app
+
+The `nsh-platform-tui` crate gives a Rust [ratatui](https://ratatui.rs) app `AppView`: one NSH engine drawn into any
+area of the app's own frame. The app keeps its terminal, its event loop and its layout; each `AppView` is
+independent, and several can share a screen.
 
 ```rust
-use nsh_platform_tui::{AppOptions, AppView, Bundle};
+use nsh_platform_tui::{AppOptions, AppView, Input, Root};
 
-let mut view = AppView::new(AppOptions::default());
-let code = std::fs::read_to_string("app/bundle.js")?;
-view.load(Bundle::source(code).into())?;
+let mut options = AppOptions::default();
+options.ui_sets = vec![nsh_base::registry(), my_app::registry()];
+let mut view = AppView::new(options);
+view.load(Root::of::<my_app::App>())?;
 
-// In the host's event loop:
-view.poll()?;
-view.tick(start.elapsed().as_secs_f64())?;
-view.resize(area.width, area.height);
-view.render(area, frame.buffer_mut());
+// In the app's draw: the view takes the area it is given.
+terminal.draw(|frame| view.render(frame, frame.area()))?;
+
+// In the app's event loop: keys, pastes and mouse events, at absolute Cells.
+view.handle(input);
+
+// Draw again when the view asks: `next_frame_deadline()` is when its next frame is due.
+let due = view.next_frame_deadline();
 ```
 
-Forward keyboard and paste events with `view.handle_event(event)`. Translate mouse positions to coordinates
-relative to the view's region before forwarding them; route events only to the surface that should receive them.
-Dropping the view or calling `stop()` ends its engine.
-
-Hosts driving `Surface` and `LocalEngine` directly deliver events to `Surface::handle_event` against the current
-mounted scene. The surface owns native pointer capture, selection, focus and gestures. Forward its ordered
-`SurfaceEvent`s through the engine's `EngineControl`, using `dispatch_event` for application callbacks, then
-call `LocalEngine::pump()` and apply every resulting mount batch before the next physical event. Publish
-`Surface::focus_path()` through `EngineControl::set_focus_path` before enqueueing events or environment updates.
-Engine work and native input continue while terminal output completes.
-
-`Surface::handle_wheel(mouse, steps)` groups consecutive detents with identical coordinates, direction and
-modifiers against one live hit-tested owner and returns the number consumed. Host components receive at most
-one detent per call so their events can be dispatched before more input arrives. When the host's input region
-changes, `Surface::cancel_pointer()` cancels native capture while retaining keyboard focus; forward its
-resulting events through the same engine control.
-
-`AppOptions::asset_base` resolves `asset:/` URIs from an asset directory or HTTP base.
-`AppOptions::limits` configures the VM limits; embedding defaults to `Limits::default()`, while the standalone
-hosts use `Limits::standalone()`. `nsh run --target tui --limits` uses the embedding defaults for a TSX entry;
-pass named limits to choose their values. `AppOptions::metrics` accepts a validated `CellMetrics` value for hosts
-that choose a different virtual point scale. See [Sandbox and capabilities](./sandbox-and-capabilities.md).
-
-`AppOptions::data_dir` chooses the embedding app's directory for app data, such as its own data directory plus
-`nsh/`. Each loaded app uses its own id below that directory. `AppOptions::storage` connects the host's own
-`nsh_engine::StorageBackend` and takes precedence over the file location.
-
-Connect optional clipboard, title and accessibility-announcement callbacks with
-`AppView::set_host_services(Some(services))`. `AppView::accessibility_snapshot()` exposes each accessible node's
-role, label, hint, state, value, frame, focus and actions; `Surface::perform_accessibility_action` routes host
-actions back to the mounted app. Secure input values stay protected. Creating an embedded view leaves terminal
-IO and service integration under the host's control.
-
-For [native components](./native-components.md), implement `NativeComponent` and register its factory with
-`AppView::register_component(name, factory)` before loading the app. Each mounted leaf gets its own instance,
-receives props and commands, paints into its clipped region, and can return native events to TSX. Hosts can supply
-terminal presentations for content such as maps, browser pages and media controls.
-
-### Host-owned services
-
-Supply native modules for one view with `AppOptions::ui_sets`. A registry's `value` factory can capture
-the host's scoped client and expose a Rust class instance to TSX:
-
-```rust
-use nsh_core::element::{Instance, Registry};
-
-let mut native = Registry::ui_set("my-app/native");
-native.value("service", move || Instance::new(Service::from(client.clone())));
-let options = AppOptions {
-    ui_sets: Some(vec![native]),
-    ..Default::default()
-};
-```
-
-Here `Service` is the host's `#[class]` wrapper. Its methods, including async methods, generate TypeScript
-declarations; TSX uses `import { service } from "my-app/native"`. A class without a constructor keeps
-client creation in the host. The first import or [`nativeModule`](../modules/nsh.md#nativemodule) lookup
-runs the factory once per VM, and both paths share its value; reloads create new values. The host retains
-cancellation, subscription cleanup and service-operation receipts.
-`None` uses the process's default modules, while `Some(vec![])` selects an empty set.
-
-## Reproducible interaction
-
-The host's `--script` runs against an in-memory Ratatui buffer and saves UTF-8 text snapshots. Steps are separated
-by semicolons or newlines:
-
-```sh
-nsh-tui-host --bundle build/bundle.nshc --size 120x40 \
-  --script "wait 300; shot home.txt; key Tab; type 你好 👋; resize 100 35; wait 300; shot resized.txt; quit"
-```
-
-| Step | Action |
-|---|---|
-| `wait <ms>` | Process commits and animations for the duration |
-| `shot <file.txt>` | Save the current text buffer |
-| `tap <column> <row>` | Click a cell |
-| `hover <column> <row>` | Move the pointer to a cell |
-| `wheel <column> <row> <dx> <dy>` | Scroll in wheel detents at a cell |
-| `type <text>` | Paste UTF-8 text into the focused input |
-| `key <name>` | Send a key, such as `Tab`, `Enter`, `Esc`, `Ctrl+a` or `Shift+Left` |
-| `selectall` | Select all text in the focused input |
-| `resize <columns> <rows>` | Change the viewport and relayout |
-| `dark`, `light` | Set the surface appearance |
-| `expect <text>` | Assert that the snapshot contains text |
-| `expect-focus` | Assert that a node has keyboard focus |
-| `quit` | Stop the app |
-
-Snapshots preserve ordinary terminal text and layout. Rasterized text and graphics appear as half-block
-approximations; use labels outside effect groups for text assertions. Inspect colors and graphic details in an
-interactive terminal.
+`load` also takes a `Bundle` (`Bundle::read(path)`, a TSX app that `nsh build` wrote). `AppView::set_wake_callback`
+tells the app's loop that the view has a frame to draw, from the engine's thread; `set_focused` gives or takes the
+keyboard focus; `set_appearance` sets light or dark mode; `register_component` adds the app's own native components,
+drawn into their Cells. `AppOptions` sets the Cell size (`cells`), the terminal's colors and depth (`capabilities`),
+the limits, storage, assets and clipboard. With feature `run-app`, `run_app(&mut terminal, &mut view, poll)` is a
+ready loop for an app that gives the whole terminal to one view, as the development host does.
 
 ## See also
 
-- [CLI](./cli.md)
-- [Packaging](./packaging.md)
-- [Images and assets](./images-and-assets.md)
-- [Canvas](./canvas.md)
-- [Platform overview](./platforms.md)
+- [CLI](./cli.md): `nsh run --target tui`, `nsh test --target tui`
+- [Platform-specific code](./platform-specific.md)
+- [Device and environment](./device-and-environment.md)

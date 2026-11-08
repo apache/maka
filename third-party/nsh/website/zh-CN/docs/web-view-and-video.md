@@ -64,7 +64,7 @@ mount(App);
 
 ### 属性
 
-在 Rust 中，每个属性是一个蛇形命名的构建方法（`injected_java_script`、`java_script_enabled`、`scrollable`、`user_agent`；`injectedJavaScriptBeforeContentLoaded` 对应 `injected_java_script_before_content`，iOS 的 `allowsBackForwardNavigationGestures` 对应 `back_forward_gestures`），每个事件是一个 `on_…` 方法（`on_navigation_state_change`），其监听函数收到 `WebNavigation`（`url`、`title`、`loading`、`can_go_back`、`can_go_forward`），`on_error` 和 `on_message` 收到 `&str`。
+在 Rust 中，每个属性是一个蛇形命名的构建方法（`injected_java_script`、`java_script_enabled`、`scrollable`、`user_agent`、`incognito`；`injectedJavaScriptBeforeContentLoaded` 对应 `injected_java_script_before_content`，iOS 的 `allowsBackForwardNavigationGestures` 对应 `back_forward_gestures`），每个事件是一个 `on_…` 方法（`on_navigation_state_change`），其监听函数收到 `WebNavigation`（`url`、`title`、`loading`、`can_go_back`、`can_go_forward`），`on_error` 和 `on_message` 收到 `&str`。Rust 还可以用 `url_scheme` 向页面提供应用自己的资源（[见下文](#应用提供的资源)）。
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -76,6 +76,7 @@ mount(App);
 | `javaScriptEnabled` | `boolean` | `true` | 页面可以运行脚本。 |
 | `scrollable` | `boolean` | `true` | 用户可以滚动页面。 |
 | `userAgent` | `string` | | 浏览器的 user agent 字符串。 |
+| `incognito` | `boolean` | `false` | 页面的网站数据只与网页视图同存亡，各平台的做法见[下文](#网站数据)。在网页视图创建时读取。 |
 | `ios={{ allowsBackForwardNavigationGestures }}` | `boolean` | | iOS：滑动在页面历史中前进后退。 |
 | `desktop={{ allowsBackForwardNavigationGestures }}` | `boolean` | | macOS：双指在触控板上轻扫，在页面历史中前进后退；Windows：在触摸屏上轻扫；Linux：在触控板上轻扫。 |
 
@@ -93,7 +94,7 @@ mount(App);
 
 ### 带前进后退的浏览器
 
-Web 视图的 ref（Rust 中用 `.element_ref(&web)` 挂上的 `element_ref()`，TSX 中的 `ref`）提供 `reload`、`go_back` / `goBack`、`go_forward` / `goForward`、`stop_loading` / `stopLoading`、`inject_java_script` / `injectJavaScript(script)`、`post_message` / `postMessage(data)` 和 `send_input` / `sendInput(input)`（见[下文](#像用户一样输入)）：
+Web 视图的 ref（Rust 中用 `.element_ref(&web)` 挂上的 `element_ref()`，TSX 中的 `ref`）提供 `reload`、`go_back` / `goBack`、`go_forward` / `goForward`、`stop_loading` / `stopLoading`、`inject_java_script` / `injectJavaScript(script)`、`post_message` / `postMessage(data)`、`load` / `load({ src, headers })`（见[下文](#已登录的页面请求头)）和 `send_input` / `sendInput(input)`（见[下文](#像用户一样输入)）：
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -282,6 +283,65 @@ web_view("https://example.com")
 />
 ```
 
+### 应用提供的资源
+
+页面可以从应用自己的 URL scheme 加载应用持有的字节（内存或磁盘中的图片、邮件的附件）。`url_scheme` 指定 scheme
+和应答其请求的 Rust 函数；页面像引用其他 URL 一样引用它的 URL（`<img src="app-image:42">`、
+`fetch("app-image:42")`），网页引擎像加载任何子资源一样加载它们：字节原样传给页面，不经过页面的脚本。几十 MB
+的图片也能以读文件的速度加载。
+
+```rust
+use nsh_core::{
+    prelude::*,
+    web_resource::{WebResource, WebResourceRequest},
+};
+
+fn serve(request: WebResourceRequest) {
+    // 在主线程上调用：把耗时的工作交给线程，并在那里应答。
+    std::thread::spawn(move || match std::fs::read(path_for(request.url())) {
+        Ok(bytes) if !request.is_cancelled() => request.respond(WebResource::new("image/png", bytes)),
+        _ => request.fail(),
+    });
+}
+
+web_view_html(html, None).url_scheme("app-image", serve).flex_1()
+```
+
+处理函数在平台的主线程上运行，因此应立即返回；请求只应答一次，可以当场或稍后、在任何线程上应答：`respond`
+（字节和 MIME 类型）或 `fail`（图片的 `error` 事件、被拒绝的 `fetch`）。未应答就被丢弃的请求视为失败。页面不再需要
+它时（页面已跳转、网页视图已移除），`is_cancelled()` 变为 true，之后的应答会被丢弃。应答带有
+`Access-Control-Allow-Origin: *`，所以无论页面的来源是什么，页面的脚本都能 `fetch` 它们；Content-Security-Policy
+像其他来源一样写出 scheme 即可（`img-src app-image:`）。
+
+scheme 以字母开头，后接字母、数字、`+`、`-` 或 `.`，且不能是 Web 或系统的 scheme（`http`、`https`、`file`、
+`data`、`blob`、`about` 等）。多个 scheme 就调用多次。与 `incognito` 一样，scheme 在创建网页视图时读取。iOS、
+macOS 和 Linux 提供它们（WebKit 的 `WKURLSchemeHandler` 和 `webkit_web_context_register_uri_scheme`）。
+
+### 已登录的页面：请求头
+
+要显示应用已登录的某个服务的页面，把凭据放在页面请求的请求头里，而不是 URL 里：URL 会留在历史记录、日志和 `Referer` 中。ref 的 `load` 加载一个页面，并只给这一个请求带上请求头：
+
+```rust tabs
+use nsh_core::{WebLoad, prelude::*};
+
+fn open(web: &ElementRef, token: &str) {
+    let headers = vec![("Authorization".to_owned(), format!("Bearer {token}"))];
+    if let Some(load) = WebLoad::new("https://docs.example.com/", headers) {
+        web.load(load);
+    }
+}
+```
+
+```tsx tabs
+web.load({ src: "https://docs.example.com/", headers: { Authorization: `Bearer ${token}` } });
+```
+
+- 只有页面自身的请求带这些请求头：它的图片、脚本等子资源不带，之后的导航和 `reload()` 也不带，所以凭据不会发给页面用到的其他主机。页面再次需要它时（点链接、重新加载），用 `load` 再加载一次，并为那次请求生成新值（DPoP proof 与 URL 绑定）。
+- 之后页面的显示与 `src` 加载的一样；之后 `src` 属性一变，就改为加载那个页面。
+- 它的主机必须是 `webview.hosts` 允许的（[`webview`](./sandbox-and-capabilities.md#webview)），与 `src` 相同；否则什么也不加载，核心会在日志里说明要添加哪个主机。
+- 请求头的名字不是 HTTP token、或值里有换行时，抛出 `TypeError`（`WebLoad::new` 返回 `None`），一个请求头不能借此开始另一个。NSH 的日志只写请求头的名字，从不写值。
+- macOS、iOS、Mac Catalyst、Android、Windows、Linux 和 GPUI 后端会发送这些请求头；浏览器后端做不到（iframe 无法设置请求头），调用不做任何事。
+
 ### 像用户一样输入
 
 `injectJavaScript` 只能产生合成事件，页面会把它们视为不可信（`event.isTrusted` 为 `false`），有些控件会忽略它们。ref 的 `send_input`（`sendInput(input)`）以用户亲手操作的方式把输入交给页面，因此页面收到的事件是可信的：
@@ -333,6 +393,31 @@ import { signal, WebView } from "nsh";
 const input = signal(false);
 WebView.inputAvailable().then((available) => input.set(available));
 ```
+
+### 网站数据
+
+网页视图把页面的网站数据（cookie、local storage、IndexedDB、缓存）和应用的放在一起，所以在一个网页视图里登录，下一个网页视图里、
+应用重启后也还是登录状态。显示应用不信任的页面（别人生成的 HTML、一次性的登录页）的网页视图加上 `incognito`：它的页面使用一份
+自己的存储，只在内存里，随网页视图一起销毁。
+
+```rust tabs
+web_view("https://example.com/preview").incognito(true).flex_1()
+```
+
+```tsx tabs
+<WebView src="https://example.com/preview" incognito style={{ flex: 1 }} />
+```
+
+`incognito` 在网页视图创建时读取，所以在 Rust 里它接收一个值；在 TSX 里之后再改它，网页视图保留原来的存储并打印一条警告。
+要切换，就显示一个新的网页视图。各平台这样保存它的存储：
+
+| 平台 | incognito 网页视图的存储 |
+|---|---|
+| iOS、macOS | 自己的一份非持久 `WKWebsiteDataStore`。 |
+| Linux | 自己的一份临时 WebKit 网络会话。 |
+| Windows | InPrivate 模式的 WebView2 控制器。同时打开的 incognito 网页视图共用一份内存中的存储，最后一个关闭时清空。 |
+| Android | cookie 和网页存储属于整个应用，所有网页视图共用，网页视图关闭后仍然保留。incognito 网页视图加载时不使用 HTTP 缓存，也不保存表单数据。 |
+| Web | 浏览器为页面所在源保存的存储，和任何 `iframe` 一样。 |
 
 ### 网页视图可以显示哪些网站
 

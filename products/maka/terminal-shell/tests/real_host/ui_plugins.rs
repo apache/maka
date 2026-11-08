@@ -167,11 +167,10 @@ export function activate(context) {
     .unwrap();
     let bindings =
         maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-    let mut view = AppView::new(AppOptions {
-        size: (100, 24),
-        data_dir: Some(directory.path().join("nsh")),
-        ..Default::default()
-    });
+    let mut options = AppOptions::default();
+    options.data_dir = Some(directory.path().join("nsh"));
+    let mut view = AppView::new(options);
+    view.resize(100, 24);
     support::load_application(&mut view, &bindings, None);
     wait_view(&mut view, |screen| {
         screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
@@ -225,7 +224,6 @@ export function activate(context) {
         .unwrap();
     let mut paused = false;
     loop {
-        view.poll().unwrap();
         support::tick(&mut view);
         assert!(view.last_error().is_none(), "{:?}", view.last_error());
         match requests.try_recv() {
@@ -248,11 +246,10 @@ export function activate(context) {
         }
     }
     drop(view);
-    let mut view = AppView::new(AppOptions {
-        size: (100, 24),
-        data_dir: Some(directory.path().join("nsh")),
-        ..Default::default()
-    });
+    let mut options = AppOptions::default();
+    options.data_dir = Some(directory.path().join("nsh"));
+    let mut view = AppView::new(options);
+    view.resize(100, 24);
     support::load_application(&mut view, &bindings, None);
     wait_view(&mut view, |screen| {
         screen.contains("VERSION_B private:PRIVATE_PLUGIN_STATE restored:PRIVATE_PLUGIN_STATE")
@@ -515,11 +512,10 @@ export function activate() {
     .unwrap();
     let bindings =
         maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-    let mut view = AppView::new(AppOptions {
-        size: (100, 24),
-        data_dir: Some(directory.path().join("nsh")),
-        ..Default::default()
-    });
+    let mut options = AppOptions::default();
+    options.data_dir = Some(directory.path().join("nsh"));
+    let mut view = AppView::new(options);
+    view.resize(100, 24);
     support::load_application(&mut view, &bindings, None);
     let loading_screen = wait_view(&mut view, |screen| {
         screen.contains("MAIN_WORKBENCH_READY OVERLAY_LOADING_SUSPENDED")
@@ -530,7 +526,7 @@ export function activate() {
         !loading_screen.contains("Loading"),
         "loading=false must suppress the loading placeholder:\n{loading_screen}"
     );
-    let viewport_bottom = view.surface().viewport().height.0;
+    let viewport_bottom = view.viewport().height.0;
     let anchor = view
         .accessibility_snapshot()
         .into_iter()

@@ -2,13 +2,21 @@
 //! (`nsh_testing::agent`): where a node's view is in the window, and the
 //! input a user's hands give there, through the handlers the window's
 //! messages go through ([`crate::synth`]). The agent calls from a thread
-//! of its own; each call does its work on the main thread
-//! ([`crate::window::invoke`]) and returns once it is done.
+//! of its own; each call does its work on the surface's UI thread
+//! ([`crate::window::UiThread::invoke`]) and returns once it is done.
 
-use std::{rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 use nsh_core::{
-    NodeId,
+    NodeId, ROOT_ID,
     geometry::{Bounds, Point, Points, Size, point},
 };
 use nsh_testing::agent::{Key, Native};
@@ -17,6 +25,7 @@ use crate::{
     input::{Modifiers, PointerKind, WheelEvent},
     surface::Surface,
     synth,
+    window::UiThread,
 };
 
 /// How long a call waits for the main thread at most.
@@ -47,14 +56,56 @@ const VK_A: u16 = 0x41;
 /// The surface the agent acts on, by key (its calls must be `Send`).
 pub(crate) struct WindowsNative {
     key: u64,
+    /// The window the pointer acts in (its root node; `ROOT_ID`: the main
+    /// window), [`Native::target_window`]'s.
+    target: Arc<AtomicU64>,
+    /// The UI thread the surface lives on.
+    ui: UiThread,
 }
 
 impl WindowsNative {
-    pub(crate) fn new(key: u64) -> Self {
-        WindowsNative { key }
+    pub(crate) fn new(key: u64, ui: UiThread) -> Self {
+        WindowsNative {
+            key,
+            target: Arc::new(AtomicU64::new(ROOT_ID as u64)),
+            ui,
+        }
     }
 
-    /// `f` with the surface on the main thread, waited for; `None` once
+    /// `f` on the main thread with the surface's input in the window the
+    /// pointer acts in ([`Native::target_window`]): its points are that
+    /// window's content's.
+    fn in_target<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Rc<Surface>) -> R + Send + 'static,
+    ) -> Option<R> {
+        let target = self.target.clone();
+        self.on_main(move |s| {
+            let id = target.load(Ordering::Relaxed) as NodeId;
+            let _root = (id != ROOT_ID)
+                .then(|| crate::app_window::enter(s, id))
+                .flatten();
+            f(s)
+        })
+    }
+
+    /// `f` on the main thread with the surface's input in the window that
+    /// has the keyboard focus, as the keyboard's keys go there.
+    fn in_focused<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Rc<Surface>) -> R + Send + 'static,
+    ) -> Option<R> {
+        self.on_main(move |s| {
+            // SAFETY: a plain query.
+            let active = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+            let _root = crate::window::app_window_root(active)
+                .filter(|_| crate::window::surface_of(active).is_some_and(|w| Rc::ptr_eq(&w, s)))
+                .and_then(|id| crate::app_window::enter(s, id));
+            f(s)
+        })
+    }
+
+    /// `f` with the surface on its UI thread, waited for; `None` once
     /// the surface is gone.
     fn on_main<R: Send + 'static>(
         &self,
@@ -62,7 +113,7 @@ impl WindowsNative {
     ) -> Option<R> {
         let (tx, rx) = mpsc::channel();
         let key = self.key;
-        crate::window::invoke(move || {
+        self.ui.invoke(move || {
             let _ = tx.send(Surface::by_key(key).map(|surface| f(&surface)));
         });
         rx.recv_timeout(MAIN).ok().flatten()
@@ -70,13 +121,16 @@ impl WindowsNative {
 
     fn click(&self, at: Point<Points>, hold: Duration, button: u8) {
         let (x, y) = (at.x.0, at.y.0);
+        let target = self.target.load(Ordering::Relaxed) as NodeId;
+        // A press in a window activates it, as a click does.
+        self.on_main(move |s| activate(s, target));
         // A real pointer arrives before it presses (hover state).
-        self.on_main(move |s| {
+        self.in_target(move |s| {
             synth::pointer(s, PointerKind::Move, x, y, 0, 0);
             synth::pointer(s, PointerKind::Down, x, y, button, 1 << button);
         });
         std::thread::sleep(hold);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, button, 0));
+        self.in_target(move |s| synth::pointer(s, PointerKind::Up, x, y, button, 0));
     }
 }
 
@@ -124,7 +178,7 @@ impl Native for WindowsNative {
         // to it.
         let n = (dx.abs().max(dy.abs()) / SCROLL_STEP).ceil().max(1.0) as u32;
         for _ in 0..n {
-            self.on_main(move |s| {
+            self.in_target(move |s| {
                 crate::input::wheel(
                     s,
                     WheelEvent {
@@ -144,7 +198,7 @@ impl Native for WindowsNative {
 
     fn drag(&self, from: Point<Points>, to: Point<Points>) {
         let (x, y) = (from.x.0, from.y.0);
-        self.on_main(move |s| {
+        self.in_target(move |s| {
             synth::pointer(s, PointerKind::Move, x, y, 0, 0);
             synth::pointer(s, PointerKind::Down, x, y, 0, 1);
         });
@@ -154,17 +208,17 @@ impl Native for WindowsNative {
             next_frame();
             let (x, y) = (at.x.0, at.y.0);
             // The primary button is held: a drag.
-            self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 1));
+            self.in_target(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 1));
             last = at;
         }
         let (x, y) = (last.x.0, last.y.0);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, 0, 0));
+        self.in_target(move |s| synth::pointer(s, PointerKind::Up, x, y, 0, 0));
     }
 
     fn type_text(&self, text: &str) {
         // Key by key, as a keyboard's characters come.
         for ch in text.chars() {
-            self.on_main(move |s| synth::type_text(s, &ch.to_string()));
+            self.in_focused(move |s| synth::type_text(s, &ch.to_string()));
         }
     }
 
@@ -180,7 +234,7 @@ impl Native for WindowsNative {
                 },
             ),
         };
-        self.on_main(move |s| synth::press(s, vk, modifiers));
+        self.in_focused(move |s| synth::press(s, vk, modifiers));
     }
 
     fn mouse(&self) -> bool {
@@ -206,7 +260,7 @@ impl Native for WindowsNative {
 
     fn hover(&self, at: Point<Points>) -> Result<(), String> {
         let (x, y) = (at.x.0, at.y.0);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 0))
+        self.in_target(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 0))
             .ok_or_else(|| "the window is gone".to_owned())
     }
 
@@ -224,7 +278,7 @@ impl Native for WindowsNative {
             alt: m.alt,
             meta: m.cmd,
         };
-        self.on_main(move |s| synth::press(s, vk, modifiers))
+        self.in_focused(move |s| synth::press(s, vk, modifiers))
             .ok_or_else(|| "the window is gone".to_owned())
     }
 
@@ -263,6 +317,11 @@ impl Native for WindowsNative {
             .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
+    fn window_screenshot(&self, window: NodeId) -> Result<Vec<u8>, String> {
+        self.on_main(move |s| synth::window_screenshot(s, window))
+            .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
         self.on_main(move |s| synth::resize(s, width.0, height.0))
             .ok_or_else(|| "the window is gone".to_owned())
@@ -276,11 +335,70 @@ impl Native for WindowsNative {
         .ok_or_else(|| "the window is gone".to_owned())
     }
 
+    fn target_window(&self, window: NodeId) -> Result<(), String> {
+        let known = self
+            .on_main(move |s| window == ROOT_ID || crate::app_window::is_window(s, window))
+            .ok_or_else(|| "the window is gone".to_owned())?;
+        if !known {
+            return Err(format!("no window shows node {window}"));
+        }
+        self.target.store(window as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn window_state(
+        &self,
+        window: NodeId,
+    ) -> Result<Option<nsh_core::desktop::WindowState>, String> {
+        self.on_main(move |s| {
+            if window == ROOT_ID {
+                crate::window_state::state(s.hwnd())
+            } else {
+                crate::app_window::state(s, window)
+            }
+        })
+        .ok_or_else(|| "the window is gone".to_owned())
+    }
+
+    fn press_window_close(&self, window: NodeId) -> Result<(), String> {
+        self.on_main(move |s| {
+            let hwnd = if window == ROOT_ID {
+                Some(s.hwnd())
+            } else {
+                crate::app_window::hwnd_of(s, window)
+            };
+            let hwnd = hwnd.ok_or_else(|| format!("no window shows node {window}"))?;
+            crate::chrome::press_close_button(hwnd)
+        })
+        .unwrap_or_else(|| Err("the window is gone".to_owned()))
+    }
+
     fn quit(&self) {
         self.on_main(|s| {
             // SAFETY: a plain call on the surface's window.
             let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(s.hwnd()) };
         });
+    }
+}
+
+/// Activates the window whose root node is `window`, as pressing in it does.
+fn activate(surface: &Surface, window: NodeId) {
+    let hwnd = if window == ROOT_ID {
+        surface.hwnd()
+    } else {
+        match crate::app_window::hwnd_of(surface, window) {
+            Some(hwnd) => hwnd,
+            None => return,
+        }
+    };
+    if !crate::window_state::top_level(hwnd)
+        || crate::window::shell(hwnd).is_some_and(|s| !s.attrs().focusable)
+    {
+        return;
+    }
+    // SAFETY: a plain call on a live window of this thread.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
     }
 }
 

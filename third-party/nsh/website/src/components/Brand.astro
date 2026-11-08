@@ -1,0 +1,289 @@
+---
+// The brand page: Native Shell's logo, app icon, banners and previews, ready to
+// download from `public/brand/`, with its colors and typeface.
+import Button from './ui/Button.astro';
+import { url, type Lang } from '../lib/site';
+
+export interface Props { lang: Lang }
+const { lang } = Astro.props;
+const isZh = lang === 'zh-CN';
+const asset = (name: string) => url(`brand/${name}`);
+
+const t = isZh
+  ? {
+      title: '品牌',
+      usage: '使用 Logo',
+      usageLead: '采用 NSH 开发的应用，都可以自由使用 NSH 的品牌 Logo 进行宣传，以标识应用采用了 NSH。',
+      logo: 'Logo',
+      logoLead: '外壳是一根发光的青柠色圆管，里面的圆珠是它运行的模块。深色背景和浅色背景各有一个版本。',
+      onDark: '深色背景',
+      onLight: '浅色背景',
+      solid: '纯色 Logo',
+      solidLead: '同样的轮廓，只用一种颜色。适合单色印刷、水印、图标字体，以及放在图片或彩色背景上。',
+      white: '白色',
+      black: '黑色',
+      citrusName: '青柠',
+      icon: 'App 图标',
+      iconLead: '1024×1024 的满版方形，圆角由系统裁切。适合应用商店和桌面图标。',
+      banners: 'README Banner',
+      bannersLead: '1600×500，以两倍分辨率导出，用于 README 和文章头图。',
+      social: '社交预览图',
+      socialLead: '1280×640，用于 GitHub 仓库的 Social preview。图案位于中间区域，话题页裁切后依然完整。',
+      link: '链接预览图',
+      linkLead: '1200×630，网站的 og:image。',
+      colors: '配色',
+      type: '字体',
+      typeLead: '标题、标语和平台名都使用 Figtree：标题 600，标语 400，平台名 300。',
+      name: '名称',
+      nameLead: '正式场合写 Native Shell，其他地方写 NSH；代码中使用小写的 nsh。',
+      dark: '深色',
+      light: '浅色',
+      citrus: '青柠（深色背景）',
+      olive: '橄榄（浅色背景）',
+      inkDark: '深色背景',
+      inkLight: '浅色文字',
+    }
+  : {
+      title: 'Brand',
+      usage: 'Using the logo',
+      usageLead: 'Any app built with NSH is free to use the NSH logo in its promotion, to show that it is built with NSH.',
+      logo: 'Logo',
+      logoLead: 'The shell is a lit citrus tube, and the bead inside it is the module it runs. There is a version for dark backgrounds and one for light.',
+      onDark: 'On dark',
+      onLight: 'On light',
+      solid: 'Solid logo',
+      solidLead: 'The same outline in one color, for single-color print, watermarks, and photos or colored grounds.',
+      white: 'White',
+      black: 'Black',
+      citrusName: 'Citrus',
+      icon: 'App icon',
+      iconLead: '1024×1024 and full-bleed: the system rounds the corners. For app stores and home screens.',
+      banners: 'README banner',
+      bannersLead: '1600×500, exported at twice that resolution, for READMEs and article headers.',
+      social: 'Social preview',
+      socialLead: "1280×640, for a GitHub repository's social preview. The mark sits in the middle band, so it stays whole when a topic page crops the image.",
+      link: 'Link preview',
+      linkLead: "1200×630, the site's og:image.",
+      colors: 'Colors',
+      type: 'Typeface',
+      typeLead: 'The name, slogan and platforms are set in Figtree: the name at 600, the slogan at 400, the platforms at 300.',
+      name: 'Name',
+      nameLead: 'Write Native Shell in formal places and NSH elsewhere. Lowercase nsh is for code.',
+      dark: 'Dark',
+      light: 'Light',
+      citrus: 'Citrus, on dark',
+      olive: 'Olive, on light',
+      inkDark: 'Dark ground',
+      inkLight: 'Ink, on light',
+    };
+
+const banners = [
+  { name: 'nsh-banner-light.png', label: t.light, ratio: '1600 / 500' },
+  { name: 'nsh-banner-dark.png', label: t.dark, ratio: '1600 / 500' },
+];
+const socials = [
+  { name: 'nsh-social-preview-light.png', label: t.light, ratio: '1280 / 640' },
+  { name: 'nsh-social-preview-dark.png', label: t.dark, ratio: '1280 / 640' },
+];
+const swatches = [
+  { hex: '#a9d63f', label: t.citrus },
+  { hex: '#4a6d0a', label: t.olive },
+  { hex: '#0d1117', label: t.inkDark },
+  { hex: '#1f2328', label: t.inkLight },
+  { hex: '#e6edf3', label: isZh ? '深色背景上的文字' : 'Ink, on dark' },
+  { hex: '#f2f4f4', label: isZh ? '浅色背景' : 'Light ground' },
+];
+---
+
+<div class="brand">
+  <header class="brand__hero page-head">
+    <h1>{t.title}</h1>
+  </header>
+
+  <section>
+    <h2>{t.usage}</h2>
+    <p>{t.usageLead}</p>
+  </section>
+
+  <section>
+    <h2>{t.logo}</h2>
+    <p>{t.logoLead}</p>
+    <div class="brand__grid">
+      {[{ file: 'on-dark', label: t.onDark, cls: 'brand__tile--dark' }, { file: 'on-light', label: t.onLight, cls: 'brand__tile--light' }].map((logo) => (
+        <figure>
+          <div class:list={['brand__tile', logo.cls]}><img src={asset(`nsh-logo-${logo.file}.svg`)} alt={`Native Shell logo, ${logo.label}`} width="144" height="144" /></div>
+          <figcaption>
+            <span>{logo.label}</span>
+            <span class="brand__links">
+              <Button variant="outline" size="xs" href={asset(`nsh-logo-${logo.file}.svg`)} download>SVG</Button>
+              <Button variant="outline" size="xs" href={asset(`nsh-logo-${logo.file}.png`)} download>PNG</Button>
+            </span>
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  </section>
+
+  <section>
+    <h2>{t.solid}</h2>
+    <p>{t.solidLead}</p>
+    <div class="brand__grid">
+      {[{ file: 'solid-white', label: t.white, cls: 'brand__tile--dark' }, { file: 'solid-black', label: t.black, cls: 'brand__tile--light' }, { file: 'solid-citrus', label: t.citrusName, cls: 'brand__tile--dark' }].map((logo) => (
+        <figure>
+          <div class:list={['brand__tile', logo.cls]}><img src={asset(`nsh-logo-${logo.file}.svg`)} alt={`Native Shell solid logo, ${logo.label}`} width="144" height="144" /></div>
+          <figcaption>
+            <span>{logo.label}</span>
+            <span class="brand__links">
+              <Button variant="outline" size="xs" href={asset(`nsh-logo-${logo.file}.svg`)} download>SVG</Button>
+              <Button variant="outline" size="xs" href={asset(`nsh-logo-${logo.file}.png`)} download>PNG</Button>
+            </span>
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  </section>
+
+  <section>
+    <h2>{t.icon}</h2>
+    <p>{t.iconLead}</p>
+    <div class="brand__grid">
+      {[{ file: 'dark', label: t.dark, cls: 'brand__tile--light' }, { file: 'light', label: t.light, cls: 'brand__tile--dark' }].map((icon) => (
+        <figure>
+          <div class:list={['brand__tile', icon.cls]}><img class="brand__icon" src={asset(`nsh-app-icon-${icon.file}.png`)} alt={`Native Shell app icon, ${icon.label}`} width="144" height="144" /></div>
+          <figcaption>
+            <span>{icon.label}</span>
+            <span class="brand__links">
+              <Button variant="outline" size="xs" href={asset(`nsh-app-icon-${icon.file}.png`)} download>PNG</Button>
+            </span>
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  </section>
+
+  <section>
+    <h2>{t.banners}</h2>
+    <p>{t.bannersLead}</p>
+    <div class="brand__stack">
+      {banners.map((item) => (
+        <figure>
+          <img class="brand__image" src={asset(item.name)} alt={`Native Shell banner, ${item.label}`} style={{ aspectRatio: item.ratio }} loading="lazy" />
+          <figcaption><span>{item.label}</span><Button variant="outline" size="xs" href={asset(item.name)} download>PNG</Button></figcaption>
+        </figure>
+      ))}
+    </div>
+  </section>
+
+  <section>
+    <h2>{t.social}</h2>
+    <p>{t.socialLead}</p>
+    <div class="brand__grid">
+      {socials.map((item) => (
+        <figure>
+          <img class="brand__image" src={asset(item.name)} alt={`Native Shell social preview, ${item.label}`} style={{ aspectRatio: item.ratio }} loading="lazy" />
+          <figcaption><span>{item.label}</span><Button variant="outline" size="xs" href={asset(item.name)} download>PNG</Button></figcaption>
+        </figure>
+      ))}
+    </div>
+  </section>
+
+  <section>
+    <h2>{t.link}</h2>
+    <p>{t.linkLead}</p>
+    <figure class="brand__single">
+      <img class="brand__image" src={url('og-image.png')} alt="Native Shell link preview" style={{ aspectRatio: '1200 / 630' }} loading="lazy" />
+      <figcaption><span>og-image.png</span><Button variant="outline" size="xs" href={url('og-image.png')} download>PNG</Button></figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>{t.colors}</h2>
+    <ul class="brand__swatches">
+      {swatches.map((swatch) => (
+        <li><span class="brand__chip" style={{ background: swatch.hex }}></span><code>{swatch.hex}</code><span>{swatch.label}</span></li>
+      ))}
+    </ul>
+  </section>
+
+  <section class="brand__notes">
+    <div>
+      <h2>{t.type}</h2>
+      <p>{t.typeLead}</p>
+      <p><a href="https://fonts.google.com/specimen/Figtree" target="_blank" rel="noopener noreferrer">Figtree</a></p>
+    </div>
+    <div>
+      <h2>{t.name}</h2>
+      <p>{t.nameLead}</p>
+    </div>
+  </section>
+</div>
+
+<style>
+  .brand {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 3rem clamp(1rem, 3vw, 2.5rem) 4rem;
+    color: var(--foreground);
+  }
+
+  .brand__hero { max-width: 46rem; margin-bottom: clamp(2.5rem, 5vw, 3.5rem); }
+
+
+  :global(html[lang^='zh']) .brand__hero h1 { letter-spacing: normal; }
+
+  .brand p { color: var(--muted-foreground); line-height: 1.7; }
+  .brand a:not([data-slot]) { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
+
+  .brand section { border-top: 1px solid var(--border); padding-block: 2rem 2.5rem; }
+  .brand h2 { font-size: 1.35rem; font-weight: 620; letter-spacing: -0.02em; }
+  .brand section > p { margin-top: 0.5rem; max-width: 46rem; }
+
+  .brand__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1.25rem; margin-top: 1.5rem; }
+  .brand__stack { display: grid; gap: 1.25rem; margin-top: 1.5rem; }
+  .brand__single { margin-top: 1.5rem; max-width: 40rem; }
+
+  .brand figure { margin: 0; min-width: 0; }
+
+  .brand figcaption {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.6rem;
+    color: var(--muted-foreground);
+    font-size: 0.875rem;
+  }
+
+  .brand__links { display: flex; gap: 0.4rem; }
+
+  .brand__tile {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+
+  .brand__tile img { width: clamp(6rem, 30%, 9rem); height: auto; }
+  .brand__tile img.brand__icon { border-radius: 22.37%; }
+  .brand__tile--dark { background: #0d1117; }
+  .brand__tile--light { background: #f2f4f4; }
+
+  .brand__image { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 12px; }
+
+  .brand__swatches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+    gap: 1rem;
+    margin: 1.25rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .brand__swatches li { display: grid; gap: 0.25rem; color: var(--muted-foreground); font-size: 0.875rem; }
+  .brand__swatches code { color: var(--foreground); font: 0.8rem var(--font-mono); }
+  .brand__chip { display: block; height: 4rem; margin-bottom: 0.35rem; border: 1px solid var(--border); border-radius: 10px; }
+
+  .brand__notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 2rem; }
+  .brand__notes p { margin-top: 0.5rem; }
+</style>

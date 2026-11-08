@@ -90,3 +90,65 @@ pub(crate) fn focused_text(window: &gtk::Window) -> Option<gtk::Widget> {
         focus = focus.parent()?;
     }
 }
+
+/// Types `text` into the focused field at its caret, as a keyboard's
+/// characters come in (the field's checks see each insertion).
+pub(crate) fn type_text(window: &gtk::Window, text: &str) {
+    match focused_text(window) {
+        Some(w) => {
+            if let Some(t) = w.downcast_ref::<gtk::Text>() {
+                let mut pos = t.position();
+                t.insert_text(text, &mut pos);
+                t.set_position(pos);
+            } else if let Some(v) = w.downcast_ref::<gtk::TextView>() {
+                v.buffer().insert_interactive_at_cursor(text, true);
+            }
+        }
+        None => log::warn!("test: no focused text field to type into"),
+    }
+}
+
+/// Selects all the focused field's text.
+pub(crate) fn select_all(window: &gtk::Window) {
+    match focused_text(window) {
+        Some(w) => {
+            if let Some(t) = w.downcast_ref::<gtk::Text>() {
+                t.select_region(0, -1);
+            } else if let Some(v) = w.downcast_ref::<gtk::TextView>() {
+                let b = v.buffer();
+                b.select_range(&b.start_iter(), &b.end_iter());
+            }
+        }
+        None => log::warn!("test: no focused text field to select in"),
+    }
+}
+
+/// Return in the focused field: a line submits (`activate`), an area
+/// starts a new line.
+pub(crate) fn enter(window: &gtk::Window) {
+    match focused_text(window) {
+        Some(w) => {
+            if let Some(t) = w.downcast_ref::<gtk::Text>() {
+                t.emit_by_name::<()>("activate", &[]);
+            } else if let Some(v) = w.downcast_ref::<gtk::TextView>() {
+                v.buffer().insert_interactive_at_cursor("\n", true);
+            }
+        }
+        None => log::warn!("test: no focused text field to press Return in"),
+    }
+}
+
+/// Backspace in the focused field: deletes the selection or the character
+/// before the caret.
+pub(crate) fn backspace(window: &gtk::Window) {
+    match focused_text(window) {
+        Some(w) => {
+            if let Some(t) = w.downcast_ref::<gtk::Text>() {
+                t.emit_by_name::<()>("backspace", &[]);
+            } else if let Some(v) = w.downcast_ref::<gtk::TextView>() {
+                v.emit_by_name::<()>("backspace", &[]);
+            }
+        }
+        None => log::warn!("test: no focused text field to press Backspace in"),
+    }
+}

@@ -4,11 +4,15 @@ tap id:case-events-context-menu
 expect Menu: none
 listens id:menu onContextMenu
 # The secondary button over the view, with Shift and Command held.
-event id:menu onContextMenu position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true
-expect Menu: at 5,7 page 25,71 meta shift
+event id:menu onContextMenu position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true pointerType=mouse
+expect Menu: at 5,7 page 25,71 meta shift by mouse
 # Over the view inside it, which does not listen: the view around it hears it.
-event id:inner onContextMenu position.x=30 position.y=12 modifiers.alt=true modifiers.control=true
-expect Menu: at 30,12 page 50,76 alt ctrl
+event id:inner onContextMenu position.x=30 position.y=12 modifiers.alt=true modifiers.control=true pointerType=mouse
+expect Menu: at 30,12 page 50,76 alt ctrl by mouse
+# The keyboard (Shift+F10, the Menu key) or a screen reader: no pointer, at
+# the view's bottom-start corner.
+event id:menu onContextMenu position.x=0 position.y=60 pointerType=null
+expect Menu: at 0,60 page 20,124 by keyboard
 covers [events] onContextMenu
 # events-gestures
 tap id:case-events-gestures

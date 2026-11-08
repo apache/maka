@@ -1,4 +1,9 @@
 # What a user does and sees (compat/apps.rs): each case after its tap.
+# core-register-font
+tap id:case-core-register-font
+expect Registered: Pacifico, true
+expect No font: refused, true
+covers [nsh] registerFont
 # core-theme
 tap id:case-core-theme
 expect Family: Pacifico

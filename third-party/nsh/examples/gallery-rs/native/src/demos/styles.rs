@@ -230,6 +230,7 @@ fn FlipCard() -> impl IntoElement {
                 damping: 16.0,
                 mass: 1.0,
                 velocity: None,
+                frame_rate: None,
             },
         );
     };
@@ -459,7 +460,7 @@ fn shadows() -> Card {
                     None,
                     some("Two radii and a shadow"),
                     None,
-                    image("https://picsum.photos/seed/nsh/300/220")
+                    image("https://pbs.twimg.com/media/HS8AFH2WsAASxLk?format=jpg&name=small")
                         .w(px(112.0))
                         .h(px(76.0))
                         .rounded_tl(px(28.0))

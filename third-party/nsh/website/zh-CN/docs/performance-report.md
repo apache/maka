@@ -80,21 +80,119 @@ gallery 的每个页面，分别在刚打开时和测试滚动它时测量，窗
 
 ### 内存
 
-启动 3 秒后的静止内存（release 运行器，480 × 640 窗口）。*私有内存*是只属于这个进程的内存（USS）；*常驻内存*还包含共享库的页面
-（GTK、GPU 驱动），这些页面由机器上所有 GTK 应用共享：
+窗口调整到 480 × 640 点之后第 8 秒的静止内存：release 构建，在下面调查所用的机器上测量（Intel i7-13700KF、
+NVIDIA RTX 3060 Ti、GTK 4.24.1、Wayland 1.6×），三个应用在同一批次里依次运行，单位 **MiB**。*私有脏页*（Private dirty）是进程
+写过且独占的内存，最接近 macOS 的 footprint 和 Windows 的私有工作集；*USS* 再加上私有的干净页，主要是可执行文件自己的代码
+（Rust 应用约 16 MiB，带 QuickJS 的 TSX 应用约 20 MiB）；*PSS* 再加上按进程分摊的共享库页面；*RSS* 把共享库页面全部计入，
+大部分是每个 GTK 应用都会映射的 GTK 和 GPU 驱动：
 
 <div class="data-table">
 
-| 应用 | 渲染器 | 私有内存（USS） | 常驻内存（RSS） |
-|---|---|---|---|
-| Rust 应用（`nsh init --template rust`） | GL（`ngl`） | ~49 MB | ~142 MB |
-| Rust 应用 | Cairo（`GSK_RENDERER=cairo`） | ~28 MB | ~95 MB |
-| TSX 计数器（`examples/counter`） | GL | ~79 MB | ~166 MB |
-| 只有一个 label 的 GTK 4 窗口，作为参照 | Vulkan / Cairo | ~62 / ~40 MB | ~132 / ~109 MB |
+| 应用 | 渲染器 | 私有脏页 | USS | PSS | RSS | 比 GTK 窗口多 |
+|---|---|---|---|---|---|---|
+| 只有一个 label 的 GTK 4 窗口，作为参照 | GL（`ngl`） | 36.7 | 37.0 | 48.8 | 129.4 | |
+| Rust 应用（`nsh init --template rust`） | GL | 41.6 | 57.4 | 69.2 | 150.3 | +4.9 |
+| TSX 应用（`nsh init --template ts`） | GL | 45.4 | 65.9 | 78.6 | 162.9 | +8.7 |
+| 只有一个 label 的 GTK 4 窗口 | Cairo（`GSK_RENDERER=cairo`） | 15.2 | 15.3 | 24.7 | 81.8 | |
+| Rust 应用 | Cairo | 19.1 | 34.4 | 43.9 | 101.5 | +3.9 |
+| TSX 应用 | Cairo | 24.3 | 44.2 | 54.5 | 115.4 | +9.1 |
 
 </div>
 
-再次访问同一页面不会增加内存；第一次访问某个页面时，进程增长的是它有意保留的缓存（解码后的图片，上限 128 MB）以及首次使用时加载的库（网页视图用的 WebKitGTK）。
+*比 GTK 窗口多*按私有脏页比较：NSH 在一个裸 GTK 窗口之上增加的内存，即引擎、布局、渲染器和模块，TSX 应用还有 QuickJS 和应用代码；
+其余都属于 GTK 和驱动。使用 GL 时，GTK 窗口和 Rust 应用各有一次启动多占约 60 MiB（私有脏页 99.4 和 98.6 MiB）；
+裸 GTK 窗口同样如此，因此这部分来自驱动，表中给出的是另一次启动。样本见[原始记录](https://github.com/longbridge/nsh/blob/main/docs/benchmarks/linux-memory-baseline-2026-11-05.json)。
+
+#### Linux 启动内存调查（2026-11-05）
+
+在版本 `e4cc287dd` 上单独测量：Intel i7-13700KF、31 GiB 内存、NVIDIA RTX 3060 Ti GDDR6X
+（驱动 615.78.08）、GTK 4.24.1、Hyprland/Wayland，显示缩放 1.6×。本节单位为 **MiB**（1,048,576 字节）。
+每行是两个独立进程在窗口浮动并调整至 480 × 640 点之后第 8 秒的范围，记录同时保留第 3 秒的数据。
+两次启动之间保留文件系统和驱动缓存。release 运行器使用工作区的 fat LTO 和单个 codegen unit，测量仅统计应用进程。
+最小 TSX 只挂载一个 `Text`；TSX 模板由 `nsh init --template ts` 生成；gallery 使用专用应用 id 和全新存储，
+启动至手机布局的索引页。三个应用均运行 `--release` 构建的字节码包。
+
+| 应用 / 渲染器 | RSS (MiB) | PSS (MiB) | USS (MiB) |
+|---|---|---|---|
+| GTK 标签 / GL | 129.2–129.4 | 48.8–49.1 | 37.0–37.2 |
+| GTK 标签 / Cairo | 81.5–81.5 | 24.7–24.7 | 15.3–15.3 |
+| 最小 TSX / GL | 161.8–162.1 | 78.2–78.5 | 65.5–65.8 |
+| 最小 TSX / Cairo | 114.2–114.9 | 54.1–54.6 | 43.7–44.2 |
+| TSX 模板 / GL | 164.4–164.5 | 80.4–80.5 | 67.6–67.7 |
+| TSX 模板 / Cairo | 115.6–115.9 | 54.9–55.4 | 44.4–44.9 |
+| Gallery 索引页 / GL | 256.5–257.4 | 162.9–163.9 | 147.3–148.3 |
+| Gallery 索引页 / Cairo | 207.4–207.8 | 141.6–141.9 | 128.7–129.0 |
+
+RSS 统计驻留页面；PSS 按实际共享进程数量分摊共享页；USS 是 `Private_Clean` 与 `Private_Dirty` 之和。
+macOS footprint 和 Windows 私有工作集各有系统自己的计费规则，比较时需保留各自口径。
+本节覆盖运行器进程，GPU 专有分配、合成器和 WebKit 子进程单独计量；驻留快照与启动峰值也属于不同指标。
+
+#### 更小的运行器配置
+
+仅启用 JS 的运行器以 `--no-default-features --features js` 构建，保留基础 UI 和 QuickJS。
+完整运行器可选的 shader、editor、highlight、math、plot、rich-editor、zlib、crypto 和 WebView
+采用各自关闭 feature 时的行为，适用于导入和行为符合该功能集的应用。完整 gallery 覆盖这些可选功能，使用完整运行器。
+
+| 配置 | RSS (MiB) | PSS (MiB) | USS (MiB) |
+|---|---|---|---|
+| 最小 TSX，仅 JS / GL | 145.7–211.4 | 65.4–124.2 | 53.5–110.8 |
+| 最小 TSX，仅 JS / Cairo | 96.9–97.2 | 40.1–40.1 | 30.6–30.6 |
+| TSX 模板，仅 JS / Cairo | 97.6–97.6 | 40.2–40.3 | 30.6–30.8 |
+| 最小 TSX，仅 JS / Cairo + GDK_DISABLE | 96.8–97.3 | 39.4–39.8 | 30.2–30.7 |
+
+使用完整运行器时，Cairo 将最小应用的 RSS 从约 162 MiB 降至 114 MiB；仅启用 JS 的 Cairo 运行器约为
+97 MiB RSS、31 MiB USS。这些配置的 RSS 均超过 **50 MB**（50,000,000 字节，47.7 MiB）；
+USS 单独列出，以保持 RSS 目标的含义。Cairo 的内存数据来自静态页面，CPU 和帧耗时的权衡需用前面的动画、滚动场景测量。
+在这台机器上，为仅启用 JS 的 Cairo 应用设置 `GDK_DISABLE=gl,vulkan,dmabuf` 基本没有额外收益。
+GTK 将这些环境变量定义为调试控制项（[GTK 环境变量](https://docs.gtk.org/gtk4/running.html)）。
+
+不同启动轮次之间有明显波动：完整最小应用在未设置 `GSK_RENDERER` 时为 164–229 MiB RSS；仅启用 JS、显式 GL 时为
+146–211 MiB。不同轮次的高低值在第 8 秒仍然存在，原始记录保留整个范围，最低值代表一次实测而非保证值。
+1200 × 800 窗口下，完整 gallery 的桌面布局打开初始的 Text 示例，约为 307–337 MiB RSS、189–219 MiB USS。
+每次比较都需记录窗口大小和实际挂载的页面。
+
+#### 实验说明了什么
+
+- 渲染器和运行器功能集能够降低实测起步成本。可执行文件体积与驻留内存分别计量，内存收益以上面的进程测量为依据。
+- gallery 整包约含 1.3 MiB 字节码和 4 MiB source map。拆包得到约 77 KiB 入口与 53 个 chunk，
+  但 Linux release runner 加载共享模块 `ui.js` 时失败，所有拆包读数均被排除。有效的原生拆包方案需要提供静态 chunk、
+  加载动态 chunk，并通过页面导航测试，再测量完整应用的内存收益。
+- 引擎启动时读取相邻的 `bundle.js.map`（`Bundle::read_trusted`），按需符号化是一个优化方向。
+  去掉 map 的探索性实验改变了 gallery 恢复的页面或启动覆盖值，因此这些结果被排除，当前实验没有确立其可重复的节省量。
+- 图片解码成本同样属于框架与应用管线。图片密集页面需比较源尺寸、目标像素尺寸、缓存项及 CPU/GPU 副本。
+  图片预算是上限而非预分配；桌面默认取内存的 1/16，最多 256 MiB，屏幕上视图持有租约的缓存项会保留。
+
+#### 复现
+
+在交互式 Linux 桌面运行，构建和测量文件放在工作区 `target/`，测试临时文件放在工作区以外。
+同时记录 GPU/驱动、GTK 版本、窗口大小、缩放、外观、应用 id 和页面。下面的 `--size` 使用 Hyprland 的 Lua dispatchers；
+其他合成器需自行固定窗口大小并省略这个参数。为基准测试的 gallery 副本在 `app.json` 设置新的专用 id，
+让测试的页面恢复记录与日常使用分别保存。
+
+```sh
+mkdir -p target/agents/memory "$HOME/.cache/nsh-test-tmp"
+export TMPDIR="$HOME/.cache/nsh-test-tmp"
+cargo build --release -p nsh-cli -p nsh-linux-app
+cp target/release/nsh-linux-app target/agents/memory/runner-full
+
+target/release/nsh init target/agents/memory/hello --template ts
+target/release/nsh build target/agents/memory/hello --release --out target/agents/memory/hello-bundle
+target/release/nsh build examples/gallery --release --out target/agents/memory/gallery-bundle
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/hello-bundle --out target/agents/memory/hello.json --size 480x640 -- target/agents/memory/runner-full
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/gallery-bundle --out target/agents/memory/gallery.json --size 480x640 -- target/agents/memory/runner-full
+
+cargo build --release -p nsh-linux-app --no-default-features --features js
+cp target/release/nsh-linux-app target/agents/memory/runner-lean
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/hello-bundle --out target/agents/memory/hello-lean.json --size 480x640 -- target/agents/memory/runner-lean
+
+cc -O2 examples/gallery/tools/memory-gtk.c -o target/agents/memory/gtk $(pkg-config --cflags --libs gtk4)
+python3 examples/gallery/tools/memory.py --out target/agents/memory/gtk.json --size 480x640 -- target/agents/memory/gtk
+```
+
+脚本默认每个渲染器启动三个进程，在第 3、10 秒采样；本次调查使用 `--repeats 2 --seconds 3,8`。
+输出包括总量、各映射的驻留量与窗口信息，进程提前退出或记录 JS 启动错误时会失败。
+[测量记录](https://github.com/longbridge/nsh/blob/main/docs/benchmarks/linux-memory-2026-11-05.json) 保留各次采样、部分文件映射及被排除的实验。
+
 
 ### 应用体积
 

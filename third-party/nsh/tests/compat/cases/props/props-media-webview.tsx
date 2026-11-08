@@ -2,8 +2,8 @@
 // view loads and how, as the platform receives it on iOS: a URL, then a
 // page of HTML with its base URL, the scripts injected before and after
 // each page's own, scripts turned off, the user agent, scrolling turned
-// off and the swipes back and forward. Its script
-// checks each.
+// off, the swipes back and forward and website data kept only as long as
+// the web view (`incognito`). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { WebView } from "nsh";
 
@@ -24,6 +24,7 @@ function App() {
         javaScriptEnabled={false}
         userAgent="CompatAgent/1"
         scrollable={false}
+        incognito
         ios={{ allowsBackForwardNavigationGestures: true }}
         style={{ width: 200, height: 120 }}
       />

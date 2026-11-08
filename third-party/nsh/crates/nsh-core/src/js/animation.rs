@@ -160,8 +160,9 @@ pub fn keyframe_list<I: HostInput>(input: &I) -> Vec<Keyframe> {
         .collect()
 }
 
-/// How keyframes play: `{ duration, delay, easing, iterations, direction
-/// }` (CSS's defaults: 300 ms, `ease`, once, `normal`).
+/// How keyframes play: `{ duration, delay, easing, iterations, direction,
+/// frameRate }` (CSS's defaults: 300 ms, `ease`, once, `normal`; no rate:
+/// the screen's highest).
 pub fn keyframe_timing<I: HostInput>(input: &I) -> KeyframeTiming {
     let number = |key| {
         input
@@ -193,6 +194,7 @@ pub fn keyframe_timing<I: HostInput>(input: &I) -> KeyframeTiming {
             .and_then(|d| d.as_string())
             .and_then(|d| PlaybackDirection::parse(&d))
             .unwrap_or_default(),
+        frame_rate: crate::style::frame_rate(number("frameRate")),
     }
 }
 

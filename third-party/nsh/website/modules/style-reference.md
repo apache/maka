@@ -361,7 +361,7 @@ const angle = createAnimatedValue(0);
 |---|---|---|---|
 | `filter` | `string` | `.blur(r)`, `.brightness(…)`, `.contrast(…)`, `.grayscale(…)`, `.hue_rotate(…)`, `.invert(…)`, `.saturate(…)`, `.sepia(…)` | CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()`. |
 | `backdropFilter` | `string` | `.backdrop_blur(r)`, `.backdrop_brightness(…)`, ... | CSS filters of what is behind the view, such as `"blur(10px)"` for frosted glass. |
-| `maskImage` | `string` | | A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included. |
+| `maskImage` | `string` | | A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included, whose blur then draws without the system material's tint. Not drawn on Windows and GPUI. |
 | `glassEffect` | `"none" \| "regular" \| "clear"` | `.glass_effect(GlassEffect::Regular)` | Liquid Glass behind the view's content on iOS 26 and macOS 26 and later. `"regular"` uses the standard material; `"clear"` takes less color from the background. `"none"` is the default. Pair with `backdropFilter` for the blur shown on earlier iOS versions and other platforms. |
 | `mixBlendMode` | `"normal" \| "multiply" \| "screen" \| "overlay" \| "darken" \| "lighten" \| "color-dodge" \| "color-burn" \| "hard-light" \| "soft-light" \| "difference" \| "exclusion" \| "hue" \| "saturation" \| "color" \| "luminosity" \| "plus-darker" \| "plus-lighter"` | `.mix_blend_mode(mode)` | How the view blends with what is behind it. |
 
@@ -410,6 +410,7 @@ Built-in keyframe animations, run natively (Tailwind's `animate-*`).
 | `animationDelay` | `number \| "${number}ms" \| "${number}s"` | `.animation(KeyframeAnimation { … })` | Delay before the first iteration. |
 | `animationTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)"` | `.animation(KeyframeAnimation { … })` | The easing curve. |
 | `animationIterationCount` | `number \| "infinite"` | `.animation(KeyframeAnimation { … })` | How many times it runs. |
+| `animationFrameRate` | `number` | `.animation(KeyframeAnimation { … })` | The highest frame rate it needs, in Hz (default: the screen's highest); macOS and iOS lower the screen's rate for it. |
 
 For animations driven by values, gestures or springs, use [`nsh`'s animation API](./nsh.md#animation) instead.
 

@@ -42,3 +42,12 @@ declarations of `__SPECIFIER__` into `.nsh/types`. Register more with `registry.
 
 NSH-generated files stay in `.nsh/`: runner sources in `.nsh/rust/` and default packages in `.nsh/out/`.
 Cargo keeps its normal `target/` directory and respects your existing `CARGO_TARGET_DIR`.
+
+We recommend building with [huacnlee/cargo](https://github.com/huacnlee/cargo), the Cargo NSH is developed with: a
+drop-in fork that builds each dependency once for all your projects and Git worktrees and keeps its build directory
+under a size limit on its own, with nothing to configure. It builds under `~/.cargo/targets/` and still puts the
+binaries in `target/`; it replaces `~/.cargo/bin/cargo`, and its README says how to put rustup's back.
+
+```sh
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows: irm https://huacnlee.github.io/cargo/install.ps1 | iex
+```

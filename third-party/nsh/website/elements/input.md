@@ -50,6 +50,8 @@ function NameField() {
 }
 ```
 
+With no width from its style or its parent, an input is as wide as twenty digits in its font, as an HTML `<input>` is: what it holds does not change its width.
+
 ## Controlled and uncontrolled
 
 - **Controlled**: pass `value` and update it in `onChange`. The app can rewrite what the user typed (trim it, format
@@ -75,48 +77,12 @@ view styles apply):
 | `defaultValue` | `.default_value(..)` | `string` | | The initial text. |
 | `placeholder` | `.placeholder(..)` | `string` | | Shown while the input is empty. |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
-| `tokens` | `.tokens(..)` | `InputTokenRule[]` | `[]` | Native styled and optionally atomic source ranges (GPUI and terminal backends). |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | A multiline input's scroll bar: the platform's indicator, or the app's built-in bar once it set one ([Scrollbar](./scrollbar.md#built-in-bars)); an object is a theme of its own, `false` none. |
 | `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `masked` | `.masked(..)` | `boolean` | `false` | The text is hidden (passwords). |
 | `allowFontScaling` | | `boolean` | `true` | Follow the system text size. |
 | `maxFontSizeMultiplier` | | `number` | `0` | The upper bound of the system scale (0 is none). |
-
-### Styled and atomic tokens
-
-The GPUI and terminal editors match `tokens` against their current committed
-plain text. A rule uses Rust regular-expression syntax and must have a named
-`token` capture; context outside that capture is neither styled nor selected
-with the token. The earliest source match wins when rules overlap; declaration
-order breaks ties. Empty captures and captures that split a grapheme are ignored.
-No replacement label or hidden
-text is introduced: copying, `value`, and `onChange` retain the original text.
-
-```tsx
-<Input
-  multiline
-  tokens={[{
-    pattern: String.raw`(?:^|\s)(?P<token>#[A-Za-z0-9_-]+)`,
-    atomic: true,
-    style: { color: "#8ab8f8", backgroundColor: "#8ab8f820", borderRadius: 4 },
-  }]}
-/>
-```
-
-`atomic` defaults to `false`. Confirmed atomic tokens have caret stops only at
-their edges; partial selections and replacements expand to the whole token.
-Backspace, Delete and Cut use the same native boundaries. A token currently
-being typed remains editable until a delimiter, an explicit replacement or
-paste, or moving the caret outside it confirms the token. Removing a trailing
-delimiter does not reopen a confirmed token. Undo restores text, selection and
-the unfinished token together; replaying the same controlled `value` preserves
-that native state.
-
-Token styles affect painting only. The Unicode renderer uses foreground and
-background colors; GPUI also draws the background radius. Masked inputs do not
-show token styles. IME preedit text remains the input method's editable text
-and is never matched or styled as a committed token.
 
 ### Keyboard
 
@@ -229,7 +195,6 @@ const height = signal(40);
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `setSelection(start, end?)` | `set_selection(start, end)` | Selects `start..end` (UTF-16 units); a caret when they are equal. |
-| `replaceRange({ start, end, text, expectedText, expectedSelection })` | `replace_range(range, text, expected_text, expected_selection)` | GPUI and terminal: replaces a UTF-16 range as one native undo step. Applies only to the focused editable input while its text and selection still match, no IME composition is active, and no newer native edit occurred. The caret moves after the literal replacement; multiline inputs preserve line breaks. |
 
 Moving focus to the next field on return:
 

@@ -41,7 +41,8 @@ trusted: every limit and check is enforced in Rust, never in JS.
   writing the system clipboard; the copy menu of selectable text is the user's own act and needs none), `picker`
   (`nsh`'s `Picker`: showing the system's picker, whose picked files reach the app; denied, a pick rejects), `speech`
   (`nsh`'s `Speech`: the microphone and the system's speech recognizer, whose transcript reaches the app; denied,
-  `Speech.start` throws), `host`
+  `Speech.start` throws), `audio` (`nsh`'s `Sound` and `AudioPlayer`: making sound; denied, `Sound.load` rejects and
+  `new AudioPlayer` throws; a remote source also needs `network`), `host`
   (`nsh`'s `host`: the embedding app's functions `host.call` may call, names or prefixes ending in `*`, `true` for all;
   names and grants are 1 to 128 of `[A-Za-z0-9_.:-]` without `..` (`access::valid_host_name`), and the core refuses
   the call of any other name before it reads the grants, since hosts may put names in paths or URLs;
@@ -49,11 +50,10 @@ trusted: every limit and check is enforced in Rust, never in JS.
   warns of an app importing `host` from `nsh` without it (`bundle.rs` `ungranted_host`); the host's events need none, the
   host sends them), `openUrl`
   (`openUrl` of `nsh`: `true`, or `{ "schemes": [...] }` for the schemes listed). `nsh`'s `Storage`
-  is no capability: an app's storage holds only its own data, and the host decides where it is kept. Everything not listed is denied and unknown keys
-  are build errors (`Capabilities::from_json`); a signed package's declaration is read with `from_json_lenient`, as a
-  newer signer may have written it: an unknown capability is not granted, an unknown key inside one drops that
+  is no capability: an app's storage holds only its own data, and the host decides where it is kept. Everything not listed is denied. `nsh.json`, bundles' `capabilities.json`, packages and embedders' grants are all
+  read with `from_json_lenient` (the bundler warns of what it dropped, `nsh_engine::parse_capabilities` logs it), as a newer NSH may have written them: an unknown capability is not granted, an unknown key inside one drops that
   capability or `http` grant (it may be a restriction), so unknown keys never widen access; an app without the key
-  retains unrestricted network, webview, status bar, clipboard, picker, speech and URL opening access. Process execution, filesystem access,
+  retains unrestricted network, webview, status bar, clipboard, picker, speech, audio and URL opening access. Process execution, filesystem access,
   trusted web view input and the host's functions always require explicit declarations, including standalone apps. The embedding app
   may grant less (`NshAppView.grantCapabilities` / `NshView.setGrantedCapabilities`, the same JSON): a request must be
   allowed by both (`Access`). The declaration travels with the bundle (`capabilities.json` next to it, written by
@@ -62,13 +62,13 @@ trusted: every limit and check is enforced in Rust, never in JS.
 - Enforced in Rust: `fetch` in the engine (`access.rs`; refused requests never reach the network, and redirects are
   followed by the engine with `follow_redirects` off for the platform, so every hop is checked — hops are issued on the
   engine thread when a hop's head arrives; a streamed request body is not sent again, so a 307 / 308 then fails); remote images, placeholders, canvas images, `Image.getSize` / `prefetch`, video sources, web view
-  sources, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, speech sessions and host calls in the core (`Core::check_prop`, the commit's commands and actions;
+  sources, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, speech sessions, sounds and players (`AudioAction::Open`) and host calls in the core (`Core::check_prop`, the commit's commands and actions;
   each refusal is logged once, target `js`, saying which key to add); top-level web view navigations on the platforms
   (`WKNavigationDelegate decidePolicyForNavigationAction` / `WebViewClient.shouldOverrideUrlLoading` → `Native.allowsWebview`).
 - What a refusal does: every call JS makes fails with `JsError::access_denied` (`ERR_ACCESS_DENIED`, `permission` the
   capability's key, `resource` what was asked for, `""` when the capability has none), which its promise rejects with.
   The modules check in the call, on the `System` the call gets, so the error is typed and nothing is queued:
-  `Clipboard`'s functions (`runtime/clipboard.rs`), `Picker.pickImages`, `Speech.start` (`runtime/speech.rs`; it throws), `openUrl` (`runtime/device.rs`,
+  `Clipboard`'s functions (`runtime/clipboard.rs`), `Picker.pickImages`, `Picker.pickFiles`, `Speech.start` (`runtime/speech.rs`; it throws), `Sound.load` / `new AudioPlayer` (`runtime/audio.rs`), `openUrl` (`runtime/device.rs`,
   `open_url::not_granted`) and `Image.getSize` / `prefetch` (`runtime/image.rs`, `resource` the URL). `host.call` is
   refused by the core (the commit's `Command::HostCall`) and by the SDK channel (`nsh-js` `host_channel.rs`) with
   `nsh_core::host_channel::not_granted`. A refused `fetch` rejects as every failed fetch, with a `TypeError`, which

@@ -25,7 +25,7 @@ use anyhow::Context as _;
 
 use crate::{
     android,
-    dist::{cargo, copy},
+    dist::{cargo, copy, remove},
     term::{self, run},
 };
 
@@ -37,7 +37,16 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     let out = root.join(out);
     // The playground: the browser runtime plus the TSX compiler, in its own
     // target directory: switching the feature would rebuild the
-    // other one every time.
+    // other one every time. huacnlee/cargo ignores `--target-dir` (its
+    // builds are kept apart by their features anyway) and puts the file in
+    // `target/`, where the embedded runtime below lands too: the file is
+    // taken from whichever of the two the build wrote, before that build
+    // replaces it.
+    let playground = [root.join("target/web-playground"), root.join("target")]
+        .map(|dir| dir.join(WASM).join("web/nsh_platform_web.wasm"));
+    for file in &playground {
+        remove(file)?;
+    }
     cargo(
         &[
             "build",
@@ -55,15 +64,13 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
         ],
         "nsh-playground.wasm",
     )?;
+    let built = playground
+        .iter()
+        .find(|file| file.exists())
+        .context("the playground's build wrote no nsh_platform_web.wasm")?;
+    copy(built, &out.join("nsh-playground.wasm"))?;
     cargo(&["build", "--release", "-p", "nsh-cli"], "nsh")?;
     fs::create_dir_all(out.join("demos"))?;
-    copy(
-        &root
-            .join("target/web-playground")
-            .join(WASM)
-            .join("web/nsh_platform_web.wasm"),
-        &out.join("nsh-playground.wasm"),
-    )?;
     let web = root.join("crates/nsh-platform-web/web");
     // The runtime `nsh package --target web` ships (`WebKind::Browser`), in
     // the same target directory and profile: packaging the gallery below

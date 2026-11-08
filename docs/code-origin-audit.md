@@ -54,6 +54,8 @@ The upstream MIT license is preserved in the root `LICENSE`. No upstream tests a
 - `website/src/assets/incubator.png`: Unmodified Apache Incubator trademark artwork from https://www.apache.org/logos/res/incubator/default.png.
 - `website/src/assets/social.en.png`: English website preview rendered by `website/scripts/social-preview.mjs`; includes the product mark and self-hosted OFL-1.1 fonts.
 - `website/src/assets/social.zh-CN.png`: Chinese website preview rendered by the same source and toolchain.
+- `third-party/nsh/crates/nsh-base/fonts/katex.pack.zst`: Zstandard-compressed KaTeX math fonts (`KaTeX_*.ttf`); source and revision are recorded in `third-party/nsh/upstream.json`, and the SIL OFL-1.1 license is preserved alongside it in `katex.LICENSE.txt`.
+- `third-party/nsh/crates/nsh-testing/tests/testing/fonts/Pacifico-Regular.woff2`: Unmodified Pacifico WOFF2 test font from the NSH source snapshot; its SIL OFL-1.1 notice is preserved in `examples/gallery/fonts/OFL.txt`.
 - `third-party/nsh/examples/gallery-rs/icon.png`: Unmodified NSH example application artwork; source and revision are recorded in `third-party/nsh/upstream.json`.
 - `third-party/nsh/examples/gallery-rs/native/assets/bounce.gif`: Unmodified NSH gallery animation fixture from the same source snapshot.
 - `third-party/nsh/examples/gallery-rs/native/assets/fonts/Pacifico-Regular.ttf`: Unmodified Pacifico example font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
@@ -63,14 +65,21 @@ The upstream MIT license is preserved in the root `LICENSE`. No upstream tests a
 - `third-party/nsh/examples/gallery/fonts/Pacifico-Regular.ttf`: Unmodified Pacifico example font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
 - `third-party/nsh/examples/gallery/icon.png`: Unmodified NSH example application artwork from the same source snapshot.
 - `third-party/nsh/examples/gallery/logo@2x.png`: Unmodified NSH gallery image fixture from the same source snapshot.
+- `third-party/nsh/examples/gallery/sounds/*.wav`: Unmodified NSH gallery sound fixtures from the same source snapshot; their MIT license is preserved alongside them in `LICENSE`.
 - `third-party/nsh/examples/gallery/spinner.webp`: Unmodified NSH gallery animation fixture from the same source snapshot.
-- `third-party/nsh/examples/terminal-workbench/assets/Pacifico-Regular.ttf`: Unmodified Pacifico example font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
-- `third-party/nsh/examples/terminal-workbench/assets/runtime.png`: Unmodified NSH terminal-workbench image fixture from the same source snapshot.
-- `third-party/nsh/tests/compat/cases/layout/fonts/Pacifico-Regular.ttf`: Unmodified Pacifico layout-test font; the snapshot preserves its SIL OFL-1.1 notice in `examples/gallery/fonts/OFL.txt`.
+- `third-party/nsh/examples/gallery/tests/fixtures/flag.png`: Unmodified NSH gallery image test fixture from the same source snapshot.
+- `third-party/nsh/tests/compat/cases/layout/fonts/Pacifico-Regular.ttf`: Unmodified Pacifico layout-test font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
+- `third-party/nsh/tests/compat/cases/layout/fonts/Pacifico-Regular.woff`: Unmodified Pacifico WOFF layout-test font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
+- `third-party/nsh/tests/compat/cases/layout/fonts/Pacifico-Regular.woff2`: Unmodified Pacifico WOFF2 layout-test font; its SIL OFL-1.1 notice is preserved alongside it in `OFL.txt`.
+- `third-party/nsh/tests/compat/cases/modules/sounds/click.wav`: Unmodified NSH audio compatibility fixture from the same source snapshot.
 - `third-party/nsh/tests/compat/cases/props/images/flag.png`: Unmodified NSH image-scale compatibility fixture from the same source snapshot.
 - `third-party/nsh/tests/compat/cases/props/images/flag@2x.png`: Unmodified NSH image-scale compatibility fixture from the same source snapshot.
 - `third-party/nsh/tests/compat/cases/props/images/flag@3x.png`: Unmodified NSH image-scale compatibility fixture from the same source snapshot.
+- `third-party/nsh/tests/compat/cases/web/images/flag.png`: Unmodified NSH web image compatibility fixture from the same source snapshot.
 - `third-party/nsh/website/public/apple-touch-icon.png`: Unmodified NSH website artwork from the same source snapshot.
+- `third-party/nsh/website/public/brand/*.png`: Unmodified NSH website brand artwork from the same source snapshot.
 - `third-party/nsh/website/public/icon-512.png`: Unmodified NSH website artwork from the same source snapshot.
+- `third-party/nsh/website/public/og-image.png`: Unmodified NSH website Open Graph preview artwork from the same source snapshot.
+- `third-party/nsh/website/public/sounds/*.wav`: Unmodified NSH website sound fixtures from the same source snapshot; their MIT license is preserved alongside them in `LICENSE`.
 
 - `products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf`: Unmodified IBM Plex Sans regression-test font copied from the pinned NSH snapshot’s `third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf`; its SIL OFL-1.1 license is preserved beside it in `OFL.txt`. The fixture is independent of the removed product renderer dependency.

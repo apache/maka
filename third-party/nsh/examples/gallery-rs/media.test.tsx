@@ -1,24 +1,14 @@
-// The Web and video and Photos demos: the buttons driving the video and
+// The WebView, Video and Photos demos: the buttons driving the video and
 // the web views, and a long list that loads more at its end.
 import { expect, open, test } from "nsh/test";
 
 test("the video's buttons play it, and the system's controls replace them", async () => {
   const app = await open(".", { clock: {} });
-  await app.press("label:Web and video");
+  await app.press("label:Video");
   for (const text of [
-    "Web view",
-    "Inline HTML, with messages both ways",
-    "From the page",
-    "To the page",
-    "A web site",
-    "Navigation state, back and forward",
-    "Loaded",
     "Video",
     "AVPlayer / MediaPlayer",
     "Paused",
-    "Post to the page",
-    "…",
-    "Reload",
     "Restart",
     "0:00",
     "Own controls",
@@ -37,7 +27,21 @@ test("the video's buttons play it, and the system's controls replace them", asyn
 
 test("a message posted to the page is shown as sent", async () => {
   const app = await open(".", { clock: {} });
-  await app.press("label:Web and video");
+  await app.press("label:WebView");
+  for (const text of [
+    "Web view",
+    "Inline HTML, with messages both ways",
+    "From the page",
+    "To the page",
+    "A web site",
+    "Navigation state, back and forward",
+    "Loaded",
+    "Post to the page",
+    "…",
+    "Reload",
+  ]) {
+    expect(app.texts()).toContain(text);
+  }
   await app.press("Post to the page");
   await app.waitFor("text:/^hi #/");
 });

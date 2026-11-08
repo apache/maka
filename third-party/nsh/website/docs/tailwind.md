@@ -207,7 +207,7 @@ With this theme, `bg-brand-500`, `text-brand` (the `DEFAULT` shade), `border-ink
 | `aspect` | A ratio (`1.5`) | `aspect-*` |
 | `ease` | `[x1, y1, x2, y2]` | `ease-*` |
 
-Unknown keys and invalid values are build errors (`nsh.json: tailwind: unknown theme key 'colours'`). The theme is compiled into the bundle and applied before the first frame.
+An entry NSH cannot read, an unknown key or a value of a form it does not know, is a warning and is left out alone (`nsh.json: tailwind: unknown key 'colours', ignored`), at run time too, so a theme written for a newer NSH keeps its other entries on an older one. The theme is compiled into the bundle and applied before the first frame.
 
 The Tailwind theme shapes your classes. Typed methods keep Tailwind's default scales, so a Rust component looks the same in every app, and take the app's look from the design tokens of its theme, `"theme"` in `nsh.json` ([Rust](./rust.md#theme)).
 
@@ -261,7 +261,8 @@ A token's name is its CSS variable's without `--`, as the theme file writes it: 
 - **Both appearances.** A token has the light and the dark value of the theme: `bg-primary`, `theme().primary` and `token("primary")` switch with the appearance by themselves, with no `dark:` class. A color the theme sets in one appearance only is used in both.
 - **Your Tailwind colors win.** A name in `"tailwind"` `colors` or Tailwind's palette is that color, so `bg-primary` is a theme token when the Tailwind theme has no color `primary`.
 - **The theme can change while the app runs.** When an app embedded in a native app is given that app's theme, and whenever the theme changes, the classes naming tokens, the Rust bindings reading `theme()` and the TSX code reading `token()` are updated, the classes and bindings natively. Tokens the embedding app's theme does not have keep the values of the app's own `"theme"` (then the default theme's). A host that only adds its brand gives theme overrides, the tokens its brand changes in the same file format ([iOS](./ios.md#theme-overrides), [Android](./android.md#theme-overrides), `AppView::set_theme_overrides` on the desktops).
-- **Checked like other classes.** A name that is no token of the default theme or of the app's `"theme"` is an unknown class when building (`unknown class 'bg-chart-up'`). To use a token only the embedding app provides, give it a value in the app's `"theme"` too: that value shows when the app runs on its own.
+- **The app can set another theme.** [`setTheme(theme)`](../modules/nsh.md#settheme) from `nsh` makes a theme in the same format the app's in place of its `"theme"`, while it runs, on every platform and in `nsh test`; `setTheme(null)` gives the app's own back. `token()` reads the new tokens at once. The theme is read whole: a value NSH cannot read throws a `TypeError` naming it, and the theme shown stays. Build it from the app's own theme file so every token the classes name keeps a value. A Rust app sets the tokens of an `nsh_base::Theme` with `set_tokens(theme.into())`.
+- **Checked like other classes.** A name that is no token of the default theme or of the app's `"theme"` is an unknown class when building (`unknown class 'bg-chart-up'`). To use a token only the embedding app or a theme set while the app runs provides, give it a value in the app's `"theme"` too: that value shows when the app runs on its own.
 
 Classes naming tokens are resolved once per theme, like any other class: drawing them costs what a palette color does.
 

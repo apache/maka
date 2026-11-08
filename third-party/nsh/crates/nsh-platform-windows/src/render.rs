@@ -33,7 +33,7 @@
 //! pushed again). Without a composition, `realize` is one test of an
 //! `Option`: the frame is the one swap chain, as before.
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::{
     BlendMode, Bounds, Color, Points, ViewKind,
@@ -1311,37 +1311,52 @@ impl Readback {
 }
 
 /// Draws the surface's window: the whole tree, then presents it.
-pub(crate) fn frame(surface: &Rc<Surface>) {
+///
+/// Returns true when the frame is deferred: the swap chain has no room for
+/// it yet (`SwapChain::ready`), the surface stays invalid and `WM_NSH_PAINT`
+/// comes when it has.
+pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
     // Shader views that came into sight render for the frames after it.
     crate::shader::reveal();
-    let Ok(gfx) = gfx::get() else { return };
+    let Ok(gfx) = gfx::get() else { return false };
     let hwnd = surface.hwnd();
     if hwnd.is_invalid() {
-        return;
+        return false;
     }
     let scale = surface.scale();
     let size = surface.pixel_size();
     if size.0 == 0 || size.1 == 0 {
-        return;
+        return false;
     }
     let mut swap = surface.swap.borrow_mut();
     if swap.as_ref().is_some_and(|s| s.stale()) {
         *swap = None;
     }
     if swap.is_none() {
-        match gfx::SwapChain::new(&gfx, hwnd, size) {
+        let base = surface.base.borrow().clone();
+        match gfx::SwapChain::new(&gfx, hwnd, size, base.as_deref()) {
             Ok(s) => *swap = Some(s),
             Err(err) => {
                 log::error!("cannot create the swap chain: {err}");
-                return;
+                return false;
             }
         }
     }
-    let Some(chain) = swap.as_mut() else { return };
+    let Some(chain) = swap.as_mut() else {
+        return false;
+    };
+    chain.set_background(crate::system::window_background(surface));
+    let resized = chain.size != (size.0.max(1), size.1.max(1));
     if let Err(err) = chain.resize(&gfx, size) {
         log::error!("cannot resize the swap chain: {err}");
         *swap = None;
-        return;
+        return false;
+    }
+    // A window that is resized draws now (never stretched pixels); the
+    // others wait until the compositor has room, so that no window's
+    // present holds the thread up for another's vblank. The damage stays.
+    if !resized && !chain.ready() {
+        return true;
     }
     if (surface.target_scale.get() - scale).abs() > f32::EPSILON {
         chain.drop_target();
@@ -1351,7 +1366,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
         Ok(t) => t,
         Err(err) => {
             log::error!("cannot get the back buffer: {err}");
-            return;
+            return false;
         }
     };
     // Only a window with web views has a composition: without one the
@@ -1366,7 +1381,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
     // All of it outside the window (an animation scrolled away): the window
     // already shows this frame, and drawing it whole would cost every frame.
     if changed.as_ref().is_some_and(Vec::is_empty) && chain.shows_a_frame() {
-        return;
+        return false;
     }
     let changed = changed.filter(|rects| !rects.is_empty());
     // What the back buffer, two presents old, needs drawn again, with
@@ -1397,6 +1412,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
         false,
         composition.as_deref(),
         areas.as_deref(),
+        None,
     );
     let painted = started.map(|s| s.elapsed());
     match drawn {
@@ -1407,14 +1423,14 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
                 log::warn!("present failed: {err}");
                 drop(swap);
                 device_lost(surface);
-                return;
+                return false;
             }
             let shown = std::time::Instant::now();
             if let Err(err) = chain.present(changed) {
                 log::warn!("present failed: {err}");
                 drop(swap);
                 device_lost(surface);
-                return;
+                return false;
             }
             if let (Some(fps), Some(painted)) = (&fps, painted) {
                 fps.painted(painted, shown.elapsed());
@@ -1434,6 +1450,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) {
             surface.invalidate();
         }
     }
+    false
 }
 
 /// The union of `rects` as one geometry.
@@ -1590,6 +1607,128 @@ struct Drawn {
     layers: Vec<usize>,
 }
 
+/// A window of the app's own as its frame draws it
+/// ([`crate::app_window`]).
+pub(crate) struct WindowFrame<'a> {
+    /// Its root view.
+    pub(crate) root: &'a NshView,
+    /// Its native window.
+    pub(crate) hwnd: windows::Win32::Foundation::HWND,
+    /// A see-through window's composition, its swap chain at the bottom.
+    pub(crate) base: Option<&'a Composition>,
+    /// The composition its web views are in (the base one, or one over
+    /// its own swap chain).
+    pub(crate) composition: Option<&'a Composition>,
+    /// Its swap chain, and the scale of the chain's target.
+    pub(crate) swap: &'a mut Option<gfx::SwapChain>,
+    pub(crate) target_scale: &'a std::cell::Cell<f32>,
+    /// Its client area in pixels, and its pixels per point.
+    pub(crate) size: (u32, u32),
+    pub(crate) scale: f32,
+    /// The hosted items and the composed items its last frame drew.
+    pub(crate) placed: &'a RefCell<Vec<(Rc<dyn Hosted>, RECT)>>,
+    pub(crate) composed: &'a RefCell<Vec<Rc<dyn Hosted>>>,
+}
+
+/// Draws a window of the app's own whole, then presents it: its web
+/// views between the layers of its composition, its hosted items' own
+/// windows placed where their views were drawn.
+///
+/// Returns true when the frame is deferred, as the main window's
+/// ([`frame`]).
+pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> bool {
+    let WindowFrame {
+        root,
+        hwnd,
+        base,
+        composition,
+        swap,
+        target_scale,
+        size,
+        scale,
+        placed,
+        composed,
+    } = frame;
+    let Ok(gfx) = gfx::get() else { return false };
+    if size.0 == 0 || size.1 == 0 {
+        return false;
+    }
+    if swap.as_ref().is_some_and(|s| s.stale()) {
+        *swap = None;
+    }
+    if swap.is_none() {
+        match gfx::SwapChain::new(&gfx, hwnd, size, base) {
+            Ok(s) => *swap = Some(s),
+            Err(err) => {
+                log::error!("cannot create a window's swap chain: {err}");
+                return false;
+            }
+        }
+    }
+    let Some(chain) = swap.as_mut() else {
+        return false;
+    };
+    // Its own background (its scheme, see-through or not).
+    chain.set_background(crate::app_window::background(surface, root.id()));
+    let resized = chain.size != (size.0.max(1), size.1.max(1));
+    if let Err(err) = chain.resize(&gfx, size) {
+        log::error!("cannot resize a window's swap chain: {err}");
+        *swap = None;
+        return false;
+    }
+    // As the main window's ([`frame`]): resized, it draws now; otherwise it
+    // waits until its swap chain has room.
+    if !resized && !chain.ready() {
+        return true;
+    }
+    if (target_scale.replace(scale) - scale).abs() > f32::EPSILON {
+        chain.drop_target();
+    }
+    let target = match chain.target(&gfx, scale) {
+        Ok(t) => t,
+        Err(err) => {
+            log::error!("cannot get a window's back buffer: {err}");
+            return false;
+        }
+    };
+    let window = Some((root, size));
+    match draw_into(
+        surface,
+        &gfx,
+        &target,
+        scale,
+        false,
+        composition,
+        None,
+        window,
+    ) {
+        Ok(drawn) => {
+            if let Some(c) = composition
+                && let Err(err) = c.present(drawn.layers.len())
+            {
+                log::warn!("present failed: {err}");
+                *swap = None;
+                device_lost(surface);
+                return false;
+            }
+            if let Err(err) = chain.present(None) {
+                log::warn!("present failed: {err}");
+                *swap = None;
+                device_lost(surface);
+                return false;
+            }
+            crate::surface::items_placed(placed, drawn.items, None);
+            crate::surface::composed_placed(composed, composition, drawn.composed, &drawn.layers);
+        }
+        Err(err) if err.code() == D2DERR_RECREATE_TARGET => {
+            *swap = None;
+            device_lost(surface);
+        }
+        Err(err) => log::error!("drawing a window failed: {err}"),
+    }
+    false
+}
+
 /// Draws the tree into `target` (its DPI set for `scale`), and into the
 /// layers of `composition` above its web views.
 #[allow(clippy::too_many_arguments)]
@@ -1601,9 +1740,22 @@ fn draw_into(
     offscreen: bool,
     composition: Option<&Composition>,
     areas: Option<&[D2D_RECT_F]>,
+    window: Option<(&NshView, (u32, u32))>,
 ) -> windows::core::Result<Drawn> {
+    let (window, pixels) = match window {
+        Some((root, pixels)) => (Some(root), pixels),
+        None => (None, surface.pixel_size()),
+    };
     let dc = &gfx.dc;
-    let background = color_f(crate::system::window_background(surface));
+    let background = color_f(match window {
+        Some(root) => crate::app_window::background(surface, root.id()),
+        None => crate::system::window_background(surface),
+    });
+    // The window drawn into, for its caption buttons.
+    let hwnd = match window {
+        Some(root) => crate::app_window::hwnd_of(surface, root.id()).unwrap_or_default(),
+        None => surface.hwnd(),
+    };
     // SAFETY: COM calls on the live context and target; `EndDraw` always
     // follows `BeginDraw`.
     unsafe {
@@ -1624,23 +1776,31 @@ fn draw_into(
         }
     };
     cx.offscreen = offscreen;
-    cx.records = !offscreen;
-    let (w, h) = surface.size();
+    // A window of the app's own draws its root alone; where its views were
+    // painted is not the main window's.
+    cx.records = !offscreen && window.is_none();
+    let (w, h) = match window {
+        Some(root) => {
+            let size = root.state().frame.size;
+            (size.width.0, size.height.0)
+        }
+        None => surface.size(),
+    };
     cx.window = Some(rect_f(0.0, 0.0, w, h));
     cx.split = composition.map(|composition| Split {
         composition,
-        size: surface.pixel_size(),
+        size: pixels,
         layers: Vec::new(),
         pending: false,
         error: None,
     });
-    let root = surface.root.clone();
+    let root = window.unwrap_or(&surface.root).clone();
     match areas {
         None => {
             draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
             // The caption buttons, last: in the topmost layer, above web
             // views.
-            crate::chrome::draw(surface, dc, scale);
+            crate::chrome::draw(surface, hwnd, dc, scale, w);
         }
         // A partial frame: each area cleared and drawn again, the rest of
         // the back buffer kept.
@@ -1666,7 +1826,7 @@ fn draw_into(
             unsafe { dc.Clear(Some(&background)) };
             cx.damage = Some(areas.to_vec());
             draw_view(&mut cx, &root, Mat4::new(), (0.0, 0.0));
-            crate::chrome::draw(surface, dc, scale);
+            crate::chrome::draw(surface, hwnd, dc, scale, w);
             cx.damage = None;
             cx.clip_skip = 0;
             cx.set_transform(Mat4::new());
@@ -1710,16 +1870,29 @@ pub(crate) struct Pixels {
 /// Draws the surface offscreen at `scale` and reads the pixels back,
 /// whatever covers the window.
 #[cfg_attr(not(feature = "dev"), allow(dead_code))]
-pub(crate) fn snapshot(surface: &Rc<Surface>, scale: f32) -> windows::core::Result<Pixels> {
+/// `window`: the root view of a window of the app's own to draw instead of
+/// the main window's.
+pub(crate) fn snapshot(
+    surface: &Rc<Surface>,
+    scale: f32,
+    window: Option<&NshView>,
+) -> windows::core::Result<Pixels> {
     let gfx = gfx::get()?;
-    let (w, h) = surface.size();
+    let (w, h) = match window {
+        Some(root) => {
+            let size = root.state().frame.size;
+            (size.width.0, size.height.0)
+        }
+        None => surface.size(),
+    };
     let px = (
         (w * scale).round().max(1.0) as u32,
         (h * scale).round().max(1.0) as u32,
     );
     let target = target_bitmap(&gfx.dc, px, scale)?;
     // Web views are not in it: their pages are composed by the system.
-    let drawn = draw_into(surface, &gfx, &target, scale, true, None, None)?;
+    let window = window.map(|root| (root, px));
+    let drawn = draw_into(surface, &gfx, &target, scale, true, None, None, window)?;
     drop(drawn);
     read_back(
         &gfx.dc,
@@ -1887,7 +2060,7 @@ mod tests {
         boxed(8, rect(0.0, 100.0, 240.0, 40.0), 0x88888888);
         let back = target(&gfx, size);
         let whole = |into: &ID2D1Bitmap1| {
-            draw_into(&surface, &gfx, into, 1.0, false, None, None).unwrap();
+            draw_into(&surface, &gfx, into, 1.0, false, None, None, None).unwrap();
         };
         whole(&back);
         assert!(surface.take_damage().is_none(), "the first frame is whole");
@@ -1916,7 +2089,7 @@ mod tests {
             .map(|r| (r.right - r.left) * (r.bottom - r.top))
             .sum();
         assert!(covered < (size.0 * size.1) as f32 * 0.6, "{areas:?}");
-        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas)).unwrap();
+        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas), None).unwrap();
 
         let fresh = target(&gfx, size);
         whole(&fresh);
