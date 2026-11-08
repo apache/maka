@@ -1600,6 +1600,17 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
         })
         .await;
     desktop.artifact("staged-image");
+    desktop.press(&format!("Open attachment {name}")).await;
+    desktop.control("Close full screen image").await;
+    desktop.key("escape", false);
+    desktop
+        .until("the staged image viewer did not close", || {
+            desktop
+                .controls("Close full screen image")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }
