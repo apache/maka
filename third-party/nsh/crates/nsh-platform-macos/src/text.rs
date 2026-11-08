@@ -1147,7 +1147,6 @@ pub(crate) fn set(
     content: nsh_core::Bounds<nsh_core::Points>,
 ) {
     let old = view.state_mut().text.take();
-    let was = old.as_ref().is_some_and(|o| o.text.is_selectable());
     // The area's selection is set again at the end of the batch; the same
     // content keeps its part until then.
     let area_range = old
@@ -1176,10 +1175,6 @@ pub(crate) fn set(
         selection,
         area_range: std::cell::Cell::new(area_range),
     });
-    if was != text.is_selectable() {
-        // The I-beam.
-        crate::input::style_changed(view);
-    }
     // The mounter draws it, when it shows.
     view.restyle();
 }
