@@ -31,8 +31,8 @@ use std::{
 };
 
 use nsh_core::{
-    Bounds, EventMask, Matrix, NodeId, PointerEvents, Points, ROOT_ID, ViewKind, ViewProps,
-    ViewStyle, animation::AnimValues,
+    Bounds, EventMask, Matrix, NodeId, Point, PointerEvents, Points, ROOT_ID, Size, ViewKind,
+    ViewProps, ViewStyle, animation::AnimValues,
 };
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -259,6 +259,37 @@ pub(crate) fn translation(x: f64, y: f64, z: f64) -> Matrix {
     let mut m = Matrix::IDENTITY;
     (m.0[12], m.0[13], m.0[14]) = (x, y, z);
     m
+}
+
+/// Where `(x, y)` of the plane lands under row-vector transform `m` (`None` behind the viewer).
+pub(crate) fn map_point(m: &Matrix, x: f32, y: f32) -> Option<(f32, f32)> {
+    let m = &m.0;
+    let (x, y) = (x as f64, y as f64);
+    let w = x * m[3] + y * m[7] + m[15];
+    if w <= 1e-6 {
+        return None;
+    }
+    Some((
+        ((x * m[0] + y * m[4] + m[12]) / w) as f32,
+        ((x * m[1] + y * m[5] + m[13]) / w) as f32,
+    ))
+}
+
+/// The axis-aligned bounds of `bounds` once mapped by `m`.
+pub(crate) fn map_bounds(m: &Matrix, bounds: Bounds<Points>) -> Option<Bounds<Points>> {
+    let (x, y) = (bounds.origin.x.0, bounds.origin.y.0);
+    let (w, h) = (bounds.size.width.0, bounds.size.height.0);
+    let mut min = (f32::MAX, f32::MAX);
+    let mut max = (f32::MIN, f32::MIN);
+    for (cx, cy) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+        let (px, py) = map_point(m, cx, cy)?;
+        min = (min.0.min(px), min.1.min(py));
+        max = (max.0.max(px), max.1.max(py));
+    }
+    Some(Bounds::new(
+        Point::new(Points(min.0), Points(min.1)),
+        Size::new(Points(max.0 - min.0), Points(max.1 - min.1)),
+    ))
 }
 
 /// `m` as a Core Animation matrix.
@@ -1018,6 +1049,18 @@ pub(crate) fn superview(view: &NSView) -> Option<Retained<NSView>> {
     unsafe { view.superview() }
 }
 
+/// The innermost `NshView` at or containing `view`.
+pub(crate) fn enclosing(view: &NSView) -> Option<NshView> {
+    let mut current = Some(Retained::from(view));
+    while let Some(ns) = current {
+        if let Some(nsh) = NshView::from_ns(&ns) {
+            return Some(nsh);
+        }
+        current = superview(&ns);
+    }
+    None
+}
+
 /// Makes `view` layer-backed with the policies every view of ours uses.
 fn setup(view: &NSView) {
     view.setWantsLayer(true);
@@ -1100,6 +1143,11 @@ impl NshView {
     /// [`NshView::moved`] afterwards.
     pub(crate) fn state_mut(&self) -> RefMut<'_, ViewState> {
         self.ivars().state.borrow_mut()
+    }
+
+    /// Its state, unless it is mutably borrowed.
+    pub(crate) fn try_state(&self) -> Option<Ref<'_, ViewState>> {
+        self.ivars().state.try_borrow().ok()
     }
 
     /// Its state, to change, unless it is borrowed.
@@ -1538,15 +1586,143 @@ impl NshView {
         }
     }
 
+    /// Whether this view itself is hidden (`NSView` hidden or `style.hidden`).
+    pub(crate) fn is_hidden(&self) -> bool {
+        self.ns().isHidden() || self.try_state().is_none_or(|s| s.style.hidden)
+    }
+
+    /// Whether this view is attached to a window with no hidden `NSView` or
+    /// `style.hidden` ancestor.
+    pub(crate) fn is_shown_in_tree(&self) -> bool {
+        let ns = self.ns();
+        if ns.window().is_none() || ns.isHiddenOrHasHiddenAncestor() {
+            return false;
+        }
+        let mut at = Some(self.clone());
+        while let Some(v) = at {
+            if v.try_state().is_none_or(|s| s.style.hidden) {
+                return false;
+            }
+            at = v.parent_view();
+        }
+        true
+    }
+
     /// Whether the pointer may target it (`pointerEvents` and visibility).
     pub(crate) fn can_target(&self) -> bool {
-        let s = self.state();
+        let Some(s) = self.try_state() else {
+            return false;
+        };
         !s.style.hidden
             && !matches!(s.props.pointer_events, PointerEvents::None)
             // Animating out (`LayoutAnimation`): already gone for input.
             && !s.live.as_ref().is_some_and(|l| l.dying())
             // A screen under the top one, a modal leaving.
             && !self.ns().isHidden()
+    }
+
+    /// Whether input and keyboard focus can reach `self` through its ancestors.
+    pub(crate) fn can_reach(&self) -> bool {
+        let ns = self.ns();
+        if ns.window().is_none() || ns.isHiddenOrHasHiddenAncestor() || !self.can_target() {
+            return false;
+        }
+        if self
+            .try_state()
+            .is_none_or(|s| s.props.pointer_events == PointerEvents::BoxNone)
+        {
+            return false;
+        }
+        let mut parent = self.parent_view();
+        while let Some(ancestor) = parent {
+            if !ancestor.can_target()
+                || ancestor
+                    .try_state()
+                    .is_none_or(|s| s.props.pointer_events == PointerEvents::BoxOnly)
+            {
+                return false;
+            }
+            parent = ancestor.parent_view();
+        }
+        true
+    }
+
+    fn local_to_parent(&self, parent: &NshView) -> Option<Matrix> {
+        let origin = self.ns().frame().origin;
+        let offset =
+            if superview(self.ns()).is_some_and(|sup| sup.downcast_ref::<Container>().is_some()) {
+                crate::scroll::bounds_origin(parent)
+            } else {
+                (0.0, 0.0)
+            };
+        let step = translation(origin.x - offset.0 as f64, origin.y - offset.1 as f64, 0.0);
+        let transform = self.try_state()?.transform();
+        Some(match transform {
+            Some(t) => t.mul(&step),
+            None => step,
+        })
+    }
+
+    /// Transform from this view's coordinates to `root`'s (points).
+    pub(crate) fn to_root(&self, root: &NshView) -> Option<Matrix> {
+        let mut m = Matrix::IDENTITY;
+        let mut view = self.clone();
+        while view != *root {
+            let parent = view.parent_view()?;
+            let local = view.local_to_parent(&parent)?;
+            m = m.mul(&local);
+            view = parent;
+        }
+        Some(m)
+    }
+
+    /// The axis-aligned box of this view (in its own coordinates) left in sight
+    /// by clipping ancestors below the surface root.
+    pub(crate) fn visible_bounds(&self) -> Bounds<Points> {
+        let size = self.ns().bounds().size;
+        let (w, h) = (size.width as f32, size.height as f32);
+        let full = Bounds::new(Point::default(), Size::new(Points(w), Points(h)));
+        let (mut left, mut top) = (0.0f32, 0.0f32);
+        let (mut right, mut bottom) = (w, h);
+        let mut m = Matrix::IDENTITY;
+        let mut view = self.clone();
+        while let Some(parent) = view.parent_view() {
+            let Some(local) = view.local_to_parent(&parent) else {
+                return full;
+            };
+            m = m.mul(&local);
+            let clip = parent.try_state().and_then(|p| {
+                (p.id != ROOT_ID && p.clips()).then(|| {
+                    let ps = parent.ns().bounds().size;
+                    (ps.width as f32, ps.height as f32)
+                })
+            });
+            if let Some((cw, ch)) = clip {
+                let mut min = (f32::MAX, f32::MAX);
+                let mut max = (f32::MIN, f32::MIN);
+                for (cx, cy) in [(0.0, 0.0), (cw, 0.0), (0.0, ch), (cw, ch)] {
+                    let Some((x, y)) = crate::input::unproject(&m, (cx, cy))
+                        .filter(|&(px, py)| map_point(&m, px, py).is_some())
+                    else {
+                        return full;
+                    };
+                    min = (min.0.min(x), min.1.min(y));
+                    max = (max.0.max(x), max.1.max(y));
+                }
+                left = left.max(min.0);
+                top = top.max(min.1);
+                right = right.min(max.0);
+                bottom = bottom.min(max.1);
+            }
+            view = parent;
+        }
+        Bounds::new(
+            Point::new(Points(left), Points(top)),
+            Size::new(
+                Points((right - left).max(0.0)),
+                Points((bottom - top).max(0.0)),
+            ),
+        )
     }
 
     /// An object for `msg_send!` calls AppKit's bindings lack.
@@ -1569,8 +1745,8 @@ impl NshView {
 /// (`ns().frame()`: a sticky shift and mirroring applied), not the logical
 /// ones, for the view and its ancestors alike: the clip spaces are the
 /// ancestors' containers'. Hidden views are AppKit's (a screen under the
-/// top one), looked at once per view a pass resolves; the containers
-/// between a view and its parent are never hidden.
+/// top one) or `style.hidden`, looked at once per view a pass resolves; the
+/// containers between a view and its parent are never hidden.
 pub(crate) struct Views;
 
 impl crate::sight::Tree for Views {
@@ -1585,12 +1761,12 @@ impl crate::sight::Tree for Views {
     }
 
     fn hidden(&self, node: &NshView) -> bool {
-        node.ns().isHidden()
+        node.is_hidden()
     }
 
     fn top_shown(&self, node: &NshView) -> bool {
         let ns = node.ns();
-        ns.window().is_some() && !ns.isHiddenOrHasHiddenAncestor()
+        ns.window().is_some() && !ns.isHiddenOrHasHiddenAncestor() && !node.is_hidden()
     }
 
     fn frame(&self, node: &NshView) -> crate::sight::Span {

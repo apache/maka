@@ -323,33 +323,7 @@ impl NativeSurface for TerminalSurface {
         self.frames.borrow().scale()
     }
     fn pressable_bounds(&self, label: &str) -> Vec<Bounds<Points>> {
-        let surface = self.view.surface();
-        surface
-            .mounter
-            .borrow()
-            .views
-            .values()
-            .filter(|view| {
-                view.state().props.accessibility.label.as_deref() == Some(label)
-                    && crate::input::takes_accessibility_press(surface, view)
-                    && !view.ns().isHiddenOrHasHiddenAncestor()
-            })
-            .map(|view| {
-                let rect = view
-                    .ns()
-                    .convertRect_toView(view.ns().bounds(), Some(surface.root.ns()));
-                Bounds::new(
-                    nsh_core::Point::new(
-                        Points(rect.origin.x as f32),
-                        Points(rect.origin.y as f32),
-                    ),
-                    Size::new(
-                        Points(rect.size.width as f32),
-                        Points(rect.size.height as f32),
-                    ),
-                )
-            })
-            .collect()
+        pressable_bounds_in(self.view.surface(), label)
     }
     fn editor_text(&self) -> Option<String> {
         crate::text_input::terminal_text(self.view.surface())
@@ -743,6 +717,68 @@ impl Drop for TerminalSurface {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+fn pressable_bounds_in(surface: &crate::surface::Surface, label: &str) -> Vec<Bounds<Points>> {
+    fn visit(
+        surface: &crate::surface::Surface,
+        view: &crate::view::NshView,
+        label: &str,
+        out: &mut Vec<Bounds<Points>>,
+    ) {
+        if view.ns().isHidden() {
+            return;
+        }
+        let Some(state) = view.try_state() else {
+            return;
+        };
+        if state.style.hidden
+            || state.props.accessibility.hidden
+            || state.props.pointer_events == nsh_core::PointerEvents::None
+            || state.live.as_ref().is_some_and(|l| l.dying())
+        {
+            return;
+        }
+        let pointer_events = state.props.pointer_events;
+        let pressable = pointer_events != nsh_core::PointerEvents::BoxNone
+            && !state.props.accessibility.state.disabled
+            && (state.events.contains(nsh_core::EventKind::Press)
+                || state.events.contains(nsh_core::EventKind::LongPress));
+        drop(state);
+        if pressable && crate::access::name_of(view).as_deref() == Some(label) {
+            let visible = view.visible_bounds();
+            if visible.size.width.0 > 0.0
+                && visible.size.height.0 > 0.0
+                && let Some(bounds) = view
+                    .to_root(&surface.root)
+                    .and_then(|m| crate::view::map_bounds(&m, visible))
+                && bounds.size.width.0 > 0.0
+                && bounds.size.height.0 > 0.0
+            {
+                out.push(bounds);
+            }
+        }
+        if pointer_events != nsh_core::PointerEvents::BoxOnly {
+            let container = view.container_view();
+            for sub in view.ns().subviews().iter() {
+                if container.as_deref() == Some(&*sub) {
+                    for child in view.child_views() {
+                        visit(surface, &child, label, out);
+                    }
+                } else if let Some(child) = crate::view::NshView::from_ns(&sub) {
+                    visit(surface, &child, label, out);
+                }
+            }
+        }
+    }
+    let scope_ns = crate::navigation::focus_scope(surface);
+    let Some(scope) =
+        crate::view::NshView::from_ns(&scope_ns).filter(crate::view::NshView::is_shown_in_tree)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    visit(surface, &scope, label, &mut out);
+    out
 }
 pub(crate) fn dispatch_terminal_key(
     surface: &Rc<crate::surface::Surface>,

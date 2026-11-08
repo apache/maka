@@ -661,3 +661,186 @@ mount(App);
     view.stop();
     window.close();
 }
+
+pub(super) fn subtree_reachability() {
+    use std::{cell::RefCell, rc::Rc};
+
+    use nsh_terminal::{MouseButton, MouseDownEvent, MouseUpEvent, Point, Points, point, px};
+
+    const REACHABILITY_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const hideEditor = signal(false);
+  const blockEditor = signal(false);
+  keymap.bind("f6", () => {
+    const next = !hideEditor();
+    hideEditor.set(next);
+    Clipboard.writeText(next ? "editor-hidden" : "editor-shown");
+  }, { when: "always" });
+  keymap.bind("f7", () => {
+    const next = !blockEditor();
+    blockEditor.set(next);
+    Clipboard.writeText(next ? "editor-blocked" : "editor-unblocked");
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <View
+      accessibilityLabel="Chat"
+      focusable={false}
+      onPress={() => Clipboard.writeText("visible-chat")}
+      style={{
+        width: 80,
+        height: 32,
+        transform: [{ translateX: 20 }, { translateY: 12 }],
+      }}
+    />
+    <View
+      focusable={false}
+      onPress={() => Clipboard.writeText("retry-clicked")}
+      style={{ width: 72, height: 28 }}
+    >
+      <Text>Retry</Text>
+    </View>
+    <View style={{ display: "none" }}>
+      <View accessibilityLabel="Chat" onPress={() => Clipboard.writeText("hidden-chat")} style={{ width: 80, height: 32 }} />
+      <Input autoFocus defaultValue="hidden-auto" style={{ width: 120, height: 32 }} />
+    </View>
+    <View style={{ pointerEvents: "none" }}>
+      <View accessibilityLabel="Chat" onPress={() => Clipboard.writeText("pe-none-chat")} style={{ width: 80, height: 32 }} />
+      <Input defaultValue="pe-none-input" style={{ width: 120, height: 32 }} />
+    </View>
+    <View style={{ pointerEvents: "box-only", width: 80, height: 32 }}>
+      <View accessibilityLabel="Chat" onPress={() => Clipboard.writeText("box-only-chat")} style={{ width: 80, height: 32 }} />
+      <Input defaultValue="box-only-input" style={{ width: 120, height: 32 }} />
+    </View>
+    <View accessibilityElementsHidden>
+      <View accessibilityLabel="Chat" focusable={false} onPress={() => Clipboard.writeText("ax-hidden-chat")} style={{ width: 80, height: 32 }} />
+    </View>
+    <View style={{ overflow: "hidden", width: 80, height: 0 }}>
+      <View accessibilityLabel="Chat" focusable={false} onPress={() => Clipboard.writeText("clipped-chat")} style={{ width: 80, height: 32 }} />
+    </View>
+    <View style={{ display: hideEditor() ? "none" : "flex", pointerEvents: blockEditor() ? "none" : "auto" }}>
+      <Input defaultValue="live-editor" style={{ width: 140, height: 36 }} />
+    </View>
+    <Input defaultValue="second-editor" style={{ width: 140, height: 36 }} />
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("Reachability.tsx", REACHABILITY_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(360), DevicePixels(320)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    pump_until(&surface, || !surface.pressable_bounds("Chat").is_empty());
+
+    let fenced: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+    let slot = fenced.clone();
+    surface.pause_input(Box::new(move |res| {
+        *slot.borrow_mut() = Some(res);
+    }));
+    pump_until(&surface, || fenced.borrow().is_some());
+    assert_eq!(*fenced.borrow(), Some(Ok(())));
+    surface.resume_input();
+    assert_eq!(surface.text_input_target(), None);
+
+    let chat = surface.pressable_bounds("Chat");
+    assert_eq!(chat.len(), 1);
+    assert_eq!(
+        (
+            chat[0].origin.x.0,
+            chat[0].origin.y.0,
+            chat[0].size.width.0,
+            chat[0].size.height.0
+        ),
+        (20.0, 12.0, 80.0, 32.0)
+    );
+
+    let click = |at: Point<Points>| {
+        let mut down = MouseDownEvent::default();
+        down.button = MouseButton::Left;
+        down.position = at;
+        down.click_count = 1;
+        let mut up = MouseUpEvent::default();
+        up.button = MouseButton::Left;
+        up.position = at;
+        up.click_count = 1;
+        surface
+            .dispatch_input(PlatformInput::MouseDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::MouseUp(up)).unwrap();
+    };
+
+    // Hit inside the CSS-translated rect [20..100, 12..44], outside untransformed [0..80, 0..32].
+    click(point(px(90.0), px(28.0)));
+    clipboard(&surface, "visible-chat");
+
+    let retry = surface.pressable_bounds("Retry");
+    assert_eq!(retry.len(), 1);
+    click(retry[0].center());
+    clipboard(&surface, "retry-clicked");
+
+    // Tab skips hidden, pointerEvents:none, and pointerEvents:box-only inputs.
+    key(&surface, "tab");
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("live-editor")
+    });
+    key(&surface, "tab");
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("second-editor")
+    });
+    let mut back_tab = Keystroke::default();
+    back_tab.key = "tab".into();
+    back_tab.modifiers.shift = true;
+    let mut down = KeyDownEvent::default();
+    down.keystroke = back_tab.clone();
+    let mut up = KeyUpEvent::default();
+    up.keystroke = back_tab;
+    surface
+        .dispatch_input(PlatformInput::KeyDown(down))
+        .unwrap();
+    surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("live-editor")
+    });
+
+    let target_a = surface.text_input_target().unwrap();
+    key(&surface, "f6");
+    clipboard(&surface, "editor-hidden");
+    assert_eq!(surface.text_input_target(), None);
+    assert_eq!(surface.editor_text(), None);
+    assert!(
+        !surface
+            .apply_composition(&target_a, "ghost", "", None, false)
+            .unwrap()
+    );
+
+    key(&surface, "f6");
+    clipboard(&surface, "editor-shown");
+    key(&surface, "tab");
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("live-editor")
+    });
+    let target_b = surface.text_input_target().unwrap();
+    assert_ne!(target_a, target_b);
+
+    key(&surface, "f7");
+    clipboard(&surface, "editor-blocked");
+    assert_eq!(surface.text_input_target(), None);
+    assert_eq!(surface.editor_text(), None);
+    assert!(
+        !surface
+            .apply_composition(&target_b, "ghost", "", None, false)
+            .unwrap()
+    );
+
+    surface.shutdown();
+}

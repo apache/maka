@@ -74,6 +74,106 @@ pub(crate) fn hides_children(s: &ViewState) -> bool {
     s.access.ax.grouped
 }
 
+/// Whether `view` or an ancestor hides its accessibility subtree
+/// (`accessibilityElementsHidden` or `style.hidden`).
+pub(crate) fn hidden_in_subtree(view: &NshView) -> bool {
+    let mut at = Some(view.clone());
+    while let Some(v) = at {
+        let Some(s) = v.try_state() else {
+            return true;
+        };
+        if s.style.hidden || s.props.accessibility.hidden {
+            return true;
+        }
+        drop(s);
+        at = v.parent_view();
+    }
+    false
+}
+
+/// The accessible name of `view`: its `accessibilityLabel`, a text view's text,
+/// else (for grouping elements) the texts and labels inside it.
+#[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+pub(crate) fn name_of(view: &NshView) -> Option<String> {
+    if view.ns().isHidden() {
+        return None;
+    }
+    let s = view.try_state()?;
+    if s.style.hidden || s.props.accessibility.hidden {
+        return None;
+    }
+    if let Some(label) = &s.props.accessibility.label {
+        return Some(label.to_string());
+    }
+    if let Some(t) = &s.text {
+        return Some(t.text.text.clone());
+    }
+    let role = role_for(&s.props.accessibility, s.kind, is_pressable(s.events));
+    let grouping = (s.props.accessibility.accessible != Some(false)
+        && matches!(
+            role,
+            Ax::Button
+                | Ax::Toggle
+                | Ax::Link
+                | Ax::CheckBox
+                | Ax::Switch
+                | Ax::Radio
+                | Ax::Tab
+                | Ax::MenuItem
+                | Ax::Option
+                | Ax::TreeItem
+        ))
+        || (s.props.accessibility.accessible == Some(true) && s.kind != ViewKind::Text);
+    drop(s);
+    if !grouping {
+        return None;
+    }
+    let mut name = String::new();
+    content_name(view, &mut name);
+    (!name.is_empty()).then_some(name)
+}
+
+#[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+fn content_name(view: &NshView, out: &mut String) {
+    for child in view.child_views() {
+        if child.ns().isHidden() {
+            continue;
+        }
+        let Some(s) = child.try_state() else { continue };
+        if s.style.hidden || s.props.accessibility.hidden {
+            continue;
+        }
+        let role = role_for(&s.props.accessibility, s.kind, is_pressable(s.events));
+        if !matches!(
+            role,
+            Ax::Generic | Ax::Text | Ax::Heading | Ax::Image | Ax::Group | Ax::Timer | Ax::Status
+        ) {
+            continue;
+        }
+        let own = s
+            .props
+            .accessibility
+            .label
+            .as_deref()
+            .or(s.text.as_ref().map(|t| t.text.text.as_str()));
+        match own {
+            Some(text) => {
+                let text = text.trim();
+                if !text.is_empty() {
+                    if !out.is_empty() {
+                        out.push(' ');
+                    }
+                    out.push_str(text);
+                }
+            }
+            None => {
+                drop(s);
+                content_name(&child, out);
+            }
+        }
+    }
+}
+
 /// What `apply` last wrote, field by field.
 ///
 /// Each attribute is its own entry: AppKit lets every one of them change while

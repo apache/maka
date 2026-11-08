@@ -85,7 +85,7 @@ fn collect(area: &NshView) -> Texts {
 }
 
 fn walk(view: &NshView, origin: (f32, f32), out: &mut Texts) {
-    if view.ns().isHidden() {
+    if view.is_hidden() {
         return;
     }
     {

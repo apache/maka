@@ -462,7 +462,8 @@ fn focused(surface: &Surface) -> Option<objc2::rc::Weak<ViewObj>> {
     }
     while &*at != root {
         if let Some(view) = NshView::from_ns(&at)
-            && (view.kind() == ViewKind::Input || crate::input::is_key_stop(&view))
+            && ((view.kind() == ViewKind::Input && view.can_reach())
+                || crate::input::is_key_stop(&view))
         {
             let obj: &ViewObj = &view;
             return Some(objc2::rc::Weak::from(obj));
@@ -497,7 +498,7 @@ fn restore_focus(surface: &Surface, scope: &NSView, view: Option<objc2::rc::Weak
         return;
     }
     if view.kind() == ViewKind::Input {
-        if view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor() {
+        if view.can_reach() {
             crate::text_input::focus(&view);
         }
     } else if crate::input::is_key_stop(&view) {
@@ -1137,10 +1138,8 @@ impl Nav {
     /// or asks first, inside `within` (the newest modal) when given.
     fn back_stack(&self, within: Option<&NshView>) -> Option<NodeId> {
         let wants = |st: &StackNav| {
-            let ns = st.view.ns();
-            ns.window().is_some()
-                && !ns.isHiddenOrHasHiddenAncestor()
-                && within.is_none_or(|w| ns.isDescendantOf(w.ns()))
+            st.view.is_shown_in_tree()
+                && within.is_none_or(|w| st.view.ns().isDescendantOf(w.ns()))
                 && st.screens.takes_back(|top| {
                     self.screens
                         .get(&top)
