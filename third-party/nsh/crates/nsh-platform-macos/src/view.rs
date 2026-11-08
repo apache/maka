@@ -31,9 +31,11 @@ use std::{
 };
 
 use nsh_core::{
-    Bounds, EventMask, Matrix, NodeId, Point, PointerEvents, Points, ROOT_ID, Size, ViewKind,
-    ViewProps, ViewStyle, animation::AnimValues,
+    Bounds, EventMask, Matrix, NodeId, PointerEvents, Points, ROOT_ID, ViewKind, ViewProps,
+    ViewStyle, animation::AnimValues,
 };
+#[cfg(feature = "terminal")]
+use nsh_core::{Point, Size};
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,

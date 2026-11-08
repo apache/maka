@@ -32884,7 +32884,8 @@ fn pointer_press_on_focused_anchor_suppresses_focus_hint_until_refocused() {
             },
         ],
     );
-    assert!(c.commit().is_some());
+    let initial = c.commit().expect("initial mount");
+    assert_eq!(mounts_listening(&initial, 2, EventKind::Touch), Some(true));
 
     let touch_up = |path: Vec<NodeId>| {
         EventPayload::Touch(Box::new(crate::TouchEvent {
@@ -32902,7 +32903,7 @@ fn pointer_press_on_focused_anchor_suppresses_focus_hint_until_refocused() {
         }))
     };
 
-    // 1. Same-turn focus + pointer click (States(FOCUSED) -> Touch::Start -> Touch::End -> commit).
+    // 1a. Same-batch focus + pointer click + release (States(FOCUSED) -> Start -> End -> commit).
     c.set_states(2, crate::tailwind::state::FOCUSED);
     c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
     c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
@@ -32914,10 +32915,25 @@ fn pointer_press_on_focused_anchor_suppresses_focus_hint_until_refocused() {
         );
     }
 
-    // 2. Pointer held before focus report (Touch::Start -> States(FOCUSED) -> commit -> Touch::End).
+    // 1b. Same-batch pointer click before focus + release (Start -> States(FOCUSED) -> End -> commit).
     c.set_states(2, 0);
     let _ = c.commit();
     c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.set_states(2, crate::tailwind::state::FOCUSED);
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    if let Some(batch) = c.commit() {
+        assert!(
+            inserts(&batch).into_iter().all(|(p, ..)| p != ROOT_ID),
+            "same-batch press before focus must not open tooltip: {:?}",
+            batch.items
+        );
+    }
+
+    // 2. Pointer held before focus report across commits (Start -> commit -> States(FOCUSED) -> commit -> End).
+    c.set_states(2, 0);
+    let _ = c.commit();
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    let _ = c.commit();
     c.set_states(2, crate::tailwind::state::FOCUSED);
     if let Some(batch) = c.commit() {
         assert!(
@@ -32929,8 +32945,11 @@ fn pointer_press_on_focused_anchor_suppresses_focus_hint_until_refocused() {
     c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
     let _ = c.commit();
 
-    // 3. Genuine keyboard focus (no pointer press) opens the tooltip, and a subsequent press hides it.
+    // 3. Non-focusing press in an earlier commit does not block genuine keyboard focus later.
     c.set_states(2, 0);
+    let _ = c.commit();
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
     let _ = c.commit();
     c.set_states(2, crate::tailwind::state::FOCUSED);
     let opened = c.commit().expect("keyboard focus opens tooltip");

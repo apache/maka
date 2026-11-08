@@ -2669,6 +2669,7 @@ impl<M: TextEngine> Core<M> {
             }
             self.mount.push(MountItem::TreeOrder(order));
         }
+        self.overlay_state.pressed.clear();
         if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
             self.mount.clear();
             None

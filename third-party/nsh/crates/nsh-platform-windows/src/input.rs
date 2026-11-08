@@ -1581,6 +1581,12 @@ fn down(
         return;
     };
     let touch = key != Key::Mouse;
+    if let Some(view) = chain(&hit.view).into_iter().find(|view| {
+        let state = view.state();
+        focusable(&state)
+    }) {
+        crate::text_input::focus_view(surface, &view);
+    }
     let mut item = None;
     if let Some(native) = hit.item.take() {
         let hosted = Item::Hosted(hit.view.clone(), native);

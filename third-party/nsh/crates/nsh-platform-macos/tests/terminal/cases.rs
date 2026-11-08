@@ -1045,17 +1045,21 @@ mount(App);
 pub(super) fn rich_editor_to_box_none_input_focus_transition() {
     const TRANSITION_APP: &str = r#"
 import { Clipboard, keymap, mount, signal, View } from "nsh";
-import { Input, RichEditor } from "nsh/base";
+import { createRichEditor, Input, RichEditor, RichEditorPlugin, StarterKit } from "nsh/base";
 
 function App() {
   const attaching = signal(false);
   const path = signal("");
+  const toggle = () => attaching.update((open) => !open);
+  const keys = new RichEditorPlugin("attachKey");
+  keys.captureKeys(["Mod-u"], toggle);
+  keys.capturing = true;
+  const session = createRichEditor({ extensions: [StarterKit], plugins: [keys] });
   let editor = null;
-  keymap.bind("mod+u", () => {
-    attaching.update((open) => !open);
-  }, { when: "always" });
+  keymap.bind("mod+u", toggle, { when: "always" });
   return <View style={{ flex: 1 }}>
     <RichEditor
+      editor={session}
       ref={(node) => { editor = node; }}
       autoFocus
       style={{ flex: 1, height: 120 }}

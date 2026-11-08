@@ -32,7 +32,7 @@
 //! (`nsh-base`'s `Tooltip`) can decide instead ([`OverlayConfig::open`]). An element's `tooltip` is a
 //! hint overlay the core makes inside the element ([`Core::set_tooltip`]).
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use taffy::NodeId as LayoutId;
 
 use super::{Core, Key, Kind, NO_KEY, definite};
@@ -142,6 +142,9 @@ pub(super) struct Overlays {
     /// Active touch pointers (`(pointer_id, path)`), so focus landing on an
     /// anchor while a pointer presses it does not open a keyboard-focus hint.
     pub(super) touches: Vec<(u32, Vec<NodeId>)>,
+    /// Nodes pressed by a touch start since the last commit, so a same-batch
+    /// click + release still suppresses a deferred keyboard-focus hint.
+    pub(super) pressed: FxHashSet<NodeId>,
     /// The elements with a `tooltip`, by id: the nodes made for it.
     pub(super) tooltips: FxHashMap<NodeId, CoreTooltip>,
 }
@@ -726,10 +729,12 @@ impl<M: TextEngine> Core<M> {
             let pressed = on
                 && anchor.is_some_and(|k| {
                     let id = self.nodes[k as usize].id;
-                    self.overlay_state
-                        .touches
-                        .iter()
-                        .any(|(_, path)| path.contains(&id))
+                    self.overlay_state.pressed.contains(&id)
+                        || self
+                            .overlay_state
+                            .touches
+                            .iter()
+                            .any(|(_, path)| path.contains(&id))
                 });
             let Some(state) = self.overlay_mut(key) else {
                 continue;
@@ -1010,6 +1015,7 @@ impl<M: TextEngine> Core<M> {
         match touch.phase {
             TouchPhase::Start => {
                 for p in touch.points.iter().filter(|p| p.changed) {
+                    self.overlay_state.pressed.extend(p.path.iter().copied());
                     self.overlay_state.touches.retain(|(id, _)| *id != p.id);
                     self.overlay_state.touches.push((p.id, p.path.clone()));
                 }
