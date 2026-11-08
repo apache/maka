@@ -119,6 +119,9 @@ impl Native for MacNative {
         self.on_main(|surface, window| {
             let mounter = surface.mounter.borrow();
             let view = mounter.views.get(&id)?;
+            if !view.is_shown_in_tree() {
+                return None;
+            }
             crate::scroll::commit_ancestors(view);
             in_window(view.ns(), view.ns().bounds(), window)
         })
@@ -129,6 +132,9 @@ impl Native for MacNative {
         self.on_main(|surface, window| {
             let mounter = surface.mounter.borrow();
             let view = mounter.views.get(&text)?;
+            if !view.is_shown_in_tree() {
+                return None;
+            }
             crate::scroll::commit_ancestors(view);
             let rect = *crate::text::range_rects(&view.state(), start, end).first()?;
             in_window(view.ns(), rect, window)

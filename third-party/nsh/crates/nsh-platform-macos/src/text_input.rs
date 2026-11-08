@@ -831,8 +831,11 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         // A text view's clip view comes right before it in the loop and
         // gives the focus back to it: skip the views around `from`.
         if next.isDescendantOf(&scope)
-            && (!crate::view::is_ours(&next)
-                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view)))
+            && if crate::view::is_ours(&next) {
+                NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view))
+            } else {
+                crate::view::enclosing(&next).is_some_and(|owner| owner.can_reach())
+            }
             && !from.isDescendantOf(&next)
         {
             return window.makeFirstResponder(Some(&next));
@@ -870,6 +873,17 @@ macro_rules! define_field {
 
             impl $name {
                 $($extra)*
+
+                #[unsafe(method(acceptsFirstResponder))]
+                fn accepts_first_responder(&self) -> bool {
+                    // SAFETY: NSResponder's method, on the field.
+                    let ok: bool = unsafe { msg_send![super(self), acceptsFirstResponder] };
+                    ok && self
+                        .ivars()
+                        .get()
+                        .and_then(|cx| cx.get())
+                        .is_none_or(|(_, view, _)| view.can_reach())
+                }
 
                 #[unsafe(method(becomeFirstResponder))]
                 fn become_first_responder(&self) -> bool {
@@ -1042,6 +1056,17 @@ define_class!(
             if let Some(input) = &input {
                 input.key_mods.set(NSEventModifierFlags::empty());
             }
+        }
+
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            // SAFETY: NSTextView's own method.
+            let ok: bool = unsafe { msg_send![super(self), acceptsFirstResponder] };
+            ok && self
+                .ivars()
+                .get()
+                .and_then(|cx| cx.get())
+                .is_none_or(|(_, view, _)| view.can_reach())
         }
 
         #[unsafe(method(becomeFirstResponder))]
@@ -1613,6 +1638,7 @@ impl InputState {
             return;
         };
         if editor.focused()
+            || self.cx.get().is_none_or(|(_, view, _)| !view.can_reach())
             || surface.is_some_and(|surface| {
                 !responder.isDescendantOf(&crate::navigation::focus_scope(surface))
             })
@@ -2120,6 +2146,14 @@ fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
         if !input.focus_pending.get() {
             return false;
         }
+        let blocked = input
+            .cx
+            .get()
+            .is_some_and(|(_, view, _)| view.ns().window().is_some() && !view.can_reach());
+        if blocked {
+            input.focus_pending.set(false);
+            return false;
+        }
         let editor = input.editor.borrow().clone();
         if editor.responder().window().is_none() {
             // Not on screen yet; an input never shown stops trying.
@@ -2155,8 +2189,14 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
         if !input.focus_pending.get() {
             continue;
         }
+        let blocked = input
+            .cx
+            .get()
+            .is_some_and(|(_, view, _)| view.ns().window().is_some() && !view.can_reach());
         let editor = input.editor.borrow().clone();
-        if editor.responder().window().is_some() {
+        if blocked {
+            input.focus_pending.set(false);
+        } else if editor.responder().window().is_some() {
             input.focus_pending.set(false);
             input.focus_editor(Some(surface));
         } else {
@@ -2519,6 +2559,7 @@ fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retaine
     let (owner_surface, view, input) = cx.get()?;
     if owner_surface.key() != surface.key()
         || !input.focused.get()
+        || !view.can_reach()
         || !view
             .ns()
             .isDescendantOf(&crate::navigation::focus_scope(surface))

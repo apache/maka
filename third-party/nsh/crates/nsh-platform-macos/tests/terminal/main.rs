@@ -41,6 +41,10 @@ fn main() -> std::process::ExitCode {
             "desktop_composing_escape_cancels_marked_text_without_blurring_or_dismissing_modal",
             cases::desktop_composing_escape,
         ),
+        (
+            "hidden_and_clipped_subtrees_exclude_pressables_and_revoke_focus",
+            cases::subtree_reachability,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];

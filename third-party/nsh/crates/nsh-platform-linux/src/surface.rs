@@ -97,6 +97,7 @@ pub(crate) struct Surface {
     events_handled: Cell<u64>,
     pub(crate) input_paused: Cell<bool>,
     pub(crate) paused_focus: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
+    pub(crate) outer: glib::WeakRef<gtk::Widget>,
     pending_pastes: Cell<usize>,
     input_ready: RefCell<Vec<InputReady>>,
     /// The root view (node [`ROOT_ID`]): the surface's widget.
@@ -212,6 +213,7 @@ impl Surface {
             events_handled: Cell::new(0),
             input_paused: Cell::new(false),
             paused_focus: RefCell::new(None),
+            outer: glib::WeakRef::new(),
             pending_pastes: Cell::new(0),
             input_ready: RefCell::new(Vec::new()),
             image_cache: RefCell::new(None),
@@ -354,7 +356,11 @@ impl Surface {
         self.paused_focus.borrow_mut().take();
         self.pending_pastes.set(0);
         crate::text_input::stopped(self);
-        for done in self.input_ready.take() {
+        let waiters = self.input_ready.take();
+        if !waiters.is_empty() && self.input_paused.get() {
+            self.set_outer_sensitive(false);
+        }
+        for done in waiters {
             done(Err("the UI engine stopped while pausing input".into()));
         }
         // Dropping the engine joins its thread.
@@ -412,9 +418,18 @@ impl Surface {
         Self::step_input_barrier(self, self.generation.get(), false, Box::new(done));
     }
 
+    pub(crate) fn set_outer_sensitive(&self, sensitive: bool) {
+        if let Some(outer) = self.outer.upgrade() {
+            outer.set_sensitive(sensitive);
+        }
+    }
+
     fn step_input_barrier(self: &Rc<Self>, generation: u64, blurred: bool, done: InputReady) {
         crate::text_input::flush_changes(self);
         let Some(control) = self.control.borrow().clone() else {
+            if self.input_paused.get() {
+                self.set_outer_sensitive(false);
+            }
             done(Err("the UI engine is not running".into()));
             return;
         };
@@ -443,6 +458,9 @@ impl Surface {
                 }
                 if crate::text_input::has_pending(&surface) {
                     crate::text_input::disarm(&surface);
+                    if surface.input_paused.get() {
+                        surface.set_outer_sensitive(false);
+                    }
                     done(Err("pending input has no editable focus target".into()));
                     return;
                 }
@@ -454,11 +472,15 @@ impl Surface {
                         .filter(|f| f == root || f.is_ancestor(root))
                         .map(|f| f.downgrade());
                     crate::text_input::blur_all(&surface);
+                    surface.set_outer_sensitive(false);
                     crate::text_input::flush_changes(&surface);
                     if surface.events_sent() != sent_before {
                         Self::step_input_barrier(&surface, generation, true, done);
                         return;
                     }
+                }
+                if surface.input_paused.get() {
+                    surface.set_outer_sensitive(false);
                 }
                 crate::text_input::disarm(&surface);
                 done(Ok(()));

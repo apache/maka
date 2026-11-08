@@ -334,26 +334,32 @@ pub(crate) fn props_changed(surface: &Rc<Surface>, view: &NshView) {
 }
 
 fn release_invalid_control_focus(surface: &Surface, view: &NshView) {
-    if view.kind() == ViewKind::Input || is_key_stop(view) {
-        return;
-    }
     let Some(window) = view.ns().window() else {
         return;
     };
-    let focused = window.firstResponder().is_some_and(|responder| {
-        responder
-            .downcast_ref::<objc2_app_kit::NSView>()
-            .and_then(NshView::from_ns)
-            .is_some_and(|focused| focused == *view)
-    });
-    if focused && view.id() != ROOT_ID {
-        window.makeFirstResponder(Some(surface.root.ns()));
+    let Some(responder) = window
+        .firstResponder()
+        .and_then(|r| r.downcast::<objc2_app_kit::NSView>().ok())
+    else {
+        return;
+    };
+    if &*responder == surface.root.ns() || !responder.isDescendantOf(view.ns()) {
+        return;
+    }
+    let valid = match NshView::from_ns(&responder) {
+        Some(focused) => is_key_stop(&focused),
+        None => crate::view::enclosing(&responder).is_some_and(|owner| owner.can_reach()),
+    };
+    if !valid {
+        crate::text_input::to_root(&window, surface);
     }
 }
 
-/// The view's style changed (cursor). The cursor follows on the next mouse
-/// move.
-pub(crate) fn style_changed(_view: &NshView) {}
+/// The view's style changed (visibility, cursor). The cursor follows on the
+/// next mouse move.
+pub(crate) fn style_changed(surface: &Rc<Surface>, view: &NshView) {
+    release_invalid_control_focus(surface, view);
+}
 
 /// `SetJsResponder` / `ClearJsResponder`. Runs while the mounter applies a
 /// batch: it must not write animations (that borrows the mounter).
@@ -805,23 +811,22 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
 /// takes presses, or any `focusable` one ([`nsh_core::ViewProps::focus_stop`]),
 /// shown and reachable by the pointer.
 pub(crate) fn is_key_stop(view: &NshView) -> bool {
-    {
-        let state = view.state();
-        if state.kind == ViewKind::Input
-            || !state
+    let is_stop = view.try_state().is_some_and(|state| {
+        state.kind != ViewKind::Input
+            && state
                 .props
                 .focus_stop(state.events.contains(EventKind::Press))
-        {
-            return false;
-        }
-    }
-    view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor()
+    });
+    is_stop && view.can_reach()
 }
 
 /// A stop that Return and Space press ([`is_key_stop`] taking presses): a
 /// stop that takes none hears its keys through the app's keymap.
 pub(crate) fn is_key_control(view: &NshView) -> bool {
-    is_key_stop(view) && view.state().events.contains(EventKind::Press)
+    is_key_stop(view)
+        && view
+            .try_state()
+            .is_some_and(|s| s.events.contains(EventKind::Press))
 }
 
 /// Current AppKit keyboard focus, from the responder through its native
@@ -842,6 +847,17 @@ pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
         // The shared field editor is a child of its native input while it
         // edits. Walking actual superviews covers it and hosted controls.
         if let Some(node) = NshView::from_ns(&view) {
+            if path.is_empty() {
+                if &*view != root && !node.can_reach() {
+                    return Vec::new();
+                }
+            } else if !node.can_target()
+                || node
+                    .try_state()
+                    .is_none_or(|s| s.props.pointer_events == PointerEvents::BoxOnly)
+            {
+                return Vec::new();
+            }
             path.push(node.id());
         }
         if &*view == root {
@@ -939,13 +955,14 @@ fn activate(surface: &Surface, view: &NshView, from: &str) {
 /// Space need ([`control_activation_target`]). Other views do not offer
 /// the action.
 pub(crate) fn takes_accessibility_press(surface: &Surface, view: &NshView) -> bool {
-    {
-        let s = view.state();
-        if !s.events.contains(EventKind::Press) || s.props.accessibility.state.disabled {
-            return false;
-        }
-    }
-    view.can_target()
+    let pressable = view.try_state().is_some_and(|s| {
+        s.events.contains(EventKind::Press)
+            && !s.props.accessibility.state.disabled
+            && !s.props.accessibility.hidden
+    });
+    pressable
+        && view.can_reach()
+        && !crate::access::hidden_in_subtree(view)
         && view
             .ns()
             .isDescendantOf(&crate::navigation::focus_scope(surface))
@@ -1176,7 +1193,7 @@ fn into_child(child: &NshView, p: (f32, f32)) -> Option<(f32, f32)> {
 /// The point of a view's plane (z = 0) that row-vector transform `m`
 /// shows at `p`, perspective included; `None` when `m` flattens the view
 /// to a line.
-fn unproject(m: &nsh_core::Matrix, p: (f32, f32)) -> Option<(f32, f32)> {
+pub(crate) fn unproject(m: &nsh_core::Matrix, p: (f32, f32)) -> Option<(f32, f32)> {
     let m = &m.0;
     // [x y 1] · H = [X Y W] maps the plane to the screen.
     let h = [
@@ -2604,11 +2621,10 @@ pub(crate) fn native_at(
     if !hit.native {
         return None;
     }
-    let local = hit.view.ns().convertPoint_fromView(
-        objc2_foundation::NSPoint::new(x as f64, y as f64),
-        Some(surface.root.ns()),
-    );
-    let (lx, ly) = (local.x as f32, local.y as f32);
+    let (lx, ly) = hit
+        .view
+        .to_root(&surface.root)
+        .and_then(|m| unproject(&m, (x, y)))?;
     let s = hit.view.state();
     s.natives
         .iter()

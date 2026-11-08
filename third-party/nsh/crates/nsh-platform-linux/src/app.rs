@@ -231,6 +231,7 @@ impl AppView {
         let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         outer.append(&slot);
         outer.append(&overlay);
+        surface.outer.set(Some(outer.upcast_ref::<gtk::Widget>()));
         crate::chrome::attach(&surface, &overlay, &slot);
         register_app_components(&options.components);
         surface.native.set_components(options.components.clone());
@@ -349,7 +350,6 @@ impl AppView {
             done(Err("input is already paused".into()));
             return;
         }
-        self.outer.set_sensitive(false);
         crate::input::reset(&self.surface);
         crate::text_input::flush_changes(&self.surface);
         self.surface.input_barrier(done);
@@ -616,7 +616,8 @@ mod tests {
             let ready = Arc::new(Mutex::new(None));
             let result = ready.clone();
             view.pause_input(move |done| *result.lock().unwrap() = Some(done));
-            assert!(!view.widget().is_sensitive());
+            assert!(view.surface.input_paused.get());
+            assert!(view.widget().is_sensitive());
             assert!(ready.lock().unwrap().is_none());
             view.surface.finish_paste(pending_paste);
             assert!(crate::gtk_test::wait_until(|| ready
@@ -624,6 +625,7 @@ mod tests {
                 .unwrap()
                 .is_some()));
             assert_eq!(ready.lock().unwrap().take().unwrap(), Ok(()));
+            assert!(!view.widget().is_sensitive());
             view.resume_input();
             assert!(view.widget().is_sensitive());
             view.pause_input(|_| {});

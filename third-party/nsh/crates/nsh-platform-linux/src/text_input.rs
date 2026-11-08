@@ -385,7 +385,9 @@ impl Ctx {
         let Some((surface, view, input)) = self.get() else {
             return false;
         };
-        if surface.input_paused.get() || !input.config.borrow().editable {
+        if (surface.input_paused.get() && !is_replaying(&surface))
+            || !input.config.borrow().editable
+        {
             return false;
         }
         let reports = view.state().events.contains(EventKind::Paste);
@@ -3292,6 +3294,7 @@ mod tests {
 
             // 3. Stranded pending text with no editable target fails pause_input cleanly.
             view.resume_input();
+            assert!(focused_input_view(&surface).is_some());
             // Unmount or blur so no editable target has focus when f9 finishes.
             blur_all(&surface);
             press_keystroke(&surface, f9);

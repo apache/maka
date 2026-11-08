@@ -616,6 +616,9 @@ fn set_cursor(view: &NshView, over_link: bool) {
 // --- GDK events ---------------------------------------------------------------------
 
 fn handle(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
+    if surface.input_paused.get() {
+        return glib::Propagation::Stop;
+    }
     // Decided before nsh's own handling moves anything.
     let shielded = shields_page(surface, event);
     let propagation = dispatch(surface, event);
