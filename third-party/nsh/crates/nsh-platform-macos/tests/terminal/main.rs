@@ -45,6 +45,10 @@ fn main() -> std::process::ExitCode {
             "hidden_and_clipped_subtrees_exclude_pressables_and_revoke_focus",
             cases::subtree_reachability,
         ),
+        (
+            "box_none_input_takes_keyboard_focus_and_typing",
+            cases::box_none_input_focus,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];
