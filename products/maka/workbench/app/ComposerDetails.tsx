@@ -44,6 +44,7 @@ import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 const composerCorner = 24;
 
 export function ComposerDetails(props: {
+  compact?: boolean;
   session: Pick<
     ComposerSession,
     | 'sessionId'
@@ -78,7 +79,7 @@ export function ComposerDetails(props: {
     },
     todo,
     computer: createComputerAppControls(session.computerAccess, height),
-    messages: createMessagesDock(session, height),
+    messages: createMessagesDock(session, height, props.compact),
   };
   type Panel = keyof typeof panels;
   type OtherPanel = Exclude<Panel, 'todo'>;
@@ -100,7 +101,7 @@ export function ComposerDetails(props: {
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
-    messages: () => tr('Messages'),
+    messages: () => props.compact ? panels.messages.summary() : tr('Messages'),
   };
   let alive = true;
   cleanup(() => {
@@ -289,9 +290,11 @@ export function ComposerDetails(props: {
           focusStyle={{ backgroundColor: C.line }}
         >
           {otherMark(key)}
-          <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+          <If when={!props.compact || key !== 'messages'}>
+            <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+          </If>
           {summary(key)}
-          {singleDesktop() ? preview(key) : null}
+          {singleDesktop() && !(props.compact && key === 'messages') ? preview(key) : null}
           {chevron(key)}
         </Button>
         <If when={singleTerminal() && selected() === null}>{preview(key)}</If>
@@ -357,11 +360,23 @@ export function ComposerDetails(props: {
                 borderTopLeftRadius: 12,
                 borderTopRightRadius: 12,
               }),
+          // Quick Tools shows the details as a strip under its search bar.
+          ...(props.compact
+            ? {
+                marginHorizontal: 0,
+                marginBottom: 0,
+                paddingHorizontal: 12,
+                borderWidth: 0,
+                borderBottomWidth: 1,
+                borderColor: C.line,
+                borderRadius: 0,
+              }
+            : {}),
         }}
       >
-        {platform.isTerminal ? null : detail()}
+        {platform.isTerminal || props.compact ? null : detail()}
         {row()}
-        {platform.isTerminal ? detail() : null}
+        {platform.isTerminal || props.compact ? detail() : null}
       </View>
     </If>
   );

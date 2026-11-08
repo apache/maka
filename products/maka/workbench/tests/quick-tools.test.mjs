@@ -325,7 +325,7 @@ test('legacy external packages retain previous versions and reject tampering bef
   }
 });
 
-test('quick assistant shows newest messages first with replies above prompts and no process rows', () => {
+test('quick assistant shows messages oldest first with replies below prompts and no process rows', () => {
   assert.deepEqual(
     tools.quickAssistantOrder([
       { key: 'u1', kind: 'row', turn: 'a', role: 'user' },
@@ -335,13 +335,13 @@ test('quick assistant shows newest messages first with replies above prompts and
       { key: 'u2', kind: 'row', turn: 'b', role: 'user' },
       { key: 'b2', kind: 'bot', turn: 'b' },
     ]),
-    ['b2', 'u2', 'b1', 'u1'],
+    ['u1', 'b1', 'u2', 'b2'],
   );
   assert.deepEqual(
     tools.quickAssistantOrder([
       { key: 'old', kind: 'bot', turn: 'a' },
       { key: 'working', kind: 'botWorking' },
     ]),
-    ['working', 'old'],
+    ['old', 'working'],
   );
 });

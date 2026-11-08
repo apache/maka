@@ -24,12 +24,14 @@ import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
 import { closeCjkEmphasis } from './markdownEmphasis';
 import { Text } from 'nsh';
+import { QuickMessageTools } from './QuickMessageTools';
 import { Icon } from './Icon';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
 /** Messages the Bot sent with `SendUser`, shown as its reply in the Chat view. */
 export function BotReply(props: {
   compact?: boolean;
+  isNew?(sequence: number): boolean;
   messages: () => BotTranscriptMessage[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
@@ -50,10 +52,11 @@ export function BotReply(props: {
       style={{ width: '100%', paddingVertical: props.compact ? 6 : 8, gap: props.compact ? 8 : 16 }}
     >
       <Each
-        of={props.compact ? [...props.messages()].reverse() : props.messages()}
+        of={props.messages()}
         key={(message) => String(message.sequence)}
       >
         {(message) => (
+          <QuickMessageTools enabled={Boolean(props.compact)} timestamp={message().at} text={() => message().text}>
           <View
             style={{ flexDirection: 'row', gap: props.compact ? 8 : 0, alignItems: 'flex-start' }}
           >
@@ -114,11 +117,19 @@ export function BotReply(props: {
                   code: { color: C.accentHover, backgroundColor: C.card },
                 }}
               />
+              <If when={props.isNew?.(message().sequence)}>
+                <View
+                  accessibilityLabel={tr('New assistant reply')}
+                  style={{ position: 'absolute', right: 2, top: 2, width: 5, height: 5,
+                    borderRadius: 3, backgroundColor: C.accent, pointerEvents: 'none' }}
+                />
+              </If>
               <If when={props.compact && message().sequence === props.messages().at(-1)?.sequence}>
                 <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
               </If>
             </View>
           </View>
+          </QuickMessageTools>
         )}
       </Each>
       <If when={!props.compact}><View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} /></If>

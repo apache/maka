@@ -15,7 +15,7 @@ pub enum Request {
     Error(JsonValue),
     Show { settings: bool },
     Settings(HostCall, bool),
-    Hide,
+    Hide { restore_focus: bool },
     Modifiers(JsonValue),
     Assistant(HostCall),
     PickPackage(HostCall),
@@ -135,6 +135,7 @@ impl Control {
             let mut panel: Option<gpui::WindowHandle<AppView>> = None;
             let mut events = HostChannel::new();
             let mut _dismiss_observers = None;
+            let mut previous_app = None;
             let visible = std::rc::Rc::new(std::cell::Cell::new(false));
             let picking = std::rc::Rc::new(std::cell::Cell::new(false));
             let mut preferences = JsonValue::Null;
@@ -156,7 +157,9 @@ impl Control {
                         super::attach(&mut config);
                         let send = self.send.clone();
                         config.host.handle("quickTools.hide", move |call| {
-                            match send.try_send(Request::Hide) {
+                            match send.try_send(Request::Hide {
+                                restore_focus: true,
+                            }) {
                                 Ok(()) => call.resolve(JsonValue::Null),
                                 Err(_) => call.reject("Quick Tools is busy"),
                             }
@@ -226,9 +229,10 @@ impl Control {
                                     });
                                     let app = view.read(cx);
                                     app.own_window(window, cx);
-                                    app.on_close_request(move |_, window, _| {
-                                        hide(window);
-                                        let _ = close.try_send(Request::Hide);
+                                    app.on_close_request(move |_, _, _| {
+                                        let _ = close.try_send(Request::Hide {
+                                            restore_focus: true,
+                                        });
                                     });
                                     app.load_with_config(*config);
                                     view
@@ -254,7 +258,9 @@ impl Control {
                                                     if shown_on_event.get()
                                                         && !dialog_on_event.get()
                                                     {
-                                                        let _ = send.try_send(Request::Hide);
+                                                        let _ = send.try_send(Request::Hide {
+                                                            restore_focus: false,
+                                                        });
                                                     }
                                                 },
                                             ));
@@ -262,18 +268,31 @@ impl Control {
                                     active.send_replace(window.is_window_active());
                                     cx.observe_window_activation(window, move |_, window, _| {
                                         let focused = window.is_window_active();
-                                        let was_focused = active.send_replace(focused);
-                                        if was_focused
-                                            && !focused
-                                            && !dialog.get()
-                                            && shown.replace(false)
+                                        if !active.send_replace(focused)
+                                            || focused
+                                            || !shown.get()
+                                            || dialog.get()
                                         {
-                                            hide(window);
-                                            let _ = channel.send(
-                                                "quickTools.visibility",
-                                                json!({"visible":false}),
-                                            );
+                                            return;
                                         }
+                                        // Ordering and focusing the panel can briefly send a resign
+                                        // notification. Check again once AppKit finishes the reveal.
+                                        let shown = shown.clone();
+                                        let dialog = dialog.clone();
+                                        let channel = channel.clone();
+                                        window.on_next_frame(move |window, _| {
+                                            if !window.is_window_active()
+                                                && !dialog.get()
+                                                && shown.replace(false)
+                                            {
+                                                hide(window);
+                                                let _ = channel.send(
+                                                    "quickTools.visibility",
+                                                    json!({"visible":false}),
+                                                );
+                                            }
+                                        });
+                                        window.refresh();
                                     })
                                     .detach();
                                 });
@@ -294,11 +313,9 @@ impl Control {
                         if let Some(panel) = panel {
                             let _ = panel.update(cx, |view, window, cx| {
                                 if show {
-                                    position(window, None);
-                                    window.activate_window();
-                                    window.focus(&view.focus_handle(cx), cx);
+                                    present(window, view, cx, &mut previous_app);
                                 } else {
-                                    hide(window);
+                                    dismiss_panel(window, &mut previous_app);
                                 }
                             });
                         }
@@ -314,17 +331,20 @@ impl Control {
                         );
                         if let Some(panel) = panel {
                             let _ = panel.update(cx, |view, window, cx| {
-                                position(window, None);
-                                window.activate_window();
-                                window.focus(&view.focus_handle(cx), cx);
+                                present(window, view, cx, &mut previous_app);
                             });
                         }
                     }
-                    Request::Hide => {
+                    Request::Hide { restore_focus } => {
+                        if !restore_focus {
+                            previous_app = None;
+                        }
                         visible.set(false);
                         let _ = events.send("quickTools.visibility", json!({"visible":false}));
                         if let Some(panel) = panel {
-                            let _ = panel.update(cx, |_, window, _| hide(window));
+                            let _ = panel.update(cx, |_, window, _| {
+                                dismiss_panel(window, &mut previous_app)
+                            });
                         }
                     }
                     Request::Error(value) => {
@@ -521,6 +541,45 @@ fn position(window: &gpui::Window, height: Option<f64>) {
             let _: () = objc2::msg_send![native, setFrame: frame, display: true];
         }
     });
+}
+
+// AppKit activates both the key and main windows. Assign both roles to the
+// panel first so the workbench keeps its place behind the user's other windows.
+fn present(
+    window: &mut gpui::Window,
+    view: &AppView,
+    cx: &mut gpui::App,
+    previous: &mut Option<i32>,
+) {
+    use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+    let app = NSRunningApplication::currentApplication();
+    if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+        if front.processIdentifier() != app.processIdentifier() {
+            *previous = Some(front.processIdentifier());
+        } else if !window.is_window_active() {
+            *previous = None;
+        }
+    }
+    position(window, None);
+    with_native_window(window, |native| unsafe {
+        let _: () = objc2::msg_send![native, makeKeyAndOrderFront: std::ptr::null::<objc2::runtime::AnyObject>()];
+        let _: () = objc2::msg_send![native, makeMainWindow];
+    });
+    cx.activate(true);
+    window.activate_window();
+    window.focus(&view.focus_handle(cx), cx);
+}
+
+fn dismiss_panel(window: &gpui::Window, previous: &mut Option<i32>) {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    if let Some(pid) = previous.take() {
+        if NSRunningApplication::currentApplication().isActive() && window.is_window_active() {
+            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                app.activateWithOptions(NSApplicationActivationOptions::empty());
+            }
+        }
+    }
+    hide(window);
 }
 
 fn hide(window: &gpui::Window) {

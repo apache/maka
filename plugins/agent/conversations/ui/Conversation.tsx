@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import * as quickStorage from '../../../application/quick-tools/runtime/storage';
 import { quickAssistantOrder } from '../../../application/quick-tools/shared/assistant-layout';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
@@ -74,6 +75,7 @@ import {
   C,
   Header,
   ViewSegment,
+  isDark,
   captionTextStyle,
   controlStyle,
   toolbarControlStyle,
@@ -783,20 +785,10 @@ export function Conversation(props: ConversationProps) {
     previouslyVisible = visible;
   });
   const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
-  const displayKeys = computed(() => {
-    if (!props.quickTools) return display().map((item) => item.key);
-    return quickAssistantOrder(
-      display().map((item) => {
-        const row = item.kind === 'row' ? projection().rowsById.get(item.rowId) : undefined;
-        return {
-          key: item.key,
-          kind: item.kind,
-          turn: 'turnId' in item ? item.turnId : row?.turnId,
-          role: row?.role,
-        };
-      }),
-    );
-  });
+  type KeptSend = { id: string; text: string; files: string[]; before?: string; after?: string };
+  const keptKey = 'undelivered';
+  type KeptBySession = Record<string, KeptSend[]>;
+  const kept = signal<KeptSend[]>([]);
   const navigationItems = computed<TurnNavigationItem[]>(() => {
     const items = new Map<string, TurnNavigationItem>();
     for (const item of landmarks().items) {
@@ -835,6 +827,7 @@ export function Conversation(props: ConversationProps) {
     const entry = displayByKey().get(key);
     if (entry?.kind === 'summary') return entry.turnId;
     if (entry?.kind === 'process') return entry.group.turnId;
+    if ((entry?.kind === 'bot' || entry?.kind === 'botNote')) return entry.turnId;
     return entry?.kind === 'row' ? (projection().rowsById.get(entry.rowId)?.turnId ?? null) : null;
   };
   let list: ListRef | undefined;
@@ -1357,7 +1350,7 @@ export function Conversation(props: ConversationProps) {
         (await resetHistory(historyDestination.position, observed.through))
       ) {
         await loadTurnStart();
-        if (props.quickTools) list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+        if (props.quickTools) positionAtLatestInput();
         else list?.scrollToEnd({ animated: false });
       }
       if (!alive) return;
@@ -1641,6 +1634,7 @@ export function Conversation(props: ConversationProps) {
   };
   const navigateTurn = async (item: TurnNavigationItem) => {
     if (!alive) return;
+    followPrompt = false;
     const target: HistoryNavigation = { kind: 'turn', item };
     historyDestination = {
       position: {
@@ -2160,6 +2154,11 @@ export function Conversation(props: ConversationProps) {
     !activeSends().has(original.id) &&
     (original.receipt == null ||
       (original.receipt.kind === 'recorded' && original.receipt.outcome.kind === 'unresolved'));
+  const checkedFromChat = signal<string | null>(null);
+  const checkFromChat = async (id: string) => {
+    await checkSend(id);
+    if (alive) checkedFromChat.set(id);
+  };
   const checkSend = async (id: string) => {
     const original = unresolved().find((item) => item.id === id);
     if (!alive || !original || activeSends().has(id) || checkingSends().has(id)) return;
@@ -2254,6 +2253,26 @@ export function Conversation(props: ConversationProps) {
       sendError(id, reason);
     }
   };
+  const ignoreInline = async (message: ComposerSendStatus) => {
+    if (message.state !== 'failed' || message.busy) return;
+    try {
+      const snapshot: KeptSend = {
+        id: message.id,
+        text: message.text,
+        files: message.attachments.map((file) => file.name),
+        after: displayKeys().findLast((key) => !key.startsWith('unsent/')),
+      };
+      const entries = await quickStorage.update<KeptBySession>(keptKey, {}, (sessions) => ({
+        ...sessions,
+        [sessionId]: [...(sessions[sessionId] ?? []).filter((item) => item.id !== message.id), snapshot],
+      }));
+      if (!alive) return;
+      kept.set(entries[sessionId]);
+      await dismissOriginal(message.id);
+    } catch (reason) {
+      sendError(message.id, reason);
+    }
+  };
   const sendStatuses = (): ComposerSendStatus[] => {
     const statuses = new Map<string, ComposerSendStatus>();
     const followups = new Set(
@@ -2323,6 +2342,59 @@ export function Conversation(props: ConversationProps) {
       });
     return [...statuses.values()];
   };
+  const inlineSends = computed(() => props.quickTools
+    ? sendStatuses().filter((item) => item.state === 'unknown' || item.state === 'failed')
+    : []);
+  const displayKeys = computed(() => {
+    if (!props.quickTools) return display().map((item) => item.key);
+    const keys = quickAssistantOrder(
+      display().map((item) => {
+        const row = item.kind === 'row' ? projection().rowsById.get(item.rowId) : undefined;
+        return {
+          key: item.key,
+          kind: item.kind,
+          turn: 'turnId' in item ? item.turnId : row?.turnId,
+          role: row?.role,
+        };
+      }),
+    );
+    for (const item of kept()) {
+      if (inlineSends().some((send) => send.id === item.id)) continue;
+      const anchor = item.after ?? item.before;
+      const index = anchor && keys.includes(anchor) ? keys.indexOf(anchor) + 1 : keys.length;
+      keys.splice(index < 0 ? keys.length : index, 0, 'unsent/' + item.id);
+    }
+    return keys.concat(inlineSends().map((send) => 'unsent/' + send.id));
+  });
+  const latestInputKey = computed(() => displayKeys().findLast(key => {
+    if (key.startsWith('unsent/')) return true;
+    const entry = displayByKey().get(key);
+    return entry?.kind === 'row' && projection().rowsById.get(entry.rowId)?.role === 'user';
+  }));
+  // Keep the prompt in view as its reply is first measured. Manual scrolling
+  // or a landmark jump hands positioning back to the reader until next open.
+  let followPrompt = true;
+  let promptFrame: ReturnType<typeof requestAnimationFrame> | undefined;
+  const positionAtLatestInput = () => {
+    if (!props.quickTools || !followPrompt || promptFrame !== undefined) return;
+    promptFrame = requestAnimationFrame(() => {
+      promptFrame = undefined;
+      if (!alive || !followPrompt || !props.visible() || !atHistoryTail()) return;
+      const key = latestInputKey();
+      const index = key === undefined ? -1 : displayKeys().indexOf(key);
+      if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
+      else list?.scrollToEnd({ animated: false });
+    });
+  };
+  cleanup(() => { if (promptFrame !== undefined) cancelAnimationFrame(promptFrame); });
+  effect(() => {
+    if (!props.quickTools) return;
+    if (!props.visible()) { followPrompt = true; return; }
+    if (!ready() || !atHistoryTail()) return;
+    latestInputKey();
+    bot.readState().latest;
+    positionAtLatestInput();
+  });
   const recover = async () => {
     if (!alive || recovering() || sending()) return;
     recovering.set(true);
@@ -2479,6 +2551,7 @@ export function Conversation(props: ConversationProps) {
       invocation() === null &&
       rows().length === 0 &&
       live().length === 0 &&
+      kept().length === 0 &&
       unresolved().length === 0 &&
       activeSends().size === 0 &&
       freezeState().kind === 'idle' &&
@@ -2596,8 +2669,10 @@ export function Conversation(props: ConversationProps) {
           if (state.list) state.list.scrollToEnd({ animated: false });
           else state.opening = 'bottom';
         }
-        if (props.quickTools) list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
-        else list?.scrollToEnd({ animated: false });
+        if (props.quickTools) {
+          followPrompt = true;
+          positionAtLatestInput();
+        } else list?.scrollToEnd({ animated: false });
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
@@ -2666,6 +2741,18 @@ export function Conversation(props: ConversationProps) {
     },
   };
   const botTails = signal(new Map<string, ViewRef>());
+  // A read receipt updates the launcher immediately. The initial boundary stays
+  // with this open chat so reading a reply does not remove its visual marker.
+  const openedReadThrough = signal<number | null>(null);
+  effect(() => {
+    if (!props.quickTools || !props.visible()) {
+      openedReadThrough.set(null);
+      return;
+    }
+    const state = bot.readState();
+    if (state.through > 0 && openedReadThrough() === null)
+      openedReadThrough.set(state.readThrough);
+  });
   const botReadPending = signal(false);
   let botReadAttempt: { sequence: number; exposure: object; node: ViewRef } | null = null;
   effect(() => {
@@ -2923,6 +3010,11 @@ export function Conversation(props: ConversationProps) {
           }
         }
         void attachments.start();
+        if (props.quickTools) {
+          void quickStorage.read<KeptBySession>(keptKey, {}).then((sessions) => {
+            if (alive) kept.set(sessions[sessionId] ?? []);
+          }).catch(report);
+        }
         const operations = await pendingSends(client);
         if (!alive) return;
         unresolved.set(operations);
@@ -2932,13 +3024,48 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
+  const visibleTurns = computed(() => {
+    const ids = new Set<string>();
+    for (const key of visibleRows()) {
+      const turnId = entryTurn(key);
+      if (turnId) ids.add(turnId);
+    }
+    return ids;
+  });
+  const replyPreviews = computed(() => {
+    const replies = new Map<string, string>();
+    if (botView() === 'ordinary') {
+      for (const row of rows()) {
+        if (row.turnId && row.role === 'assistant' && row.text.trim())
+          replies.set(row.turnId, row.text);
+      }
+    }
+    return replies;
+  });
+  const previewReply = (turnId: string) => botView() === 'ordinary'
+    ? replyPreviews().get(turnId) ?? ''
+    : bot.forTurn(turnId).at(-1)?.text ?? '';
+  const conversationScrollbar = computed(() => ({
+    mode: 'hover' as const,
+    motion: { idle: 650, enter: 100, exit: 220 },
+    vertical: {
+      class: 'absolute inset-y-0 right-0 w-3 items-end p-0.5',
+      thumbClass: 'w-[3px] rounded-full transition-all duration-150 motion-reduce:transition-none ' +
+        (isDark()
+          ? 'bg-[#56585d] hover:bg-[#83858b] active:bg-[#83858b]'
+          : 'bg-[#c5c6cb] hover:bg-[#919399] active:bg-[#919399]'),
+    },
+  }));
   const railShown = () => ready() && navigationItems().length > 1;
   // The desktop rail's width, kept on both sides so the reading column stays centered.
-  const railInset = () => (!platform.isTerminal && railShown() ? railWidth() + 8 : 0);
+  const railInset = () => (!platform.isTerminal && railShown() ? railWidth() + (props.quickTools ? 0 : 8) : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
-      active={visibleTurn}
+      visible={visibleTurns}
+      preview={previewReply}
+      active={() => props.quickTools && atHistoryTail() && !awayFromLatest()
+        ? navigationItems().at(-1)?.turnId ?? null : visibleTurn()}
       busy={navigatingTurn}
       navigate={(item) => {
         void navigateTurn(item).catch(report);
@@ -3113,14 +3240,15 @@ export function Conversation(props: ConversationProps) {
           <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
             <List
               ref={list}
+              scrollbar={platform.isTerminal ? undefined : conversationScrollbar()}
               onLayout={({ bounds: frame }) => {
                 readingSize.set(frame.size);
                 changedReadExposure();
               }}
               each={displayKeys()}
               onScrollIntent={(event) => {
-                if (event.intent === 'start' && props.quickTools) ownHandle.jumpLatest(null);
-                else if (event.intent === 'start') void navigateStart().catch(report);
+                followPrompt = false;
+                if (event.intent === 'start') void navigateStart().catch(report);
                 else cancelNavigation();
               }}
               onBlur={() => {
@@ -3135,8 +3263,7 @@ export function Conversation(props: ConversationProps) {
               }}
               estimatedItemSize={96}
               maintainVisibleContentPosition={
-                !props.quickTools &&
-                atHistoryTail() &&
+                !props.quickTools && atHistoryTail() &&
                 innerReader() === null &&
                 navigation() === null
                   ? { autoscrollToBottomThreshold: 32 }
@@ -3146,7 +3273,7 @@ export function Conversation(props: ConversationProps) {
               // beside the reading column; the matching left inset keeps that
               // column centered in the window.
               contentStyle={{
-                paddingLeft: props.quickTools ? 0 : railInset(),
+                paddingLeft: railInset(),
                 paddingTop: props.quickTools ? 26 : 0,
                 paddingBottom: platform.isTerminal ? 0 : 16,
               }}
@@ -3155,10 +3282,7 @@ export function Conversation(props: ConversationProps) {
                 changedReadExposure();
                 awayFromLatest.set(
                   !atHistoryTail() ||
-                    (props.quickTools
-                      ? event.offset.y > 32
-                      : event.offset.y <
-                        Math.max(0, event.contentSize.height - event.size.height) - 32),
+                    event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
                 );
                 const reader = innerReader();
                 const row = reader === null ? undefined : projection().rowsById.get(reader);
@@ -3174,12 +3298,12 @@ export function Conversation(props: ConversationProps) {
                   event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
                 )
                   innerReader.set(null);
-                if (event.offset.y <= 32) void (props.quickTools ? loadNewer() : loadOlder());
+                if (event.offset.y <= 32) void loadOlder();
                 if (
                   event.offset.y >=
                   Math.max(0, event.contentSize.height - event.size.height) - 32
                 )
-                  void (props.quickTools ? loadOlder() : loadNewer());
+                  void loadNewer();
               }}
               empty={
                 <If when={!ready()}>
@@ -3188,9 +3312,50 @@ export function Conversation(props: ConversationProps) {
               }
             >
               {(key) => (
-                <View style={readingColumn}>
+                <View style={readingColumn} onLayout={props.quickTools ? () => {
+                  if (key() === displayKeys().at(-1)) positionAtLatestInput();
+                } : undefined}>
                   <Each of={[key()]} key={(id: string) => id}>
                     {(ownedKey) => {
+                      if (ownedKey().startsWith('unsent/')) {
+                        const id = ownedKey().slice('unsent/'.length);
+                        const send = () => inlineSends().find((item) => item.id === id);
+                        const saved = () => kept().find((item) => item.id === id);
+                        const actionStyle = { ...captionTextStyle, color: C.accent };
+                        return (
+                          <View style={{ alignItems: 'flex-end', paddingVertical: 6, gap: 4 }}>
+                            <View style={{ maxWidth: '86%', backgroundColor: C.raised,
+                              borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 }}>
+                              <Text style={{ color: C.text, fontSize: 14, lineHeight: 22 }}>
+                                {[send()?.text ?? saved()?.text, ...(send()?.attachments.map((f) => f.name)
+                                  ?? saved()?.files ?? [])].filter(Boolean).join('\n')}
+                              </Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                              <Text style={{ ...captionTextStyle, color: C.muted, flexShrink: 1 }}>
+                                {send()?.state === 'unknown' && !send()?.busy && checkedFromChat() === id && !sendErrors().has(id)
+                                  ? tr('Checked · delivery is still unconfirmed.')
+                                  : send()?.detail ?? tr('Not sent')}
+                              </Text>
+                              <If when={send()?.retryable}>
+                                <Button onPress={inputAction(retryOriginal, id)} disabled={!connected()}>
+                                  <Text style={actionStyle}>{tr('Retry')}</Text>
+                                </Button>
+                              </If>
+                              <If when={send()?.state === 'unknown'}>
+                                <Button onPress={inputAction(checkFromChat, id)} disabled={!connected() || send()?.busy}>
+                                  <Text style={actionStyle}>{tr('Check status')}</Text>
+                                </Button>
+                              </If>
+                              <If when={send()?.state === 'failed' && !send()?.busy}>
+                                <Button onPress={() => { const item = send(); if (item) void ignoreInline(item); }}>
+                                  <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Dismiss reminder')}</Text>
+                                </Button>
+                              </If>
+                            </View>
+                          </View>
+                        );
+                      }
                       const initial = displayByKey().get(ownedKey());
                       if (!initial) return <View />;
                       const entry = () => displayByKey().get(ownedKey()) ?? initial;
@@ -3326,6 +3491,8 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <BotReply
                             compact={props.quickTools}
+                            isNew={(sequence) => props.quickTools === true &&
+                              openedReadThrough() !== null && sequence > openedReadThrough()!}
                             tailRef={(node) => {
                               const next = new Map(botTails());
                               if (node) next.set(initial.turnId, node);
@@ -3474,7 +3641,7 @@ export function Conversation(props: ConversationProps) {
             >
               <ReturnToLatest
                 visible={
-                  awayFromLatest() ||
+                  (awayFromLatest() && (!props.quickTools || !visibleRows().has(latestInputKey() ?? ''))) ||
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}
@@ -3498,7 +3665,7 @@ export function Conversation(props: ConversationProps) {
               position: 'absolute',
               top: 0,
               bottom: 0,
-              right: 8,
+              left: props.quickTools ? 0 : 2,
               flexDirection: 'row',
             }}
           >

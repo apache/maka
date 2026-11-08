@@ -31,6 +31,8 @@ type Props = {
   accessibilityLabel: string;
   value: string;
   readonly: boolean;
+  fieldText?: typeof bodyTextStyle;
+  onContentHeight?(height: number): void;
   sourceId?: string;
   sourceOffset?: number;
   placeholder: string;
@@ -56,7 +58,8 @@ export function SkillInput(props: Props) {
   const status = signal<ComposerInputState | null>(null);
   const composition = signal(false);
   const valueCount = signal(0);
-  const height = signal(bodyTextStyle.lineHeight);
+  const fieldText = () => props.fieldText ?? bodyTextStyle;
+  const height = signal(fieldText().lineHeight);
   let alive = true;
   let frame: ReturnType<typeof requestAnimationFrame> | undefined;
   const captureKeys = signal<{ key: string; fallback: boolean }[]>([]);
@@ -154,7 +157,10 @@ export function SkillInput(props: Props) {
           node.caretBounds(),
         ]);
         if (!alive || native() !== node) return;
-        if (measured !== null && measured > 0) height.set(measured);
+        if (measured !== null && measured > 0) {
+          height.set(measured);
+          props.onContentHeight?.(measured);
+        }
         if (pageBounds) props.onCaretMove?.({ bounds: pageBounds, pageBounds });
       } catch (error) {
         if (alive) throw error;
@@ -171,7 +177,7 @@ export function SkillInput(props: Props) {
   };
   return (
     <View
-      style={[props.style, { height: height(), minHeight: bodyTextStyle.lineHeight }]}
+      style={[props.style, props.onContentHeight ? {} : { height: height(), minHeight: fieldText().lineHeight }]}
       onFileDrop={props.onFileDrop}
       onFileDragEnter={props.onFileDragEnter}
       onFileDragLeave={props.onFileDragLeave}
@@ -192,11 +198,11 @@ export function SkillInput(props: Props) {
         tokenIcon={lucide.book[0].d}
         captureKeys={captureKeys()}
         styles={{
-          root: { ...bodyTextStyle, color: C.text },
+          root: { ...fieldText(), color: C.text },
           content: { padding: 0 },
           caret: { backgroundColor: C.text },
           placeholder: { color: C.muted },
-          nodes: { paragraph: bodyTextStyle },
+          nodes: { paragraph: fieldText() },
         }}
         style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
         onChange={(event) => {

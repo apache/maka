@@ -1,5 +1,5 @@
 /* Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE. */
-/** Match the legacy transcript: newest messages first, including replies above their prompts. */
+/** Keep turns in chronological order and omit internal process rows. */
 export function quickAssistantOrder(
   entries: readonly {
     key: string;
@@ -20,5 +20,5 @@ export function quickAssistantOrder(
     group.push(entry.key);
     turns.set(key, group);
   }
-  return [...turns.values()].reverse().flatMap((group) => group.reverse());
+  return [...turns.values()].flat();
 }

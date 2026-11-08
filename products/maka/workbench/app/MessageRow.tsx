@@ -47,7 +47,9 @@ import {
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
-import { MessageCopy } from './MessageCopy';
+import { useHost } from './host';
+import { QuickMessageTools, messageTime } from './QuickMessageTools';
+import { MessageCopy, readOriginal } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
@@ -133,6 +135,7 @@ export function MessageRow({
   failureActions?(row: () => Row): JSX.Element;
 }) {
   const rowKey = (row: Row) => ownerKey?.() ?? messageKey(row);
+  const host = useHost();
   return (
     <Each of={[item()]} key={rowKey}>
       {(row) => {
@@ -260,14 +263,6 @@ export function MessageRow({
         const compact = () => thinking() || isTool();
         const user = () => row().role === 'user';
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
-        const timestamp = () => {
-          const value = (row() as Row & { timestamp?: number }).timestamp;
-          if (typeof value !== 'number') return '';
-          const date = new Date(value);
-          return Number.isNaN(date.getTime())
-            ? ''
-            : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-        };
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
         const menu = platform.isTerminal || compact() || quickTools ? undefined : createMessageMenu();
@@ -484,6 +479,15 @@ export function MessageRow({
                 </If>
               }
             >
+              <QuickMessageTools enabled={Boolean(quickTools)} user timestamp={row().timestamp}
+                text={async current => {
+                  const item = row();
+                  if (!item.position || item.field !== 'body') return item.text;
+                  return readOriginal(host, {
+                    sessionId, key: rowKey(item), role: 'user', position: item.position,
+                    through: item.metadataThrough ?? through(),
+                  }, current);
+                }}>
               <View
                 style={{
                   alignSelf: 'flex-end',
@@ -507,11 +511,11 @@ export function MessageRow({
                   />
                 </If>
               </View>
+              </QuickMessageTools>
+              <If when={!quickTools}>
               <View
                 class={revealed}
                 style={{
-                  marginBottom: quickTools ? -24 : 0,
-                  opacity: quickTools ? 0 : 1,
                   alignSelf: 'flex-end',
                   width: '78%',
                   minWidth: 0,
@@ -524,11 +528,10 @@ export function MessageRow({
                   // The last glyph ends where the bubble does.
                   marginRight: platform.isTerminal ? 0 : -8,
                 }}
-                hoverStyle={{ opacity: 1 }}
               >
-                <If when={timestamp()}>
+                <If when={messageTime(row().timestamp)}>
                   <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-                    {timestamp()}
+                    {messageTime(row().timestamp)}
                   </Text>
                 </If>
                 <MessageCopy
@@ -540,6 +543,7 @@ export function MessageRow({
                 />
                 {!quickTools && editMessage?.(row, () => rowKey(row()), menu)}
               </View>
+              </If>
             </If>
           </View>
         );

@@ -490,6 +490,7 @@ export function SettingsInlineInput(props: {
   masked?: boolean;
   disabled?: boolean;
   grow?: number;
+  onCommit?(): void;
 }) {
   return (
     <Input
@@ -497,6 +498,8 @@ export function SettingsInlineInput(props: {
       value={props.value}
       placeholder={props.placeholder ?? props.label}
       onChange={({ value }) => props.change(value)}
+      onBlur={props.onCommit}
+      onSubmit={props.onCommit}
       masked={props.masked}
       readonly={props.disabled}
       autoCapitalize="none"

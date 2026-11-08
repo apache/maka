@@ -69,10 +69,11 @@ export function createMessagesDock(
     'queue' | 'sends' | 'connected' | 'retrySend' | 'checkSend' | 'dismissSend'
   >,
   height: () => number,
+  compact = false,
 ) {
   const queue = session.queue;
   const connected = session.connected;
-  const sends = computed(() => session.sends());
+  const sends = computed(() => compact ? [] : session.sends());
   const items = computed(
     () => queue.snapshot()?.entries.filter((row) => row.kind === 'followup') ?? [],
   );
@@ -275,7 +276,9 @@ export function createMessagesDock(
     shown: () =>
       messages().length > 0 || editing() !== null || busy() !== null || (connected() && !!error()),
     summary: () =>
-      problems().length
+      compact && messages().length
+        ? tr('Message status ({count})', { count: messages().length })
+        : problems().length
         ? tr('{count} · {problems} to review', {
             count: messages().length,
             problems: problems().length,

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import {
   QuickToolsBar,
   QuickToolsMark,
@@ -2447,10 +2448,18 @@ export function createConversationUi(
               </View>
             </If>
             <If when={Boolean(input.shell.quickToolsBar)}>
-              <QuickToolsBar openSettings={() => input.shell.quickToolsBar?.openSettings()}>
-                <QuickToolsMark />
+              <QuickToolsBar
+                expanding
+                openSettings={() => input.shell.quickToolsBar?.openSettings()}
+              >
+                <View style={{ height: 40, justifyContent: 'center' }}>
+                  <QuickToolsMark />
+                </View>
                 <View style={{ flex: 1, minWidth: 0 }}>{composer()}</View>
               </QuickToolsBar>
+              <Each of={composerSession() ? [composerSession()!] : []} key={(owner) => owner.sessionId}>
+                {(owner) => <ComposerDetails session={owner()} compact />}
+              </Each>
             </If>
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (

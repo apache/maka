@@ -36,6 +36,7 @@ import { loadDraft, saveDraft } from './host';
 import type { OperationReply } from '../../../../packages/plugin-sdk/src/index.js';
 import { C, isDark, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
+import { toolIcon } from './QuickToolIcon';
 import { Icon } from './Icon';
 import { serveQuickSettings } from './quickSettings';
 import { QuickShortcutRecorder } from './QuickShortcutRecorder';
@@ -58,34 +59,6 @@ function ErrorHint(props: { message: string }) {
     </View>
   );
 }
-const pluginGlyph = (id = '', icon = ''): Parameters<typeof Icon>[0]['name'] => {
-  const kind = `${id} ${icon}`;
-  if (/assistant|suggestions/.test(kind)) return 'thinking';
-  if (/quicklink|link/.test(kind)) return 'paperclip';
-  if (/clipboard/.test(kind)) return 'copy';
-  if (/notes|snippet/.test(kind)) return 'file';
-  if (/files/.test(kind)) return 'folder';
-  if (/calculator/.test(kind)) return 'code';
-  if (/chrome|browser/.test(kind)) return 'sidebar';
-  if (/screenshot/.test(kind)) return 'image';
-  if (/bilibili/.test(kind)) return 'play';
-  if (/symbols/.test(kind)) return 'plus';
-  if (/application/.test(kind)) return 'split';
-  return 'command';
-};
-const toolIcon = (icon?: string, id?: string) => (
-  <View
-    style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
-  >
-    <If
-      when={icon?.startsWith('data:image/png;base64,')}
-      else={<Icon name={pluginGlyph(id, icon)} color={C.secondary} />}
-    >
-      <Image src={icon ?? ''} style={{ width: 26, height: 26 }} />
-    </If>
-  </View>
-);
-
 /** NSH components: the same native view runs on GPUI and AppKit. */
 export function QuickToolsSurface(props: {
   opened(): boolean;

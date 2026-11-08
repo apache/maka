@@ -21,7 +21,6 @@ import {
   quickFieldText,
   quickEditorInset,
   quickFieldHeight,
-  quickFieldStyle,
 } from '../../../../products/maka/workbench/app/QuickToolsBar';
 import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
@@ -526,7 +525,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
-                <ComposerDetails session={owner} />
+                <If when={!props.quickTools}><ComposerDetails session={owner} /></If>
               </View>
             );
           }}
@@ -598,6 +597,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   if (pendingDrop === drop) pendingDrop = null;
                 });
               }
+              const measuredRows = signal(1);
+              const quickInputHeight = () => {
+                const draft = owner?.draft() ?? local?.draft() ?? '';
+                const rows = draft ? Math.max(draft.split('\n').length, measuredRows()) : 1;
+                const visible = rows === 1 ? 1 : Math.min(5, Math.max(3, rows));
+                return quickFieldHeight + (visible - 1) * quickFieldText.lineHeight;
+              };
               const focusEditor = () => {
                 if (owner?.editable() || local) editor()?.focus();
               };
@@ -692,10 +698,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           : hero() && !compact()
                             ? 40
                             : 24,
-                        maxHeight: compact() ? 64 : 144,
+                        height: props.quickTools ? quickInputHeight() : undefined,
+                        maxHeight: props.quickTools ? undefined : compact() ? 64 : 144,
                       }}
                     >
                       <SkillInput
+                        fieldText={props.quickTools ? quickFieldText : undefined}
+                        onContentHeight={props.quickTools ? (height) => {
+                          measuredRows.set(Math.max(1, Math.round(height / quickFieldText.lineHeight)));
+                        } : undefined}
                         ref={(node) => {
                           editor.set(node);
                           props.attach(node);
@@ -815,7 +826,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             color: C.text,
                             ...bodyTextStyle,
                             ...(props.quickTools
-                              ? { ...quickFieldStyle(), paddingVertical: quickEditorInset }
+                              ? { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, paddingTop: quickEditorInset }
                               : {}),
                             ...(owner !== null && suggestedMessage() !== null
                               ? {

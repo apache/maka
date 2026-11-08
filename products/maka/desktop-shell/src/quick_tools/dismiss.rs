@@ -1,20 +1,12 @@
 /* Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE. */
 // A nonactivating panel can remain key while a different app handles a click.
 use block2::RcBlock;
-use objc2::{
-    rc::Retained,
-    runtime::{AnyObject, ProtocolObject},
-};
-use objc2_app_kit::{
-    NSEvent, NSEventMask, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
-};
-use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSOperationQueue};
+use objc2::{rc::Retained, runtime::AnyObject};
+use objc2_app_kit::{NSEvent, NSEventMask};
 use std::{ptr::NonNull, rc::Rc};
 
 pub(super) struct DismissObservers {
     clicks: Vec<Retained<AnyObject>>,
-    center: Retained<NSNotificationCenter>,
-    activation: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
 
 impl DismissObservers {
@@ -40,26 +32,10 @@ impl DismissObservers {
                 }),
             )
         };
-        let center = NSWorkspace::sharedWorkspace().notificationCenter();
-        let activation = unsafe {
-            center.addObserverForName_object_queue_usingBlock(
-                Some(NSWorkspaceDidActivateApplicationNotification),
-                None,
-                Some(&NSOperationQueue::mainQueue()),
-                &RcBlock::new(move |_| {
-                    if NSWorkspace::sharedWorkspace()
-                        .frontmostApplication()
-                        .is_some_and(|app| app.processIdentifier() != std::process::id() as i32)
-                    {
-                        dismiss();
-                    }
-                }),
-            )
-        };
+        // Window deactivation is observed by the panel itself. A workspace notification
+        // can still report the previous application while the panel is becoming key.
         Self {
             clicks: global.into_iter().chain(local).collect(),
-            center,
-            activation,
         }
     }
 }
@@ -70,7 +46,6 @@ impl Drop for DismissObservers {
             for token in &self.clicks {
                 NSEvent::removeMonitor(token);
             }
-            self.center.removeObserver((*self.activation).as_ref());
         }
     }
 }

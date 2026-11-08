@@ -17,68 +17,30 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
-import type { ListRef } from 'nsh';
-import { Button } from 'nsh/base';
-import { pixelRatio, platform, windowSize } from 'nsh';
-import { host as nativeHost } from 'maka/host';
-import type { Position } from './history';
-import { C, controlStyle, captionTextStyle } from './ui';
-import { Icon } from './Icon';
-import { tr } from './locale';
+import { textTooltip } from "./ui";
+import {
+  Canvas,
+  computed,
+  effect,
+  inputAction,
+  signal,
+  Text,
+  View,
+  Overlay,
+  List,
+} from "nsh";
+import type { ListRef } from "nsh";
+import { Button } from "nsh/base";
+import { reduceMotion, platform, windowSize } from "nsh";
+import type { Position } from "./history";
+import { C, controlStyle, captionTextStyle, isDark } from "./ui";
+import { Icon } from "./Icon";
+import { tr } from "./locale";
 
-// Cell input rounds by half a 16 / scale row; include the two-point stroke.
-const markPitch = computed(() => {
-  if (platform.isTerminal) return 16;
-  pixelRatio();
-  windowSize();
-  return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
-});
+const markPitch = () => (platform.isTerminal ? 16 : 12);
 const railInset = platform.isTerminal ? 0 : 6;
 const railMargin = 32;
-export const railWidth = () => (platform.isTerminal ? 24 : markPitch());
-
-function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) {
-  const color = () => (props.active ? C.text : C.line);
-  if (platform.isTerminal)
-    return (
-      <Text
-        accessibilityElementsHidden
-        style={[
-          {
-            width: railWidth(),
-            height: markPitch(),
-            lineHeight: markPitch(),
-            textAlign: 'center',
-            color: color(),
-          },
-          { pointerEvents: 'none' },
-        ]}
-      >
-        {props.busy ? '◌' : props.active ? '●' : '━'}
-      </Text>
-    );
-  return (
-    <Canvas
-      accessibilityElementsHidden
-      style={[{ width: railWidth(), height: markPitch() }, { pointerEvents: 'none' }]}
-      draw={(cx) => {
-        cx.strokeStyle = color();
-        cx.lineWidth = 2;
-        cx.lineCap = 'round';
-        cx.beginPath();
-        if (props.busy) cx.arc(railWidth() - 6, markPitch() / 2, 3, 0, Math.PI * 2);
-        else {
-          const width = props.active ? 20 : props.landmark ? 8 : 12;
-          cx.moveTo(railWidth() - width - 1, markPitch() / 2);
-          cx.lineTo(railWidth() - 1, markPitch() / 2);
-        }
-        cx.stroke();
-      }}
-    />
-  );
-}
+export const railWidth = () => (platform.isTerminal ? 24 : 26);
 
 function RailFade(props: { bottom: boolean }) {
   return (
@@ -86,14 +48,14 @@ function RailFade(props: { bottom: boolean }) {
       accessibilityElementsHidden
       style={[
         {
-          position: 'absolute',
+          position: "absolute",
           left: 0,
           top: props.bottom ? undefined : 0,
           bottom: props.bottom ? 0 : undefined,
           width: railWidth(),
           height: 24,
         },
-        { pointerEvents: 'none' },
+        { pointerEvents: "none" },
       ]}
       draw={(cx) => {
         const fade = cx.createLinearGradient(0, 0, 0, 24);
@@ -110,9 +72,9 @@ export type TurnNavigationItem = {
   turnId: string;
   label: string;
   anchor:
-    | { kind: 'loaded'; position: Position }
+    | { kind: "loaded"; position: Position }
     | {
-        kind: 'landmark';
+        kind: "landmark";
         through: number;
         position: Position;
         lastPosition: Position;
@@ -122,83 +84,125 @@ export type TurnNavigationItem = {
 function NavigationMark(props: {
   item(): TurnNavigationItem;
   active: boolean;
+  distance: number;
+  preview(): string;
+  hover(): void;
+  leave(): void;
   busy: boolean;
   navigate(item: TurnNavigationItem): void;
 }) {
   return (
-    <Button
-      accessibilityLabel={tr('Jump to turn: {label}', {
-        label: props.item().label || tr('Recorded turn'),
-      })}
-      tooltip={
-        <Overlay
-          placement="left"
-          hintDelay={0}
-          offset={12}
-          margin={16}
-          style={{
-            width: Math.min(300, Math.max(0, windowSize().width - 32)),
-            maxHeight: 100,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-            borderRadius: 8,
-            backgroundColor: C.surface,
-            borderWidth: 1,
-            borderColor: C.line,
-            pointerEvents: 'none',
-          }}
-        >
-          <Text
-            style={[
-              { ...captionTextStyle, color: C.text, fontWeight: '500' },
-              { numberOfLines: 3 },
-            ]}
+    <View onMouseEnter={props.hover} onMouseLeave={props.leave}>
+      <Button
+        accessibilityLabel={tr("Jump to turn: {label}", {
+          label: props.item().label || tr("Recorded turn"),
+        })}
+        tooltip={
+          <Overlay
+            placement="right"
+            hintDelay={0}
+            offset={12}
+            margin={16}
+            style={{
+              width: Math.min(248, Math.max(0, windowSize().width - 32)),
+              maxHeight: 100,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              borderRadius: 8,
+              backgroundColor: C.surface,
+              borderWidth: 1,
+              borderColor: C.line,
+              pointerEvents: "none",
+            }}
           >
-            {props.item().label || tr('Recorded turn')}
+            <Text
+              style={[
+                { ...captionTextStyle, color: C.text, fontWeight: "500" },
+                { numberOfLines: 1 },
+              ]}
+            >
+              {props.item().label || tr("Recorded turn")}
+            </Text>
+            <If when={props.preview()}>
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.muted },
+                  { numberOfLines: 2 },
+                ]}
+              >
+                {props.preview()}
+              </Text>
+            </If>
+            <If when={props.busy}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr("Navigating…")}
+              </Text>
+            </If>
+          </Overlay>
+        }
+        selected={props.active}
+        onPress={inputAction(props.navigate, props.item())}
+        style={{
+          height: markPitch(),
+          width: railWidth(),
+          alignItems: "flex-start",
+          paddingLeft: platform.isTerminal ? 0 : 7,
+          justifyContent: "center",
+        }}
+        focusStyle={{ backgroundColor: C.raised }}
+      >
+        <If when={platform.isTerminal}>
+          <Text style={{ color: props.active ? C.text : C.line }}>
+            {props.busy ? "◌" : props.active ? "●" : "━"}
           </Text>
-          <If when={props.busy}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
-          </If>
-        </Overlay>
-      }
-      selected={props.active}
-      onPress={inputAction(props.navigate, props.item())}
-      style={{
-        height: markPitch(),
-        width: railWidth(),
-        borderRadius: 4,
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-      hoverStyle={{ backgroundColor: C.card }}
-      focusStyle={{ backgroundColor: C.raised }}
-    >
-      <TurnMark
-        active={props.active}
-        busy={props.busy}
-        landmark={props.item().anchor.kind === 'landmark'}
-      />
-    </Button>
+        </If>
+        <If when={!platform.isTerminal}>
+          <View
+            style={{
+              height: 2,
+              width: [19, 14, 9][props.distance] ?? 6,
+              borderRadius: 1,
+              backgroundColor: isDark()
+                ? (props.active || props.distance === 0 ? "#ffffff" : C.muted)
+                : (props.distance === 0 ? "#383b43" : props.active ? "#72757d" : "#b3b5ba"),
+              transitionProperty: "width",
+              transitionDuration: reduceMotion() ? 0 : 150,
+              transitionTimingFunction: "ease-out",
+            }}
+          />
+        </If>
+      </Button>
+    </View>
   );
 }
 
 /** Host landmarks and the loaded window retain one native, independently scrolling rail. */
 export function TurnNavigation(props: {
+  visible?(): ReadonlySet<string>;
+  preview?(turnId: string): string;
   items(): readonly TurnNavigationItem[];
   active(): string | null;
   busy(): string | null;
   navigate(item: TurnNavigationItem): void;
   cancel(): void;
 }) {
+  const hovered = signal<string | null>(null);
+  const hoveredIndex = computed(() =>
+    props.items().findIndex((item) => item.turnId === hovered()),
+  );
   const height = signal(0);
   const offset = signal(0);
-  const contentHeight = computed(() => props.items().length * markPitch() + railInset * 2);
+  const contentHeight = computed(
+    () => props.items().length * markPitch() + railInset * 2,
+  );
   const frameHeight = computed(() => {
     // Bound the instrument's geometry, never its item count or history source.
     const available = Math.min(420, Math.max(0, height() - railMargin * 2));
     return Math.min(
       contentHeight(),
-      platform.isTerminal ? Math.floor(available / markPitch()) * markPitch() : available,
+      platform.isTerminal
+        ? Math.floor(available / markPitch()) * markPitch()
+        : available,
     );
   });
   const activeIndex = computed(() => {
@@ -208,7 +212,13 @@ export function TurnNavigation(props: {
   let rail: ListRef | undefined;
   const followActive = () => {
     const index = activeIndex();
-    if (rail && props.active() !== null && index >= 0)
+    if (
+      rail &&
+      contentHeight() > frameHeight() &&
+      frameHeight() > 0 &&
+      props.active() !== null &&
+      index >= 0
+    )
       rail.scrollToIndex({
         index,
         viewPosition: 0.5,
@@ -225,13 +235,13 @@ export function TurnNavigation(props: {
   return (
     <View
       onLayout={({ bounds: frame }) => height.set(frame.size.height)}
-      style={{ width: railWidth(), minHeight: 0, justifyContent: 'center' }}
+      style={{ width: railWidth(), minHeight: 0, justifyContent: "center" }}
     >
       <View style={{ width: railWidth(), height: frameHeight() }}>
         <List
           ref={rail}
           testID="turn-navigation"
-          accessibilityLabel={tr('Turn navigation')}
+          accessibilityLabel={tr("Turn navigation")}
           each={props.items()}
           keyExtractor={(item) => item.turnId}
           estimatedItemSize={markPitch()}
@@ -241,10 +251,25 @@ export function TurnNavigation(props: {
           onScroll={(event) => offset.set(event.offset.y)}
           style={{ flex: 1, minHeight: 0 }}
         >
-          {(item) => (
+          {(item, index) => (
             <NavigationMark
               item={item}
-              active={props.active() === item().turnId}
+              active={
+                platform.isTerminal
+                  ? props.active() === item().turnId
+                  : (props.visible?.().has(item().turnId) ??
+                    props.active() === item().turnId)
+              }
+              distance={
+                hoveredIndex() < 0
+                  ? Infinity
+                  : Math.abs(index() - hoveredIndex())
+              }
+              preview={() => props.preview?.(item().turnId) ?? ""}
+              hover={() => hovered.set(item().turnId)}
+              leave={() => {
+                if (hovered() === item().turnId) hovered.set(null);
+              }}
               busy={props.busy() === item().turnId}
               navigate={props.navigate}
             />
@@ -253,24 +278,28 @@ export function TurnNavigation(props: {
         <If when={!platform.isTerminal && offset() > 0}>
           <RailFade bottom={false} />
         </If>
-        <If when={!platform.isTerminal && offset() + frameHeight() < contentHeight()}>
+        <If
+          when={
+            !platform.isTerminal && offset() + frameHeight() < contentHeight()
+          }
+        >
           <RailFade bottom />
         </If>
         <If when={props.busy()}>
           <Button
-            accessibilityLabel={tr('Cancel turn navigation')}
-            tooltip={textTooltip(() => tr('Cancel navigation'))}
+            accessibilityLabel={tr("Cancel turn navigation")}
+            tooltip={textTooltip(() => tr("Cancel navigation"))}
             onPress={props.cancel}
             style={{
-              position: 'absolute',
+              position: "absolute",
               right: 0,
-              top: '100%',
+              top: "100%",
               marginTop: platform.isTerminal ? 0 : 8,
               width: railWidth(),
               height: platform.isTerminal ? 32 : markPitch(),
               borderRadius: 8,
-              alignItems: 'center',
-              justifyContent: 'center',
+              alignItems: "center",
+              justifyContent: "center",
               backgroundColor: C.card,
             }}
             hoverStyle={{ backgroundColor: C.cardRaised }}
@@ -288,28 +317,34 @@ export function TurnNavigation(props: {
  * `paused`: the view is already at the end but stopped following live output
  * (an expanded tool is being read), so the button resumes rather than descends.
  */
-export function ReturnToLatest(props: { visible: boolean; paused?: boolean; activate(): void }) {
+export function ReturnToLatest(props: {
+  visible: boolean;
+  paused?: boolean;
+  activate(): void;
+}) {
   return (
     <If when={props.visible}>
       <View
         style={[
           {
-            position: 'absolute',
+            position: "absolute",
             left: 0,
             right: 0,
             bottom: 8,
-            alignItems: 'center',
+            alignItems: "center",
           },
-          { pointerEvents: 'box-none' },
+          { pointerEvents: "box-none" },
         ]}
       >
         <Button
-          accessibilityLabel={props.paused ? tr('Resume following') : tr('Return to latest')}
+          accessibilityLabel={
+            props.paused ? tr("Resume following") : tr("Return to latest")
+          }
           onPress={props.activate}
           style={{
             ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
+            flexDirection: "row",
+            alignItems: "center",
             gap: 8,
             backgroundColor: C.cardRaised,
           }}
@@ -320,7 +355,7 @@ export function ReturnToLatest(props: { visible: boolean; paused?: boolean; acti
             <Icon name="latest" color={C.secondary} />
           </If>
           <Text style={{ ...captionTextStyle, color: C.text }}>
-            {props.paused ? tr('Resume following') : tr('Latest')}
+            {props.paused ? tr("Resume following") : tr("Latest")}
           </Text>
         </Button>
       </View>

@@ -1,4 +1,5 @@
 {
+  "未设置": "Not set",
   "打开快捷工具设置": "Open Quick Tools Settings",
   "加载中…": "Loading…",
   "启用快捷键": "Enable hotkey",
@@ -472,5 +473,11 @@
   "截图失败": "Screenshot capture failed",
   "条目设置": "Item settings",
   "插件详情：${0}": "Plugin details: ${0}",
-  "请选择同一个插件的更新包": "Choose an update package for the same plugin"
+  "请选择同一个插件的更新包": "Choose an update package for the same plugin",
+  "全局唤起": "Global hotkey",
+  "唤起快捷工具": "Open Quick Tools",
+  "插件与命令": "Plugins and commands",
+  "搜索插件、命令或别名": "Search plugins, commands, or aliases",
+  "命令": "Command",
+  "没有匹配项": "No matches"
 }
