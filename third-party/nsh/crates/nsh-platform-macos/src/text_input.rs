@@ -545,7 +545,6 @@ impl Ctx {
             // The scroll views around show the field, as on phones.
             crate::scroll::reveal(&surface, &view);
         }
-        let events_before = surface.events_sent();
         let kind = if focused {
             EventKind::Focus
         } else {
@@ -553,16 +552,18 @@ impl Ctx {
         };
         self.send(kind, || EventPayload::None);
         if focused {
-            if wants_text(&surface) && surface.events_sent() > events_before {
-                arm(&surface);
-            } else if !has_pending(&surface) {
-                disarm(&surface);
-            }
             self.selection_changed();
         }
         leave_changing(&surface);
-        if focused && !is_changing(&surface) {
-            flush_pending(&surface);
+        if focused {
+            if wants_text(&surface) && surface.events_handled() < surface.events_sent() {
+                arm(&surface);
+            } else {
+                maybe_disarm(&surface);
+            }
+            if !is_changing(&surface) {
+                flush_pending(&surface);
+            }
         }
     }
 
@@ -1758,6 +1759,7 @@ impl InputState {
             leave_changing(surface);
             if !is_changing(surface) {
                 flush_pending(surface);
+                maybe_disarm(surface);
             }
         }
     }
@@ -2775,6 +2777,16 @@ pub(crate) fn disarm(surface: &Surface) {
     crate::keymap::sync_monitor(surface);
 }
 
+pub(crate) fn maybe_disarm(surface: &Surface) {
+    if !behind(surface)
+        && !has_pending(surface)
+        && !has_pending_auto_focus(surface)
+        && !is_changing(surface)
+    {
+        disarm(surface);
+    }
+}
+
 pub(crate) fn is_armed(surface: &Surface) -> bool {
     FOCUS.with(|f| {
         f.borrow()
@@ -2810,13 +2822,7 @@ fn behind(surface: &Surface) -> bool {
 pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
     if is_armed(surface) && !behind(surface) {
         flush_pending(surface);
-        if !behind(surface)
-            && !has_pending(surface)
-            && !has_pending_auto_focus(surface)
-            && !is_changing(surface)
-        {
-            disarm(surface);
-        }
+        maybe_disarm(surface);
     }
 }
 

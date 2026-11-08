@@ -546,9 +546,10 @@ impl Ed {
             if !ed.completion.open.get() {
                 return;
             }
+            let input = ed.input;
             let bind = |keys: &str, repeat: bool, f: Rc<dyn Fn(&Ed)>| {
                 let e = ed.clone();
-                on_key_with(
+                input.on_key_with(
                     keys,
                     KeyOptions {
                         when: When::Always,
@@ -582,10 +583,11 @@ impl Ed {
             if !ed.completion.ghost.get() || ed.completion.open.get() {
                 return;
             }
+            let input = ed.input;
             let e = ed.clone();
-            on_key_with("tab", always(), move |_| e.accept_inline_completion());
+            input.on_key_with("tab", always(), move |_| e.accept_inline_completion());
             let e = ed.clone();
-            on_key_with("escape", always(), move |_| e.hide_inline_completion());
+            input.on_key_with("escape", always(), move |_| e.hide_inline_completion());
         });
         let ed = self.clone();
         effect(move || {

@@ -198,9 +198,10 @@ impl Term {
             if !term.focused.get() {
                 return;
             }
+            let sink = term.sink;
             for (keys, bytes) in keys::bindings(apple_keys()) {
                 let term = term.clone();
-                on_key_with(
+                sink.on_key_with(
                     keys,
                     KeyOptions {
                         when: nsh_core::keymap::When::Always,

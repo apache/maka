@@ -628,9 +628,7 @@ define_class!(
                 // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
-                    if !crate::text_input::has_pending(&surface) {
-                        crate::text_input::disarm(&surface);
-                    }
+                    crate::text_input::maybe_disarm(&surface);
                 }
             }
             accepted

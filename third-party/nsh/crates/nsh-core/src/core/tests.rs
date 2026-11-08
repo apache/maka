@@ -32662,3 +32662,136 @@ fn native_focus_path_keeps_virtual_list_cell_across_scroll_splice_and_zero_viewp
     c.commit();
     assert_eq!(bound_slot(&c, 2, 5), focused_slot);
 }
+
+#[test]
+fn element_ref_on_key_with_scopes_within_attached_node_on_focus_scope_hosts() {
+    use crate::{
+        element::{Environment, Root},
+        keymap::{KeyMatch, Keystroke, When},
+        platform::Os,
+        prelude::*,
+    };
+
+    thread_local! {
+        static HITS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    #[derive(Default)]
+    struct ScopedKeys;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct ScopedKeysProps {}
+
+    impl Component for ScopedKeys {
+        type Props = ScopedKeysProps;
+        type Event = NoEvent;
+
+        fn view(_: ScopedKeysProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let show = signal(false);
+            let sink: ElementRef = element_ref();
+            sink.on_key_with(
+                "ctrl+a",
+                KeyOptions {
+                    when: When::Always,
+                    repeat: false,
+                    ..Default::default()
+                },
+                move |_| HITS.with(|hits| hits.set(hits.get() + 1)),
+            );
+            view()
+                .flex_1()
+                .child(
+                    view()
+                        .test_id("toggle")
+                        .on_press(move |_: &PressEvent| show.update(|v| *v = !*v)),
+                )
+                .child(when(
+                    move || show.get(),
+                    move || input().test_id("sink").element_ref(&sink),
+                ))
+        }
+    }
+
+    let keymap_of = |batch: &MountBatch| {
+        batch.items.iter().find_map(|item| match item {
+            MountItem::Keymap(k) => Some(k.clone()),
+            _ => None,
+        })
+    };
+    let label_id = |batch: &MountBatch, wanted: &str| {
+        batch.items.iter().find_map(|item| match item {
+            MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(wanted) => {
+                Some(*id)
+            }
+            _ => None,
+        })
+    };
+
+    let ctrl_a = Keystroke::parse("ctrl+a", Os::Linux).unwrap();
+
+    // 1. Native focus-scope host: unmounted ref emits no global binding; mounted ref scopes `within` to sink.
+    HITS.with(|hits| hits.set(0));
+    let mut scoped = core();
+    scoped.set_environment(Environment {
+        native_focus_scopes: true,
+        ..Environment::default()
+    });
+    scoped.mount_root(&Root::new::<ScopedKeys>(|| ScopedKeysProps {}));
+    let first = scoped.commit().unwrap();
+    let toggle = label_id(&first, "toggle").expect("toggle view");
+    assert_eq!(
+        keymap_of(&first).expect("initial keymap").bindings().len(),
+        0,
+        "unmounted scoped ElementRef must not leak an unscoped binding"
+    );
+
+    assert!(scoped.component_event(toggle, EventKind::Press, &EventPayload::None));
+    let mounted = scoped.commit().unwrap();
+    let sink_id = label_id(&mounted, "sink").expect("mounted sink");
+    let table = keymap_of(&mounted).expect("mounted keymap");
+    assert_eq!(table.bindings().len(), 1);
+    assert_eq!(table.bindings()[0].within, Some(sink_id));
+    assert_eq!(
+        table.find_with(ctrl_a, true, false, |id| id == toggle),
+        KeyMatch::None,
+        "focused sibling input outside sink must not match sink's When::Always binding"
+    );
+    let KeyMatch::Fire(binding_id) = table.find_with(ctrl_a, true, false, |id| id == sink_id)
+    else {
+        panic!("expected Fire when focus is within sink");
+    };
+    assert!(scoped.component_event(
+        ROOT_ID,
+        EventKind::KeyCommand,
+        &EventPayload::Value(PayloadValue::Number(binding_id as f64)),
+    ));
+    assert_eq!(HITS.with(Cell::get), 1);
+
+    assert!(scoped.component_event(toggle, EventKind::Press, &EventPayload::None));
+    let unmounted = scoped.commit().unwrap();
+    assert_eq!(
+        keymap_of(&unmounted)
+            .expect("unmounted keymap")
+            .bindings()
+            .len(),
+        0
+    );
+
+    // 2. Host without native focus scopes (e.g. headless): `within` stays None so `Keymap::find` fires.
+    HITS.with(|hits| hits.set(0));
+    let mut headless = core();
+    headless.mount_root(&Root::new::<ScopedKeys>(|| ScopedKeysProps {}));
+    let first = headless.commit().unwrap();
+    let table = keymap_of(&first).expect("headless keymap");
+    assert_eq!(table.bindings().len(), 1);
+    assert_eq!(table.bindings()[0].within, None);
+    let KeyMatch::Fire(binding_id) = table.find(ctrl_a, true, false) else {
+        panic!("headless Keymap::find must fire");
+    };
+    assert!(headless.component_event(
+        ROOT_ID,
+        EventKind::KeyCommand,
+        &EventPayload::Value(PayloadValue::Number(binding_id as f64)),
+    ));
+    assert_eq!(HITS.with(Cell::get), 1);
+}

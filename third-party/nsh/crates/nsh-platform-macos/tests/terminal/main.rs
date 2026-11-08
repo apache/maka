@@ -53,6 +53,10 @@ fn main() -> std::process::ExitCode {
             "native_input_shortcuts_copy_cut_paste_and_undo_without_global_pasteboard",
             cases::native_input_clipboard_and_undo,
         ),
+        (
+            "rich_editor_to_box_none_input_focus_transition_copies_and_submits",
+            cases::rich_editor_to_box_none_input_focus_transition,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];

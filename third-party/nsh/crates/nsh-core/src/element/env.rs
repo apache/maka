@@ -51,6 +51,9 @@ pub struct Environment {
     /// Ctrl stands in for Command: labels show Command as Ctrl
     /// ([`crate::platform::Environment::ctrl_for_command`]).
     pub ctrl_for_command: bool,
+    /// The host tracks native focus paths and matches `within`-scoped shortcuts
+    /// ([`crate::platform::Environment::native_focus_scopes`]).
+    pub native_focus_scopes: bool,
     /// The embedding app answers `nsh/host`'s calls
     /// ([`crate::platform::Environment::host`]).
     pub host: bool,
@@ -102,6 +105,7 @@ impl Default for Environment {
             locale_settings: LocaleSettings::default(),
             apple_keyboard: false,
             ctrl_for_command: false,
+            native_focus_scopes: false,
             host: false,
             lifecycle: Lifecycle::Active,
             screen_color: false,

@@ -1290,12 +1290,35 @@ pub fn on_key(keystroke: &str, handler: impl Fn(&str) + 'static) {
 /// As [`on_key`].
 #[track_caller]
 pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) + 'static) {
+    bind_key(keystroke, options, None, handler);
+}
+
+fn native_focus_scopes() -> bool {
+    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| e.native_focus_scopes)
+}
+
+#[track_caller]
+fn bind_key(
+    keystroke: &str,
+    options: KeyOptions,
+    within: Option<super::ElementRef>,
+    handler: impl Fn(&str) + 'static,
+) {
     let os = os();
     let parsed = crate::keymap::Keystroke::parse_with(keystroke, apple_keys())
         .unwrap_or_else(|e| panic!("on_key: {e}"));
     if let Some(why) = parsed.reserved(os) {
         panic!("on_key: {keystroke:?} cannot be bound: {why}");
     }
+    let within = match within.filter(|_| native_focus_scopes()) {
+        Some(element) => match element.target() {
+            Some(target) => Some(target),
+            None => return,
+        },
+        None => None,
+    };
     let owner = Owner::current();
     let handler: super::keys::KeyHandler = Rc::new(move |k: &str| owner.run(|| handler(k)));
     let keys = executor().keys.clone();
@@ -1304,6 +1327,7 @@ pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) 
             crate::keymap::KeyBinding::new(id, parsed, options.when, options.repeat)
                 .passing_through(options.pass_through)
         },
+        within,
         keystroke.into(),
         handler,
     );
@@ -1338,6 +1362,25 @@ pub fn watch_scroll(
 }
 
 impl super::ElementRef {
+    /// [`on_key`] scoped to native keyboard focus on this element or a
+    /// descendant where the host tracks native focus scopes.
+    #[track_caller]
+    pub fn on_key(&self, keystroke: &str, handler: impl Fn(&str) + 'static) {
+        self.on_key_with(keystroke, KeyOptions::default(), handler);
+    }
+
+    /// [`on_key_with`] scoped to native keyboard focus on this element or a
+    /// descendant where the host tracks native focus scopes.
+    #[track_caller]
+    pub fn on_key_with(
+        &self,
+        keystroke: &str,
+        options: KeyOptions,
+        handler: impl Fn(&str) + 'static,
+    ) {
+        bind_key(keystroke, options, Some(*self), handler);
+    }
+
     /// Listens to the keyboard focus coming into the element: onto it or
     /// an element inside it, from outside (GPUI's `on_focus_in` of a focus
     /// handle; the element enters `focus-within`). Moving between elements

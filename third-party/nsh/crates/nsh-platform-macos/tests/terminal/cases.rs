@@ -1041,3 +1041,114 @@ mount(App);
     first.shutdown();
     second.shutdown();
 }
+
+pub(super) fn rich_editor_to_box_none_input_focus_transition() {
+    const TRANSITION_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Input, RichEditor } from "nsh/base";
+
+function App() {
+  const attaching = signal(false);
+  const path = signal("");
+  let editor = null;
+  keymap.bind("mod+u", () => {
+    attaching.update((open) => !open);
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <RichEditor
+      ref={(node) => { editor = node; }}
+      autoFocus
+      style={{ flex: 1, height: 120 }}
+    />
+    {() => attaching() ? (
+      <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, pointerEvents: "box-none" }}>
+        <View style={{ height: 40 }}>
+          <Input
+            accessibilityLabel="Attachment path"
+            autoFocus
+            value={path()}
+            onChange={({ value }) => path.set(value)}
+            onSubmit={({ text }) => {
+              Clipboard.writeText(`attached:${text}`);
+              path.set("");
+              attaching.set(false);
+              editor?.focus();
+            }}
+            style={{ width: 260, height: 32 }}
+          />
+        </View>
+      </View>
+    ) : null}
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("RichEditorAttach.tsx", TRANSITION_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let chord = |name: &str| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let copy_focused = || {
+        let _ = surface.take_clipboard_write();
+        chord("a");
+        chord("c");
+        let mut copied = None;
+        pump_until(&surface, || {
+            if copied.is_none() {
+                copied = surface.take_clipboard_write();
+            }
+            copied.is_some()
+        });
+        copied.unwrap()
+    };
+
+    pump_until(&surface, || surface.text_input_target().is_some());
+    let editor_target = surface.text_input_target();
+
+    // Open the attachment field via Ctrl+U and wait only for the native responder swap
+    // (without calling `pause_input`), matching `Desktop::attach` -> `type_text` -> `copy_input`.
+    chord("u");
+    pump_until(&surface, || {
+        let current = surface.text_input_target();
+        current.is_some() && current != editor_target
+    });
+    let picker_target = surface.text_input_target();
+
+    let attached = "/private/var/folders/test/selected.png";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(attached)));
+    assert_eq!(copy_focused(), attached);
+
+    key(&surface, "enter");
+    clipboard(&surface, &format!("attached:{attached}"));
+    pump_until(&surface, || {
+        let current = surface.text_input_target();
+        current.is_some() && current != picker_target
+    });
+
+    let draft = "FIRST_DESKTOP_MESSAGE";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(draft)));
+    assert_eq!(copy_focused(), draft);
+    surface.shutdown();
+}

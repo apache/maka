@@ -1010,11 +1010,10 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
     set_changing(surface, true);
     if old.as_ref() != view {
         let moved_to = view.is_some();
-        let events_before = surface.events_sent();
         move_focus(surface, old, view);
-        if wants_text(surface) && surface.events_sent() > events_before {
+        if wants_text(surface) && surface.events_handled() < surface.events_sent() {
             arm(surface);
-        } else if moved_to && !has_pending(surface) {
+        } else if moved_to && !behind(surface) && !has_pending(surface) {
             disarm(surface);
         }
     } else if view.is_some() {

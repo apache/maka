@@ -613,7 +613,6 @@ impl Ctx {
             self.composition_ended();
         }
         crate::input::set_state(&surface, &view, state::FOCUSED, focused);
-        let events_before = surface.events_sent();
         let kind = if focused {
             EventKind::Focus
         } else {
@@ -621,16 +620,18 @@ impl Ctx {
         };
         self.send(kind, || EventPayload::None);
         if focused {
-            if wants_text(&surface) && surface.events_sent() > events_before {
-                arm(&surface);
-            } else if !has_pending(&surface) {
-                disarm(&surface);
-            }
             self.selection_changed();
         }
         leave_changing(&surface);
-        if focused && !is_changing(&surface) {
-            flush_pending(&surface);
+        if focused {
+            if wants_text(&surface) && surface.events_handled() < surface.events_sent() {
+                arm(&surface);
+            } else {
+                maybe_disarm(&surface);
+            }
+            if !is_changing(&surface) {
+                flush_pending(&surface);
+            }
         }
     }
 

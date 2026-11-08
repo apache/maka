@@ -6145,7 +6145,7 @@ impl<M: TextEngine> Core<M> {
             .bindings()
             .iter()
             .copied()
-            .chain(keys.list.iter().map(|k| k.binding))
+            .chain(keys.list.iter().filter_map(|k| k.scoped_binding()))
             .chain(overlay)
             .collect();
         Arc::new(crate::keymap::Keymap::new(bindings))
