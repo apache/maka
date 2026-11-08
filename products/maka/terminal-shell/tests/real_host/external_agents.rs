@@ -26,6 +26,7 @@ use std::{path::Path, sync::OnceLock};
 
 const ACKNOWLEDGE: &str = "I understand and accept the external agent permissions";
 const CONFIRM: &str = "Confirm permissions and enable";
+const SANDBOX: &str = "Sandbox and approvals";
 
 async fn fixture() -> Fixture {
     let node = tokio::task::spawn_blocking(|| {
@@ -240,6 +241,14 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
     );
 }
 
+fn composer_sandbox(view: &AppView) -> Option<bool> {
+    let nodes = view.accessibility_snapshot();
+    nodes
+        .iter()
+        .any(|node| node.label == "Choose model and effort")
+        .then(|| nodes.iter().any(|node| node.label == SANDBOX))
+}
+
 async fn model_choices(view: &mut AppView) {
     click(view, "Choose model and effort").await;
     wait_view_state(view, |view, _| {
@@ -351,6 +360,8 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
         observed["session"]["backend"].pointer("/selection/executor"),
         Some(&json!("external"))
     );
+    // External CLIs run outside the session sandbox, so the composer must not offer its setting.
+    wait_view_state(&mut view, |view, _| composer_sandbox(view) == Some(false)).await;
 
     open_settings(&mut view).await;
     update_worker_state(fixture.directory.path(), |state| {
@@ -375,6 +386,7 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
         .await
         .unwrap();
     assert_eq!(observed["session"]["backend"]["kind"], "model");
+    wait_view_state(&mut view, |view, _| composer_sandbox(view) == Some(true)).await;
 
     open_settings(&mut view).await;
     toggle_runtime(&mut view, &client, "codex", "Codex", false).await;

@@ -134,6 +134,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => platform.idiom !== 'terminal' && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
+  // External CLIs run outside the session sandbox, so its setting would not apply to them.
+  const externalAgent = () => {
+    const backend = props.session() ? props.session()!.backend() : (pending()?.backend() ?? null);
+    return backend?.kind === 'executor' && backend.selection.executor === 'external';
+  };
   let pendingDrop: ((event: { uris: string[] }) => void) | null = null;
   props.dropFiles?.((event) => {
     const owner = props.session();
@@ -866,10 +871,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             >
               <Icon name="plus" color={C.secondary} />
             </Button>
-            <SessionPermissionsSelect
-              owner={props.session()?.permissions ?? null}
-              pending={pending()?.permissions ?? null}
-            />
+            <If when={!externalAgent()}>
+              <SessionPermissionsSelect
+                owner={props.session()?.permissions ?? null}
+                pending={pending()?.permissions ?? null}
+              />
+            </If>
             {/* After the sandbox, so leaving the start pane moves neither. */}
             <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
             <If when={props.session() !== null || pending() !== null}>
