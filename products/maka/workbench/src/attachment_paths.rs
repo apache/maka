@@ -68,37 +68,45 @@ fn normalize(value: &str) -> Result<PathBuf, String> {
                 .and_then(|value| value.strip_suffix('\''))
         })
         .unwrap_or(value);
-    if file_uri(value) {
+    let path = if file_uri(value) {
         let uri = url::Url::parse(value).map_err(|error| format!("Invalid file URI: {error}"))?;
         if uri.query().is_some() || uri.fragment().is_some() {
             return Err("A selected file URI cannot contain a query or fragment".into());
         }
         #[cfg(not(windows))]
-        {
+        let windows = {
             let decoded = || {
                 percent_encoding::percent_decode_str(uri.path())
                     .decode_utf8()
                     .map_err(|_| "The Windows file URI is not valid Unicode".to_owned())
             };
             if let Some(host) = uri.host_str().filter(|host| *host != "localhost") {
-                return windows_path(&format!("\\\\{host}{}", decoded()?.replace('/', "\\")));
+                Some(windows_path(&format!(
+                    "\\\\{host}{}",
+                    decoded()?.replace('/', "\\")
+                ))?)
+            } else if uri.path().strip_prefix('/').is_some_and(drive_path) {
+                Some(windows_path(&decoded()?[1..])?)
+            } else {
+                None
             }
-            if uri.path().strip_prefix('/').is_some_and(drive_path) {
-                return windows_path(&decoded()?[1..]);
-            }
+        };
+        #[cfg(windows)]
+        let windows: Option<PathBuf> = None;
+        match windows {
+            Some(path) => path,
+            None => uri
+                .to_file_path()
+                .map_err(|_| "The file URI does not identify a local absolute path".to_owned())?,
         }
-        return uri
-            .to_file_path()
-            .map_err(|_| "The file URI does not identify a local absolute path".into());
-    }
-    let path = Path::new(value);
-    if path.is_absolute() {
-        return Ok(path.to_owned());
-    }
-    if drive_path(value) || value.starts_with("\\\\") {
-        return windows_path(value);
-    }
-    Err("The selected file needs an absolute path".into())
+    } else if Path::new(value).is_absolute() {
+        PathBuf::from(value)
+    } else if drive_path(value) || value.starts_with("\\\\") {
+        windows_path(value)?
+    } else {
+        return Err("The selected file needs an absolute path".into());
+    };
+    Ok(path.components().collect())
 }
 
 #[cfg(windows)]
@@ -147,9 +155,20 @@ mod tests {
         let file = root.path().join("notes.txt").to_str().unwrap().to_owned();
         std::fs::write(&file, b"notes").unwrap();
         let uri = url::Url::from_file_path(root.path()).unwrap().into();
-        for selected in [directory.clone(), uri] {
+        let directory_uri = url::Url::from_directory_path(root.path()).unwrap().into();
+        for selected in [
+            directory.clone(),
+            format!("{directory}/"),
+            uri,
+            directory_uri,
+        ] {
             assert_eq!(pasted_directories(&[selected]), Ok(Some(directory.clone())));
         }
+        #[cfg(unix)]
+        assert_eq!(
+            pasted_directories(&["file:///".to_owned()]),
+            Ok(Some("/".to_owned()))
+        );
         assert_eq!(
             pasted_directories(&[file.clone(), directory.clone()]),
             Ok(Some(format!("{file}\n{directory}")))
