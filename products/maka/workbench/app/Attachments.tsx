@@ -20,12 +20,13 @@
 import { textTooltip } from './ui';
 import { tr } from './locale';
 import { Image, inputAction, Scroll, signal, Text, View } from 'nsh';
-import type { JSX } from 'nsh';
+import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerAttachments } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Position } from './history';
 import { ImageThumbnail, type ImagePreview } from './ImageThumbnail';
+import { ImageViewer } from './ImageViewer';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 import { useHost } from './host';
@@ -98,15 +99,26 @@ export function StagedAttachments(props: {
             {(file) => {
               const original = file();
               const undecodable = signal(false);
+              const loaded = signal<{ width: number; height: number } | null>(null);
+              const viewing = signal(false);
+              let opener: ViewRef | undefined;
               const thumbnail = () => original.imageUri !== null && !undecodable();
+              const view = (id: string) => {
+                if (id === original.id && loaded()) viewing.set(true);
+              };
               return (
                 <View style={{ flexShrink: 0 }}>
                   <If
                     when={thumbnail()}
                     else={<FileTile name={original.name} bytes={original.bytes} />}
                   >
-                    <View
+                    <Button
+                      ref={(node) => {
+                        opener = node;
+                      }}
+                      accessibilityLabel={tr('Open attachment {name}', { name: original.name })}
                       tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
+                      onPress={inputAction(view, original.id)}
                       style={{
                         width: 64,
                         height: 64,
@@ -116,13 +128,25 @@ export function StagedAttachments(props: {
                         borderRadius: 8,
                         overflow: 'hidden',
                       }}
+                      hoverStyle={{ borderColor: C.secondary }}
+                      focusStyle={{ borderColor: C.accent }}
                     >
                       <Image
                         src={original.imageUri!}
+                        onLoad={({ size: dimensions }) => loaded.set(dimensions)}
                         onError={() => undecodable.set(true)}
                         style={[{ width: 64, height: 64 }, { objectFit: 'cover' }]}
                       />
-                    </View>
+                    </Button>
+                    <If when={viewing() && loaded()}>
+                      <ImageViewer
+                        image={{ uri: original.imageUri!, ...loaded()!, title: original.name }}
+                        close={() => {
+                          viewing.set(false);
+                          opener?.focus();
+                        }}
+                      />
+                    </If>
                   </If>
                   <Button
                     accessibilityLabel={tr('Remove attachment {name}', { name: original.name })}
