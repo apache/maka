@@ -582,16 +582,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             text,
             NSAccessibilityPriorityLevel::Medium,
         ),
-        Command::SetClipboard(text) => {
-            if surface.terminal.get() {
-                *surface.terminal_clipboard.borrow_mut() = Some(text.clone());
-            }
-            let pasteboard = NSPasteboard::generalPasteboard();
-            pasteboard.clearContents();
-            // SAFETY: an immutable AppKit constant.
-            pasteboard
-                .setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
-        }
+        Command::SetClipboard(text) => write_clipboard(surface, text),
         Command::ReadClipboard { id, has_only } => read_clipboard(surface, *id, *has_only),
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
         Command::ReadClipboardImage { id, has_only } => {
@@ -1163,18 +1154,38 @@ pub(crate) fn open_url(url: &str) -> bool {
     NSWorkspace::sharedWorkspace().openURL(&url)
 }
 
-fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
+pub(crate) fn write_clipboard(surface: &Surface, text: &str) {
+    if surface.terminal.get() {
+        let mut clipboard = surface.terminal_clipboard.borrow_mut();
+        clipboard.text = Some(text.to_owned());
+        clipboard.pending = Some(text.to_owned());
+        return;
+    }
     let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
     // SAFETY: an immutable AppKit constant.
-    let string = unsafe { NSPasteboardTypeString };
-    // The types on offer: reading them is no paste (no privacy notice).
-    let has = pasteboard
-        .types()
-        .is_some_and(|types| types.containsObject(string));
-    let text = (has && !has_only)
-        .then(|| pasteboard.stringForType(string))
-        .flatten()
-        .map(|s| s.to_string());
+    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
+}
+
+fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
+    let (has, text) = if surface.terminal.get()
+        && let Some(text) = surface.terminal_clipboard.borrow().text.clone()
+    {
+        (true, (!has_only).then_some(text))
+    } else {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        // SAFETY: an immutable AppKit constant.
+        let string = unsafe { NSPasteboardTypeString };
+        // The types on offer: reading them is no paste (no privacy notice).
+        let has = pasteboard
+            .types()
+            .is_some_and(|types| types.containsObject(string));
+        let text = (has && !has_only)
+            .then(|| pasteboard.stringForType(string))
+            .flatten()
+            .map(|s| s.to_string());
+        (has, text)
+    };
     let mut fields = vec![
         ("id", PayloadValue::Number(id as f64)),
         ("has", PayloadValue::Bool(has)),

@@ -1445,6 +1445,9 @@ fn field_editor(mtm: MainThreadMarker, window: &objc2_app_kit::NSWindow) -> Reta
         // SAFETY: the class is a subclass of NSTextView.
         let editor: Retained<NSTextView> = unsafe { Retained::cast_unchecked(editor) };
         editor.setFieldEditor(true);
+        editor.setRichText(false);
+        editor.setImportsGraphics(false);
+        editor.setAllowsUndo(true);
         editors.push((objc2::rc::Weak::from(window), editor.clone()));
         editor
     })
@@ -1902,6 +1905,7 @@ fn new_editor(
         if let Some(cell) = field.cell() {
             cell.setScrollable(true);
             cell.setWraps(false);
+            cell.setAllowsUndo(true);
             // Not single-line mode: it replaces pasted line breaks in a
             // second edit, which `Ctx::should_change` does at once.
             cell.setLineBreakMode(NSLineBreakMode::ByClipping);
@@ -1966,11 +1970,14 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             field.setAlignment(align);
             field.setBaseWritingDirection(direction);
             field.setEditable(config.editable);
+            field.setSelectable(true);
             field.setPlaceholderAttributedString(Some(&placeholder(config, &font, align)));
             if let Some(editor) = field.currentEditor() {
                 editor.setFont(Some(&font));
                 editor.setTextColor(Some(&color));
                 editor.setAlignment(align);
+                editor.setEditable(config.editable);
+                editor.setSelectable(true);
             }
         }
         Editor::Area {
@@ -3184,18 +3191,13 @@ pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
 }
 
 #[cfg(feature = "terminal")]
-pub(crate) fn terminal_allows_copy(surface: &Surface) -> bool {
-    let Some((id, _)) = terminal_editor(surface) else {
-        return false;
-    };
-    let mounter = surface.mounter.borrow();
-    let Some(view) = mounter.views.get(&id) else {
-        return false;
-    };
-    view.state()
-        .input
-        .as_ref()
-        .is_some_and(|input| !input.config.borrow().secure)
+pub(crate) fn terminal_focused_editor(
+    surface: &Surface,
+) -> Option<(Retained<NSTextView>, bool, bool)> {
+    let (_, input, editor) = focused_editor(surface)?;
+    let config = input.config.borrow();
+    let editable = config.editable && editor.isEditable();
+    Some((editor, editable, config.secure))
 }
 
 #[cfg(feature = "terminal")]

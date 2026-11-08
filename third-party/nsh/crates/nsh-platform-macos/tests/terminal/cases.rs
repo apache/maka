@@ -884,3 +884,160 @@ mount(App);
         surface.shutdown();
     }
 }
+
+pub(super) fn native_input_clipboard_and_undo() {
+    use std::{cell::RefCell, rc::Rc};
+
+    const INPUT_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const line = signal("seed");
+  const area = signal("");
+  let secret = null;
+  keymap.bind("f6", () => {
+    secret?.focus();
+    Clipboard.writeText("secret-focused");
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <Input
+      autoFocus
+      value={line()}
+      onChange={({ value }) => line.set(value)}
+      onSubmit={({ text }) => Clipboard.writeText(`submitted:${text}`)}
+      style={{ width: 220, height: 32 }}
+    />
+    <Input
+      multiline
+      value={area()}
+      onChange={({ value }) => area.set(value)}
+      style={{ width: 220, height: 64 }}
+    />
+    <Input
+      ref={(node) => { secret = node; }}
+      masked
+      defaultValue="secret-token"
+      style={{ width: 220, height: 32 }}
+    />
+  </View>;
+}
+mount(App);
+"#;
+
+    let make = || {
+        let code = nsh_bundler::compile_module("InputClipboard.tsx", INPUT_APP, &[]).unwrap();
+        let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+        config.ui_sets = vec![nsh_base::registry()];
+        TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|_| {}),
+            Arc::new(|| {}),
+        )
+        .unwrap()
+    };
+    let chord = |surface: &TerminalSurface, name: &str, shift: bool| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        stroke.modifiers.shift = shift;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let fence = |surface: &TerminalSurface| {
+        let done: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+        let slot = done.clone();
+        surface.pause_input(Box::new(move |res| {
+            *slot.borrow_mut() = Some(res);
+        }));
+        pump_until(surface, || done.borrow().is_some());
+        assert_eq!(*done.borrow(), Some(Ok(())));
+        surface.resume_input();
+    };
+
+    let first = make();
+    let second = make();
+    pump_until(&first, || first.editor_text().as_deref() == Some("seed"));
+    pump_until(&second, || second.editor_text().as_deref() == Some("seed"));
+
+    second.set_clipboard_text("other-surface");
+    assert_eq!(second.take_clipboard_write(), None);
+
+    let attached = "/private/var/folders/test/selected.png";
+    chord(&first, "a", false);
+    assert!(first.paste(nsh_core::PasteEvent::new(attached)));
+    pump_until(&first, || first.editor_text().as_deref() == Some(attached));
+    chord(&first, "a", false);
+    chord(&first, "c", false);
+    assert_eq!(first.take_clipboard_write().as_deref(), Some(attached));
+    assert_eq!(first.take_clipboard_write(), None);
+    assert_eq!(second.take_clipboard_write(), None);
+
+    chord(&second, "a", false);
+    chord(&second, "v", false);
+    pump_until(&second, || {
+        second.editor_text().as_deref() == Some("other-surface")
+    });
+
+    chord(&first, "a", false);
+    chord(&first, "x", false);
+    assert_eq!(first.take_clipboard_write().as_deref(), Some(attached));
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+
+    chord(&first, "z", false);
+    pump_until(&first, || first.editor_text().as_deref() == Some(attached));
+    chord(&first, "z", true);
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+
+    first.set_clipboard_text("Read the project\nFix it");
+    assert_eq!(first.take_clipboard_write(), None);
+    chord(&first, "v", false);
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project Fix it")
+    });
+
+    key(&first, "tab");
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+    chord(&first, "v", false);
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project\nFix it")
+    });
+
+    let mut back_tab = Keystroke::default();
+    back_tab.key = "tab".into();
+    back_tab.modifiers.shift = true;
+    let mut down = KeyDownEvent::default();
+    down.keystroke = back_tab.clone();
+    let mut up = KeyUpEvent::default();
+    up.keystroke = back_tab;
+    first.dispatch_input(PlatformInput::KeyDown(down)).unwrap();
+    first.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project Fix it")
+    });
+
+    key(&first, "enter");
+    clipboard(&first, "submitted:Read the project Fix it");
+
+    key(&first, "f6");
+    clipboard(&first, "secret-focused");
+    pump_until(&first, || {
+        first.text_input_target().is_some() && first.editor_text().is_none()
+    });
+    chord(&first, "a", false);
+    chord(&first, "c", false);
+    chord(&first, "x", false);
+    fence(&first);
+    assert_eq!(first.take_clipboard_write(), None);
+
+    first.shutdown();
+    second.shutdown();
+}

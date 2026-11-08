@@ -43,9 +43,8 @@ use nsh_terminal::{
 };
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard,
-    NSPasteboardTypeString, NSStandardKeyBindingResponding, NSTextInputClient, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventType,
+    NSStandardKeyBindingResponding, NSTextInputClient, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRange, NSRect, NSSize, NSString};
 
@@ -68,7 +67,6 @@ pub struct TerminalSurface {
     dirty: Cell<bool>,
     text_drag: Cell<Option<(u32, NSRange)>>,
     revision: Cell<u64>,
-    clipboard: RefCell<Option<String>>,
     fence: RefCell<Option<InputFence>>,
 }
 struct InputFence {
@@ -150,7 +148,6 @@ impl TerminalSurface {
                 dirty: Cell::new(true),
                 text_drag: Cell::new(None),
                 revision: Cell::new(0),
-                clipboard: RefCell::new(None),
                 fence: RefCell::new(None),
             };
             host.set_viewport(size, scale)?;
@@ -329,10 +326,7 @@ impl NativeSurface for TerminalSurface {
         crate::text_input::terminal_text(self.view.surface())
     }
     fn set_clipboard_text(&self, text: &str) {
-        let board = NSPasteboard::generalPasteboard();
-        board.clearContents();
-        // SAFETY: immutable AppKit string pasteboard type.
-        board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
+        self.view.surface().terminal_clipboard.borrow_mut().text = Some(text.to_owned());
     }
     fn drop_paths(&self, paths: Vec<std::path::PathBuf>, position: nsh_core::Point<Points>) {
         if self.paused.get() || self.stopped.get() {
@@ -448,9 +442,7 @@ impl NativeSurface for TerminalSurface {
                 return Err("terminal input is not active".into());
             }
             self.dirty.set(true);
-            let board = NSPasteboard::generalPasteboard();
-            let count = board.changeCount();
-            let result = match input {
+            match input {
                 PlatformInput::KeyDown(e) => self.key(&e.keystroke, true, e.is_held),
                 PlatformInput::KeyUp(e) => self.key(&e.keystroke, false, false),
                 PlatformInput::MouseDown(e) => self.mouse(
@@ -502,14 +494,7 @@ impl NativeSurface for TerminalSurface {
                     );
                     Ok(())
                 }
-            };
-            if board.changeCount() != count {
-                // SAFETY: immutable AppKit string pasteboard type.
-                *self.clipboard.borrow_mut() = board
-                    .stringForType(unsafe { NSPasteboardTypeString })
-                    .map(|text| text.to_string());
             }
-            result
         })
     }
 
@@ -567,8 +552,7 @@ impl NativeSurface for TerminalSurface {
         self.cancel_pointer();
         self.admissions.borrow_mut().focus(None);
         self.frames.borrow_mut().revoke();
-        self.clipboard.borrow_mut().take();
-        self.view.surface().terminal_clipboard.borrow_mut().take();
+        *self.view.surface().terminal_clipboard.borrow_mut() = Default::default();
         self.view.surface().terminal_quit.set(false);
         self.error.borrow_mut().take();
         let surface = self.view.surface();
@@ -673,8 +657,8 @@ impl NativeSurface for TerminalSurface {
             .surface()
             .terminal_clipboard
             .borrow_mut()
+            .pending
             .take()
-            .or_else(|| self.clipboard.borrow_mut().take())
     }
     fn frame_is_current(&self, token: &FrameToken) -> bool {
         self.frames.borrow().is_current(token)
@@ -817,8 +801,6 @@ pub(crate) fn dispatch_terminal_key(
     if down && crate::keymap::fires(surface, &event) {
         return Ok(());
     }
-    let board = NSPasteboard::generalPasteboard();
-    let count = board.changeCount();
     let mut handled = false;
     if down
         && !key.modifiers.control
@@ -854,45 +836,93 @@ pub(crate) fn dispatch_terminal_key(
     if down
         && (key.modifiers.control || key.modifiers.platform)
         && !key.modifiers.alt
-        && let Some((_, editor)) = crate::text_input::terminal_editor(surface)
+        && let Some((editor, editable, secure)) =
+            crate::text_input::terminal_focused_editor(surface)
     {
-        if matches!(key.key.as_str(), "c" | "x")
-            && !crate::text_input::terminal_allows_copy(surface)
-        {
-            return Ok(());
-        }
-        // SAFETY: standard NSText action methods accept a nil sender. The native
-        // editor enforces read-only, secure copy/cut, paste policy and undo rules.
-        unsafe {
-            match key.key.as_str() {
-                "a" => {
-                    editor.selectAll(None);
-                    handled = true;
-                }
-                "c" => {
-                    editor.copy(None);
-                    handled = true;
-                }
-                "x" => {
-                    editor.cut(None);
-                    handled = true;
-                }
-                "v" => {
-                    editor.paste(None);
-                    handled = true;
-                }
-                _ => {}
+        match (key.key.as_str(), key.modifiers.shift) {
+            ("a", false) => {
+                editor.setSelectedRange(NSRange::new(0, editor.string().length()));
+                handled = true;
             }
+            ("c", false) => {
+                if !secure {
+                    let range = editor.selectedRange();
+                    let text = editor.string();
+                    if range.length > 0
+                        && range
+                            .location
+                            .checked_add(range.length)
+                            .is_some_and(|end| end <= text.length())
+                    {
+                        let selected = text.substringWithRange(range).to_string();
+                        crate::system::write_clipboard(surface, &selected);
+                    }
+                }
+                handled = true;
+            }
+            ("x", false) => {
+                if editable && !secure {
+                    let range = editor.selectedRange();
+                    let text = editor.string();
+                    if range.length > 0
+                        && range
+                            .location
+                            .checked_add(range.length)
+                            .is_some_and(|end| end <= text.length())
+                    {
+                        let selected = text.substringWithRange(range).to_string();
+                        crate::system::write_clipboard(surface, &selected);
+                        let empty = NSString::new();
+                        editor.breakUndoCoalescing();
+                        if editor.shouldChangeTextInRange_replacementString(range, Some(&empty)) {
+                            editor.replaceCharactersInRange_withString(range, &empty);
+                            editor.didChangeText();
+                            editor.breakUndoCoalescing();
+                        }
+                    }
+                }
+                handled = true;
+            }
+            ("v", shift) => {
+                if editable {
+                    if let Some(text) = surface.terminal_clipboard.borrow().text.clone() {
+                        let _ = crate::text_input::paste(window, &nsh_core::PasteEvent::new(text));
+                    } else {
+                        // SAFETY: standard NSText paste actions accept a nil sender.
+                        unsafe {
+                            if shift {
+                                editor.pasteAsPlainText(None);
+                            } else {
+                                editor.paste(None);
+                            }
+                        }
+                    }
+                }
+                handled = true;
+            }
+            ("z", shift) => {
+                if editable && let Some(undo) = editor.undoManager() {
+                    editor.breakUndoCoalescing();
+                    if shift {
+                        undo.redo();
+                    } else {
+                        undo.undo();
+                    }
+                }
+                handled = true;
+            }
+            ("y", false) => {
+                if editable && let Some(undo) = editor.undoManager() {
+                    editor.breakUndoCoalescing();
+                    undo.redo();
+                }
+                handled = true;
+            }
+            _ => {}
         }
     }
     if !handled {
         window.sendEvent(&event);
-    }
-    if board.changeCount() != count {
-        // SAFETY: immutable AppKit string pasteboard type.
-        *surface.terminal_clipboard.borrow_mut() = board
-            .stringForType(unsafe { NSPasteboardTypeString })
-            .map(|text| text.to_string());
     }
     Ok(())
 }
