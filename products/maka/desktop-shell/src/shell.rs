@@ -19,6 +19,10 @@
 
 //! The workbench-to-window command protocol.
 
+mod close;
+
+pub(crate) use close::CloseReady;
+use close::WindowClose;
 use nsh_engine::{EngineConfig, HostCall, HostChannel, JsonValue};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -32,6 +36,7 @@ pub(crate) const SIZE: (i32, i32) = (1280, 820);
 
 /// What the workbench asks of its window, for the window to carry out.
 pub(crate) struct Requests {
+    pub(crate) close_ready: tokio::sync::mpsc::UnboundedReceiver<CloseReady>,
     pub(crate) exits: tokio::sync::mpsc::UnboundedReceiver<()>,
     pub(crate) folders: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
     pub(crate) text_sizes: tokio::sync::mpsc::UnboundedReceiver<f32>,
@@ -41,9 +46,11 @@ pub(crate) struct Requests {
 /// What the window gives each workbench it loads, beside its Host.
 #[derive(Clone)]
 pub(crate) struct Shell {
+    close: Arc<Mutex<Option<Arc<WindowClose>>>>,
+    close_ready: tokio::sync::mpsc::UnboundedSender<CloseReady>,
     /// Whether the window is active.
     foreground: watch::Receiver<bool>,
-    /// Closes the window.
+    /// Requests explicit application exit.
     exit: tokio::sync::mpsc::UnboundedSender<()>,
     /// Asks for a folder with the system's dialog.
     folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
@@ -56,11 +63,14 @@ pub(crate) struct Shell {
 
 impl Shell {
     pub(crate) fn new(foreground: watch::Receiver<bool>) -> (Self, Requests) {
+        let (close_ready, closed) = tokio::sync::mpsc::unbounded_channel();
         let (exit, exits) = tokio::sync::mpsc::unbounded_channel();
         let (folder, folders) = tokio::sync::mpsc::unbounded_channel();
         let (text_size, text_sizes) = tokio::sync::mpsc::unbounded_channel();
         let (notify, notices) = tokio::sync::mpsc::unbounded_channel();
         let shell = Self {
+            close: Arc::default(),
+            close_ready,
             foreground,
             exit,
             folder,
@@ -69,6 +79,7 @@ impl Shell {
             events: Arc::default(),
         };
         let requests = Requests {
+            close_ready: closed,
             exits,
             folders,
             text_sizes,
@@ -77,11 +88,43 @@ impl Shell {
         (shell, requests)
     }
 
+    pub(crate) fn prepare_close(&self) -> bool {
+        let close = self.close.lock().unwrap().clone();
+        let host = self
+            .events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match (close, host) {
+            (Some(close), Some(host)) => {
+                close.prepare(host, self.close_ready.clone(), self.close.clone())
+            }
+            _ => true,
+        }
+    }
+
+    /// Releases the closed window's channel without closing its application client.
+    pub(crate) fn release(&self) {
+        self.close.lock().unwrap().take();
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
     pub(crate) fn attach(&self, mut config: EngineConfig) -> EngineConfig {
+        if let Some(reload) = config.context.get::<maka_workbench::reload::UiReload>() {
+            let close = Arc::new(WindowClose::new(
+                reload.as_ref().clone(),
+                config.runtime.clone().expect("Workbench has a runtime"),
+            ));
+            let reply = close.clone();
+            config
+                .host
+                .handle("desktop.closeReady", move |call| reply.answer(call));
+            *self.close.lock().unwrap() = Some(close);
+        }
         config.context = config
             .context
             .with(maka_workbench::Foreground(self.foreground.clone()));
-        // The workbench's exit gesture (Ctrl+C twice) closes the window, as
+        // The workbench's explicit exit gesture ends the application, as
         // it ends the terminal.
         let exit = self.exit.clone();
         config.host.handle("terminal.exit", move |_| {

@@ -37,6 +37,8 @@ embed-resource = "3.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux.workspace = true
+ksni = "0.3.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 nsh-platform-windows.workspace = true
@@ -44,3 +46,6 @@ nsh-platform-windows.workspace = true
 nsh-platform-macos.workspace = true
 raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }

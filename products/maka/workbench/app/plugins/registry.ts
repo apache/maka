@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, importModule, signal, type JSX, type Signal } from 'nsh';
+import { batch, cleanup, computed, host, importModule, signal, type JSX, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import type {
   UiCatalog,
@@ -86,7 +86,8 @@ type ReconcilePhase =
   | { kind: 'adopting' }
   | { kind: 'pause_requested' }
   | { kind: 'preparing_reload'; instances: RestoredInstance[] }
-  | { kind: 'reload_accepted' };
+  | { kind: 'reload_accepted' }
+  | { kind: 'preparing_close'; id: string };
 const targetKey = (target: UiTarget) => JSON.stringify([target.path, target.id]);
 const instanceKey = (identity: InstanceIdentity) =>
   JSON.stringify([identity.instance, identity.packageId]);
@@ -98,7 +99,12 @@ export function createPlugins() {
   const phase = signal<ReconcilePhase>({ kind: 'idle' });
   const reloading = computed(() => {
     const kind = phase().kind;
-    return kind === 'pause_requested' || kind === 'preparing_reload' || kind === 'reload_accepted';
+    return (
+      kind === 'pause_requested' ||
+      kind === 'preparing_reload' ||
+      kind === 'reload_accepted' ||
+      kind === 'preparing_close'
+    );
   });
   const updateError = signal<unknown | null>(null);
   const importedPackages = new Set<string>();
@@ -239,6 +245,55 @@ export function createPlugins() {
     instance: entry.instance.instance,
     packageId: entry.instance.package.id,
   });
+  const snapshot = async (instances: RestoredInstance[] = []): Promise<RestoredUi> => {
+    for (const entry of entries()) {
+      const state = entry.state();
+      if (state.kind !== 'active') continue;
+      const saved = (await state.activation.prepareReload?.()) ?? null;
+      if (!alive) throw new Error('The window closed during state capture.');
+      instances.push({ ...identityFor(entry), state: saved });
+    }
+    return { instances };
+  };
+  cleanup(
+    host.on('desktop.prepareClose', (request: unknown) => {
+      const id = (request as { id: string }).id;
+      if (phase().kind !== 'idle') {
+        host.post('desktop.closeReady', {
+          id,
+          error: 'UI reload is in progress. Try closing again when it finishes.',
+        });
+        return;
+      }
+      const attempt: Extract<ReconcilePhase, { kind: 'preparing_close' }> = {
+        kind: 'preparing_close',
+        id,
+      };
+      phase.set(attempt);
+      void snapshot().then(
+        (state) => {
+          if (alive && phase() === attempt) host.post('desktop.closeReady', { id, state });
+        },
+        (reason) => {
+          if (!alive || phase() !== attempt) return;
+          phase.set({ kind: 'idle' });
+          updateError.set(reason);
+          host.post('desktop.closeReady', { id, error: String(reason) });
+          void reconcile();
+        },
+      );
+    }),
+  );
+  cleanup(
+    host.on('desktop.closeFailed', (failure: unknown) => {
+      const { id, error } = failure as { id: string; error: string };
+      const attempt = phase();
+      if (!alive || attempt.kind !== 'preparing_close' || attempt.id !== id) return;
+      phase.set({ kind: 'idle' });
+      updateError.set(new Error(error));
+      void reconcile();
+    }),
+  );
   const reconcile = async () => {
     if (phase().kind !== 'idle' || !alive || !desired) return;
     const target = desired;
@@ -254,13 +309,7 @@ export function createPlugins() {
         };
         phase.set(held);
         if (!alive) return;
-        for (const entry of entries()) {
-          const state = entry.state();
-          if (state.kind !== 'active') continue;
-          const snapshot = (await state.activation.prepareReload?.()) ?? null;
-          if (!alive) return;
-          held.instances.push({ ...identityFor(entry), state: snapshot });
-        }
+        await snapshot(held.instances);
         if (!alive) return;
         validate(desired!);
         if (needsReload(desired!)) {

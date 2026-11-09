@@ -294,6 +294,7 @@ export function executor(
         'desktop',
         'pixels',
         'linux-nsh',
+        'linux-desktop',
         'macos-nsh',
         'macos-surface',
         'macos-desktop',
@@ -396,6 +397,21 @@ export function executor(
       ].includes(id)
     ) {
       await nextest(id, false, filter, ['--no-tests=fail', '-j', '1', ...extra]);
+    } else if (id === 'linux-desktop') {
+      await run('xvfb-run', [
+        '-a',
+        'dbus-run-session',
+        '--',
+        'cargo',
+        'nextest',
+        'run',
+        ...suites[id].cargoArgs,
+        '--no-tests=fail',
+        '--run-ignored=all',
+        '-j',
+        '1',
+        ...extra,
+      ]);
     } else if (id === 'linux-nsh') {
       await run('xvfb-run', [
         '-a',

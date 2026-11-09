@@ -6046,6 +6046,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ksni"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf"
+dependencies = [
+ "arc-swap",
+ "crossbeam-queue",
+ "futures-util",
+ "pastey",
+ "serde",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "kstring"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6806,6 +6821,8 @@ name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
  "embed-resource",
+ "image",
+ "ksni",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",
@@ -6819,6 +6836,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

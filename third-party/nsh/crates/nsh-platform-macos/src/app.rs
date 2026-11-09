@@ -158,7 +158,8 @@ pub struct AppOptions {
     pub background: bool,
     /// Hides the standalone window on close while retaining its engine.
     /// Reopening from the Dock shows the same window. Quit still stops the app.
-    /// Only used by [`run_app`]; defaults to false.
+    /// Only used by [`run_app`]; defaults to false. For releasing the UI on
+    /// close and rebuilding it on Open, use [`run_resident_app_with_config`].
     pub keep_alive_on_close: bool,
     /// The smallest size [`run_app`]'s window takes, in points. `None` (the
     /// default) leaves it to AppKit.
@@ -558,10 +559,21 @@ struct Running {
     window: Retained<NSWindow>,
     view: Rc<AppView>,
     keep_alive_on_close: bool,
-    on_active: Box<dyn Fn(bool)>,
+    on_active: Rc<dyn Fn(bool)>,
+}
+
+/// Process lifetime state for the opt-in resident runner, without a UI engine.
+struct Resident {
+    options: AppOptions,
+    status_menu: crate::StatusMenuOptions,
+    configure: RefCell<Box<dyn FnMut() -> EngineConfig>>,
+    on_active: Rc<dyn Fn(bool)>,
+    on_close: Box<dyn Fn()>,
+    should_close: Box<dyn Fn() -> bool>,
 }
 
 thread_local! {
+    static RESIDENT: RefCell<Option<Rc<Resident>>> = const { RefCell::new(None) };
     static RUNNING: RefCell<Option<Running>> = const { RefCell::new(None) };
     /// Links that came before the app's engine started.
     static URL_SCHEMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -597,7 +609,7 @@ fn url_scheme(url: String) {
 }
 
 define_class!(
-    /// Closes the app with its window.
+    /// Application and standalone window lifecycle callbacks.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NshAppDelegate"]
@@ -665,18 +677,7 @@ define_class!(
 
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
         fn should_handle_reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
-            let window = RUNNING.with(|running| {
-                running
-                    .borrow()
-                    .as_ref()
-                    .map(|running| running.window.clone())
-            });
-            if let Some(window) = window {
-                if window.isMiniaturized() {
-                    window.deminiaturize(None);
-                }
-                window.makeKeyAndOrderFront(None);
-            }
+            reopen_window(self);
             false
         }
 
@@ -701,6 +702,12 @@ define_class!(
         // closes ([`crate::window`]), which closes it later.
         #[unsafe(method(windowShouldClose:))]
         fn should_close(&self, window: &NSWindow) -> bool {
+            let resident = RESIDENT.with(|resident| resident.borrow().clone());
+            if let Some(resident) = resident
+                && !(resident.should_close)()
+            {
+                return false.into();
+            }
             let surface = RUNNING.with(|running| {
                 running
                     .borrow()
@@ -717,6 +724,9 @@ define_class!(
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
             stop_running();
+            if RESIDENT.with(|resident| resident.borrow().is_some()) {
+                return;
+            }
             // Leave AppKit's close callback before stopping its event loop,
             // including when the window closed while minimized.
             dispatch2::DispatchQueue::main().exec_async(|| {
@@ -807,7 +817,8 @@ pub(crate) fn close_main_window(key: u64) -> bool {
 /// this has no effect; embedded hosts own their application lifecycle.
 pub fn quit_app() {
     dispatch2::DispatchQueue::main().exec_async(|| {
-        if RUNNING.with(|running| running.borrow().is_some())
+        if (RUNNING.with(|running| running.borrow().is_some())
+            || RESIDENT.with(|resident| resident.borrow().is_some()))
             && let Some(mtm) = MainThreadMarker::new()
         {
             finish_running(&NSApplication::sharedApplication(mtm));
@@ -844,6 +855,7 @@ fn finish_running(app: &NSApplication) {
         window.close();
     }
     stop_running();
+    RESIDENT.with(|resident| resident.borrow_mut().take());
     app.stop(None);
     // stop: takes effect after the next event. A close can arrive through a
     // dispatch block rather than an AppKit event, so wake nextEventMatchingMask
@@ -866,8 +878,15 @@ fn finish_running(app: &NSApplication) {
 /// Stops the standalone app's engine (its window closes).
 fn stop_running() {
     if let Some(running) = RUNNING.with(|r| r.borrow_mut().take()) {
+        (running.on_active)(false);
         running.view.stop();
-        drop(running.window);
+        running.window.setDelegate(None);
+        running.window.setContentView(None);
+        drop(running);
+        let resident = RESIDENT.with(|resident| resident.borrow().clone());
+        if let Some(resident) = resident {
+            (resident.on_close)();
+        }
     }
 }
 
@@ -901,7 +920,7 @@ fn name_app(name: &str) {
 /// The caller can finish cleanup or restart after this function returns.
 pub fn run_app(source: AppSource, mut options: AppOptions) -> std::process::ExitCode {
     options.notifications = true;
-    run_window(Start::Source(source), options, |_| {})
+    run_window(Start::Source(source), options, Rc::new(|_| {}), None)
 }
 
 /// [`run_app`] for an engine the embedding app configured
@@ -912,7 +931,12 @@ pub fn run_app_with_config(
     options: AppOptions,
     on_active: impl Fn(bool) + 'static,
 ) -> std::process::ExitCode {
-    run_window(Start::Config(Box::new(config)), options, on_active)
+    run_window(
+        Start::Config(Box::new(config)),
+        options,
+        Rc::new(on_active),
+        None,
+    )
 }
 
 enum Start {
@@ -927,10 +951,76 @@ enum Loaded {
     DevServer(String),
 }
 
+/// Runs a resident application with a native menu-bar entry (Open / Quit).
+/// `status_menu` supplies the application-owned button and command labels.
+/// Closing the window stops and drops its engine and native views, but keeps
+/// the application event loop alive. Open and Dock reopen call `configure` on
+/// the main thread to create a fresh engine; an existing window is just raised.
+/// `should_close` gates ordinary window close without blocking the main thread:
+/// return false while preparing state, then reissue the close when ready.
+/// Explicit Quit bypasses this gate. `on_close` runs after each UI is destroyed,
+/// including on Quit. Quit returns
+/// control to the caller for its own bounded cleanup. Other runners retain
+/// their existing close behavior. Must be called on the main thread.
+pub fn run_resident_app_with_config(
+    options: AppOptions,
+    status_menu: crate::StatusMenuOptions,
+    configure: impl FnMut() -> EngineConfig + 'static,
+    on_active: impl Fn(bool) + 'static,
+    on_close: impl Fn() + 'static,
+    should_close: impl Fn() -> bool + 'static,
+) -> std::process::ExitCode {
+    let mut options = options;
+    options.keep_alive_on_close = false;
+    let resident = Rc::new(Resident {
+        options: options.clone(),
+        status_menu,
+        configure: RefCell::new(Box::new(configure)),
+        on_active: Rc::new(on_active),
+        on_close: Box::new(on_close),
+        should_close: Box::new(should_close),
+    });
+    let initial = (resident.configure.borrow_mut())();
+    run_window(
+        Start::Config(Box::new(initial)),
+        options,
+        resident.on_active.clone(),
+        Some(resident),
+    )
+}
+
+/// Shows one existing UI or constructs a new one on the same connection.
+fn reopen_window(delegate: &Delegate) {
+    let window = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|running| running.window.clone())
+    });
+    let mtm = MainThreadMarker::from(delegate);
+    let app = NSApplication::sharedApplication(mtm);
+    if let Some(window) = window {
+        if window.isMiniaturized() {
+            window.deminiaturize(None);
+        }
+        window.makeKeyAndOrderFront(None);
+        app.activate();
+    } else if let Some(resident) = RESIDENT.with(|resident| resident.borrow().clone()) {
+        let config = (resident.configure.borrow_mut())();
+        create_window(
+            Start::Config(Box::new(config)),
+            &resident.options,
+            delegate,
+            resident.on_active.clone(),
+        );
+    }
+}
+
 fn run_window(
     start: Start,
     options: AppOptions,
-    on_active: impl Fn(bool) + 'static,
+    on_active: Rc<dyn Fn(bool)>,
+    resident: Option<Rc<Resident>>,
 ) -> std::process::ExitCode {
     let mtm = MainThreadMarker::new().expect("run_app must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -950,6 +1040,45 @@ fn run_window(
     handle_quit_events(Some(&delegate));
     app.setMainMenu(Some(&main_menu(mtm, &options.title)));
 
+    let status = resident.as_ref().map(|resident| {
+        let delegate = delegate.clone();
+        crate::StatusMenu::new(
+            resident.status_menu.clone(),
+            move || reopen_window(&delegate),
+            quit_app,
+        )
+    });
+    RESIDENT.with(|state| *state.borrow_mut() = resident);
+    create_window(start, &options, &delegate, on_active);
+    app.run();
+    stop_running();
+    RESIDENT.with(|state| state.borrow_mut().take());
+    drop(status);
+    handle_quit_events(None);
+    app.setDelegate(None);
+    drop(delegate);
+    // The new process waits for this one to exit, so the caller's cleanup
+    // after `run_app` returns still comes first.
+    if RESTART.take() {
+        if cfg!(feature = "dev") {
+            // `nsh run` ends with its host and stops the dev server: a host
+            // started again would be cut off from both, so it only quits.
+            log::warn!("a development host quits on restart; restarting runs in a packaged app");
+        } else if let Err(err) = nsh_core::restart::spawn_after_exit() {
+            log::error!("cannot restart the app: {err}");
+        }
+    }
+    std::process::ExitCode::SUCCESS
+}
+
+fn create_window(
+    start: Start,
+    options: &AppOptions,
+    delegate: &Delegate,
+    on_active: Rc<dyn Fn(bool)>,
+) {
+    let mtm = MainThreadMarker::from(delegate);
+    let app = NSApplication::sharedApplication(mtm);
     // nsh.json `window`: known before the window is made, so its first
     // frame has it. A dev server's app comes later (its window options with it).
     let loaded = match start {
@@ -1012,7 +1141,7 @@ fn run_window(
     // SAFETY: the window is kept in `RUNNING` until it closes.
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&options.title));
-    window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    window.setDelegate(Some(ProtocolObject::from_ref(delegate)));
     crate::system::open_window(&window, options.appearance);
     let view = AppView::new(mtm, options.clone());
     view.surface().standalone.set(true);
@@ -1066,7 +1195,7 @@ fn run_window(
             window,
             view,
             keep_alive_on_close: options.keep_alive_on_close,
-            on_active: Box::new(on_active),
+            on_active,
         })
     });
     // The mode it opens in, once it shows.
@@ -1074,23 +1203,6 @@ fn run_window(
     for url in URL_SCHEMES.with(|links| std::mem::take(&mut *links.borrow_mut())) {
         url_scheme(url);
     }
-    app.run();
-    stop_running();
-    handle_quit_events(None);
-    app.setDelegate(None);
-    drop(delegate);
-    // The new process waits for this one to exit, so the caller's cleanup
-    // after `run_app` returns still comes first.
-    if RESTART.take() {
-        if cfg!(feature = "dev") {
-            // `nsh run` ends with its host and stops the dev server: a host
-            // started again would be cut off from both, so it only quits.
-            log::warn!("a development host quits on restart; restarting runs in a packaged app");
-        } else if let Err(err) = nsh_core::restart::spawn_after_exit() {
-            log::error!("cannot restart the app: {err}");
-        }
-    }
-    std::process::ExitCode::SUCCESS
 }
 
 /// Centers `window` on `display` (its visible part: below the menu bar,
