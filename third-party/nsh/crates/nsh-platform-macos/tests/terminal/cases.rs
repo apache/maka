@@ -1236,14 +1236,14 @@ mount(App);
     // must not advance or revoke the focused main editor's target or preedit.
     key(&surface, "f6");
     clipboard(&surface, "side-mounted");
-    assert_eq!(surface.text_input_target(), Some(main_target));
+    assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
 
     key(&surface, "f7");
     clipboard(&surface, "side-ready");
-    assert_eq!(surface.text_input_target(), Some(main_target));
+    assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
     assert!(
         surface
-            .apply_composition(&main_target, "", "", Some(0..0), false)
+            .apply_composition(&main_target, "", "", None, false)
             .unwrap()
     );
     assert_eq!(surface.editor_text().as_deref(), Some("MAIN_DRAFT"));
@@ -1252,8 +1252,10 @@ mount(App);
     key(&surface, "f8");
     clipboard(&surface, "side-focused");
     pump_until(&surface, || {
-        let current = surface.text_input_target();
-        current.is_some() && current != Some(main_target)
+        surface
+            .text_input_target()
+            .as_ref()
+            .is_some_and(|target| target != &main_target)
     });
     assert!(surface.paste(nsh_core::PasteEvent::new("SIDE_DRAFT")));
     pump_until(&surface, || {
