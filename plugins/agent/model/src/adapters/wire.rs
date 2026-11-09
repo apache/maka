@@ -72,18 +72,19 @@ pub(super) fn chat_options(
         .and_then(|options| options.get("openAiChatReasoningField"))
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
-        .map_err(|error| ModelError::Adapter(error.to_string()))?
-        .unwrap_or_default();
+        .map_err(|error| ModelError::Adapter(error.to_string()))?;
     Ok(prompt_options)
 }
 pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> String {
-    let mut codec = serde_json::json!({"codec":"maka.chat-items.v1","language":language,
-        "namespace":options.provider_namespace,"metadataNamespace":options.metadata_namespace,
-        "multipartToolContent":options.multipart_tool_content});
-    if options.reasoning_field != maka_provider_protocol::output::ReasoningField::Content {
-        codec["reasoningField"] = serde_json::json!(options.reasoning_field);
-    }
-    codec.to_string()
+    serde_json::json!({
+        "codec": "maka.chat-items.v1",
+        "language": language,
+        "namespace": options.provider_namespace,
+        "metadataNamespace": options.metadata_namespace,
+        "multipartToolContent": options.multipart_tool_content,
+        "reasoningField": options.reasoning_field,
+    })
+    .to_string()
 }
 
 /// Immutable message encoding policy. Tool schemas belong to the request header;

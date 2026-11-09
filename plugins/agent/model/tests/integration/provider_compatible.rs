@@ -484,16 +484,23 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         input.provider.base_url = model.base_url;
         input.provider_options = model.provider_options;
         input.prompt = vec![Message::Assistant {
-            content: vec![AssistantPart::Reasoning { text: "previous thought".into(), provider_options: None }, AssistantPart::Text { text: "previous reply".into(), provider_options: None }],
+            content: vec![
+                AssistantPart::Reasoning {
+                    text: "previous thought".into(),
+                    provider_options: Some(json!({"maka":{"openAiChatReasoningField":"reasoning_content"}})),
+                },
+                AssistantPart::Text { text: "previous reply".into(), provider_options: None },
+            ],
             provider_options: None,
         }, Message::user("continue")].into();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let wire = body(&mut socket).await;
             assert_eq!(wire["messages"][0], json!({"role":"assistant","content":"previous reply","reasoning":"previous thought"}));
+            assert!(wire["messages"][0].get("reasoning_content").is_none());
             assert_eq!(wire["stream_options"], json!({"include_usage":true}));
             assert!(wire.get("maka").is_none());
-            response(&mut socket, 200, &completion(&[json!({"reasoning":"new thought"}), json!({"content":"reply"})])).await;
+            response(&mut socket, 200, &completion(&[json!({"reasoning_content":"new thought"}), json!({"content":"reply"})])).await;
         });
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();

@@ -27,10 +27,9 @@ pub enum TextKind {
     Text,
     Reasoning,
 }
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningField {
-    #[default]
     #[serde(rename = "reasoning_content")]
     Content,
     Reasoning,

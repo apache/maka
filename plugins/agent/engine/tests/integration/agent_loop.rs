@@ -262,3 +262,179 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
     .await
     .expect("agent loop must make bounded progress");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compatible_reasoning_replay_honors_override_observed_empty_and_multipart_steps() {
+    use tokio::io::AsyncWriteExt;
+
+    async fn stream_sse(socket: &mut tokio::net::TcpStream, deltas: &[Value], tool: bool) {
+        let mut body = String::new();
+        for delta in deltas {
+            let chunk = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+            body.push_str(&format!("data: {chunk}\n\n"));
+        }
+        let finish = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":if tool {"tool_calls"} else {"stop"}}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}});
+        body.push_str(&format!("data: {finish}\n\ndata: [DONE]\n\n"));
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    }
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::new(
+            ModelExecutor::new(Duration::from_secs(10)).unwrap(),
+            CodeExecutor::new(CellLimits::default()).unwrap(),
+        )
+        .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(
+                &mut socket,
+                &[
+                    json!({"reasoning_content":"part-1 "}),
+                    json!({"content":"checking"}),
+                    json!({"reasoning_content":"part-2"}),
+                    json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{\"value\":42}"}}]}),
+                ],
+                true,
+            )
+            .await;
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(
+                &mut socket,
+                &[json!({"reasoning_content":""}), json!({"content":"done"})],
+                false,
+            )
+            .await;
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(&mut socket, &[json!({"content":"final"})], false).await;
+            requests
+        });
+
+        let log = Arc::new(
+            SessionFixture::open(&directory.path().join("override.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let effect = Arc::new(Effect {
+            log: log.clone(),
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+        for suffix in ["first", "next"] {
+            let mut run = input(&base, suffix, effect.clone());
+            run.provider_id = "ollama-cloud".into();
+            run.provider.kind = maka_model::ProviderKind::OpenaiCompatible {
+                name: "ollama-cloud".into(),
+            };
+            run.provider_options =
+                json!({"maka":{"includeUsage":true,"openAiChatReasoningField":"reasoning"}});
+            engine
+                .run(log.store(), run, CancellationToken::new())
+                .await
+                .unwrap();
+        }
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0]["stream_options"], json!({"include_usage":true}));
+        let assistants = |request: &Value| {
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "assistant")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let step_two = assistants(&requests[1]);
+        assert_eq!(step_two.len(), 1);
+        assert_eq!(step_two[0]["reasoning"], "part-1 part-2");
+        assert!(step_two[0].get("reasoning_content").is_none());
+
+        let turn_two = assistants(&requests[2]);
+        assert_eq!(turn_two.len(), 2);
+        assert_eq!(turn_two[0]["reasoning"], "part-1 part-2");
+        assert!(turn_two[0].get("reasoning_content").is_none());
+        assert_eq!(turn_two[1]["reasoning"], "");
+        assert!(turn_two[1].get("reasoning_content").is_none());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(
+                &mut socket,
+                &[
+                    json!({"reasoning_content":""}),
+                    json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{\"value\":42}"}}]}),
+                ],
+                true,
+            )
+            .await;
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(
+                &mut socket,
+                &[json!({"reasoning":"native-why"}), json!({"content":"done"})],
+                false,
+            )
+            .await;
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(read_request(&mut socket).await);
+            stream_sse(&mut socket, &[json!({"content":"final"})], false).await;
+            requests
+        });
+
+        let log = Arc::new(
+            SessionFixture::open(&directory.path().join("observed.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let effect = Arc::new(Effect {
+            log: log.clone(),
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+        for suffix in ["first", "next"] {
+            let mut run = input(&base, suffix, effect.clone());
+            run.provider.kind = maka_model::ProviderKind::OpenaiCompatible {
+                name: "fixture".into(),
+            };
+            run.provider_options = json!({"maka":{"includeUsage":false}});
+            engine
+                .run(log.store(), run, CancellationToken::new())
+                .await
+                .unwrap();
+        }
+        let requests = server.await.unwrap();
+        assert!(requests[0].get("stream_options").is_none());
+        let turn_two = assistants(&requests[2]);
+        assert_eq!(turn_two.len(), 2);
+        assert_eq!(turn_two[0]["reasoning_content"], "");
+        assert!(turn_two[0].get("reasoning").is_none());
+        assert_eq!(turn_two[1]["reasoning"], "native-why");
+        assert!(turn_two[1].get("reasoning_content").is_none());
+
+        engine.drain().await;
+    })
+    .await
+    .expect("compatible reasoning replay must make bounded progress");
+}

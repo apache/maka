@@ -92,14 +92,9 @@ enum Plan {
 }
 pub(super) enum MessageBuilder {
     User(Arc<dyn RecipeSource<ContentRecipe>>),
-    Assistant {
-        parts: Range<usize>,
-        options: Option<JsonSource>,
-    },
+    Assistant { parts: Range<usize> },
     Tool(Box<ToolResultRecipe>),
-    DeferredUser {
-        parts: Range<usize>,
-    },
+    DeferredUser { parts: Range<usize> },
 }
 struct Producer {
     id: [u8; 32],
@@ -108,7 +103,6 @@ struct Producer {
 struct AssistantGroup {
     key: u64,
     start: usize,
-    options: Option<JsonSource>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -336,20 +330,11 @@ async fn capture_owned(
                         parts.push(part);
                         builders.push(MessageBuilder::Assistant {
                             parts: start..parts.len(),
-                            options: None,
                         });
                     }
                     ProjectedRow::Assistant(part) => {
                         ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
                         parts.push(part);
-                    }
-                    ProjectedRow::AssistantMetadata { options } => {
-                        ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
-                        if let Some(group) = &mut group
-                            && group.options.is_none()
-                        {
-                            group.options = Some(options);
-                        }
                     }
                     ProjectedRow::Skip => {}
                 }
@@ -395,12 +380,9 @@ async fn capture_owned(
                     content,
                     provider_options: None,
                 },
-                MessageBuilder::Assistant {
-                    parts: range,
-                    options,
-                } => MessageRecipe::Assistant {
+                MessageBuilder::Assistant { parts: range } => MessageRecipe::Assistant {
                     content: Arc::new(Items::range(parts.clone(), range, owner.clone())),
-                    provider_options: options,
+                    provider_options: None,
                 },
                 MessageBuilder::DeferredUser { parts: range } => MessageRecipe::User {
                     content: Arc::new(Items::range(
@@ -500,11 +482,10 @@ fn flush(
     group: &mut Option<AssistantGroup>,
 ) {
     if let Some(group) = group.take()
-        && (group.start != parts.len() || group.options.is_some())
+        && group.start != parts.len()
     {
         builders.push(MessageBuilder::Assistant {
             parts: group.start..parts.len(),
-            options: group.options,
         });
     }
 }
@@ -521,7 +502,6 @@ fn ensure_group(
     *group = Some(AssistantGroup {
         key,
         start: parts.len(),
-        options: None,
     });
 }
 fn add(total: &mut usize, bytes: usize) -> io::Result<()> {
