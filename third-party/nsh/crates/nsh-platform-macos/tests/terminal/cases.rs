@@ -1268,16 +1268,25 @@ mount(App);
 }
 
 pub(super) fn rich_editor_composition_commit_matches_preedit() {
+    use std::{cell::RefCell, rc::Rc};
+
     const IME_EDITOR_APP: &str = r#"
-import { mount, View } from "nsh";
+import { mount, signal, View } from "nsh";
 import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
 
 function App() {
   const session = createRichEditor({ extensions: [StarterKit] });
+  const composing = signal(false);
   return <View style={{ flex: 1 }}>
+    <View
+      onPress={() => {}}
+      accessibilityLabel={composing() ? "Composing" : "Idle"}
+      style={{ width: 20, height: 20 }}
+    />
     <RichEditor
       editor={session}
       autoFocus
+      onCompositionChange={({ composing: next }) => composing.set(next)}
       style={{ flex: 1, height: 120 }}
     />
   </View>;
@@ -1309,6 +1318,16 @@ mount(App);
             .unwrap();
         surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
     };
+    let fence = || {
+        let done: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+        let slot = done.clone();
+        surface.pause_input(Box::new(move |res| {
+            *slot.borrow_mut() = Some(res);
+        }));
+        pump_until(&surface, || done.borrow().is_some());
+        assert_eq!(*done.borrow(), Some(Ok(())));
+        surface.resume_input();
+    };
     let copy_focused = || {
         let _ = surface.take_clipboard_write();
         chord("a");
@@ -1323,6 +1342,7 @@ mount(App);
         copied.unwrap()
     };
 
+    // 1. Unsettled autoFocus fence: queued composition survives Enter + Escape before commit.
     pump_until(&surface, || surface.text_input_target().is_some());
     let target = surface.text_input_target().unwrap();
     assert!(
@@ -1338,6 +1358,31 @@ mount(App);
             .unwrap()
     );
     assert_eq!(copy_focused(), "方向");
+
+    // 2. Settled empty editor: live NSTextView marked text where `commit == preedit` still commits
+    //    and exits RichEditor's composing state cleanly.
+    chord("a");
+    key(&surface, "backspace");
+    fence();
+    assert_eq!(surface.editor_text().as_deref(), Some(""));
+    let target = surface.text_input_target().unwrap();
+    assert!(
+        surface
+            .apply_composition(&target, "", "再试", Some(2..2), true)
+            .unwrap()
+    );
+    pump_until(&surface, || {
+        !surface.pressable_bounds("Composing").is_empty()
+    });
+    key(&surface, "enter");
+    key(&surface, "escape");
+    assert!(
+        surface
+            .apply_composition(&target, "再试", "", None, false)
+            .unwrap()
+    );
+    pump_until(&surface, || !surface.pressable_bounds("Idle").is_empty());
+    assert_eq!(copy_focused(), "再试");
 
     let next = "Check keyboard focus too.";
     chord("a");

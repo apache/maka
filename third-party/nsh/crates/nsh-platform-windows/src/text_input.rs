@@ -841,6 +841,7 @@ struct Focus {
     armed: bool,
     after: u64,
     changing: bool,
+    replaying: bool,
 }
 
 thread_local! {
@@ -860,6 +861,7 @@ pub(crate) fn stopped(surface: &Surface) {
                 focus.armed = false;
                 focus.after = 0;
                 focus.changing = false;
+                focus.replaying = false;
                 focus.view.take()
             })
     });
@@ -931,7 +933,29 @@ pub(crate) fn composing(view: &NshView) -> bool {
 }
 
 pub(crate) fn composing_focused(surface: &Surface) -> bool {
-    focused(surface).is_some_and(|view| composing(&view))
+    focused(surface).is_some_and(|view| {
+        if !is_replaying(surface) {
+            #[cfg(feature = "terminal")]
+            let expected = (view.id(), surface.terminal_focus_generation.get());
+            if let Some(active) = FOCUS.with(|f| {
+                f.borrow().get(&surface.key()).and_then(|focus| {
+                    focus.pending.iter().rev().find_map(|held| match held {
+                        Held::Ime { composition, .. } => Some(composition.is_some()),
+                        #[cfg(feature = "terminal")]
+                        Held::TerminalComposition {
+                            expected: item_expected,
+                            active,
+                            ..
+                        } if *item_expected == expected => Some(*active),
+                        _ => None,
+                    })
+                })
+            }) {
+                return active;
+            }
+        }
+        composing(&view)
+    })
 }
 
 pub(crate) fn wants_text(surface: &Surface) -> bool {
@@ -1122,7 +1146,7 @@ pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
             || (0x70..=0x87).contains(&x)
     );
     let chord = (m.ctrl || m.alt || m.meta) && !crate::input::is_modifier(vk);
-    if (event.down && !(edits || chord)) || !is_armed(surface) {
+    if is_replaying(surface) || (event.down && !(edits || chord)) || !is_armed(surface) {
         return false;
     }
     let waiting_for_engine = behind(surface);
@@ -1213,8 +1237,30 @@ pub(crate) fn has_pending(surface: &Surface) -> bool {
     })
 }
 
+fn is_replaying(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.replaying)
+    })
+}
+
+fn with_replaying(surface: &Surface, run: impl FnOnce()) {
+    let prev = FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let focus = map.entry(surface.key()).or_default();
+        std::mem::replace(&mut focus.replaying, true)
+    });
+    run();
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.replaying = prev;
+        }
+    });
+}
+
 fn queue_if_unsettled(surface: &Surface, operation: impl FnOnce() -> Held) -> bool {
-    if !is_armed(surface) {
+    if is_replaying(surface) || !is_armed(surface) {
         return false;
     }
     let (changing, waits, has_auto) = FOCUS.with(|f| {
@@ -1277,7 +1323,7 @@ fn flush_pending(surface: &Rc<Surface>) {
             }
             return;
         }
-        match next {
+        with_replaying(surface, || match next {
             Held::Char(text) => char_input_now(surface, &text),
             Held::Ime {
                 result,
@@ -1302,7 +1348,7 @@ fn flush_pending(surface: &Rc<Surface>) {
                     terminal_composition_now(surface, &commit, &preedit, selection, active);
                 }
             }
-        }
+        });
         taken = true;
     }
     if taken && !behind(surface) {
@@ -2346,7 +2392,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     let vk = event.vk;
     #[cfg(feature = "terminal")]
     if surface.terminal_active.get().is_some()
-        && input.model.borrow().composition.is_some()
+        && composing_focused(surface)
         && (vk == VK_RETURN.0 || vk == VK_ESCAPE.0)
     {
         // Only the terminal IME protocol can commit or cancel its preedit.
@@ -2864,9 +2910,7 @@ pub(crate) fn terminal_validate_selection(
 
 #[cfg(feature = "terminal")]
 pub(crate) fn terminal_is_composing(surface: &Surface) -> bool {
-    focused(surface)
-        .and_then(|view| input_of(&view))
-        .is_some_and(|input| input.model.borrow().composition.is_some())
+    composing_focused(surface)
 }
 
 #[cfg(test)]
@@ -3545,6 +3589,109 @@ mod tests {
             },
         );
         assert!(surface.terminal_focus_generation.get() > readonly_generation);
+        surface.stop();
+    }
+
+    #[cfg(all(feature = "js", feature = "terminal"))]
+    #[test]
+    fn unsettled_terminal_composition_survives_enter_and_escape() {
+        let code = nsh_bundler::compile_module(
+            "UnsettledTerminalIme.tsx",
+            r#"
+            import { mount, signal, View } from 'nsh';
+            import { Input } from 'nsh/base';
+            function App() {
+                const first = signal('A');
+                const second = signal('');
+                const log = signal('');
+                return (
+                    <View style={{ flex: 1, gap: 4 }}>
+                        <Input
+                            testID="first"
+                            autoFocus
+                            value={first()}
+                            onChange={({ value }) => first.set(value)}
+                            style={{ height: 28 }}
+                        />
+                        <Input
+                            testID="second"
+                            value={second()}
+                            onChange={({ value }) => second.set(value)}
+                            onFocus={() => log.set(log() + 'focused|')}
+                            onSubmit={() => log.set(log() + 'submitted|')}
+                            submitBehavior="submit"
+                            style={{ height: 28 }}
+                        />
+                        <Input
+                            testID="report"
+                            readonly
+                            focusable={false}
+                            value={log() + second()}
+                            style={{ height: 28 }}
+                        />
+                    </View>
+                );
+            }
+            mount(App);
+            "#,
+            &[],
+        )
+        .unwrap();
+        let surface = Surface::new(nsh_core::platform::Environment {
+            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
+            os: nsh_core::platform::Os::Windows,
+            native_focus_scopes: true,
+            fallback_key_bindings: true,
+            ..Default::default()
+        });
+        surface.terminal_active.set(Some(true));
+        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        surface.start(config);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (second, report) = loop {
+            surface.drain();
+            if focused(&surface).is_some()
+                && surface.events_handled() == surface.events_sent()
+                && let Some(second) = find_test_view(&surface.root, "second")
+                && let Some(report) = find_test_view(&surface.root, "report")
+            {
+                break (second, report);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial fields did not settle"
+            );
+            std::thread::yield_now();
+        };
+
+        focus_view(&surface, &second);
+        assert!(behind(&surface));
+        terminal_composition(&surface, "", "方向", None, true).unwrap();
+        assert!(terminal_is_composing(&surface));
+        for vk in [VK_RETURN.0, VK_ESCAPE.0] {
+            assert!(crate::input::key(
+                &surface,
+                KeyEvent {
+                    vk,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                },
+            ));
+        }
+        assert_eq!(focused(&surface), Some(second.clone()));
+        terminal_composition(&surface, "方向", "", None, false).unwrap();
+
+        while input_of(&report).unwrap().model.borrow().text() != "focused|方向" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unsettled terminal composition did not commit cleanly"
+            );
+            std::thread::yield_now();
+        }
+        assert!(!terminal_is_composing(&surface));
         surface.stop();
     }
 }

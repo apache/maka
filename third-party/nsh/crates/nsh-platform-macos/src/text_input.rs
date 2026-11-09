@@ -2627,7 +2627,27 @@ fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retaine
 
 /// Whether `surface`'s focused input is currently composing marked text.
 pub(crate) fn composing_focused(surface: &Surface) -> bool {
-    focused_editor(surface).is_some_and(|(_, input, editor)| {
+    focused_editor(surface).is_some_and(|(view, input, editor)| {
+        #[cfg(not(feature = "terminal"))]
+        let _ = view;
+        #[cfg(feature = "terminal")]
+        if !is_replaying(surface) {
+            let expected = (view.state().id, surface.focus_generation.get());
+            if let Some(active) = FOCUS.with(|f| {
+                f.borrow().get(&surface.key()).and_then(|focus| {
+                    focus.pending.iter().rev().find_map(|held| match held {
+                        Held::TerminalComposition {
+                            expected: item_expected,
+                            active,
+                            ..
+                        } if *item_expected == expected => Some(*active),
+                        _ => None,
+                    })
+                })
+            }) {
+                return active;
+            }
+        }
         #[cfg(feature = "terminal")]
         if input.terminal_original.borrow().is_some() {
             return true;
@@ -3151,7 +3171,9 @@ fn flush_pending(surface: &Rc<Surface>) {
                 if terminal_editor(surface).map(|(id, _)| id) == Some(expected.0)
                     && surface.focus_generation.get() == expected.1
                 {
-                    let _ = terminal_compose(surface, &commit, &preedit, selection, active);
+                    with_replaying(surface, || {
+                        let _ = terminal_compose(surface, &commit, &preedit, selection, active);
+                    });
                 }
             }
         }
