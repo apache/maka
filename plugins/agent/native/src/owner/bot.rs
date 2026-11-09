@@ -108,6 +108,9 @@ pub(super) enum Appended {
 fn former_key(session: &str) -> String {
     format!("former/{session}")
 }
+fn read_key(session: &str) -> String {
+    format!("outbox/{session}/read")
+}
 fn head_key(session: &str) -> String {
     format!("outbox/{session}/head")
 }
@@ -181,6 +184,16 @@ impl Bot {
     /// The single decision of whether a Session is the Bot.
     pub(super) fn is(&self, session: &str) -> bool {
         self.current.read().expect("bot identity").as_deref() == Some(session)
+    }
+    /// Whether a Session is the Bot or once was; its outbox outlives the replacement.
+    async fn is_or_was(&self, session: &str) -> Result<bool, String> {
+        Ok(self.is(session)
+            || self
+                .storage
+                .read(former_key(session))
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some())
     }
     fn creating(&self, session: &str) -> Creating<'_> {
         self.creating
@@ -386,6 +399,32 @@ impl Bot {
                 // Another call advanced the head or recorded this id; read again.
                 Err(StoreError::Conflict { .. }) => continue,
                 Err(error) => return Err(storage(error)),
+            }
+        }
+    }
+    /// Advance the read cursor; a stale acknowledgement leaves it where it is.
+    async fn mark_read(&self, session: &str, through: u64) -> Result<(), StoreError> {
+        let key = read_key(session);
+        loop {
+            let (revision, previous) = self.read::<Head>(&key).await?;
+            if previous.unwrap_or_default().through >= through {
+                return Ok(());
+            }
+            match self
+                .storage
+                .batch(vec![Self::mutation(
+                    key.clone(),
+                    revision,
+                    &Head { through },
+                )?])
+                .await
+            {
+                Ok(_) => {
+                    self.changed.send_replace(());
+                    return Ok(());
+                }
+                Err(StoreError::Conflict { .. }) => continue,
+                Err(error) => return Err(error),
             }
         }
     }
@@ -939,20 +978,37 @@ impl Owner {
             _ => Ok(true),
         }
     }
+    pub async fn mark_bot_read(&self, input: BotMarkRead) -> Result<BotOutbox, String> {
+        if !self.owns(&input.session_id) || !self.bot.is_or_was(&input.session_id).await? {
+            return Err("bot_session_unavailable".into());
+        }
+        let head = self
+            .bot
+            .read::<Head>(&head_key(&input.session_id))
+            .await
+            .map_err(|error| error.to_string())?
+            .1
+            .unwrap_or_default()
+            .through;
+        if input.through > head {
+            return Err("bot_read_beyond_head".into());
+        }
+        self.bot
+            .mark_read(&input.session_id, input.through)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.bot_outbox(&BotOutboxRead {
+            session_id: Some(input.session_id),
+            after: 0,
+            limit: 0,
+        })
+        .await
+    }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         let session_id = self.bot.session();
         let target = input.session_id.clone().or_else(|| session_id.clone());
         let is_bot = match &target {
-            Some(session) => {
-                session_id.as_deref() == Some(session)
-                    || self
-                        .bot
-                        .storage
-                        .read(former_key(session))
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .is_some()
-            }
+            Some(session) => self.bot.is_or_was(session).await?,
             None => false,
         };
         let (through, messages, more) = match target.as_ref().filter(|_| is_bot) {
@@ -966,15 +1022,50 @@ impl Owner {
         let next_after = more
             .then(|| messages.last().map(|message| message.sequence))
             .flatten();
+        let (read_through, preview) = match target.as_ref().filter(|_| is_bot) {
+            Some(session) => {
+                let read = self
+                    .bot
+                    .read::<Head>(&read_key(session))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1
+                    .unwrap_or_default()
+                    .through
+                    .min(through);
+                let latest = self
+                    .bot
+                    .read::<BotMessage>(&message_key(session, through))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1;
+                (
+                    read,
+                    latest.map_or_else(String::new, |message| preview(&message.text)),
+                )
+            }
+            None => (0, String::new()),
+        };
         Ok(BotOutbox {
             enabled: self.settings.bot,
             session_id,
             is_bot,
+            read_through,
+            preview,
             through,
             messages,
             next_after,
         })
     }
+}
+
+fn preview(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(160)
+        .collect()
 }
 
 /// What the standing instructions may claim, keyed by the tools that grant it:
