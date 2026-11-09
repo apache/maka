@@ -77,8 +77,9 @@ fn resident_close_releases_ui_reopens_without_duplicates_and_quits_while_hidden(
                         .with_policy(policy);
                 let mut config = EngineConfig::new(bundle);
                 config.context = config.context.with(UiLifetime(factory_released.clone()));
+                let ui = crate::window::UiThread::current();
                 config.host.handle("test.ready", move |_| {
-                    crate::window::invoke(move || {
+                    ui.invoke(move || {
                         let hwnd = STATE.with(|slot| {
                             let state = slot.borrow();
                             let state = state.as_ref()?;
