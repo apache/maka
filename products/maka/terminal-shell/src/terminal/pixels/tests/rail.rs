@@ -52,6 +52,10 @@ impl RailHost {
         "en".into()
     }
     #[getter]
+    pub fn ui_scale_supported(&self) -> bool {
+        true
+    }
+    #[getter]
     pub fn ui_scale_factor(&self) -> f32 {
         f32::from_bits(self.active_scale.load(Ordering::Relaxed))
     }

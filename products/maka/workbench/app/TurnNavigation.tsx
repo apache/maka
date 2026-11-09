@@ -21,16 +21,29 @@ import { textTooltip } from './ui';
 import { Canvas, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import type { ListRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { reduceMotion, platform, windowSize } from 'nsh';
+import { pixelRatio, reduceMotion, platform, windowSize } from 'nsh';
+import { host as nativeHost } from 'maka/host';
 import type { Position } from './history';
 import { C, controlStyle, captionTextStyle, isDark } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
 
-const markPitch = () => (platform.idiom === 'terminal' ? 16 : 12);
+// The pixel renderer draws desktop views but still receives mouse input in terminal cells.
+const cellInput = platform.idiom !== 'terminal' && nativeHost.uiScaleSupported;
+// Cell input rounds by half a 16 / scale row; include the two-point stroke.
+const markPitch = computed(() => {
+  if (platform.idiom === 'terminal') return 16;
+  if (!cellInput) return 12;
+  pixelRatio();
+  windowSize();
+  return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
+});
 const railInset = platform.idiom === 'terminal' ? 0 : 6;
 const railMargin = 32;
-export const railWidth = () => (platform.idiom === 'terminal' ? 24 : 26);
+export const railWidth = () => {
+  if (platform.idiom === 'terminal') return 24;
+  return cellInput ? markPitch() : 26;
+};
 
 function RailFade(props: { bottom: boolean }) {
   return (
@@ -89,7 +102,7 @@ function NavigationMark(props: {
         })}
         tooltip={
           <Tooltip
-            placement="right"
+            placement={cellInput ? 'left' : 'right'}
             delay={0}
             offset={12}
             margin={16}
@@ -128,8 +141,8 @@ function NavigationMark(props: {
         style={{
           height: markPitch(),
           width: railWidth(),
-          alignItems: 'flex-start',
-          paddingLeft: platform.idiom === 'terminal' ? 0 : 7,
+          alignItems: cellInput ? 'flex-end' : 'flex-start',
+          paddingLeft: platform.idiom === 'terminal' || cellInput ? 0 : 7,
           justifyContent: 'center',
         }}
         focusStyle={{ backgroundColor: C.raised }}
@@ -143,17 +156,21 @@ function NavigationMark(props: {
           <View
             style={{
               height: 2,
-              width: [19, 14, 9][props.distance] ?? 6,
+              width: cellInput ? 12 : ([19, 14, 9][props.distance] ?? 6),
               borderRadius: 1,
-              backgroundColor: isDark()
-                ? props.active || props.distance === 0
-                  ? '#ffffff'
-                  : C.muted
-                : props.distance === 0
-                  ? '#383b43'
-                  : props.active
-                    ? '#72757d'
-                    : '#b3b5ba',
+              backgroundColor: cellInput
+                ? props.active
+                  ? C.text
+                  : C.line
+                : isDark()
+                  ? props.active || props.distance === 0
+                    ? '#ffffff'
+                    : C.muted
+                  : props.distance === 0
+                    ? '#383b43'
+                    : props.active
+                      ? '#72757d'
+                      : '#b3b5ba',
               transitionProperty: 'width',
               transitionDuration: reduceMotion() ? 0 : 150,
               transitionTimingFunction: 'ease-out',
