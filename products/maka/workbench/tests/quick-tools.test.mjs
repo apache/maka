@@ -217,6 +217,38 @@ test('package updates reject stale previews, serialize independent installs, and
     ['test.second'],
   );
   await assert.rejects(packages.preview(bundle('preferences', '1')));
+  // Host records stored beside plugin data must not be claimable by a plugin ID.
+  await assert.rejects(packages.preview(bundle('undelivered', '1')));
+  await assert.rejects(packages.preview(bundle('launcher-shortcut', '1')));
+});
+
+test('a full package registry rejects new installs and still restarts', async () => {
+  const bundle = (id, version) => ({
+    format: 1,
+    manifest: {
+      apiVersion: 1,
+      id,
+      name: id,
+      version,
+      description: 'test',
+      permissions: [],
+      commands: [],
+    },
+    code: 'module.exports.default=()=>({});',
+  });
+  const packages = new runtime.Packages();
+  await packages.start();
+  for (let i = packages.records.length; i < 64; i++)
+    await packages.commit((await packages.preview(bundle(`test.fill-${i}`, '1'))).token);
+  assert.equal(packages.records.length, 64);
+  await assert.rejects(
+    packages.commit((await packages.preview(bundle('test.overflow', '1'))).token),
+  );
+  // Updating an installed package is not a new install.
+  await packages.commit((await packages.preview(bundle('test.fill-63', '2'))).token);
+  const restarted = new runtime.Packages();
+  await restarted.start();
+  assert.equal(restarted.records.length, 64);
 });
 
 test('web adapters cannot silently change their declared access or domain', async () => {

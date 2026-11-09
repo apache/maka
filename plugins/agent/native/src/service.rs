@@ -181,8 +181,20 @@ impl Handler for Agent {
                 "checklist" => encode(owner.checklist(&decode(input)?).await?),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
                 "rankQuickTools" => {
-                    let operation=context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.rank_quick_tools(decode(input)?,context.scope(),operation,context.operation_scope().ok_or("agent_mutation_required")?.clone()).await?)
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .rank_quick_tools(
+                                decode(input)?,
+                                context.scope(),
+                                operation,
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?,
+                    )
                 }
                 "predictNextMessage" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;

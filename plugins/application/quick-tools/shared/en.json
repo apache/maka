@@ -262,6 +262,7 @@
   "随附插件包不存在": "Bundled plugin package does not exist",
   "安装预览已过期，请重新选择插件包": "Installation preview expired. Select the package again.",
   "插件版本已变化，请重新预览后安装": "Plugin version changed. Preview it again before installing.",
+  "最多安装 64 个插件，请先移除不用的插件": "You can install up to 64 plugins. Remove one you no longer use first.",
   "插件已卸载，但旧文件清理失败: ${0}": "Plugin uninstalled, but old files could not be removed: ${0}",
   "没有可回退的版本": "No version available to roll back to",
   "旧版本校验失败": "Previous version verification failed",

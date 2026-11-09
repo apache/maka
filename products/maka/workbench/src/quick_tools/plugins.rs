@@ -167,6 +167,8 @@ pub fn attach(config: &mut EngineConfig) {
                             "trace",
                             "shortcuts",
                             "extensions",
+                            "launcher-shortcut",
+                            "undelivered",
                         ]
                         .contains(&id)
                             || !id

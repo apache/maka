@@ -19,7 +19,8 @@ const bundleSchema = z
 export type Bundle = z.infer<typeof bundleSchema>;
 const artifact = z.object({ bundle: bundleSchema, digest: z.string().regex(/^[a-f0-9]{64}$/) });
 const record = artifact.extend({ previous: artifact.optional() });
-const registry = z.object({ version: z.literal(1), records: z.array(record).max(64) });
+const capacity = 64;
+const registry = z.object({ version: z.literal(1), records: z.array(record).max(capacity) });
 type Record = z.infer<typeof record>;
 const digest = (bundle: Bundle) =>
   createHash('sha256').update(JSON.stringify(bundle)).digest('hex');
@@ -71,6 +72,8 @@ export class Packages {
         throw Error(qt('安装预览已过期，请重新选择插件包'));
       const current = this.records.find((r) => r.bundle.manifest.id === pending.bundle.manifest.id);
       if (current?.digest !== pending.expected) throw Error(qt('插件版本已变化，请重新预览后安装'));
+      if (!current && this.records.length >= capacity)
+        throw Error(qt('最多安装 64 个插件，请先移除不用的插件'));
       const next = {
         bundle: pending.bundle,
         digest: digest(pending.bundle),
@@ -100,8 +103,9 @@ export class Packages {
   cancel(token: string) {
     this.pending.delete(token);
   }
+  // Writes only what start() can read back, so a restart never loses the registry.
   private async save(records: Record[]) {
-    await storage.write('extensions', { version: 1, records });
+    await storage.write('extensions', registry.parse({ version: 1, records }));
     this.records = records;
   }
 }

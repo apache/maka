@@ -175,32 +175,56 @@ mod tests {
     fn independent_quick_panel_follows_language_and_appearance() {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
-        let sets=vec![nsh_base::registry(),registry];
-        let bundle=nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry:std::path::Path::new("tests/fixtures/quick-preferences.tsx").canonicalize().unwrap(),
-            minify:false,split:false,ui_sets:sets.iter().map(Into::into).collect(),
-        }).unwrap();
-        let root=tempfile::tempdir().unwrap();
-        let main=nsh_engine::HostChannel::new();
-        let panel=nsh_engine::HostChannel::new();
-        main.set_params(serde_json::from_value(serde_json::json!({"nativeQuickTools":true})).unwrap());
-        panel.set_params(serde_json::from_value(serde_json::json!({"quickToolsPanel":true})).unwrap());
-        for (source,target) in [(&main,&panel),(&panel,&main)] {
-            let target=target.clone();
-            source.handle("quickTools.preferences.update",move|call|{
-                target.send("quickTools.preferences",call.data().clone()).unwrap();call.resolve(serde_json::Value::Null);
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/quick-preferences.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let main = nsh_engine::HostChannel::new();
+        let panel = nsh_engine::HostChannel::new();
+        main.set_params(
+            serde_json::from_value(serde_json::json!({"nativeQuickTools":true})).unwrap(),
+        );
+        panel.set_params(
+            serde_json::from_value(serde_json::json!({"quickToolsPanel":true})).unwrap(),
+        );
+        for (source, target) in [(&main, &panel), (&panel, &main)] {
+            let target = target.clone();
+            source.handle("quickTools.preferences.update", move |call| {
+                target
+                    .send("quickTools.preferences", call.data().clone())
+                    .unwrap();
+                call.resolve(serde_json::Value::Null);
             });
-            source.handle("quickTools.preferences.read",|call|call.resolve(serde_json::Value::Null));
+            source.handle("quickTools.preferences.read", |call| {
+                call.resolve(serde_json::Value::Null)
+            });
         }
-        let mut capabilities=nsh_engine::Capabilities::all();
+        let mut capabilities = nsh_engine::Capabilities::all();
         super::quick_tools_capabilities(&mut capabilities);
-        let config=|host,name|nsh_engine::EngineConfig {
-            ui_sets:sets.clone(),host,data_dir:Some(root.path().join(name)),
-            environment:Environment{os:Os::MacOs,renderer:Renderer::Native,..Environment::default()},
-            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code.clone()).with_policy(nsh_engine::Policy{declared:Some(capabilities.clone()),..nsh_engine::Policy::development()}))
+        let config = |host, name| nsh_engine::EngineConfig {
+            ui_sets: sets.clone(),
+            host,
+            data_dir: Some(root.path().join(name)),
+            environment: Environment {
+                os: Os::MacOs,
+                ..Environment::default()
+            },
+            ..nsh_engine::EngineConfig::new(
+                nsh_engine::Bundle::source(bundle.code.clone()).with_policy(nsh_engine::Policy {
+                    declared: Some(capabilities.clone()),
+                    ..nsh_engine::Policy::development()
+                }),
+            )
         };
-        let mut first=nsh_testing::Headless::start(config(main.clone(),"main")).unwrap();
-        let mut second=nsh_testing::Headless::start(config(panel.clone(),"panel")).unwrap();
+        let mut first = nsh_testing::Headless::start(config(main.clone(), "main")).unwrap();
+        let mut second = nsh_testing::Headless::start(config(panel.clone(), "panel")).unwrap();
         first.wait_for("id:chinese").unwrap();
         first.press("id:chinese").unwrap();
         first.press("id:dark").unwrap();
@@ -210,7 +234,8 @@ mod tests {
         first.wait_for("text:zh-CN|dark|sage").unwrap();
         first.press("id:english").unwrap();
         second.wait_for("text:en|dark|sage").unwrap();
-        main.remove_handler("quickTools.preferences.update");panel.remove_handler("quickTools.preferences.update");
+        main.remove_handler("quickTools.preferences.update");
+        panel.remove_handler("quickTools.preferences.update");
     }
     #[test]
     #[cfg(target_os = "macos")]
@@ -235,7 +260,6 @@ mod tests {
             viewport: Size::new(px(900.0), px(700.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer: Renderer::Native,
                 native_focus_scopes: true,
                 ..Environment::default()
             },
@@ -262,7 +286,11 @@ mod tests {
             };"#});
             call.resolve(serde_json::Value::String(bundle.to_string()));
         });
-        config.host.handle("quickTools.shortcuts.configure", |call| call.resolve(serde_json::Value::Null));
+        config
+            .host
+            .handle("quickTools.shortcuts.configure", |call| {
+                call.resolve(serde_json::Value::Null)
+            });
         let mut app = nsh_testing::Headless::start(config).unwrap();
         app.wait_for("role:button[Quicklinks]").unwrap();
         assert!(
@@ -284,14 +312,17 @@ mod tests {
         let target = "label:Target (website, app deep link, or file path)";
         app.type_text(target, "https://").unwrap();
         app.press("role:button[Save]").unwrap();
-        app.wait_for("text:Add a domain to the URL, for example https://example.com.").unwrap();
+        app.wait_for("text:Add a domain to the URL, for example https://example.com.")
+            .unwrap();
         app.clear(target).unwrap();
-        assert!(!app.screen().texts().iter().any(|text| text.contains("Add a domain")));
-        app.type_text(
-            target,
-            "example.com/search?q={argument name=\"Query\"}",
-        )
-        .unwrap();
+        assert!(
+            !app.screen()
+                .texts()
+                .iter()
+                .any(|text| text.contains("Add a domain"))
+        );
+        app.type_text(target, "example.com/search?q={argument name=\"Query\"}")
+            .unwrap();
         app.press("role:button[Save]").unwrap();
         app.wait_for("role:button[Example Search]").unwrap();
         let saved: serde_json::Value = serde_json::from_str(
@@ -300,7 +331,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved[0]["name"], "Example Search");
-        assert_eq!(saved[0]["target"], "example.com/search?q={argument name=\"Query\"}");
+        assert_eq!(
+            saved[0]["target"],
+            "example.com/search?q={argument name=\"Query\"}"
+        );
         app.press("role:button[Actions ⌘ K]").unwrap();
         app.type_text("label:Search actions", "Settings").unwrap();
         app.press("role:button[Settings]").unwrap();
@@ -310,10 +344,17 @@ mod tests {
         app.press("role:button[Save]").unwrap();
         app.wait_for("role:button[Item settings]").unwrap();
         let preferences: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("default/quick-tools/preferences.json")).unwrap(),
-        ).unwrap();
-        assert!(preferences.as_object().unwrap().values().any(|value|
-            value["alias"] == "example-alias" && value["favorite"] == true));
+            &std::fs::read_to_string(root.path().join("default/quick-tools/preferences.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            preferences
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|value| value["alias"] == "example-alias" && value["favorite"] == true)
+        );
 
         app.press("role:button[Back]").unwrap();
         app.type_text("label:Search", "example-alias").unwrap();
@@ -322,14 +363,16 @@ mod tests {
         app.wait_for("label:Query").unwrap();
         app.press("role:button[Cancel]").unwrap();
         let key = format!("maka.links:{}", saved[0]["id"].as_str().unwrap());
-        app.send_host_event("quickTools.execute", serde_json::json!({"id":key})).unwrap();
+        app.send_host_event("quickTools.execute", serde_json::json!({"id":key}))
+            .unwrap();
         app.wait_for("label:Query").unwrap();
         app.press("role:button[Cancel]").unwrap();
         app.press("role:button[Quick Tools Settings]").unwrap();
         app.press("role:button[Install plugin]").unwrap();
         app.wait_for("role:button[Install]").unwrap();
         app.press("role:button[Install]").unwrap();
-        app.wait_for("role:button[Plugin details: External plugin]").unwrap();
+        app.wait_for("role:button[Plugin details: External plugin]")
+            .unwrap();
         app.press("role:button[Back]").unwrap();
         app.wait_for("role:button[External plugin]").unwrap();
         app.press("role:button[External plugin]").unwrap();
@@ -348,11 +391,23 @@ mod tests {
         app.press("role:button[Item settings]").unwrap();
         app.type_text("label:Alias", "my-sum").unwrap();
         app.press("role:button[Save]").unwrap();
-        app.send_host_event("quickTools.visibility", serde_json::json!({"visible":true,"home":true})).unwrap();
+        app.send_host_event(
+            "quickTools.visibility",
+            serde_json::json!({"visible":true,"home":true}),
+        )
+        .unwrap();
         app.type_text("label:Search", "my-sum").unwrap();
         app.wait_for("role:button[4]").unwrap();
-        app.send_host_event("quickTools.visibility", serde_json::json!({"visible":true,"home":true})).unwrap();
-        app.send_host_event("quickTools.visibility", serde_json::json!({"visible":false})).unwrap();
+        app.send_host_event(
+            "quickTools.visibility",
+            serde_json::json!({"visible":true,"home":true}),
+        )
+        .unwrap();
+        app.send_host_event(
+            "quickTools.visibility",
+            serde_json::json!({"visible":false}),
+        )
+        .unwrap();
         app.press("id:chinese").unwrap();
         app.press("id:reopen").unwrap();
         app.wait_for("role:button[快捷链接]").unwrap();

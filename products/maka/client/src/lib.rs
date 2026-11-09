@@ -1067,7 +1067,12 @@ impl Client {
             .pending_controls(&self.0.source, &owner)
             .await?
             .into_iter()
-            .filter(|operation| !matches!(operation.method.as_str(), "predictNextMessage" | "rankQuickTools"))
+            .filter(|operation| {
+                !matches!(
+                    operation.method.as_str(),
+                    "predictNextMessage" | "rankQuickTools"
+                )
+            })
             .collect())
     }
     /// Stop prompting for this original without cancelling, replaying, or changing its outcome.

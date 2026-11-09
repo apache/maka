@@ -56,8 +56,16 @@ pub struct QuickToolRank {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentQuickToolCandidate")]
-pub struct QuickToolCandidate { pub id:String, pub name:String, pub kind:String, pub uses:u32 }
+pub struct QuickToolCandidate {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub uses: u32,
+}
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentQuickToolRanking")]
-pub struct QuickToolRanking { pub source:String, pub ids:Vec<String> }
+pub struct QuickToolRanking {
+    pub source: String,
+    pub ids: Vec<String>,
+}

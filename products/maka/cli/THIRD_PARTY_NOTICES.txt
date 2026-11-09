@@ -100,6 +100,7 @@ portable-atomic@1.15.0 (Apache-2.0 OR MIT)
 prettyplease@0.2.37 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 proc-macro-crate@3.5.0 (MIT OR Apache-2.0); authors declared by package: Bastian Köcher <git@kchr.de>
 proc-macro2@1.0.107 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>
+process-wrap@10.0.1 (Apache-2.0 OR MIT); authors declared by package: Félix Saparelli <felix@passcod.name>
 quote@1.0.47 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 ref-cast-impl@1.0.27 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 ref-cast@1.0.27 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
@@ -222,6 +223,7 @@ https://crates.io/api/v1/crates/portable-atomic/1.15.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/prettyplease/0.2.37/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/proc-macro-crate/3.5.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/proc-macro2/1.0.107/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/process-wrap/10.0.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/quote/1.0.47/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/ref-cast-impl/1.0.27/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/ref-cast/1.0.27/download :: LICENSE-MIT
@@ -2260,6 +2262,7 @@ paste@1.0.15 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dto
 pastey@0.2.3 (MIT OR Apache-2.0); authors declared by package: Aditya Kumar <git@adityais.dev>, David Tolnay <dtolnay@gmail.com>
 prettyplease@0.2.37 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 proc-macro2@1.0.107 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>
+process-wrap@10.0.1 (Apache-2.0 OR MIT); authors declared by package: Félix Saparelli <felix@passcod.name>
 quote@1.0.47 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 rand_xoshiro@0.8.1 (MIT OR Apache-2.0); authors declared by package: The Rand Project Developers
 ref-cast-impl@1.0.27 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
@@ -2317,6 +2320,7 @@ https://crates.io/api/v1/crates/paste/1.0.15/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pastey/0.2.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/prettyplease/0.2.37/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/proc-macro2/1.0.107/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/process-wrap/10.0.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/quote/1.0.47/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/rand_xoshiro/0.8.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/ref-cast-impl/1.0.27/download :: LICENSE-APACHE
@@ -32715,6 +32719,42 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+process-wrap@10.0.1 (Apache-2.0 OR MIT); authors declared by package: Félix Saparelli <felix@passcod.name>
+
+https://crates.io/api/v1/crates/process-wrap/10.0.1/download :: COPYRIGHT
+
+Short version for non-lawyers:
+
+This project is dual-licensed under Apache 2.0 and MIT terms.
+
+
+Longer version:
+
+Copyrights in this project are retained by their contributors. No copyright
+assignment is required to contribute.
+
+Some files include explicit copyright notices and/or license notices.
+For full authorship information, see the version control history.
+
+Except as otherwise noted (below and/or in individual files), the project is
+licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
+<http://www.apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT>
+or <http://opensource.org/licenses/MIT>, at your option.
+
+
+The read2() method in src/std/core.rs is adapted from the read2()
+function in the Rust stdlib at sys/unix/pipe.rs, copyright the Rust Contributors,
+licensed under Apache 2.0 and MIT.
+<https://github.com/rust-lang/rust/blob/c9aa2595d9ba2313bbfcc8e0244231baa9c5d9e0/library/std/src/sys/unix/pipe.rs#L76-L122>
+
+
+The job_object() and resume_threads() methods in src/windows.rs are
+adapted from the Windows™ version of the new() method in watchexec at
+src/process.rs, copyright Matt Green, licensed under Apache 2.0 only.
+<https://github.com/watchexec/watchexec/blob/07974e0d1411e79e653a5a5f610f923834628038/lib/src/process.rs#L305-L393>
+
+================================================================================
+
 prodash@31.0.1 (MIT); authors declared by package: Sebastian Thiel <sebastian.thiel@icloud.com>
 
 https://crates.io/api/v1/crates/prodash/31.0.1/download :: LICENSE.md
@@ -45417,6 +45457,34 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+
+================================================================================
+
+zod@4.6.7 (MIT)
+
+https://registry.npmjs.org/zod/-/zod-4.6.7.tgz :: LICENSE
+
+MIT License
+
+Copyright (c) 2025 Colin McDonnell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ================================================================================
 

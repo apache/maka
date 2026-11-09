@@ -766,6 +766,7 @@
     "cargo:proc-macro-crate@3.5.0 registry+https://github.com/rust-lang/crates.io-index": "69050fe82c7f06c5d8f9f9fa3c8b14acd51dd473ffcdd7c61cb7c1f4231e8581",
     "cargo:proc-macro-utils@0.10.0 registry+https://github.com/rust-lang/crates.io-index": "3b8764413469ca762e4383a00f1b86f9e96752ff2a6853492616ac88695a6b0b",
     "cargo:proc-macro2@1.0.107 registry+https://github.com/rust-lang/crates.io-index": "7669207f1450f3352ac158adeb0d5a70d183f3cc37199186a71de0dab3158fe6",
+    "cargo:process-wrap@10.0.1 registry+https://github.com/rust-lang/crates.io-index": "69cda4f2596725ec7ca93492fe24d14615ded41b49d6ed0afcd06e0459725bf2",
     "cargo:prodash@31.0.1 registry+https://github.com/rust-lang/crates.io-index": "60e874e3ef0d1100a71bb89bfd4aa9a1b736d4ce964e7da013280ab9e705bc21",
     "cargo:psm@0.1.32 registry+https://github.com/rust-lang/crates.io-index": "f5022a331a2671700d89e5bf37784e6aa3e61c06946891606da13d8f672e5d15",
     "cargo:pxfm@0.1.30 registry+https://github.com/rust-lang/crates.io-index": "9ddedcb220de998748240f214c6a64f9f426eac52c2e8dc9f366d32e6adc54d6",
@@ -1245,7 +1246,8 @@
     "cargo:zvariant_utils@4.2.0 registry+https://github.com/rust-lang/crates.io-index": "58641071a870aa97a0f38637179049eaf2ffaeeafbbb53e016c3d409411b9f88",
     "cargo:zvariant@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "8606849c24d82d7d012980cba51a766abfe0307b48f936ec59e11b9a05b9c288",
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
-    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
+    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b",
+    "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff"
   },
-  "sha256": "ef7aa56523df85636e1ac7a6fb280795c9bd164484afff111733f726059a70fc"
+  "sha256": "3077e491d4db73c021b0ee0f30cf211af2d4e12bf0bfdb348a3b3899d6a12a0d"
 }

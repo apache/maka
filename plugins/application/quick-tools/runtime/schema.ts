@@ -163,7 +163,16 @@ export const manifestSchema = z.object({
     .regex(/^[a-z0-9][a-z0-9.-]{0,99}$/)
     .refine(
       (id) =>
-        !['host', 'preferences', 'input-history', 'trace', 'shortcuts', 'extensions'].includes(id),
+        ![
+          'host',
+          'preferences',
+          'input-history',
+          'trace',
+          'shortcuts',
+          'extensions',
+          'launcher-shortcut',
+          'undelivered',
+        ].includes(id),
       'Reserved host identifier',
     ),
   name: z.string().max(160),

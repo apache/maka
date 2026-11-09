@@ -2,9 +2,9 @@
 #[cfg(target_os = "macos")]
 pub mod chrome;
 #[cfg(target_os = "macos")]
-pub mod panel;
-#[cfg(target_os = "macos")]
 mod dismiss;
+#[cfg(target_os = "macos")]
+pub mod panel;
 #[cfg(target_os = "macos")]
 mod shortcuts;
 mod web;
