@@ -808,7 +808,7 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
     let Some(window) = from.window() else {
         return false;
     };
-    let scope = crate::navigation::focus_scope(surface);
+    let scope = crate::navigation::focus_scope_of(surface, &window);
     // A window that recalculates its loop does so only in its own
     // `selectNextKeyView:`: the views' links are empty until then.
     window.recalculateKeyViewLoop();
@@ -1738,9 +1738,8 @@ impl InputState {
         };
         if editor.focused()
             || self.cx.get().is_none_or(|(_, view, _)| !view.can_reach())
-            || surface.is_some_and(|surface| {
-                !responder.isDescendantOf(&crate::navigation::focus_scope(surface))
-            })
+            || surface
+                .is_some_and(|surface| !crate::navigation::in_focus_scope(surface, &responder))
         {
             return;
         }

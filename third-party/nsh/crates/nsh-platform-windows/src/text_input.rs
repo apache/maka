@@ -3406,6 +3406,67 @@ mod tests {
     }
 
     #[test]
+    fn focus_in_an_app_window_outside_its_events_holds() {
+        use nsh_core::{
+            Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,
+            desktop::{DesktopCommand, OpenWindow},
+        };
+
+        let surface = Surface::new(Default::default());
+        let window: NodeId = 2;
+        let field: NodeId = 3;
+        {
+            let mut mounter = surface.mounter.borrow_mut();
+            for item in [
+                MountItem::Create {
+                    id: window,
+                    kind: ViewKind::Modal,
+                },
+                MountItem::ModalConfig {
+                    id: window,
+                    config: ModalConfig {
+                        animation: ModalAnimation::None,
+                        ..Default::default()
+                    },
+                },
+                MountItem::Create {
+                    id: field,
+                    kind: ViewKind::Input,
+                },
+                MountItem::Input {
+                    id: field,
+                    config: Box::new(InputConfig::default()),
+                },
+                MountItem::Insert {
+                    parent: window,
+                    child: field,
+                    before: None,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: window,
+                    before: None,
+                },
+                MountItem::Command {
+                    id: window,
+                    command: Command::Desktop(Box::new(DesktopCommand::OpenWindow(Box::new(
+                        OpenWindow::default(),
+                    )))),
+                },
+                MountItem::Command {
+                    id: field,
+                    command: Command::Focus,
+                },
+            ] {
+                mounter.apply(&surface, &item);
+            }
+            mounter.end_batch(&surface);
+        }
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(field));
+        surface.stop();
+    }
+
+    #[test]
     fn modal_auto_focus_keeps_focus_over_covered_background_input() {
         use nsh_core::{
             Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,

@@ -943,9 +943,7 @@ pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
 pub(crate) fn focus_control(surface: &Surface, view: &NshView) {
     if !is_key_stop(view)
         || has_key_focus(view)
-        || !view
-            .ns()
-            .isDescendantOf(&crate::navigation::focus_scope(surface))
+        || !crate::navigation::in_focus_scope(surface, view.ns())
     {
         return;
     }
@@ -1031,9 +1029,7 @@ pub(crate) fn takes_accessibility_press(surface: &Surface, view: &NshView) -> bo
     (window_control || pressable)
         && view.can_reach()
         && !crate::access::hidden_in_subtree(view)
-        && view
-            .ns()
-            .isDescendantOf(&crate::navigation::focus_scope(surface))
+        && crate::navigation::in_focus_scope(surface, view.ns())
 }
 
 /// `AXPress` from an accessibility client (VoiceOver's VO-Space, UI
@@ -1062,9 +1058,7 @@ pub(crate) fn accessibility_press(surface: &Surface, view: &NshView) -> bool {
 /// offer the action.
 pub(crate) fn takes_accessibility_show_menu(surface: &Surface, view: &NshView) -> bool {
     view.state().events.contains(EventKind::ContextMenu)
-        && view
-            .ns()
-            .isDescendantOf(&crate::navigation::focus_scope(surface))
+        && crate::navigation::in_focus_scope(surface, view.ns())
 }
 
 /// `AXShowMenu` on `view`: it hears `onContextMenu` with no pointer, at its

@@ -103,6 +103,8 @@ pub(crate) struct AppWindow {
     opened: Cell<bool>,
     /// The mode it takes once shown.
     opening_mode: Cell<Option<WindowMode>>,
+    /// `focus()` came while it waited for its first frame.
+    focus_on_show: Cell<bool>,
     /// A policy hid it, reported as `Closed`: it waits for the app to
     /// remove its root.
     closed: Cell<bool>,
@@ -229,6 +231,12 @@ pub(crate) fn command(
                 // SAFETY: a plain call on the window, alive while listed.
                 let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             }
+            // It shows with its first frame, and takes the keyboard then.
+            WindowRequest::Focus if !window.opened.get() => {
+                window.closed.set(false);
+                hold_owner(&window);
+                window.focus_on_show.set(true);
+            }
             WindowRequest::Show | WindowRequest::Focus => {
                 window.closed.set(false);
                 hold_owner(&window);
@@ -305,6 +313,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         reported: Cell::new(None),
         opened: Cell::new(false),
         opening_mode: Cell::new(None),
+        focus_on_show: Cell::new(false),
         closed: Cell::new(false),
         state: Cell::new(None),
     });
@@ -414,6 +423,9 @@ fn first_show(surface: &Rc<Surface>, window: &AppWindow) {
     surface.drain();
     paint(surface, window);
     crate::window::show(window.hwnd);
+    if window.focus_on_show.take() {
+        crate::shell::request(window.hwnd, &WindowRequest::Focus);
+    }
     if let Some(mode) = window.opening_mode.take() {
         crate::window_state::set_mode(window.hwnd, mode);
     }
