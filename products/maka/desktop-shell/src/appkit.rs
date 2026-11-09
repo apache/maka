@@ -17,8 +17,9 @@
  * under the License.
  */
 
-//! The AppKit workbench follows the Root's admitted Host. Utility windows
-//! belong to that connection and close before a replacement client is loaded.
+//! The AppKit workbench follows the Root's admitted Host. Closing destroys the
+//! UI, while Open creates a fresh UI on the retained connection. Utility windows
+//! belong to that connection and close with its workbench or before replacement.
 
 mod permissions;
 
@@ -30,11 +31,13 @@ use maka_workbench::{
     bindings::SystemPermissionWindow,
     reload::{Request, UiReload},
 };
-use nsh_engine::JsonValue;
-use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
+use nsh_engine::{EngineConfig, JsonValue};
+use nsh_platform_macos::{
+    AppOptions, StatusMenuOptions, quit_app, run_resident_app_with_config, with_running_view,
+};
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -72,9 +75,9 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let (shell, requests) = Shell::new(foreground);
     let (quick, quick_requests) =
         crate::quick_tools::panel::Control::new(runtime.handle(), directory.clone());
-    let mut config = shell.attach(first.config.clone());
-    quick.attach(&mut config);
     quick.clone().run(quick_requests);
+    // Retain the recipe, not a UI: every Open gets a fresh channel and VM.
+    let configuration = Arc::new(Mutex::new(first.config.clone()));
     carry_out(requests, &runtime);
     let windows = permission_requests(&first);
     refuse_reloads(
@@ -87,9 +90,22 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         runtime.handle(),
     );
     let (quit, quitting) = watch::channel(false);
-    let following = runtime.spawn(follow(first, root, shell, quick, windows, quitting));
-    run_app_with_config(
-        config,
+    let following = runtime.spawn(follow(
+        first,
+        root,
+        shell.clone(),
+        quick.clone(),
+        configuration.clone(),
+        windows,
+        quitting,
+    ));
+    let closing_shell = shell.clone();
+    let released_shell = shell.clone();
+    let mut status_menu = StatusMenuOptions::default();
+    status_menu.title = TITLE.into();
+    status_menu.open_label = "Open Maka".into();
+    status_menu.quit_label = "Quit".into();
+    run_resident_app_with_config(
         AppOptions {
             app_id: APP_ID.into(),
             title: TITLE.into(),
@@ -98,9 +114,19 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
             frame_autosave_name,
             ..Default::default()
         },
+        status_menu,
+        move || {
+            let config = configuration.lock().unwrap().clone();
+            attach(&shell, &quick, config)
+        },
         move |is_active| {
             active.send_replace(is_active);
         },
+        move || {
+            permissions::close_all();
+            released_shell.release();
+        },
+        move || closing_shell.prepare_close(),
     );
     permissions::close_all();
     crate::quick_tools::panel::close_all();
@@ -110,6 +136,17 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         .map_err(|error| error.to_string())?;
     runtime.shutdown_background();
     Ok(())
+}
+
+fn attach(
+    shell: &Shell,
+    quick: &crate::quick_tools::panel::Control,
+    mut config: EngineConfig,
+) -> EngineConfig {
+    config.host = nsh_engine::HostChannel::new();
+    let mut config = shell.attach(config);
+    quick.attach(&mut config);
+    config
 }
 
 fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
@@ -123,6 +160,7 @@ async fn follow(
     root: Root,
     shell: Shell,
     quick: crate::quick_tools::panel::Control,
+    shared: Arc<Mutex<EngineConfig>>,
     mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
     mut quit: watch::Receiver<bool>,
 ) {
@@ -163,10 +201,12 @@ async fn follow(
         // Main-thread barrier: no old engine or drag source survives into the
         // next connection. Quitting can end the standalone runner first.
         let (closed, closing) = tokio::sync::oneshot::channel();
+        let releasing = shell.clone();
         with_running_view(move |view| {
             permissions::close_all();
             crate::quick_tools::panel::close_all();
             view.stop();
+            releasing.release();
             let _ = closed.send(());
         });
         tokio::select! {
@@ -223,10 +263,12 @@ async fn follow(
             .expect("the admitted workbench owns its UI reload channel")
             .take_requests();
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
-        configuration = shell.attach(config);
-        quick.attach(&mut configuration);
+        configuration = config;
+        *shared.lock().unwrap() = configuration.clone();
+        let shell = shell.clone();
+        let quick = quick.clone();
         let config = configuration.clone();
-        with_running_view(move |view| view.load_with_config(config));
+        with_running_view(move |view| view.load_with_config(attach(&shell, &quick, config)));
     }
     if let Some(bindings) = bindings {
         host::detach(bindings, &endpoint, epoch).await;
@@ -236,13 +278,26 @@ async fn follow(
 fn carry_out(requests: Requests, runtime: &Runtime) {
     let Requests {
         mut exits,
+        mut close_ready,
         mut folders,
         mut text_sizes,
         mut notices,
     } = requests;
     runtime.spawn(async move {
-        if exits.recv().await.is_some() {
+        while exits.recv().await.is_some() {
             quit_app();
+        }
+    });
+    runtime.spawn(async move {
+        while let Some(request) = close_ready.recv().await {
+            with_running_view(move |view| {
+                if !request.is_current() {
+                    return;
+                }
+                if let Some(window) = view.view().window() {
+                    window.performClose(None);
+                }
+            });
         }
     });
     runtime.spawn(async move {

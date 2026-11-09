@@ -411,6 +411,7 @@ impl Ed {
             if !ed.focused.get() {
                 return;
             }
+            let input = ed.input;
             let apple = matches!(os(), Os::Ios | Os::MacOs);
             // Escape is bound below, only while it has carets or a
             // selection to collapse.
@@ -420,7 +421,7 @@ impl Ed {
             {
                 let e = ed.clone();
                 let command = binding.command;
-                on_key_with(
+                input.on_key_with(
                     binding.keys,
                     KeyOptions {
                         when: When::Always,
@@ -433,14 +434,14 @@ impl Ed {
             for binding in keymap::editor_bindings(apple) {
                 let e = ed.clone();
                 let command = binding.command;
-                on_key_with(binding.keys, always(binding.repeat), move |_| {
+                input.on_key_with(binding.keys, always(binding.repeat), move |_| {
                     e.run_public(command)
                 });
             }
             let e = ed.clone();
-            on_key_with("mod+c", always(false), move |_| e.copy());
+            input.on_key_with("mod+c", always(false), move |_| e.copy());
             let e = ed.clone();
-            on_key_with("mod+x", always(false), move |_| e.cut());
+            input.on_key_with("mod+x", always(false), move |_| e.cut());
         });
         // Escape collapses several carets or a selection to one caret;
         // with nothing to collapse it is left to the page (a dialog closes,
@@ -459,8 +460,9 @@ impl Ed {
             if !ed.focused.get() || !collapsible.get() {
                 return;
             }
+            let input = ed.input;
             let e = ed.clone();
-            on_key_with("escape", always(false), move |_| {
+            input.on_key_with("escape", always(false), move |_| {
                 e.run(Command::SingleSelection)
             });
         });

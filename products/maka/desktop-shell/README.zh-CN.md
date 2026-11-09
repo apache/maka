@@ -44,7 +44,7 @@ just build
 
 从访达、程序坞或文件管理器直接打开时，shell 拿不到这些变量。它会运行所在目录里的 `maka desktop`（macOS 上是 `Maka.app` 旁边，其他平台是 shell 旁边），然后退出；由这个启动器为默认 Root 打开窗口。
 
-关闭窗口、应用菜单的退出项和退出快捷键都会关闭窗口；shell 随后与 Host 断开并退出。启动器同样只断开连接，因此 Host 会完成已接受的工作，在没有客户端后停止。取消启动器只会停止它启动的 shell。
+普通关窗先保存 presentation state，再销毁窗口、UI 引擎、渲染器和窗口级订阅。Desktop 保留已经接入的真实 Host 客户端及托盘／菜单栏入口；Open 重建 UI，已有窗口则只聚焦。显式 Quit 才执行有界 detach 并退出。没有可用托盘时关窗退出，Linux 隐藏期间失去托盘 watcher 时恢复窗口。Host 生命周期策略和已接受工作不变。
 
 Linux GTK 窗口从 Root 的 `clients/desktop-window.json` 恢复普通窗口大小以及全屏或最大化状态；桌面合成器负责窗口位置与显示器选择。GTK 提供原生菜单、文件拖放、剪贴板、目录选择器与系统通知。UI 重载会暂停物理输入，排空已接收的编辑，并在取消或完成后恢复输入。构建依赖见 [NSH Linux 指南](../../../third-party/nsh/docs/dev/linux.md)。
 

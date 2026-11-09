@@ -32,6 +32,8 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 import { UiError } from './text';
+import { sameValue } from '../../../../plugins/shared/value';
+import { createSettingsDiscard } from './settingsDiscard';
 
 type Pair = { id: number; name: string; value: string };
 type Group = 'env' | 'headers' | 'headerEnv';
@@ -66,6 +68,22 @@ const object = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown) => (typeof value === 'string' ? value : '');
 const strings = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+const pairEntries = (pairs: Pair[]) => pairs.map((pair) => [pair.name, pair.value]);
+// Row ids and the Advanced disclosure are not edits.
+const editedValues = (draft: McpEditor) => ({
+  location: draft.location,
+  name: draft.name,
+  transport: draft.transport,
+  command: draft.command,
+  args: draft.args.map((argument) => argument.value),
+  cwd: draft.cwd,
+  passEnv: draft.passEnv,
+  env: pairEntries(draft.env),
+  url: draft.url,
+  headers: pairEntries(draft.headers),
+  headerEnv: pairEntries(draft.headerEnv),
+  enabled: draft.enabled,
+});
 export const mcpDisabled = (configuration: unknown) => object(configuration).disabled === true;
 export const mcpLaunch = (configuration: unknown) => {
   const value = object(configuration);
@@ -87,10 +105,19 @@ export function createMcpSettings(
   let serial = 0;
   let read = 0;
   let alive = true;
+  let opened: ReturnType<typeof editedValues> | null = null;
   cleanup(() => {
     alive = false;
     ++read;
   });
+  const closeEditor = () => {
+    editor.set(null);
+    deleting.set(null);
+  };
+  const discarding = createSettingsDiscard(() => {
+    const draft = editor();
+    return !!draft && !sameValue(editedValues(draft), opened);
+  }, closeEditor);
   const load = async () => {
     const request = ++read;
     loading.set(true);
@@ -113,8 +140,8 @@ export function createMcpSettings(
     scope.workspace();
     if (visible)
       untracked(() => {
-        editor.set(null);
-        deleting.set(null);
+        discarding.clear();
+        closeEditor();
         void load();
       });
   });
@@ -134,7 +161,7 @@ export function createMcpSettings(
       locations[0]?.location;
     if (!location) return;
     const configuration = object(row?.entry.configuration);
-    editor.set({
+    const draft: McpEditor = {
       original: row?.entry.name ?? null,
       location,
       workspace: row?.workspace ?? scope.workspace(),
@@ -153,7 +180,9 @@ export function createMcpSettings(
       headerEnv: pairs(configuration.headerEnv),
       enabled: configuration.disabled !== true,
       advanced: false,
-    });
+    };
+    opened = editedValues(draft);
+    editor.set(draft);
   };
   const change = <K extends keyof McpEditor>(field: K, value: McpEditor[K]) => {
     const draft = editor();
@@ -282,15 +311,14 @@ export function createMcpSettings(
     });
   };
   const back = () => {
-    if (deleting()) {
+    if (deleting() && !discarding.asking()) {
       deleting.set(null);
       return false;
     }
-    if (editor()) {
-      editor.set(null);
-      return false;
-    }
-    return true;
+    if (discarding.back()) return false;
+    if (!editor()) return true;
+    closeEditor();
+    return false;
   };
   return {
     scope,
@@ -309,6 +337,9 @@ export function createMcpSettings(
     save,
     remove,
     back,
+    cancel: closeEditor,
+    discarding,
+    leave: discarding.leave,
     refresh: () => {
       if (editor() || deleting() || scope.busy()) return;
       operations.error.set('');
@@ -343,12 +374,13 @@ export function createMcpSettings(
       active.set(false);
       ++read;
       loading.set(false);
+      discarding.clear();
     },
     navigation: () =>
       `${editor()?.original ?? 'list'}:${!!editor()}:${deleting()?.entry.name ?? ''}`,
     recovered: () => {
-      editor.set(null);
-      deleting.set(null);
+      discarding.clear();
+      closeEditor();
       void load();
     },
   };

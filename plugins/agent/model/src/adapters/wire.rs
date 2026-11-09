@@ -62,16 +62,28 @@ pub(super) fn chat_options(
         ProviderKind::OpenaiCompatible { name } => name,
         _ => return Err(ModelError::Adapter("not a Chat Completions codec".into())),
     };
-    Ok(chat::prompt_options(
+    let mut prompt_options = chat::prompt_options(
         namespace,
         &prompt::extensions(Some(options.clone()))?,
         false,
-    ))
+    );
+    prompt_options.reasoning_field = options
+        .get("maka")
+        .and_then(|options| options.get("openAiChatReasoningField"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| ModelError::Adapter(error.to_string()))?;
+    Ok(prompt_options)
 }
 pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> String {
-    serde_json::json!({"codec":"maka.chat-items.v1","language":language,
-        "namespace":options.provider_namespace,"metadataNamespace":options.metadata_namespace,
-        "multipartToolContent":options.multipart_tool_content})
+    serde_json::json!({
+        "codec": "maka.chat-items.v1",
+        "language": language,
+        "namespace": options.provider_namespace,
+        "metadataNamespace": options.metadata_namespace,
+        "multipartToolContent": options.multipart_tool_content,
+        "reasoningField": options.reasoning_field,
+    })
     .to_string()
 }
 

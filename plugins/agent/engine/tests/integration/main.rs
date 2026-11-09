@@ -23,6 +23,7 @@ mod code_mode;
 mod code_mode_lifetime;
 mod code_mode_media;
 mod codex_compaction;
+mod codex_replay;
 mod context_compaction;
 mod context_overflow;
 mod context_stop;

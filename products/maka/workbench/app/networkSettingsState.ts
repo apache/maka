@@ -30,6 +30,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { credentialBasis, settingsRejection, type SettingsOperations } from './settingsOperations';
 import { sameValue } from '../../../../plugins/shared/value';
+import { createSettingsDiscard } from './settingsDiscard';
 
 type CredentialAction = SettingsNetworkUpdate['credential'];
 type Draft = {
@@ -89,6 +90,7 @@ export function createNetworkSettings(
       value = draft();
     return !!saved && !!value && !sameValue(value, initial(saved));
   };
+  const discarding = createSettingsDiscard(dirty, () => draft.set(initial(snapshot()!)));
   const load = async () => {
     if (!alive || !active() || loading()) return;
     const generation = ++read;
@@ -211,6 +213,7 @@ export function createNetworkSettings(
     read += 1;
     view += 1;
     loading.set(false);
+    discarding.clear();
   };
   const reset = () => {
     deactivate();
@@ -237,7 +240,14 @@ export function createNetworkSettings(
     activate,
     deactivate,
     reset,
-    back: () => true,
+    discarding,
+    leave: discarding.leave,
+    // Escape on this root page closes the dialog, which asks through leave.
+    back() {
+      if (!discarding.asking()) return true;
+      discarding.keep();
+      return false;
+    },
     title: () => tr('Network'),
   };
 }

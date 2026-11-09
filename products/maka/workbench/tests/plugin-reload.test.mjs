@@ -86,6 +86,8 @@ async function setup(
     cancels: 0,
     prepares: 0,
     reloads: [],
+    events: new Map(),
+    posts: [],
     module: {
       activate: () => ({
         exports: {
@@ -139,6 +141,10 @@ async function setup(
         const read = () => value;
         read.set = next => { value = next; };
         return read;
+      };
+      export const host = {
+        on(event, handler) { fixture.events.set(event, handler); return () => fixture.events.delete(event); },
+        post(event, data) { fixture.posts.push({ event, data }); },
       };
       export const computed = read => read;
       export const batch = run => run();
@@ -358,4 +364,27 @@ test('disposal before pause acknowledgement still returns a subsequently held ga
   assert.equal(fixture.cancels, 1);
   assert.deepEqual(fixture.reloads, []);
   assert.equal(manager.runtime.reloading(), false);
+});
+
+test('closing during a pending reload cannot replace or release its native pause', async (t) => {
+  const pause = Promise.withResolvers();
+  const { fixture, manager } = await setup(t, { begin: () => pause.promise });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  fixture.events.get('desktop.prepareClose')({ id: 'close-while-reloading' });
+  assert.equal(fixture.posts.length, 1);
+  assert.equal(fixture.posts[0].event, 'desktop.closeReady');
+  assert.equal(fixture.posts[0].data.id, 'close-while-reloading');
+  assert.match(fixture.posts[0].data.error, /reload is in progress/);
+  fixture.events.get('desktop.closeFailed')({
+    id: 'close-while-reloading',
+    error: 'rejected close',
+  });
+  assert.equal(manager.runtime.reloading(), true);
+  assert.equal(fixture.cancels, 0);
+  pause.resolve();
+  await setImmediate();
+  assert.equal(fixture.reloads.length, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(manager.runtime.reloading(), true);
 });

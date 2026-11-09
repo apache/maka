@@ -2437,6 +2437,15 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         appearance,
     )
     .await;
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":parent}))
+        .await
+        .unwrap();
+    assert_eq!(
+        observed["session"]["permissions"]["access"], "read_only",
+        "the parent must need human approval to allow the child's report write"
+    );
     let backend = json!({
         "kind": "model",
         "connectionId": fixture.selection["connectionId"],

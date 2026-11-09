@@ -48,7 +48,9 @@ pub(super) struct ProjectContext<'a> {
     pub vision: bool,
     pub provider: &'a ProviderKind,
     pub replay: Option<&'a maka_event_log::context::semantic::SemanticReplay>,
+    pub model: Option<&'a crate::history::ReplayTarget>,
     pub captured: Option<&'a maka_event_log::context::semantic::CapturedSource>,
+    pub row: Option<&'a maka_event_log::context::semantic::CapturedRow>,
     pub row_root: Option<&'a PayloadSource>,
     pub payload_root: Option<&'a maka_event_log::context::semantic::PayloadSource>,
     pub arena: Option<&'a super::capture_arena::CaptureArena>,
@@ -68,7 +70,9 @@ impl ProjectContext<'_> {
             vision: self.vision,
             provider: self.provider,
             replay: self.replay,
+            model: self.model,
             captured: self.captured,
+            row: self.row,
             row_root: self.row_root,
             payload_root,
             arena: self.arena,
@@ -80,10 +84,12 @@ impl ProjectContext<'_> {
     }
     pub fn for_row<'row>(
         &'row self,
+        row: &'row maka_event_log::context::semantic::CapturedRow,
         row_root: &'row PayloadSource,
         payload_root: Option<&'row PayloadSource>,
     ) -> ProjectContext<'row> {
         let mut context = self.for_payload(payload_root);
+        context.row = Some(row);
         context.row_root = Some(row_root);
         context
     }
@@ -97,7 +103,6 @@ impl ProjectContext<'_> {
 pub(super) enum ProjectedRow {
     User(Arc<dyn RecipeSource<ContentRecipe>>),
     Assistant(AssistantRecipe),
-    AssistantMetadata { options: JsonSource },
     Tool(ToolResultRecipe),
     Skip,
 }
@@ -187,15 +192,20 @@ pub(super) async fn project_row(
             ))
         }
         (RowDirectory::AssistantPart { .. }, PayloadDirectory::Part(part)) => {
-            if matches!(
-                part,
-                PartDirectory::Text {
-                    text_kind: TextKind::Thinking,
-                    ..
-                }
-            ) && !reasoning_matches_route(row, context).await?
+            if let PartDirectory::Text {
+                text_kind: TextKind::Thinking,
+                text,
+                ..
+            } = part
             {
-                return Ok(ProjectedRow::Skip);
+                match reasoning_replay(row, context).await? {
+                    ReasoningReplay::Original => {}
+                    ReasoningReplay::Omit => return Ok(ProjectedRow::Skip),
+                    ReasoningReplay::Plaintext => {
+                        return project_text(located::text(*text, context)?, None, true, context)
+                            .await;
+                    }
+                }
             }
             assistant(part, context).await
         }
@@ -369,10 +379,70 @@ async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Re
         }
     }
 }
-async fn reasoning_matches_route(
+enum ReasoningReplay {
+    Original,
+    Plaintext,
+    Omit,
+}
+
+fn incompatible_reasoning(provider: &ProviderKind) -> ReasoningReplay {
+    match provider {
+        ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
+            ReasoningReplay::Plaintext
+        }
+        ProviderKind::OpenResponses(contract)
+            if contract.reasoning_replay
+                == maka_agent_facts::model::PlaintextReasoningReplay::PlaintextContent =>
+        {
+            ReasoningReplay::Plaintext
+        }
+        _ => ReasoningReplay::Omit,
+    }
+}
+
+async fn reasoning_replay(
     row: &RowDirectory,
     context: &ProjectContext<'_>,
-) -> io::Result<bool> {
+) -> io::Result<ReasoningReplay> {
+    if let Some(target) = context.model {
+        let source = context
+            .captured
+            .ok_or_else(invalid)?
+            .request_context(context.row.ok_or_else(invalid)?)
+            .await
+            .map_err(io::Error::other)?;
+        let source_codex = source.as_ref().and_then(|request| request.codex.as_ref());
+        if target.codex.is_some() || source_codex.is_some() {
+            let (Some(target_codex), Some(source_codex)) = (&target.codex, source_codex) else {
+                return Ok(incompatible_reasoning(context.provider));
+            };
+            let RowDirectory::AssistantPart { model_id, .. } = row else {
+                return Err(invalid());
+            };
+            let same_model = json::text_eq(
+                &row_text(*model_id, context)?,
+                &target.model,
+                context.budget.clone(),
+            )
+            .await?;
+            let hashes_match = source_codex
+                .compatibility
+                .as_ref()
+                .zip(target_codex.compatibility.as_ref())
+                .map(|(old, new)| old.comp_hash == new.comp_hash);
+            return Ok(
+                if maka_agent_facts::context::codex_replay_allowed(
+                    same_model,
+                    hashes_match,
+                    target.operation,
+                ) {
+                    ReasoningReplay::Original
+                } else {
+                    incompatible_reasoning(context.provider)
+                },
+            );
+        }
+    }
     if let Some(replay) = context.replay {
         let RowDirectory::AssistantPart {
             model_id,
@@ -395,10 +465,10 @@ async fn reasoning_matches_route(
             )
             .await?
         {
-            return Ok(false);
+            return Ok(ReasoningReplay::Omit);
         }
     }
-    Ok(true)
+    Ok(ReasoningReplay::Original)
 }
 
 async fn call_kind(
@@ -423,42 +493,6 @@ async fn project_text(
     thinking: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
-    if thinking
-        && matches!(context.provider, ProviderKind::OpenaiCompatible { .. })
-        && let Some(options) = provider_options.as_ref()
-        && let Some(field) = json::field(
-            options,
-            &["maka", "openAiChatReasoningField"],
-            context.budget.clone(),
-        )
-        .await?
-        && field.kind == JsonKind::String
-        && (json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await?
-            || json::text_eq(&field.text()?, "reasoning_content", context.budget.clone()).await?)
-    {
-        if text.encoding() != TextEncoding::JsonString {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "compatible reasoning requires captured quoted text source",
-            ));
-        }
-        let prefix = if json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await? {
-            "{\"openaiCompatible\":{\"reasoning\":"
-        } else {
-            "{\"openaiCompatible\":{\"reasoning_content\":"
-        };
-        let bytes = super::joined_source::join(
-            vec![
-                literal(prefix).into_bytes(),
-                text.into_bytes(),
-                literal("}}").into_bytes(),
-            ],
-            context.directory_owner.clone(),
-        )?;
-        return Ok(ProjectedRow::AssistantMetadata {
-            options: JsonSource::new(bytes),
-        });
-    }
     if thinking && let ProviderKind::OpenResponses(contract) = context.provider {
         match contract.reasoning_replay {
             maka_agent_facts::model::PlaintextReasoningReplay::PlaintextContent => {
@@ -1110,22 +1144,6 @@ async fn text_footprint(
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
     let mut bytes = raw_footprint(text.bytes())?;
-    if thinking
-        && matches!(context.provider, ProviderKind::OpenaiCompatible { .. })
-        && let Some(options) = options
-        && let Some(field) = json::field(
-            options,
-            &["maka", "openAiChatReasoningField"],
-            context.budget.clone(),
-        )
-        .await?
-        && field.kind == JsonKind::String
-        && (json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await?
-            || json::text_eq(&field.text()?, "reasoning_content", context.budget.clone()).await?)
-    {
-        footprint_add(&mut bytes, super::joined_source::metadata_bytes(3)?)?;
-        return Ok(bytes);
-    }
     if thinking
         && let ProviderKind::OpenResponses(contract) = context.provider
         && contract.reasoning_replay

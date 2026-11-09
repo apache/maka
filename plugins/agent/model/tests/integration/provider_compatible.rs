@@ -460,3 +460,86 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
         "count covers actual model/options/messages/overlay envelope"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
+    use maka_agent_facts::configuration::ModelInfo;
+    use maka_agent_ports::provider::{Connection, Resolve};
+    use maka_model::prompt::{AssistantPart, Message};
+    use maka_providers::{api::ApiProviders, catalog::Snapshot};
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let binding = ApiProviders::definition("ollama-cloud", Arc::new(Snapshot::bundled().unwrap())).unwrap();
+        let model = binding.prepare(Resolve {
+            connection: Connection { id: "cloud".into(), revision: 1, configuration: binding.configure(json!({"baseUrl":url})).unwrap() },
+            model: ModelInfo::new("deepseek-v4-flash"),
+            overrides: None,
+            thinking_level: None,
+        }).await.unwrap();
+        let mut input = request(&url);
+        input.provider.kind = model.protocol;
+        input.provider.model = model.info.id;
+        input.provider.base_url = model.base_url;
+        input.provider_options = model.provider_options;
+        input.prompt = vec![Message::Assistant {
+            content: vec![
+                AssistantPart::Reasoning {
+                    text: "previous thought".into(),
+                    provider_options: Some(json!({"maka":{"openAiChatReasoningField":"reasoning_content"}})),
+                },
+                AssistantPart::Text { text: "previous reply".into(), provider_options: None },
+            ],
+            provider_options: None,
+        }, Message::user("continue")].into();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = body(&mut socket).await;
+            assert_eq!(wire["messages"][0], json!({"role":"assistant","content":"previous reply","reasoning":"previous thought"}));
+            assert!(wire["messages"][0].get("reasoning_content").is_none());
+            assert_eq!(wire["stream_options"], json!({"include_usage":true}));
+            assert!(wire.get("maka").is_none());
+            response(&mut socket, 200, &completion(&[json!({"reasoning_content":"new thought"}), json!({"content":"reply"})])).await;
+        });
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
+        let mut builder = StepBuilder::default();
+        while let Some(event) = stream.next().await {
+            builder.push(event.unwrap().event).unwrap();
+        }
+        stream.cancel_and_wait().await.unwrap();
+        let step = builder.finish().unwrap();
+        assert_eq!(step.usage.output_tokens, Some(6));
+        assert!(step.parts.iter().any(|part| matches!(part, ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "reply")));
+        server.await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_usage_opt_out_is_respected_on_the_first_request() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = body(&mut socket).await;
+            assert!(wire.get("stream_options").is_none());
+            response(&mut socket, 200, &completion(&[json!({"content":"ok"})])).await;
+        });
+        let mut input = request(&url);
+        input.provider_options = json!({"maka":{"includeUsage":false}});
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        let mut stream = executor
+            .stream(input, CancellationToken::new())
+            .await
+            .unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        stream.cancel_and_wait().await.unwrap();
+        server.await.unwrap();
+    })
+    .await
+    .unwrap();
+}

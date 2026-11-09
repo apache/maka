@@ -49,6 +49,22 @@ fn main() -> std::process::ExitCode {
             "box_none_input_takes_keyboard_focus_and_typing",
             cases::box_none_input_focus,
         ),
+        (
+            "native_input_shortcuts_copy_cut_paste_and_undo_without_global_pasteboard",
+            cases::native_input_clipboard_and_undo,
+        ),
+        (
+            "rich_editor_to_box_none_input_focus_transition_copies_and_submits",
+            cases::rich_editor_to_box_none_input_focus_transition,
+        ),
+        (
+            "unfocused_readonly_input_mount_preserves_focused_target_until_focused",
+            cases::unfocused_readonly_input_preserves_focused_target,
+        ),
+        (
+            "rich_editor_composition_commit_matches_preedit_and_keeps_shortcuts",
+            cases::rich_editor_composition_commit_matches_preedit,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];

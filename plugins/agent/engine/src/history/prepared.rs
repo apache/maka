@@ -92,14 +92,9 @@ enum Plan {
 }
 pub(super) enum MessageBuilder {
     User(Arc<dyn RecipeSource<ContentRecipe>>),
-    Assistant {
-        parts: Range<usize>,
-        options: Option<JsonSource>,
-    },
+    Assistant { parts: Range<usize> },
     Tool(Box<ToolResultRecipe>),
-    DeferredUser {
-        parts: Range<usize>,
-    },
+    DeferredUser { parts: Range<usize> },
 }
 struct Producer {
     id: [u8; 32],
@@ -108,7 +103,6 @@ struct Producer {
 struct AssistantGroup {
     key: u64,
     start: usize,
-    options: Option<JsonSource>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,6 +116,7 @@ pub(crate) async fn capture(
     cancellation: &CancellationToken,
     resources: ModelPreparationResources,
     overlay_bytes: usize,
+    target: Option<crate::history::ReplayTarget>,
 ) -> Result<Arc<FrozenHistory>, RunError> {
     let captured = log.capture_source(selection).await?;
     let receipt = captured.reserve_local_resource()?;
@@ -141,6 +136,7 @@ pub(crate) async fn capture(
             &cancellation,
             resources,
             overlay_bytes,
+            target,
         ))
         .catch_unwind()
         .await;
@@ -197,6 +193,7 @@ pub(crate) async fn capture(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn capture_owned(
     captured: CapturedSource,
     language: Language,
@@ -205,11 +202,13 @@ async fn capture_owned(
     cancellation: &CancellationToken,
     resources: ModelPreparationResources,
     overlay_bytes: usize,
+    target: Option<crate::history::ReplayTarget>,
 ) -> Result<Arc<FrozenHistory>, RunError> {
     let work = acquire_work(&resources, cancellation).await?;
     let budget = work.budget();
     let plan = plan(
         &captured,
+        target.as_ref(),
         language,
         vision,
         provider,
@@ -243,6 +242,7 @@ async fn capture_owned(
                 rows,
                 chat,
                 overlay_bytes,
+                target,
             )
             .await;
         }
@@ -282,11 +282,13 @@ async fn capture_owned(
             vision,
             provider,
             replay: captured.selection().replay.as_ref(),
+            model: target.as_ref(),
             budget: budget.clone(),
             directory_owner: owner.clone(),
             captured: Some(&captured),
             arena: Some(&arena),
             cancellation,
+            row: None,
             row_root: None,
             payload_root: None,
             internal_arena: false,
@@ -309,7 +311,7 @@ async fn capture_owned(
                 }
                 let payload = captured.describe_payload(&row)?;
                 let row_root = captured.metadata_source(&row)?;
-                let row_context = context.for_row(&row_root, payload.as_ref());
+                let row_context = context.for_row(&row, &row_root, payload.as_ref());
                 let projected = super::source_projector::project_row(
                     &metadata,
                     entry.payload.as_ref(),
@@ -328,20 +330,11 @@ async fn capture_owned(
                         parts.push(part);
                         builders.push(MessageBuilder::Assistant {
                             parts: start..parts.len(),
-                            options: None,
                         });
                     }
                     ProjectedRow::Assistant(part) => {
                         ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
                         parts.push(part);
-                    }
-                    ProjectedRow::AssistantMetadata { options } => {
-                        ensure_group(row.order.source_sequence, &mut builders, &parts, &mut group);
-                        if let Some(group) = &mut group
-                            && group.options.is_none()
-                        {
-                            group.options = Some(options);
-                        }
                     }
                     ProjectedRow::Skip => {}
                 }
@@ -387,12 +380,9 @@ async fn capture_owned(
                     content,
                     provider_options: None,
                 },
-                MessageBuilder::Assistant {
-                    parts: range,
-                    options,
-                } => MessageRecipe::Assistant {
+                MessageBuilder::Assistant { parts: range } => MessageRecipe::Assistant {
                     content: Arc::new(Items::range(parts.clone(), range, owner.clone())),
-                    provider_options: options,
+                    provider_options: None,
                 },
                 MessageBuilder::DeferredUser { parts: range } => MessageRecipe::User {
                     content: Arc::new(Items::range(
@@ -492,11 +482,10 @@ fn flush(
     group: &mut Option<AssistantGroup>,
 ) {
     if let Some(group) = group.take()
-        && (group.start != parts.len() || group.options.is_some())
+        && group.start != parts.len()
     {
         builders.push(MessageBuilder::Assistant {
             parts: group.start..parts.len(),
-            options: group.options,
         });
     }
 }
@@ -513,7 +502,6 @@ fn ensure_group(
     *group = Some(AssistantGroup {
         key,
         start: parts.len(),
-        options: None,
     });
 }
 fn add(total: &mut usize, bytes: usize) -> io::Result<()> {
@@ -537,6 +525,7 @@ fn row_slots() -> usize {
 #[allow(clippy::too_many_arguments)]
 async fn plan(
     captured: &CapturedSource,
+    target: Option<&crate::history::ReplayTarget>,
     language: Language,
     vision: bool,
     provider: &ProviderKind,
@@ -549,11 +538,13 @@ async fn plan(
         vision,
         provider,
         replay: captured.selection().replay.as_ref(),
+        model: target,
         budget: budget.clone(),
         directory_owner: Arc::new(()),
         captured: Some(captured),
         arena: None,
         cancellation,
+        row: None,
         row_root: None,
         payload_root: None,
         internal_arena: false,
@@ -596,7 +587,7 @@ async fn plan(
             let metadata = entry.directory;
             let payload = captured.describe_payload(&row).map_err(io::Error::other)?;
             let row_root = captured.metadata_source(&row).map_err(io::Error::other)?;
-            let row_context = context.for_row(&row_root, payload.as_ref());
+            let row_context = context.for_row(&row, &row_root, payload.as_ref());
 
             let payload = entry.payload.as_ref();
             if chat_policy {

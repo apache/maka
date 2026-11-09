@@ -483,6 +483,11 @@ async fn continuation_uses_native_prefix_without_mistaking_it_for_a_new_assistan
         .boundary;
     let mut child = input(&base, "child", false);
     child.configuration = source.configuration;
+    child.provider.model = "compatible-target".into();
+    child.configuration.model.as_mut().unwrap().model = "compatible-target".into();
+    let provenance = child.context.as_mut().unwrap().codex.as_mut().unwrap();
+    provenance.connection_id = "other-connection".into();
+    provenance.account_id = Some("other-account".into());
     child.request_fingerprint = Some(maka_agent_facts::artifact::content_digest(
         b"native-continuation",
     ));

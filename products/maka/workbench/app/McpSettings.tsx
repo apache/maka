@@ -26,6 +26,7 @@ import {
   SettingsBody,
   SettingsButton,
   SettingsConfirm,
+  SettingsDiscard,
   SettingsFields,
   SettingsFormFooter,
   SettingsInlineInput,
@@ -42,9 +43,20 @@ import {
 export function McpSettings(props: { owner: McpSettingsOwner }) {
   const owner = props.owner;
   return (
-    <If when={!owner.deleting()} else={<Removal owner={owner} />}>
-      <If when={owner.editor()} else={<ServerList owner={owner} />}>
-        <ServerEditor owner={owner} />
+    <If
+      when={!owner.discarding.asking()}
+      else={
+        <SettingsDiscard
+          name={owner.editor()?.name}
+          onDiscard={owner.discarding.discard}
+          onKeep={owner.discarding.keep}
+        />
+      }
+    >
+      <If when={!owner.deleting()} else={<Removal owner={owner} />}>
+        <If when={owner.editor()} else={<ServerList owner={owner} />}>
+          <ServerEditor owner={owner} />
+        </If>
       </If>
     </If>
   );
@@ -137,7 +149,7 @@ function ServerEditor(props: { owner: McpSettingsOwner }) {
           }
           busy={owner.busy()}
           save={() => owner.save(editor())}
-          cancel={() => owner.back()}
+          cancel={owner.cancel}
         />
       }
     >

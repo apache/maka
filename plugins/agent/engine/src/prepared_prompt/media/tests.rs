@@ -300,6 +300,7 @@ impl Fixture {
             &CancellationToken::new(),
             resources,
             0,
+            None,
         )
         .await
         .unwrap();

@@ -25,8 +25,8 @@ use std::{cell::RefCell, ptr::NonNull, rc::Rc, sync::Arc};
 
 use block2::RcBlock;
 use nsh_core::{
-    EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, Keymap, Keystroke, Modifiers},
+    EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
+    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
 use objc2::{rc::Retained, runtime::AnyObject};
@@ -188,13 +188,15 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
         return false;
     }
     let path = crate::input::focus_path(surface);
-    let within = |id| path.contains(&id);
-    let repeat = event.isARepeat();
-    let found = if fallback {
-        table.find_fallback_with(keystroke, editing, repeat, within)
-    } else {
-        table.find_with(keystroke, editing, repeat, within)
-    };
+    let found = match_table(
+        &table,
+        keystroke,
+        editing,
+        event.isARepeat(),
+        fallback,
+        surface.environment.get().ctrl_for_command,
+        |id| path.contains(&id),
+    );
     if let Some(id) = found.fired() {
         surface.event(
             ROOT_ID,
@@ -296,8 +298,45 @@ pub(crate) fn function_key_code(n: u8) -> Option<u16> {
     FUNCTION_KEYS.get(usize::from(n).checked_sub(1)?).copied()
 }
 
+/// Matches `keystroke` against `table`, falling back from `Ctrl` to `Cmd` on
+/// terminal surfaces where `ctrl_for_command` stands in for Apple's Command.
+fn match_table(
+    table: &Keymap,
+    keystroke: Keystroke,
+    editing: bool,
+    repeat: bool,
+    fallback: bool,
+    ctrl_for_command: bool,
+    within: impl Fn(NodeId) -> bool,
+) -> KeyMatch {
+    let find = |stroke| {
+        if fallback {
+            table.find_fallback_with(stroke, editing, repeat, &within)
+        } else {
+            table.find_with(stroke, editing, repeat, &within)
+        }
+    };
+    let mut found = find(keystroke);
+    if matches!(found, KeyMatch::None)
+        && ctrl_for_command
+        && keystroke.modifiers.ctrl
+        && !keystroke.modifiers.cmd
+    {
+        let mut command = keystroke;
+        command.modifiers.ctrl = false;
+        command.modifiers.cmd = true;
+        found = find(command);
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
+    use nsh_core::{
+        keymap::{KeyBinding, KeyMatch, Keymap, Keystroke, When},
+        platform::Os,
+    };
+
     #[test]
     fn function_keys() {
         assert_eq!(super::function_key(122), Some(1));
@@ -308,5 +347,40 @@ mod tests {
         assert_eq!(super::function_key_code(20), Some(90));
         assert_eq!(super::function_key_code(0), None);
         assert_eq!(super::function_key_code(21), None);
+    }
+
+    #[test]
+    fn ctrl_for_command_falls_back_to_command_after_explicit_ctrl_bindings() {
+        let parse = |text| Keystroke::parse(text, Os::MacOs).unwrap();
+        let table = Keymap::new(vec![
+            KeyBinding::new(1, parse("mod+u"), When::Always, false),
+            KeyBinding::new(2, parse("ctrl+c"), When::Always, false),
+            KeyBinding::new(3, parse("mod+c"), When::Always, false),
+            KeyBinding::new(4, parse("mod+s"), When::Always, false),
+        ]);
+        assert_eq!(
+            super::match_table(&table, parse("ctrl+u"), true, false, false, false, |_| true),
+            KeyMatch::None
+        );
+        assert_eq!(
+            super::match_table(&table, parse("ctrl+u"), true, false, false, true, |_| true),
+            KeyMatch::Fire(1)
+        );
+        assert_eq!(
+            super::match_table(&table, parse("ctrl+c"), true, false, false, true, |_| true),
+            KeyMatch::Fire(2)
+        );
+        assert_eq!(
+            super::match_table(
+                &table,
+                parse("ctrl+cmd+s"),
+                true,
+                false,
+                false,
+                true,
+                |_| true
+            ),
+            KeyMatch::None
+        );
     }
 }

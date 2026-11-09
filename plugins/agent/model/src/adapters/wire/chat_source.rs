@@ -62,6 +62,42 @@ async fn validate_options(
     }
     Ok(())
 }
+async fn observed_reasoning_field(
+    options: &JsonSource,
+    budget: &Arc<dyn SourceBudget>,
+) -> Result<Option<maka_provider_protocol::output::ReasoningField>, ModelError> {
+    let Some(field) = recipe::json::field(
+        options,
+        &["maka", "openAiChatReasoningField"],
+        budget.clone(),
+    )
+    .await
+    .map_err(error)?
+    else {
+        return Ok(None);
+    };
+    if field.kind != recipe::json::JsonKind::String {
+        return Ok(None);
+    }
+    let text = field.text().map_err(error)?;
+    if recipe::json::text_eq(&text, "reasoning", budget.clone())
+        .await
+        .map_err(error)?
+    {
+        Ok(Some(
+            maka_provider_protocol::output::ReasoningField::Reasoning,
+        ))
+    } else if recipe::json::text_eq(&text, "reasoning_content", budget.clone())
+        .await
+        .map_err(error)?
+    {
+        Ok(Some(
+            maka_provider_protocol::output::ReasoningField::Content,
+        ))
+    } else {
+        Ok(None)
+    }
+}
 async fn overlay(
     options: Option<JsonSource>,
     fields: Vec<(&'static str, Vec<F>)>,
@@ -374,6 +410,7 @@ async fn encode(
             let mut cursor = parts.open(0);
             let mut nonempty_text = false;
             let mut nonempty_reasoning = false;
+            let mut observed_reasoning = None;
             let mut has_calls = false;
             while let Some(part) = cursor.next().await.map_err(error)? {
                 tokio::task::yield_now().await;
@@ -401,10 +438,22 @@ async fn encode(
                             .await
                             .map_err(error)?
                     }
-                    AssistantRecipe::Reasoning { text, .. } if !nonempty_reasoning => {
-                        nonempty_reasoning = !source::escaped_equals(&text, b"", budget.clone())
-                            .await
-                            .map_err(error)?
+                    AssistantRecipe::Reasoning {
+                        text,
+                        provider_options,
+                    } => {
+                        if !nonempty_reasoning {
+                            nonempty_reasoning =
+                                !source::escaped_equals(&text, b"", budget.clone())
+                                    .await
+                                    .map_err(error)?;
+                        }
+                        if observed_reasoning.is_none()
+                            && let Some(options) = provider_options
+                        {
+                            observed_reasoning =
+                                observed_reasoning_field(&options, &budget).await?;
+                        }
                     }
                     AssistantRecipe::ToolCall { .. } => has_calls = true,
                     _ => {}
@@ -425,9 +474,14 @@ async fn encode(
                     )?,
                 ));
             }
-            if nonempty_reasoning {
+            if let Some(field) = (nonempty_reasoning || observed_reasoning.is_some()).then(|| {
+                options
+                    .reasoning_field
+                    .or(observed_reasoning)
+                    .unwrap_or(maka_provider_protocol::output::ReasoningField::Content)
+            }) {
                 fields.push((
-                    "reasoning_content",
+                    field.as_str(),
                     assistant::plan(parts, assistant::Mode::Reasoning)?,
                 ));
             }

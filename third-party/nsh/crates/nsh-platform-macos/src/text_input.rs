@@ -545,7 +545,6 @@ impl Ctx {
             // The scroll views around show the field, as on phones.
             crate::scroll::reveal(&surface, &view);
         }
-        let events_before = surface.events_sent();
         let kind = if focused {
             EventKind::Focus
         } else {
@@ -553,16 +552,18 @@ impl Ctx {
         };
         self.send(kind, || EventPayload::None);
         if focused {
-            if wants_text(&surface) && surface.events_sent() > events_before {
-                arm(&surface);
-            } else if !has_pending(&surface) {
-                disarm(&surface);
-            }
             self.selection_changed();
         }
         leave_changing(&surface);
-        if focused && !is_changing(&surface) {
-            flush_pending(&surface);
+        if focused {
+            if wants_text(&surface) && surface.events_handled() < surface.events_sent() {
+                arm(&surface);
+            } else {
+                maybe_disarm(&surface);
+            }
+            if !is_changing(&surface) {
+                flush_pending(&surface);
+            }
         }
     }
 
@@ -1445,6 +1446,9 @@ fn field_editor(mtm: MainThreadMarker, window: &objc2_app_kit::NSWindow) -> Reta
         // SAFETY: the class is a subclass of NSTextView.
         let editor: Retained<NSTextView> = unsafe { Retained::cast_unchecked(editor) };
         editor.setFieldEditor(true);
+        editor.setRichText(false);
+        editor.setImportsGraphics(false);
+        editor.setAllowsUndo(true);
         editors.push((objc2::rc::Weak::from(window), editor.clone()));
         editor
     })
@@ -1755,6 +1759,7 @@ impl InputState {
             leave_changing(surface);
             if !is_changing(surface) {
                 flush_pending(surface);
+                maybe_disarm(surface);
             }
         }
     }
@@ -1902,6 +1907,7 @@ fn new_editor(
         if let Some(cell) = field.cell() {
             cell.setScrollable(true);
             cell.setWraps(false);
+            cell.setAllowsUndo(true);
             // Not single-line mode: it replaces pasted line breaks in a
             // second edit, which `Ctx::should_change` does at once.
             cell.setLineBreakMode(NSLineBreakMode::ByClipping);
@@ -1966,11 +1972,14 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             field.setAlignment(align);
             field.setBaseWritingDirection(direction);
             field.setEditable(config.editable);
+            field.setSelectable(true);
             field.setPlaceholderAttributedString(Some(&placeholder(config, &font, align)));
             if let Some(editor) = field.currentEditor() {
                 editor.setFont(Some(&font));
                 editor.setTextColor(Some(&color));
                 editor.setAlignment(align);
+                editor.setEditable(config.editable);
+                editor.setSelectable(true);
             }
         }
         Editor::Area {
@@ -2001,25 +2010,23 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         }
     }
     *input.config.borrow_mut() = config.clone();
-    if became_readonly {
+    if became_readonly && input.focused.get() {
         surface
             .focus_generation
             .set(surface.focus_generation.get().wrapping_add(1));
-        if input.focused.get() {
-            #[cfg(feature = "terminal")]
-            terminal_cancel_input(&input);
-            if let Some(text) = editor
-                .editing()
-                .and_then(|text| text.downcast::<NSTextView>().ok())
-                && text.hasMarkedText()
-            {
-                text.unmarkText();
-            }
-            input.editing.set(false);
-            input.cx.compose(&input, None);
+        #[cfg(feature = "terminal")]
+        terminal_cancel_input(&input);
+        if let Some(text) = editor
+            .editing()
+            .and_then(|text| text.downcast::<NSTextView>().ok())
+            && text.hasMarkedText()
+        {
+            text.unmarkText();
         }
+        input.editing.set(false);
+        input.cx.compose(&input, None);
     }
-    if became_editable {
+    if became_editable && input.focused.get() {
         surface
             .focus_generation
             .set(surface.focus_generation.get().wrapping_add(1));
@@ -2620,7 +2627,27 @@ fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retaine
 
 /// Whether `surface`'s focused input is currently composing marked text.
 pub(crate) fn composing_focused(surface: &Surface) -> bool {
-    focused_editor(surface).is_some_and(|(_, input, editor)| {
+    focused_editor(surface).is_some_and(|(view, input, editor)| {
+        #[cfg(not(feature = "terminal"))]
+        let _ = view;
+        #[cfg(feature = "terminal")]
+        if !is_replaying(surface) {
+            let expected = (view.state().id, surface.focus_generation.get());
+            if let Some(active) = FOCUS.with(|f| {
+                f.borrow().get(&surface.key()).and_then(|focus| {
+                    focus.pending.iter().rev().find_map(|held| match held {
+                        Held::TerminalComposition {
+                            expected: item_expected,
+                            active,
+                            ..
+                        } if *item_expected == expected => Some(*active),
+                        _ => None,
+                    })
+                })
+            }) {
+                return active;
+            }
+        }
         #[cfg(feature = "terminal")]
         if input.terminal_original.borrow().is_some() {
             return true;
@@ -2768,6 +2795,16 @@ pub(crate) fn disarm(surface: &Surface) {
     crate::keymap::sync_monitor(surface);
 }
 
+pub(crate) fn maybe_disarm(surface: &Surface) {
+    if !behind(surface)
+        && !has_pending(surface)
+        && !has_pending_auto_focus(surface)
+        && !is_changing(surface)
+    {
+        disarm(surface);
+    }
+}
+
 pub(crate) fn is_armed(surface: &Surface) -> bool {
     FOCUS.with(|f| {
         f.borrow()
@@ -2803,13 +2840,7 @@ fn behind(surface: &Surface) -> bool {
 pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
     if is_armed(surface) && !behind(surface) {
         flush_pending(surface);
-        if !behind(surface)
-            && !has_pending(surface)
-            && !has_pending_auto_focus(surface)
-            && !is_changing(surface)
-        {
-            disarm(surface);
-        }
+        maybe_disarm(surface);
     }
 }
 
@@ -3140,7 +3171,9 @@ fn flush_pending(surface: &Rc<Surface>) {
                 if terminal_editor(surface).map(|(id, _)| id) == Some(expected.0)
                     && surface.focus_generation.get() == expected.1
                 {
-                    let _ = terminal_compose(surface, &commit, &preedit, selection, active);
+                    with_replaying(surface, || {
+                        let _ = terminal_compose(surface, &commit, &preedit, selection, active);
+                    });
                 }
             }
         }
@@ -3184,18 +3217,13 @@ pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
 }
 
 #[cfg(feature = "terminal")]
-pub(crate) fn terminal_allows_copy(surface: &Surface) -> bool {
-    let Some((id, _)) = terminal_editor(surface) else {
-        return false;
-    };
-    let mounter = surface.mounter.borrow();
-    let Some(view) = mounter.views.get(&id) else {
-        return false;
-    };
-    view.state()
-        .input
-        .as_ref()
-        .is_some_and(|input| !input.config.borrow().secure)
+pub(crate) fn terminal_focused_editor(
+    surface: &Surface,
+) -> Option<(Retained<NSTextView>, bool, bool)> {
+    let (_, input, editor) = focused_editor(surface)?;
+    let config = input.config.borrow();
+    let editable = config.editable && editor.isEditable();
+    Some((editor, editable, config.secure))
 }
 
 #[cfg(feature = "terminal")]
@@ -3274,9 +3302,10 @@ pub(crate) fn terminal_compose(
         };
         input
     };
+    let events_before = surface.events_sent();
     let replacement = NSRange::new(isize::MAX as usize, 0);
     if !commit.is_empty() {
-        input.terminal_original.borrow_mut().take();
+        terminal_cancel_input(&input);
         // SAFETY: NSString is a valid NSTextInputClient insertion; NSNotFound replaces the mark/selection.
         let _: () = unsafe {
             msg_send![&*editor, insertText: &*NSString::from_str(commit), replacementRange: replacement]
@@ -3300,6 +3329,9 @@ pub(crate) fn terminal_compose(
         }
         editor.unmarkText();
         input.cx.composition_changed();
+        if surface.events_sent() > events_before {
+            arm(surface);
+        }
     }
     true
 }

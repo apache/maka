@@ -778,18 +778,20 @@ impl Listbox {
     /// move the highlight (around the ends), Home and End to the first and
     /// the last, Page Up and Down by a page, Return chooses (`choose`, with
     /// the highlighted item), and without a search field Space chooses too.
-    /// With a search field they fire while it edits (Home and End stay its
-    /// own). Typeahead is [`bind_typeahead`]'s.
+    /// They fire wherever the keyboard focus is (the trigger, its search
+    /// field, or another text input that kept focus when the trigger was
+    /// pressed); with a search field, Home and End stay its own while it
+    /// edits. Typeahead is [`bind_typeahead`]'s.
     pub(crate) fn bind_keys(self, open: impl Fn() -> bool + 'static, choose: Rc<dyn Fn(usize)>) {
         effect(move || {
             if !open() {
                 return;
             }
             let searchable = self.searchable.get();
-            let when = if searchable {
-                When::Always
-            } else {
+            let ends = if searchable {
                 When::NotEditing
+            } else {
+                When::Always
             };
             let bind = |keys: &str, when: When, repeat: bool, f: Rc<dyn Fn()>| {
                 on_key_with(
@@ -803,23 +805,23 @@ impl Listbox {
                 );
             };
             let moves = [
-                ("up", Move::Previous, when),
-                ("down", Move::Next, when),
-                ("home", Move::First, When::NotEditing),
-                ("end", Move::Last, When::NotEditing),
+                ("up", Move::Previous, When::Always),
+                ("down", Move::Next, When::Always),
+                ("home", Move::First, ends),
+                ("end", Move::Last, ends),
             ];
             for (keys, by, when) in moves {
                 bind(keys, when, true, Rc::new(move || self.move_by(by)));
             }
             bind(
                 "pageup",
-                when,
+                When::Always,
                 true,
                 Rc::new(move || self.move_by(Move::PageUp(self.page()))),
             );
             bind(
                 "pagedown",
-                when,
+                When::Always,
                 true,
                 Rc::new(move || self.move_by(Move::PageDown(self.page()))),
             );
@@ -831,9 +833,9 @@ impl Listbox {
                     }
                 })
             };
-            bind("enter", when, false, accept.clone());
+            bind("enter", When::Always, false, accept.clone());
             if !searchable {
-                bind("space", When::NotEditing, false, accept);
+                bind("space", When::Always, false, accept);
             }
         });
     }
@@ -845,10 +847,12 @@ const TYPEAHEAD_KEYS: [&str; 36] = [
     "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 ];
 
-/// Binds typeahead's keys (when no text input edits) while `active`
-/// holds, to `typed` with the character: bound once for as long as it
-/// holds, so a trigger's typeahead and its open list's (one `active`)
-/// bind nothing again as the list opens and closes.
+/// Binds typeahead's keys while `active` holds, to `typed` with the
+/// character: bound once for as long as it holds (with [`When::Always`], so
+/// an open non-searchable list owns letters and digits even when pressing
+/// its trigger left responder focus in another text field), and a trigger's
+/// typeahead and its open list's (one `active`) bind nothing again as the
+/// list opens and closes.
 pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn Fn(char)>) {
     let active = computed(active);
     effect(move || {
@@ -860,7 +864,7 @@ pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn 
             on_key_with(
                 key,
                 KeyOptions {
-                    when: When::NotEditing,
+                    when: When::Always,
                     repeat: false,
                     ..Default::default()
                 },
