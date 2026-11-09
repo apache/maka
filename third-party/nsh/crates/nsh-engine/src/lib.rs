@@ -3396,6 +3396,7 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         locale_settings: env.locale_settings,
         apple_keyboard: env.apple_keyboard,
         ctrl_for_command: env.ctrl_for_command,
+        native_focus_scopes: env.native_focus_scopes,
         host: env.host,
         lifecycle: env.lifecycle,
         screen_color: env.screen_color,

@@ -884,3 +884,464 @@ mount(App);
         surface.shutdown();
     }
 }
+
+pub(super) fn native_input_clipboard_and_undo() {
+    use std::{cell::RefCell, rc::Rc};
+
+    const INPUT_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const line = signal("seed");
+  const area = signal("");
+  let secret = null;
+  keymap.bind("f6", () => {
+    secret?.focus();
+    Clipboard.writeText("secret-focused");
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <Input
+      autoFocus
+      value={line()}
+      onChange={({ value }) => line.set(value)}
+      onSubmit={({ text }) => Clipboard.writeText(`submitted:${text}`)}
+      style={{ width: 220, height: 32 }}
+    />
+    <Input
+      multiline
+      value={area()}
+      onChange={({ value }) => area.set(value)}
+      style={{ width: 220, height: 64 }}
+    />
+    <Input
+      ref={(node) => { secret = node; }}
+      masked
+      defaultValue="secret-token"
+      style={{ width: 220, height: 32 }}
+    />
+  </View>;
+}
+mount(App);
+"#;
+
+    let make = || {
+        let code = nsh_bundler::compile_module("InputClipboard.tsx", INPUT_APP, &[]).unwrap();
+        let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+        config.ui_sets = vec![nsh_base::registry()];
+        TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|_| {}),
+            Arc::new(|| {}),
+        )
+        .unwrap()
+    };
+    let chord = |surface: &TerminalSurface, name: &str, shift: bool| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        stroke.modifiers.shift = shift;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let fence = |surface: &TerminalSurface| {
+        let done: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+        let slot = done.clone();
+        surface.pause_input(Box::new(move |res| {
+            *slot.borrow_mut() = Some(res);
+        }));
+        pump_until(surface, || done.borrow().is_some());
+        assert_eq!(*done.borrow(), Some(Ok(())));
+        surface.resume_input();
+    };
+
+    let first = make();
+    let second = make();
+    pump_until(&first, || first.editor_text().as_deref() == Some("seed"));
+    pump_until(&second, || second.editor_text().as_deref() == Some("seed"));
+
+    second.set_clipboard_text("other-surface");
+    assert_eq!(second.take_clipboard_write(), None);
+
+    let attached = "/private/var/folders/test/selected.png";
+    chord(&first, "a", false);
+    assert!(first.paste(nsh_core::PasteEvent::new(attached)));
+    pump_until(&first, || first.editor_text().as_deref() == Some(attached));
+    chord(&first, "a", false);
+    chord(&first, "c", false);
+    assert_eq!(first.take_clipboard_write().as_deref(), Some(attached));
+    assert_eq!(first.take_clipboard_write(), None);
+    assert_eq!(second.take_clipboard_write(), None);
+
+    chord(&second, "a", false);
+    chord(&second, "v", false);
+    pump_until(&second, || {
+        second.editor_text().as_deref() == Some("other-surface")
+    });
+
+    chord(&first, "a", false);
+    chord(&first, "x", false);
+    assert_eq!(first.take_clipboard_write().as_deref(), Some(attached));
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+
+    chord(&first, "z", false);
+    pump_until(&first, || first.editor_text().as_deref() == Some(attached));
+    chord(&first, "z", true);
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+
+    first.set_clipboard_text("Read the project\nFix it");
+    assert_eq!(first.take_clipboard_write(), None);
+    chord(&first, "v", false);
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project Fix it")
+    });
+
+    key(&first, "tab");
+    pump_until(&first, || first.editor_text().as_deref() == Some(""));
+    chord(&first, "v", false);
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project\nFix it")
+    });
+
+    let mut back_tab = Keystroke::default();
+    back_tab.key = "tab".into();
+    back_tab.modifiers.shift = true;
+    let mut down = KeyDownEvent::default();
+    down.keystroke = back_tab.clone();
+    let mut up = KeyUpEvent::default();
+    up.keystroke = back_tab;
+    first.dispatch_input(PlatformInput::KeyDown(down)).unwrap();
+    first.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    pump_until(&first, || {
+        first.editor_text().as_deref() == Some("Read the project Fix it")
+    });
+
+    key(&first, "enter");
+    clipboard(&first, "submitted:Read the project Fix it");
+
+    key(&first, "f6");
+    clipboard(&first, "secret-focused");
+    pump_until(&first, || {
+        first.text_input_target().is_some() && first.editor_text().is_none()
+    });
+    chord(&first, "a", false);
+    chord(&first, "c", false);
+    chord(&first, "x", false);
+    fence(&first);
+    assert_eq!(first.take_clipboard_write(), None);
+
+    first.shutdown();
+    second.shutdown();
+}
+
+pub(super) fn rich_editor_to_box_none_input_focus_transition() {
+    const TRANSITION_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { createRichEditor, defineExtension, Input, RichEditor, RichEditorPlugin, StarterKit } from "nsh/base";
+
+function App() {
+  const attaching = signal(false);
+  const path = signal("");
+  const toggle = () => attaching.update((open) => !open);
+  const keys = new RichEditorPlugin("attachKey");
+  keys.captureKeys(["Mod-u"], toggle);
+  keys.capturing = true;
+  const attachKey = defineExtension({
+    name: "attachKey",
+    priority: 200,
+    addProseMirrorPlugins: () => [keys],
+  });
+  const session = createRichEditor({ extensions: [StarterKit, attachKey] });
+  let editor = null;
+  keymap.bind("mod+u", toggle, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <RichEditor
+      editor={session}
+      ref={(node) => { editor = node; }}
+      autoFocus
+      style={{ flex: 1, height: 120 }}
+    />
+    {() => attaching() ? (
+      <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, pointerEvents: "box-none" }}>
+        <View style={{ height: 40 }}>
+          <Input
+            accessibilityLabel="Attachment path"
+            autoFocus
+            value={path()}
+            onChange={({ value }) => path.set(value)}
+            onSubmit={({ text }) => {
+              Clipboard.writeText(`attached:${text}`);
+              path.set("");
+              attaching.set(false);
+              editor?.focus();
+            }}
+            style={{ width: 260, height: 32 }}
+          />
+        </View>
+      </View>
+    ) : null}
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("RichEditorAttach.tsx", TRANSITION_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let chord = |name: &str| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let copy_focused = || {
+        let _ = surface.take_clipboard_write();
+        chord("a");
+        chord("c");
+        let mut copied = None;
+        pump_until(&surface, || {
+            if copied.is_none() {
+                copied = surface.take_clipboard_write();
+            }
+            copied.is_some()
+        });
+        copied.unwrap()
+    };
+
+    pump_until(&surface, || surface.text_input_target().is_some());
+    let editor_target = surface.text_input_target();
+
+    // Open the attachment field via Ctrl+U and wait only for the native responder swap
+    // (without calling `pause_input`), matching `Desktop::attach` -> `type_text` -> `copy_input`.
+    chord("u");
+    pump_until(&surface, || {
+        let current = surface.text_input_target();
+        current.is_some() && current != editor_target
+    });
+    let picker_target = surface.text_input_target();
+
+    let attached = "/private/var/folders/test/selected.png";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(attached)));
+    assert_eq!(copy_focused(), attached);
+
+    key(&surface, "enter");
+    clipboard(&surface, &format!("attached:{attached}"));
+    pump_until(&surface, || {
+        let current = surface.text_input_target();
+        current.is_some() && current != picker_target
+    });
+
+    let draft = "FIRST_DESKTOP_MESSAGE";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(draft)));
+    assert_eq!(copy_focused(), draft);
+    surface.shutdown();
+}
+
+pub(super) fn unfocused_readonly_input_preserves_focused_target() {
+    const SIDE_DRAFT_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const main = signal("MAIN_DRAFT");
+  const side = signal("");
+  const sideMounted = signal(false);
+  const sideReady = signal(false);
+  let sideRef = null;
+  keymap.bind("f6", () => {
+    sideMounted.set(true);
+    Clipboard.writeText("side-mounted");
+  }, { when: "always" });
+  keymap.bind("f7", () => {
+    sideReady.set(true);
+    Clipboard.writeText("side-ready");
+  }, { when: "always" });
+  keymap.bind("f8", () => {
+    sideRef?.focus();
+    Clipboard.writeText("side-focused");
+  }, { when: "always" });
+  keymap.bind("f9", () => {
+    Clipboard.writeText(`${main()}|${side()}`);
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <Input
+      accessibilityLabel="Main composer"
+      autoFocus
+      value={main()}
+      onChange={({ value }) => main.set(value)}
+      style={{ width: 260, height: 32 }}
+    />
+    {() => sideMounted() ? (
+      <Input
+        accessibilityLabel="Side composer"
+        ref={(node) => { sideRef = node; }}
+        readonly={!sideReady()}
+        value={side()}
+        onChange={({ value }) => side.set(value)}
+        style={{ width: 260, height: 32 }}
+      />
+    ) : null}
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("SideDraft.tsx", SIDE_DRAFT_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("MAIN_DRAFT")
+    });
+    let main_target = surface.text_input_target().unwrap();
+    assert!(
+        surface
+            .apply_composition(&main_target, "", "ni", Some(2..2), true)
+            .unwrap()
+    );
+
+    // Mounting a read-only background input and flipping it editable while unfocused
+    // must not advance or revoke the focused main editor's target or preedit.
+    key(&surface, "f6");
+    clipboard(&surface, "side-mounted");
+    assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
+
+    key(&surface, "f7");
+    clipboard(&surface, "side-ready");
+    assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
+    assert!(
+        surface
+            .apply_composition(&main_target, "", "", None, false)
+            .unwrap()
+    );
+    assert_eq!(surface.editor_text().as_deref(), Some("MAIN_DRAFT"));
+
+    // Focusing the side input advances `text_input_target()` only once focus actually moves.
+    key(&surface, "f8");
+    clipboard(&surface, "side-focused");
+    pump_until(&surface, || {
+        surface
+            .text_input_target()
+            .as_ref()
+            .is_some_and(|target| target != &main_target)
+    });
+    assert!(surface.paste(nsh_core::PasteEvent::new("SIDE_DRAFT")));
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("SIDE_DRAFT")
+    });
+
+    key(&surface, "f9");
+    clipboard(&surface, "MAIN_DRAFT|SIDE_DRAFT");
+    surface.shutdown();
+}
+
+pub(super) fn rich_editor_composition_commit_matches_preedit() {
+    const IME_EDITOR_APP: &str = r#"
+import { mount, View } from "nsh";
+import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
+
+function App() {
+  const session = createRichEditor({ extensions: [StarterKit] });
+  return <View style={{ flex: 1 }}>
+    <RichEditor
+      editor={session}
+      autoFocus
+      style={{ flex: 1, height: 120 }}
+    />
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("ImeEditor.tsx", IME_EDITOR_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let chord = |name: &str| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let copy_focused = || {
+        let _ = surface.take_clipboard_write();
+        chord("a");
+        chord("c");
+        let mut copied = None;
+        pump_until(&surface, || {
+            if copied.is_none() {
+                copied = surface.take_clipboard_write();
+            }
+            copied.is_some()
+        });
+        copied.unwrap()
+    };
+
+    pump_until(&surface, || surface.text_input_target().is_some());
+    let target = surface.text_input_target().unwrap();
+    assert!(
+        surface
+            .apply_composition(&target, "", "方向", Some(2..2), true)
+            .unwrap()
+    );
+    key(&surface, "enter");
+    key(&surface, "escape");
+    assert!(
+        surface
+            .apply_composition(&target, "方向", "", None, false)
+            .unwrap()
+    );
+    assert_eq!(copy_focused(), "方向");
+
+    let next = "Check keyboard focus too.";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(next)));
+    assert_eq!(copy_focused(), next);
+    surface.shutdown();
+}

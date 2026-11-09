@@ -32662,3 +32662,311 @@ fn native_focus_path_keeps_virtual_list_cell_across_scroll_splice_and_zero_viewp
     c.commit();
     assert_eq!(bound_slot(&c, 2, 5), focused_slot);
 }
+
+#[test]
+fn element_ref_on_key_with_scopes_within_attached_node_on_focus_scope_hosts() {
+    use crate::{
+        element::{Environment, Root},
+        keymap::{KeyMatch, Keystroke, When},
+        platform::Os,
+        prelude::*,
+    };
+
+    thread_local! {
+        static HITS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    #[derive(Default)]
+    struct ScopedKeys;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct ScopedKeysProps {}
+
+    impl Component for ScopedKeys {
+        type Props = ScopedKeysProps;
+        type Event = NoEvent;
+
+        fn view(_: ScopedKeysProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let show = signal(false);
+            let sink: ElementRef = element_ref();
+            sink.on_key_with(
+                "ctrl+a",
+                KeyOptions {
+                    when: When::Always,
+                    repeat: false,
+                    ..Default::default()
+                },
+                move |_| HITS.with(|hits| hits.set(hits.get() + 1)),
+            );
+            view()
+                .flex_1()
+                .child(
+                    view()
+                        .test_id("toggle")
+                        .on_press(move |_: &PressEvent| show.update(|v| *v = !*v)),
+                )
+                .child(when(
+                    move || show.get(),
+                    move || input().test_id("sink").element_ref(&sink),
+                ))
+        }
+    }
+
+    let keymap_of = |batch: &MountBatch| {
+        batch.items.iter().find_map(|item| match item {
+            MountItem::Keymap(k) => Some(k.clone()),
+            _ => None,
+        })
+    };
+    let label_id = |batch: &MountBatch, wanted: &str| {
+        batch.items.iter().find_map(|item| match item {
+            MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(wanted) => {
+                Some(*id)
+            }
+            _ => None,
+        })
+    };
+
+    let ctrl_a = Keystroke::parse("ctrl+a", Os::Linux).unwrap();
+
+    // 1. Native focus-scope host: unmounted ref emits no global binding; mounted ref scopes `within` to sink.
+    HITS.with(|hits| hits.set(0));
+    let mut scoped = core();
+    scoped.set_environment(Environment {
+        native_focus_scopes: true,
+        ..Environment::default()
+    });
+    scoped.mount_root(&Root::new::<ScopedKeys>(|| ScopedKeysProps {}));
+    let first = scoped.commit().unwrap();
+    let toggle = label_id(&first, "toggle").expect("toggle view");
+    assert_eq!(
+        keymap_of(&first).expect("initial keymap").bindings().len(),
+        0,
+        "unmounted scoped ElementRef must not leak an unscoped binding"
+    );
+
+    assert!(scoped.component_event(toggle, EventKind::Press, &EventPayload::None));
+    let mounted = scoped.commit().unwrap();
+    let sink_id = label_id(&mounted, "sink").expect("mounted sink");
+    let table = keymap_of(&mounted).expect("mounted keymap");
+    assert_eq!(table.bindings().len(), 1);
+    assert_eq!(table.bindings()[0].within, Some(sink_id));
+    assert_eq!(
+        table.find_with(ctrl_a, true, false, |id| id == toggle),
+        KeyMatch::None,
+        "focused sibling input outside sink must not match sink's When::Always binding"
+    );
+    let KeyMatch::Fire(binding_id) = table.find_with(ctrl_a, true, false, |id| id == sink_id)
+    else {
+        panic!("expected Fire when focus is within sink");
+    };
+    assert!(scoped.component_event(
+        ROOT_ID,
+        EventKind::KeyCommand,
+        &EventPayload::Value(PayloadValue::Number(binding_id as f64)),
+    ));
+    assert_eq!(HITS.with(Cell::get), 1);
+
+    assert!(scoped.component_event(toggle, EventKind::Press, &EventPayload::None));
+    let unmounted = scoped.commit().unwrap();
+    assert_eq!(
+        keymap_of(&unmounted)
+            .expect("unmounted keymap")
+            .bindings()
+            .len(),
+        0
+    );
+
+    // 2. Host without native focus scopes (e.g. headless): `within` stays None so `Keymap::find` fires.
+    HITS.with(|hits| hits.set(0));
+    let mut headless = core();
+    headless.mount_root(&Root::new::<ScopedKeys>(|| ScopedKeysProps {}));
+    let first = headless.commit().unwrap();
+    let table = keymap_of(&first).expect("headless keymap");
+    assert_eq!(table.bindings().len(), 1);
+    assert_eq!(table.bindings()[0].within, None);
+    let KeyMatch::Fire(binding_id) = table.find(ctrl_a, true, false) else {
+        panic!("headless Keymap::find must fire");
+    };
+    assert!(headless.component_event(
+        ROOT_ID,
+        EventKind::KeyCommand,
+        &EventPayload::Value(PayloadValue::Number(binding_id as f64)),
+    ));
+    assert_eq!(HITS.with(Cell::get), 1);
+}
+
+#[test]
+fn displays_none_emits_hidden_view_style_on_mount_and_toggle() {
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::View,
+            },
+            style_op(2, &[("display", StyleValue::Str("none"))]),
+            Op::Create {
+                id: 3,
+                tag: Tag::View,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 3,
+                before: None,
+            },
+        ],
+    );
+    let mounted = c.commit().unwrap();
+    assert_eq!(hidden_in(&mounted, 2).0, Some(true));
+    assert_eq!(hidden_in(&mounted, 3).0, None);
+
+    apply(
+        &mut c,
+        vec![
+            style_op(2, &[("display", StyleValue::Str("flex"))]),
+            style_op(3, &[("display", StyleValue::Str("none"))]),
+        ],
+    );
+    let toggled = c.commit().unwrap();
+    assert_eq!(hidden_in(&toggled, 2).0, Some(false));
+    assert_eq!(hidden_in(&toggled, 3).0, Some(true));
+
+    apply(
+        &mut c,
+        vec![style_op(3, &[("display", StyleValue::Str("flex"))])],
+    );
+    let restored = c.commit().unwrap();
+    assert_eq!(hidden_in(&restored, 3).0, Some(false));
+}
+
+#[test]
+fn pointer_press_on_focused_anchor_suppresses_focus_hint_until_refocused() {
+    use StyleValue::Number;
+    let mut c = core();
+    c.set_environment(crate::element::Environment {
+        os: crate::platform::Os::Windows,
+        idiom: crate::platform::Idiom::Terminal,
+        ..crate::element::Environment::default()
+    });
+    add(
+        &mut c,
+        2,
+        Tag::View,
+        ROOT_ID,
+        &[("width", Number(80.0)), ("height", Number(40.0))],
+    );
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 4,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 6,
+                text: "Prompt 5".into(),
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(4)),
+            },
+        ],
+    );
+    let initial = c.commit().expect("initial mount");
+    assert_eq!(mounts_listening(&initial, 2, EventKind::Touch), Some(true));
+
+    let touch_up = |path: Vec<NodeId>| {
+        EventPayload::Touch(Box::new(crate::TouchEvent {
+            phase: crate::TouchPhase::End,
+            timestamp: 0.0,
+            points: vec![crate::TouchPoint {
+                id: 1,
+                target: path[0],
+                path,
+                page: point(px(5.0), px(6.0)),
+                location: point(px(5.0), px(6.0)),
+                changed: true,
+            }],
+            activated: None,
+        }))
+    };
+
+    // 1a. Same-batch focus + pointer click + release (States(FOCUSED) -> Start -> End -> commit).
+    c.set_states(2, crate::tailwind::state::FOCUSED);
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    if let Some(batch) = c.commit() {
+        assert!(
+            inserts(&batch).into_iter().all(|(p, ..)| p != ROOT_ID),
+            "pointer click must not open keyboard-focus tooltip: {:?}",
+            batch.items
+        );
+    }
+
+    // 1b. Same-batch pointer click before focus + release (Start -> States(FOCUSED) -> End -> commit).
+    c.set_states(2, 0);
+    let _ = c.commit();
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.set_states(2, crate::tailwind::state::FOCUSED);
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    if let Some(batch) = c.commit() {
+        assert!(
+            inserts(&batch).into_iter().all(|(p, ..)| p != ROOT_ID),
+            "same-batch press before focus must not open tooltip: {:?}",
+            batch.items
+        );
+    }
+
+    // 2. Pointer held before focus report across commits (Start -> commit -> States(FOCUSED) -> commit -> End).
+    c.set_states(2, 0);
+    let _ = c.commit();
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    let _ = c.commit();
+    c.set_states(2, crate::tailwind::state::FOCUSED);
+    if let Some(batch) = c.commit() {
+        assert!(
+            inserts(&batch).into_iter().all(|(p, ..)| p != ROOT_ID),
+            "focus while pointer is held on anchor must not open tooltip: {:?}",
+            batch.items
+        );
+    }
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    let _ = c.commit();
+
+    // 3. Non-focusing press in an earlier commit does not block genuine keyboard focus later.
+    c.set_states(2, 0);
+    let _ = c.commit();
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    let _ = c.commit();
+    c.set_states(2, crate::tailwind::state::FOCUSED);
+    let opened = c.commit().expect("keyboard focus opens tooltip");
+    assert_eq!(texts_of(&opened), ["Prompt 5"]);
+    let overlay = inserts(&opened)
+        .into_iter()
+        .find(|&(p, ..)| p == ROOT_ID)
+        .map(|(_, child, _)| child)
+        .expect("tooltip overlay inserted in root");
+
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_down(vec![2, ROOT_ID]));
+    c.component_event(ROOT_ID, EventKind::Touch, &touch_up(vec![2, ROOT_ID]));
+    let closed = c.commit().expect("press closes focused tooltip");
+    assert!(
+        closed
+            .items
+            .iter()
+            .any(|i| matches!(i, MountItem::Remove { id } if *id == overlay))
+    );
+}

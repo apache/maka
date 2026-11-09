@@ -254,6 +254,36 @@ fn errors_are_dismissible_and_logs_open_only_on_request() {
 }
 
 #[test]
+fn runtime_error_draws_diagnostics_on_the_frame_that_drains_it() {
+    let log_path =
+        std::env::temp_dir().join(format!("nsh-tui-dev-same-frame-{}", std::process::id()));
+    std::fs::write(&log_path, "").unwrap();
+    let mut options = AppOptions::default();
+    options.cache = CacheOptions::off();
+    let mut view = AppView::new(options);
+    view.set_dev_log_path(log_path.clone());
+    view.resize(80, 20);
+    view.load_local(nsh_engine::EngineConfig::new(nsh_engine::App::Js(
+        nsh_platform_tui::Bundle::source("throw new Error('runtime failure')".into()),
+    )))
+    .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|f| view.render(f, f.area())).unwrap();
+    let shown: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    let _ = std::fs::remove_file(log_path);
+    assert!(
+        shown.contains("runtime failure"),
+        "expected diagnostics on the error frame, got {shown:?}"
+    );
+}
+
+#[test]
 fn a_linked_rust_root_loads_and_can_be_reloaded_from_the_panel() {
     use nsh_core::prelude::*;
     #[component]

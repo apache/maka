@@ -2158,12 +2158,13 @@ pub(crate) fn selection_key(
     event: &objc2_app_kit::NSEvent,
 ) -> bool {
     use objc2_app_kit::NSEventModifierFlags;
-    let command = event
-        .modifierFlags()
-        .contains(NSEventModifierFlags::Command);
+    let flags = event.modifierFlags();
+    let shortcut = !flags.contains(NSEventModifierFlags::Option)
+        && (flags.contains(NSEventModifierFlags::Command)
+            || (surface.terminal.get() && flags.contains(NSEventModifierFlags::Control)));
     match crate::input::shortcut_key(event) {
-        Some('c') if command => copy(surface),
-        Some('a') if command => select_all(surface),
+        Some('c') if shortcut => copy(surface),
+        Some('a') if shortcut => select_all(surface),
         // Escape.
         _ if event.keyCode() == 53
             && (surface.selection.with_range().is_some()
@@ -2176,7 +2177,7 @@ pub(crate) fn selection_key(
     }
 }
 
-/// Copies the selection to the general pasteboard (the Edit menu's Copy).
+/// Copies the selection to the surface clipboard (the Edit menu's Copy).
 /// False if there is none.
 pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     let Some(text) = surface.selection.area.text().or_else(|| {
@@ -2187,11 +2188,7 @@ pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     }) else {
         return false;
     };
-    let board = objc2_app_kit::NSPasteboard::generalPasteboard();
-    board.clearContents();
-    // SAFETY: an immutable AppKit constant.
-    let kind = unsafe { objc2_app_kit::NSPasteboardTypeString };
-    board.setString_forType(&objc2_foundation::NSString::from_str(&text), kind);
+    crate::system::write_clipboard(surface, &text);
     true
 }
 

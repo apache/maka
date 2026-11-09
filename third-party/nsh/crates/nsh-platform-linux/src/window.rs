@@ -97,7 +97,7 @@ pub(crate) struct AppWindow {
     /// The root node of the window that owns it.
     parent: Option<NodeId>,
     /// Its attributes, as the core sent them.
-    attributes: WindowAttributes,
+    pub(crate) attributes: WindowAttributes,
     /// The size last reported to the core.
     reported: Option<Size<Points>>,
     /// Not shown yet: `Some(true)` once the commit that opened it is

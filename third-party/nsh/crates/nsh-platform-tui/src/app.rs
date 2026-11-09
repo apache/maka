@@ -532,14 +532,12 @@ impl AppView {
             let had_messages = !self.surface.held.is_empty() || !self.surface.inbox.is_empty();
             let area = self.area;
             let mut next = Buffer::empty(area);
-            let errors = self.draw_scene(area, &mut next, false);
+            let first_err = self.draw_scene(area, &mut next, false);
             if next != self.scratch || had_messages {
                 changed = true;
             }
             self.scratch = next;
-            if let Some(first_err) = errors.first() {
-                let text = first_err.to_string();
-                self.report_errors(errors);
+            if let Some(text) = first_err {
                 return Err(text);
             }
             if !self.surface.is_local() {
@@ -2048,8 +2046,7 @@ impl AppView {
 
     fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
         let advance_frame = !self.surface.is_local();
-        let errors = self.draw_scene(area, buffer, advance_frame);
-        self.report_errors(errors);
+        let _ = self.draw_scene(area, buffer, advance_frame);
         self.sync_scratch(area, buffer);
     }
 
@@ -2067,25 +2064,20 @@ impl AppView {
         }
     }
 
-    fn report_errors(&mut self, errors: Vec<AppError>) {
-        if let Some(first) = errors.first() {
-            self.last_error = Some(first.to_string());
+    fn report_error(&mut self, error: AppError, text: &str) {
+        #[cfg(feature = "dev")]
+        if let Some(test) = &self.test {
+            test.model.error(text.to_owned());
         }
-        for error in errors {
-            #[cfg(feature = "dev")]
-            if let Some(test) = &self.test {
-                test.model.error(error.to_string());
-            }
-            #[cfg(feature = "dev")]
-            if self.dev.is_some() || self.diagnostics.log_path.is_some() {
-                self.diagnostics.error("App error", &error.to_string());
-            }
-            if let Some(callback) = &mut self.on_error {
-                callback(&error.to_string());
-            }
-            if let Some(callback) = &mut self.on_app_error {
-                callback(&error);
-            }
+        #[cfg(feature = "dev")]
+        if self.dev.is_some() || self.diagnostics.log_path.is_some() {
+            self.diagnostics.error("App error", text);
+        }
+        if let Some(callback) = &mut self.on_error {
+            callback(text);
+        }
+        if let Some(callback) = &mut self.on_app_error {
+            callback(&error);
         }
     }
 
@@ -2094,7 +2086,7 @@ impl AppView {
         area: Rect,
         buffer: &mut Buffer,
         advance_frame: bool,
-    ) -> Vec<AppError> {
+    ) -> Option<String> {
         let started = self.perf.as_ref().map(|_| Instant::now());
         // The application menu's bar is the top row; the app has the rows
         // below it (all of them while the bar hides itself).
@@ -2135,7 +2127,7 @@ impl AppView {
                 self.surface.laid_out = self.size();
             }
         }
-        let mut errors = Vec::new();
+        let mut first_error = None;
         while let Some(message) = self
             .surface
             .held
@@ -2144,7 +2136,14 @@ impl AppView {
         {
             match message {
                 Message::Batch(batch) => self.apply_batch(batch),
-                Message::Error(error) => errors.push(error),
+                Message::Error(error) => {
+                    let text = error.to_string();
+                    if first_error.is_none() {
+                        self.last_error = Some(text.clone());
+                        first_error = Some(text.clone());
+                    }
+                    self.report_error(error, &text);
+                }
                 Message::Frame => self.surface.request_frame(),
                 Message::Resized(size) => self.surface.laid_out = size,
                 Message::Focused(moved) => self.keyboard.caught_up(moved),
@@ -2452,7 +2451,7 @@ impl AppView {
                 request(self, buffer);
             }
         }
-        errors
+        first_error
     }
 
     /// Stops the engine, drops queued commits, and clears the surface's app-owned state.

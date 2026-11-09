@@ -217,7 +217,7 @@ pub(crate) struct Surface {
     events_handled: Cell<u64>,
     pub(crate) terminal: Cell<bool>,
     pub(crate) terminal_scale: Cell<f32>,
-    pub(crate) terminal_clipboard: RefCell<Option<String>>,
+    pub(crate) terminal_clipboard: RefCell<TerminalClipboard>,
     pub(crate) terminal_quit: Cell<bool>,
     pub(crate) terminal_wake: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     control: RefCell<Option<EngineControl>>,
@@ -349,6 +349,12 @@ impl From<bool> for Next {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct TerminalClipboard {
+    pub(crate) text: Option<String>,
+    pub(crate) pending: Option<String>,
+}
+
 impl Surface {
     /// A surface with no app yet.
     pub(crate) fn new(mtm: MainThreadMarker, environment: Environment) -> Rc<Surface> {
@@ -370,7 +376,7 @@ impl Surface {
             events_handled: Cell::new(0),
             terminal: Cell::new(false),
             terminal_scale: Cell::new(1.0),
-            terminal_clipboard: RefCell::new(None),
+            terminal_clipboard: RefCell::default(),
             terminal_quit: Cell::new(false),
             terminal_wake: RefCell::new(None),
             control: RefCell::new(None),

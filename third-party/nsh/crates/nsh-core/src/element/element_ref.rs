@@ -45,7 +45,18 @@ pub struct ElementRef(Kept<Target>);
 pub(crate) struct Target {
     /// The node, 0 while none carries it.
     node: Cell<NodeId>,
+    scoped_keys: Cell<u32>,
     executor: Weak<Executor>,
+}
+
+impl Target {
+    fn notify_keys(&self) {
+        if self.scoped_keys.get() > 0
+            && let Some(executor) = self.executor.upgrade()
+        {
+            executor.keys.borrow_mut().changed = true;
+        }
+    }
 }
 
 /// What the element carrying a ref holds, to tell the ref where it is.
@@ -53,14 +64,33 @@ pub(crate) struct Target {
 pub(crate) struct RefTarget(Rc<Target>);
 
 impl RefTarget {
+    pub(crate) fn node(&self) -> Option<NodeId> {
+        Some(self.0.node.get()).filter(|&n| n != 0)
+    }
+
+    pub(crate) fn watch_keys(&self) {
+        self.0
+            .scoped_keys
+            .set(self.0.scoped_keys.get().saturating_add(1));
+    }
+
+    pub(crate) fn unwatch_keys(&self) {
+        self.0
+            .scoped_keys
+            .set(self.0.scoped_keys.get().saturating_sub(1));
+    }
+
     pub(crate) fn attach(&self, node: NodeId) {
-        self.0.node.set(node);
+        if self.0.node.replace(node) != node {
+            self.0.notify_keys();
+        }
     }
 
     /// Forgets `node` when it is the one carrying the ref.
     pub(crate) fn detach(&self, node: NodeId) {
         if self.0.node.get() == node {
             self.0.node.set(0);
+            self.0.notify_keys();
         }
     }
 }
@@ -97,6 +127,7 @@ impl FollowTarget {
     pub(crate) fn of_node(node: NodeId) -> Self {
         Self(RefTarget(Rc::new(Target {
             node: Cell::new(node),
+            scoped_keys: Cell::new(0),
             executor: Weak::new(),
         })))
     }
@@ -106,6 +137,7 @@ impl ElementRef {
     pub(crate) fn new(executor: &Rc<Executor>) -> Self {
         Self(Kept::new(Rc::new(Target {
             node: Cell::new(0),
+            scoped_keys: Cell::new(0),
             executor: Rc::downgrade(executor),
         })))
     }
