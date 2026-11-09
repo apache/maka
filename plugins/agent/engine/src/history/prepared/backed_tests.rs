@@ -85,6 +85,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
             &cancellation,
             resources,
             0,
+            None,
         )
         .await
         .unwrap();
@@ -104,6 +105,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
             &cancellation,
             resources,
             0,
+            None,
         )
         .await
         .unwrap();

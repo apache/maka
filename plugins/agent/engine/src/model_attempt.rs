@@ -164,27 +164,31 @@ pub(super) async fn prompt_with_resources(
     purpose: ModelPurpose,
     instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
+    let target = crate::history::ReplayTarget {
+        model: settings.provider.model.clone(),
+        codex: settings.codex.cloned(),
+        operation: settings.operation,
+    };
     if let Some(producer) = source
         .baseline
         .as_ref()
         .and_then(|baseline| baseline.native())
     {
-        let model_id = &producer.model_id;
-        let producer = &producer.provenance;
-        if settings.codex.is_none() || model_id != &settings.provider.model {
+        let allowed = target.codex.as_ref().is_some_and(|codex| {
+            maka_agent_facts::context::codex_replay_allowed(
+                producer.model_id == target.model,
+                producer
+                    .provenance
+                    .compatibility
+                    .as_ref()
+                    .zip(codex.compatibility.as_ref())
+                    .map(|(old, new)| old.comp_hash == new.comp_hash),
+                target.operation,
+            )
+        });
+        if !allowed {
             return Err(RunError::InvalidInput(
-                "native Codex checkpoint requires its producing model".into(),
-            ));
-        }
-        if settings.operation == maka_agent_facts::context::ModelOperation::Inference
-            && producer
-                .compatibility
-                .as_ref()
-                .zip(settings.codex.and_then(|c| c.compatibility.as_ref()))
-                .is_some_and(|(old, new)| old.comp_hash != new.comp_hash)
-        {
-            return Err(RunError::InvalidInput(
-                "native Codex checkpoint requires re-compaction after compatibility changed".into(),
+                "native Codex checkpoint requires compatible ChatGPT state or re-compaction".into(),
             ));
         }
     }
@@ -217,6 +221,7 @@ pub(super) async fn prompt_with_resources(
         cancellation,
         resources,
         overlay_bytes,
+        Some(target),
     )
     .await?;
     let mut prompt = PreparedPrompt::from_history(body);

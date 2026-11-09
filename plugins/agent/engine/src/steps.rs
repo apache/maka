@@ -215,6 +215,7 @@ async fn run_from(
             )
             .await?;
             tools.set_steering(steering.signal.clone());
+            let mut retry_snapshot = None;
             let (initial_high_water, high_water, result, request_tools, surface) =
                 if let Some(consumption) = retry.take() {
                     let plan = consumption.plan.clone();
@@ -234,10 +235,9 @@ async fn run_from(
                     .await?;
                     let initial_high_water = source.evidence.high_water;
                     let prior_unknown = source.capture.prior_unknown;
-                    *input = frozen_input;
                     let (high_water, result) = model_attempt::execute_frozen_main(
                         inner,
-                        input,
+                        &frozen_input,
                         source,
                         prompt,
                         model_attempt::Main {
@@ -251,6 +251,7 @@ async fn run_from(
                         cancellation,
                     )
                     .await;
+                    retry_snapshot = Some(frozen_input);
                     (
                         initial_high_water,
                         high_water,
@@ -488,12 +489,13 @@ async fn run_from(
                             "model retry cannot park while execution remains active".into(),
                         ));
                     }
+                    let step = retry_snapshot.as_ref().unwrap_or(input);
                     let point = ModelResumePoint {
                         opening_id: opening_id.to_owned(),
-                        context: input.context.clone(),
-                        provider_options: input.provider_options.clone(),
-                        main_output_limit: input.main_output_limit,
-                        supports_vision: input.supports_vision,
+                        context: step.context.clone(),
+                        provider_options: step.provider_options.clone(),
+                        main_output_limit: step.main_output_limit,
+                        supports_vision: step.supports_vision,
                         tools: tools.checkpoint()?,
                         compaction,
                         replay_base: continuation_base,
@@ -544,12 +546,13 @@ async fn run_from(
                 Err(error) => return Err(error),
             };
             if !output.approvals.is_empty() {
+                let step = retry_snapshot.as_ref().unwrap_or(input);
                 let resume = ModelResumePoint {
                     opening_id: opening_id.to_owned(),
-                    context: input.context.clone(),
-                    provider_options: input.provider_options.clone(),
-                    main_output_limit: input.main_output_limit,
-                    supports_vision: input.supports_vision,
+                    context: step.context.clone(),
+                    provider_options: step.provider_options.clone(),
+                    main_output_limit: step.main_output_limit,
+                    supports_vision: step.supports_vision,
                     tools: tools.checkpoint()?,
                     compaction: CompactionBudget::Available,
                     replay_base: continuation_base,
