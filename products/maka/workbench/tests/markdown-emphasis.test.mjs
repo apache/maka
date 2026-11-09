@@ -192,22 +192,36 @@ test('every pair on every line is handled, and the result is stable', () => {
   assert.equal(closeCjkEmphasis(once), once);
 });
 
-test('indented code in a quote and raw HTML blocks are never rewritten', () => {
+test('indented code inside mixed list and quote containers is never rewritten', () => {
   for (const text of [
     '>     first line\n>     **原文：**继续',
     '> >     **原文：**继续',
     '- >     **原文：**继续',
+    '1. >     **原文：**继续',
     '1. > >     **原文：**继续',
+    '> -     **原文：**继续',
+    '- >\t\t**原文：**继续',
+  ])
+    assert.equal(closeCjkEmphasis(text), text, text);
+  for (const prefix of ['> ', '- > ', '1. > > ', '> - '])
+    assert.equal(closeCjkEmphasis(`${prefix}**结论：**继续`), `${prefix}**结论**：继续`);
+});
+
+test('raw HTML block bodies stay byte-identical, including across blank lines', () => {
+  for (const text of [
     '<pre>\n\n**原文：**继续\n</pre>',
     '<script>\n\n**原文：**继续\n</script>',
-    '<div>\n**原文：**继续\n</div>',
+    '<style>\n\n**原文：**继续\n</style>',
+    '<textarea>\n\n**原文：**继续\n</textarea>',
     '<!--\n\n**原文：**继续\n-->',
-    '<?xml version="1.0"?>\n\n**原文：**继续\n?>',
-    '<!DOCTYPE html>\n\n**原文：**继续',
+    '<?instruction\n\n**原文：**继续\n?>',
+    '<!DOCTYPE\n\n**原文：**继续\n>',
     '<![CDATA[\n\n**原文：**继续\n]]>',
+    '<div>\n**原文：**继续\n</div>',
+    '</div>\n**原文：**继续',
+    '<custom-tag>\n**原文：**继续\n</custom-tag>',
+    '- > <custom-tag>\n  > **原文：**继续\n  > </custom-tag>',
     '**甲：**乙\n\n<pre>\ncode\n</pre>',
   ])
     assert.equal(closeCjkEmphasis(text), text, text);
-  // An ordinary quote is still fixed.
-  assert.equal(closeCjkEmphasis('> **结论：**短线观望为主'), '> **结论**：短线观望为主');
 });
