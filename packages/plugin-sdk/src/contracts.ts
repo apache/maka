@@ -13036,6 +13036,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'session',
                       },
                       execution: {
@@ -14385,6 +14402,23 @@ export const contracts: {
                 description:
                   'Trusted producer attribution, preserved independently of editable content.',
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -20284,6 +20318,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'session',
                       },
                       execution: {
@@ -21157,6 +21208,23 @@ export const contracts: {
                 description:
                   'Trusted producer attribution, preserved independently of editable content.',
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -26198,6 +26266,23 @@ export const contracts: {
                 description:
                   'Trusted producer attribution, preserved independently of editable content.',
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -32474,6 +32559,18 @@ export const contracts: {
             title: 'AgentSend',
             type: 'object',
             properties: {
+              onComplete: {
+                description:
+                  'Best-effort notification to the native model caller when this message finishes,\nfails or is cancelled. When registration is confirmed, the caller can yield\nrather than poll. The watch and task admission commit together;\ncheck the completion field of the send receipt.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentOnComplete',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               delivery: {
                 description:
                   'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
@@ -32522,6 +32619,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['sessionId', 'message'],
             $defs: {
+              AgentOnComplete: {
+                type: 'string',
+                enum: ['notify_caller'],
+              },
               AgentSendDelivery: {
                 oneOf: [
                   {
@@ -32685,6 +32786,16 @@ export const contracts: {
                   messageId: {
                     type: 'string',
                   },
+                  completion: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCompletionRegistration',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'runId', 'messageId'],
@@ -32706,6 +32817,16 @@ export const contracts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  completion: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCompletionRegistration',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
@@ -32881,6 +33002,22 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              AgentCompletionRegistration: {
+                oneOf: [
+                  {
+                    description:
+                      'The notification watch was persisted; delivery remains best effort.',
+                    type: 'string',
+                    const: 'registered',
+                  },
+                  {
+                    description:
+                      'The task was admitted but notification registration could not be confirmed.\nInspect the returned message ID if needed; do not resend the task.',
+                    type: 'string',
+                    const: 'unconfirmed',
+                  },
+                ],
               },
             },
           },
@@ -35255,6 +35392,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'session',
                       },
                       execution: {
@@ -37095,6 +37249,23 @@ export const contracts: {
                 description:
                   'Trusted producer attribution, preserved independently of editable content.',
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_completion',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
                   {
                     type: 'object',
                     properties: {

@@ -666,6 +666,12 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Best-effort notification to the native model caller when this message finishes,
+    /// fails or is cancelled. When registration is confirmed, the caller can yield
+    /// rather than poll. The watch and task admission commit together;
+    /// check the completion field of the send receipt.
+    #[serde(default)]
+    pub on_complete: Option<OnComplete>,
     /// Defaults to steer. Omit or use steer for updates to ongoing work;
     /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
@@ -681,6 +687,12 @@ pub struct Send {
     pub session_id: String,
 
     pub message: String,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentOnComplete")]
+pub enum OnComplete {
+    NotifyCaller,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -843,15 +855,29 @@ pub enum SendResult {
         session_id: String,
         run_id: maka_agent_facts::durable::RunId,
         message_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion: Option<CompletionRegistration>,
     },
     Queued {
         session_id: String,
         message_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion: Option<CompletionRegistration>,
     },
     /// The caller may not send to this conversation: the Bot sends only to the
     /// workers it created. Nothing was admitted.
     NotYourWorker { session_id: String },
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentCompletionRegistration")]
+pub enum CompletionRegistration {
+    /// The notification watch was persisted; delivery remains best effort.
+    Registered,
+    /// The task was admitted but notification registration could not be confirmed.
+    /// Inspect the returned message ID if needed; do not resend the task.
+    Unconfirmed,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]

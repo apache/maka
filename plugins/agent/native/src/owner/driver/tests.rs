@@ -3233,3 +3233,202 @@ mod replay_origin_regressions {
 }
 
 mod tool_history;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_watch_retires_when_original_caller_is_stopped() {
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let source = rig.driver.as_ref().unwrap().access.execution().clone();
+        let route = owner.return_route(&source).await?;
+        let model = route.binding_model();
+        let request = json!({
+            "source": source,
+            "model": {"connectionId": model.connection_id, "modelId": model.model},
+            "thinking_level": route.thinking_level(),
+            "workspace": route.workspace,
+            "binding": route.binding,
+        });
+        let worker = format!("{}missing-worker", owner.prefix);
+        owner
+            .store
+            .register_message_completion(&owner.prefix, &worker, "task", &session, request)
+            .await?;
+        // A live caller keeps the notification pending, even if its worker is gone.
+        owner.deliver_completions().await?;
+        assert_eq!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .len(),
+            1
+        );
+        rig.append(
+            vec![Fact::StopRequested {
+                diagnostic: "user_requested_stop".into(),
+            }],
+            vec![],
+        )
+        .await?;
+        owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
+        assert!(
+            owner
+                .durable
+                .queue()
+                .read(session)
+                .await?
+                .entries
+                .is_empty()
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_notification_survives_pending_message_edit() {
+    use maka_agent_facts::message::{MessageOrigin, RootSourceMessage};
+    use maka_agent_state::queue::{QueueCommand, QueueEdit};
+
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let _producer = owner.producer_gate.lock().await;
+        let source = rig.driver.as_ref().unwrap().access.execution().clone();
+        let route = owner.return_route(&source).await?;
+        let model = route.binding_model();
+        let request = json!({
+            "source": source,
+            "model": {"connectionId": model.connection_id, "modelId": model.model},
+            "thinking_level": route.thinking_level(),
+            "workspace": route.workspace,
+            "binding": route.binding,
+        });
+        let worker = format!("{}missing-worker", owner.prefix);
+        owner
+            .store
+            .register_message_completion(&owner.prefix, &worker, "task", &session, request)
+            .await?;
+        let notification = owner
+            .prepare_notification(
+                &source,
+                &route,
+                "completion-edit",
+                |_| "Task finished.".into(),
+                MessageOrigin::SessionCompletion {
+                    session_id: worker,
+                    message_id: "task".into(),
+                },
+            )
+            .await?
+            .ok_or("notification not prepared")?;
+        let entry = owner
+            .store
+            .message_completions(&owner.prefix, None)
+            .await?
+            .remove(0);
+        owner
+            .store
+            .settle_message_completion(
+                &owner.prefix,
+                &entry.key,
+                Some(serde_json::to_value(&notification)?),
+            )
+            .await?;
+
+        // Resume settlement from the frozen subscription after a legal queue edit.
+        let queue = owner.durable.queue();
+        let mut edited_source: RootSourceMessage = serde_json::from_slice(
+            &queue
+                .content(
+                    session.clone(),
+                    notification.id.clone(),
+                    notification.source.clone(),
+                )
+                .await?,
+        )?;
+        edited_source.unprepared_content.text = "Read the result and summarize it.".into();
+        edited_source.message.content = edited_source.unprepared_content.clone();
+        let mut input: RunInput = serde_json::from_slice(
+            &queue
+                .content(
+                    session.clone(),
+                    notification.id.clone(),
+                    notification.spec.input.clone(),
+                )
+                .await?,
+        )?;
+        let RunInput::Message {
+            content,
+            source_messages,
+            ..
+        } = &mut input
+        else {
+            return Err("notification is not a message".into());
+        };
+        *content = edited_source.message.content.clone();
+        *source_messages = vec![edited_source.clone()];
+        let source_blob = ContentBlob::json(&edited_source)?;
+        let input_blob = ContentBlob::json(&input)?;
+        let mut edited = notification.clone();
+        edited.source = source_blob.reference().clone();
+        edited.spec.input = input_blob.reference().clone();
+        queue
+            .execute(
+                session.clone(),
+                QueueCommand {
+                    id: FactId::try_from(Uuid::new_v4()).unwrap(),
+                    at: at(),
+                    expected_revision: queue.read(session.clone()).await?.revision,
+                    edit: QueueEdit::Update {
+                        request: Box::new(edited.clone()),
+                    },
+                },
+                vec![source_blob, input_blob],
+            )
+            .await?;
+
+        let mut wrong_identity = notification.clone();
+        wrong_identity.message_id = "another-message".into();
+        assert_eq!(
+            owner.admit_notification(&wrong_identity).await.unwrap_err(),
+            "agent_message_identity_changed"
+        );
+        assert!(owner.admit_notification(&notification).await?);
+        owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
+        let pending = queue.read(session).await?;
+        assert_eq!(
+            pending.entries.len(),
+            1,
+            "settlement must not enqueue another notification"
+        );
+        assert_eq!(pending.entries[0].request, edited);
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}

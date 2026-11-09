@@ -194,6 +194,26 @@ impl QueueStore {
             work_fence: Some(Arc::new(fence)),
         })
     }
+    pub fn prepare_with<S: Statement>(
+        &self,
+        session: String,
+        command: QueueCommand,
+        contents: Vec<ContentBlob>,
+        original: Option<RunId>,
+        fence: Option<SessionWorkFence>,
+        extra: S,
+    ) -> maka_event_log::root_store::DataChange {
+        self.data.prepare(WithExtra {
+            queue: Write {
+                session,
+                command,
+                contents,
+                admission_fence: original,
+                work_fence: fence.map(Arc::new),
+            },
+            extra,
+        })
+    }
     pub async fn execute(
         &self,
         session: String,
@@ -355,5 +375,40 @@ impl Query for Ready {
     type Output = Vec<ReadyEntry>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::ready(c, &self.0, self.1.as_ref(), self.2)
+    }
+}
+
+struct WithExtra<S> {
+    queue: Write,
+    extra: S,
+}
+impl<S: Statement> Statement for WithExtra<S> {
+    type Value = (QueueCommit, S::Value);
+    type Output = QueueCommit;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.queue.retain();
+        retained.extend(self.extra.retain());
+        retained
+    }
+    fn prepare(mut self) -> Result<Self, StoreError> {
+        self.extra = self.extra.prepare()?;
+        Ok(self)
+    }
+    fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let queue = self.queue.execute(c)?;
+        let extra = self.extra.execute(c)?;
+        Ok(Prepared {
+            value: (queue.value, extra.value),
+            changed: queue.changed || extra.changed,
+            notification: queue.notification.combine(extra.notification),
+        })
+    }
+    fn committed((queue, extra): Self::Value) -> Self::Output {
+        S::committed(extra);
+        queue
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        Write::isolated_rejection(error)
     }
 }

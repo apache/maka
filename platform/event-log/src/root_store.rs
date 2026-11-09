@@ -27,6 +27,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub mod completions;
 pub(crate) mod creation;
 mod data;
 pub use data::{DataChange, DataWriter};

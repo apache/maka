@@ -31,6 +31,10 @@ use std::collections::HashSet;
     deny_unknown_fields
 )]
 pub enum MessageOrigin {
+    SessionCompletion {
+        session_id: String,
+        message_id: String,
+    },
     Session {
         execution: crate::durable::ExecutionIdentity,
     },
@@ -63,6 +67,13 @@ impl MessageOrigin {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::SessionCompletion {
+                session_id,
+                message_id,
+            } => {
+                crate::interaction::entity_id(session_id)?;
+                crate::interaction::entity_id(message_id)
+            }
             Self::Session { execution } => {
                 crate::interaction::entity_id(&execution.session_id)?;
                 crate::interaction::entity_id(&execution.turn_id)?;
