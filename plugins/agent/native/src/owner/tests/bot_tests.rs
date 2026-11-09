@@ -1236,29 +1236,59 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
             },
         )
         .await;
+        use maka_agent_facts::execution::ThinkingLevel::{High, Low, Xhigh};
         selection::edit(&f, |changes| {
             changes
                 .enabled_model_ids
                 .as_mut()
                 .unwrap()
                 .push("worker-requested-model".into());
+            changes.model_overrides = Patch::Set(BTreeMap::from([
+                (
+                    "fixture-model".into(),
+                    ModelOverride {
+                        thinking_levels: Some(vec![Low, High]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "worker-requested-model".into(),
+                    ModelOverride {
+                        thinking_levels: Some(vec![Xhigh]),
+                        ..Default::default()
+                    },
+                ),
+            ]));
         })
         .await;
         let admitted = f.selection().await;
-        let mut requested = admitted.clone();
-        requested.model_id = "worker-requested-model".into();
-        let requested_backend = model_backend(&requested);
+        let requested_backend = crate::contract::BackendPreference::Model {
+            connection_id: admitted.connection_id.clone(),
+            model_id: "worker-requested-model".into(),
+            thinking_level: Some(Xhigh),
+        };
+        let stale_foreign_backend = crate::contract::BackendPreference::Model {
+            connection_id: admitted.connection_id.clone(),
+            model_id: "disabled-foreign-model".into(),
+            thinking_level: Some(Xhigh),
+        };
+        let same_model_effort = crate::contract::BackendPreference::Model {
+            connection_id: admitted.connection_id.clone(),
+            model_id: admitted.model_id.clone(),
+            thinking_level: Some(Low),
+        };
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
         let ordinary = f.create("The user's own conversation").await;
         f.send(&bot).await.unwrap();
 
-        // The Bot creates a worker in its own workspace.
+        // The Bot creates a worker in its own workspace; a discarded foreign native
+        // model neither blocks admission nor leaks its source-specific thinking level.
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         service_tools::named_tool_response(
             &mut socket,
             "SessionCreate",
-            json!({"title":"Worker","labels":[],"backend":requested_backend,"workspace":{"kind":"session","sessionId":bot}}),
+            json!({"title":"Worker","labels":[],"backend":stale_foreign_backend,"workspace":{"kind":"session","sessionId":bot}}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1290,16 +1320,27 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         assert!(last_tool_result(&sent).contains("not_your_worker"), "{}", last_tool_result(&sent));
 
         // Explicit tools are not intersected with the Bot's own list: the Bot does
-        // not hold SessionChange, its worker may.
+        // not hold SessionChange, its worker may. Thinking effort on the Bot's own
+        // model is retained.
         service_tools::named_tool_response(
             &mut socket,
             "SessionCreate",
-            json!({"title":"Narrow","labels":[],"tools":["SessionChange"],"workspace":{"kind":"session","sessionId":bot}}),
+            json!({"title":"Narrow","labels":[],"backend":same_model_effort,"tools":["SessionChange"],"workspace":{"kind":"session","sessionId":bot}}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
-        assert!(last_tool_result(&sent).contains("SessionChange"), "{}", last_tool_result(&sent));
+        let narrow: Value = serde_json::from_str(&last_tool_result(&sent)).unwrap();
+        let narrow = match narrow {
+            Value::String(text) => serde_json::from_str(&text).unwrap(),
+            other => other,
+        };
+        assert_eq!(narrow["session"]["tools"], json!(["SessionChange"]), "{narrow}");
+        assert_eq!(
+            narrow["session"]["backend"],
+            serde_json::to_value(&same_model_effort).unwrap(),
+            "{narrow}"
+        );
         // SendUser and sleep still follow Bot identity alone.
         service_tools::named_tool_response(
             &mut socket,
@@ -1329,6 +1370,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
             } else {
                 assert!(sent["messages"].to_string().contains("Do the task"));
                 assert_eq!(sent["model"], admitted.model_id);
+                assert_eq!(sent["reasoning_effort"], Value::Null);
                 worker_socket = Some(socket);
             }
         }
@@ -1364,6 +1406,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
         assert_eq!(sent["model"], admitted.model_id);
+        assert_eq!(sent["reasoning_effort"], Value::Null);
         assert!(sent["messages"].to_string().contains("Continue directly"));
 
         let changed = f.mutation(
@@ -1373,6 +1416,24 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         assert_eq!(changed["session"]["backend"], serde_json::to_value(&requested_backend).unwrap());
         response(&mut socket).await;
         idle(&f, &worker).await;
+
+        let narrow_id = narrow["session"]["id"].as_str().unwrap();
+        let narrow_send = f
+            .mutation(
+                2,
+                "send",
+                json!({"sessionId":narrow_id,"message":"Use saved effort"}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(narrow_send["kind"], "started", "{narrow_send}");
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert_eq!(sent["model"], admitted.model_id);
+        assert_eq!(sent["reasoning_effort"], "low");
+        response(&mut socket).await;
+        idle(&f, narrow_id).await;
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
