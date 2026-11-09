@@ -221,6 +221,7 @@ impl Saved {
     }
     pub fn detail(&self) -> ScheduledDetail {
         ScheduledDetail {
+            investigation: None,
             revision: self.revision,
             task: self.plan.task.clone(),
             timezone: self.plan.timezone.clone(),

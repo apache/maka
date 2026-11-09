@@ -63,6 +63,9 @@ pub(crate) struct Scheduler {
     pub(super) investigation: std::sync::RwLock<Option<Invocation>>,
 }
 impl Scheduler {
+    pub(super) fn notify_status_changed(&self) {
+        self.changed.send_modify(|_| {});
+    }
     pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         Self {
             storage: Arc::new(maka_host_runtime::storage::Storage::new(
@@ -133,10 +136,22 @@ impl Owner {
             });
         }
         let catalog = scheduler.load().await?;
+        let discovery_session = match &input {
+            ScheduleRead::Discovery { session_id, .. } => {
+                self.session(session_id).await?;
+                Some(session_id.clone())
+            }
+            _ => None,
+        };
         match input {
             ScheduleRead::List {
                 cursor,
                 expected_revision,
+            }
+            | ScheduleRead::Discovery {
+                cursor,
+                expected_revision,
+                ..
             } => {
                 let revision = catalog.revision.unwrap_or(0);
                 if expected_revision.is_some_and(|expected| expected != revision) {
@@ -148,6 +163,9 @@ impl Owner {
                 let mut tasks = Vec::new();
                 let mut next_cursor = None;
                 for (id, saved) in &catalog.plans {
+                    if discovery_session.as_ref().is_some_and(|session| !matches!(
+                        &saved.plan.task.effect, ScheduledEffect::Discovery { target, .. } if &target.session_id == session
+                    )) { continue; }
                     if cursor.as_ref().is_some_and(|after| id <= after) {
                         continue;
                     }
@@ -163,12 +181,16 @@ impl Owner {
                     next_cursor,
                 })
             }
-            ScheduleRead::Get { task_id } => Ok(Schedules::Task {
-                detail: catalog
+            ScheduleRead::Get { task_id } => {
+                let mut detail = catalog
                     .plans
                     .get(&task_id)
-                    .map(|saved| Box::new(saved.detail())),
-            }),
+                    .map(|saved| Box::new(saved.detail()));
+                if let Some(detail) = &mut detail {
+                    detail.investigation = self.scheduler.discovery_status(&task_id).await?;
+                }
+                Ok(Schedules::Task { detail })
+            }
             ScheduleRead::Receipt { .. } => unreachable!(),
         }
     }

@@ -267,6 +267,34 @@ impl Bot {
             .1
             .is_some_and(|call| call.message_id == message))
     }
+    pub(super) async fn outbox_message(
+        &self,
+        session: &str,
+        sequence: u64,
+    ) -> Result<Option<BotMessage>, String> {
+        self.read::<BotMessage>(&message_key(session, sequence))
+            .await
+            .map(|(_, message)| message)
+            .map_err(|e| e.to_string())
+    }
+    async fn published_discovery(
+        &self,
+        session: &str,
+        message: &str,
+    ) -> Result<Option<DiscoveryPublication>, String> {
+        let Some(call) = self
+            .read::<Call>(&call_key(session, message))
+            .await
+            .map_err(|e| e.to_string())?
+            .1
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .outbox_message(session, call.first)
+            .await?
+            .and_then(|message| message.discovery))
+    }
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         vec![
             ToolRegistration {
@@ -331,6 +359,7 @@ impl Bot {
     /// Append one `SendUser` call atomically: its call record, its messages and the
     /// advanced head commit together. A retried call with the same id and content is
     /// a duplicate; the same id with different content is refused.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn append(
         &self,
         session: &str,
@@ -339,6 +368,7 @@ impl Bot {
         fingerprint: &str,
         texts: &[String],
         at: i64,
+        discovery: Option<DiscoveryPublication>,
     ) -> Result<Appended, ToolError> {
         loop {
             if let (_, Some(call)) = self
@@ -389,6 +419,7 @@ impl Bot {
                         message_key(session, sequence),
                         None,
                         &BotMessage {
+                            discovery: discovery.clone(),
                             sequence,
                             message_id: message_id.into(),
                             index: index as u32,
@@ -630,10 +661,13 @@ impl ToolPreparer for Bot {
                             .check_bot_invocation(&context)
                             .await
                             .map_err(ToolError::Failed)?;
-                        if let Some(decision) = &discovery
-                            && !captured.bot.has_message(&context.invocation.session_id, &message_id).await.map_err(ToolError::Failed)? {
-                            captured.validate_discovery_decision(&context, &decision.record, &decision.reason).await?;
-                        }
+                        let publication = if let Some(decision) = &discovery {
+                            if captured.bot.has_message(&context.invocation.session_id, &message_id).await.map_err(ToolError::Failed)? {
+                                captured.bot.published_discovery(&context.invocation.session_id, &message_id).await.map_err(ToolError::Failed)?
+                            } else {
+                                Some(captured.validate_discovery_decision(&context, &decision.record, &decision.reason).await?)
+                            }
+                        } else { None };
                         let appended = captured
                             .bot
                             .append(
@@ -643,6 +677,7 @@ impl ToolPreparer for Bot {
                                 &fingerprint,
                                 &texts,
                                 now() as i64,
+                                publication,
                             )
                             .await?;
                         let (count, duplicate) = match appended {

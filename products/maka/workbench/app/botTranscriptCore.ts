@@ -18,6 +18,8 @@
  */
 
 /** What the Bot sent with `SendUser`, and what is known about each Turn's replies. */
+import type { ServiceMethods, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+
 type Query = (
   endpoint: 'agent',
   method: 'botOutbox',
@@ -38,6 +40,7 @@ type Subscribe = (
 ) => Promise<{ next(): Promise<any | null>; close(): Promise<void> }>;
 export type BotHost = { query: Query; subscribe: Subscribe };
 export type BotTranscriptMessage = {
+  discovery?: ServiceMethods['agent']['botOutbox']['output']['messages'][number]['discovery'];
   sequence: number;
   messageId: string;
   index: number;
@@ -45,6 +48,22 @@ export type BotTranscriptMessage = {
   at: number;
   turnId?: string;
 };
+
+export function quoteBotMessage(
+  message: BotTranscriptMessage,
+  sessionId: string,
+  name: string,
+  text: string,
+  at: number,
+): QuoteRef {
+  return {
+    text,
+    label: name,
+    sourceMessageId: `bot/${message.sequence}`,
+    sourceTurnId: message.turnId,
+    source: { sessionId, sessionName: name, capturedAt: at, truncated: false },
+  };
+}
 
 /**
  * What the Bot deliberately told its user, grouped by the Turn that sent it. Only the

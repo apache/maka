@@ -116,3 +116,9 @@ Open **Settings → External agents**, or use **External agents** in the model p
 These CLIs retain native tools, accounts and full-access permissions outside Maka’s sandbox. Maka Host tools still use their existing authorization and receipts. Install, initialize and sign in using each native CLI, then **Refresh**. There is no SDK installer or automatic update. Claude runs in an interactive PTY, never print mode.
 
 Expand **Details** for installation, authentication and model diagnostics. Native protocol model discovery shares a bounded cache with single-model validation. An unavailable external runtime does not remove native model choices. Claude uses its native configured default when discovery is unsupported.
+
+## Proactive discovery
+
+Open **Proactive discovery** in the current Bot header to approve a periodic, read-only investigation. The panel shows the Bot workspace and selected model before approval; you can edit the direction and interval, pause or resume, or check once. It shows the active investigation and recent outcome, with links to the original worker conversation. Changing the source boundary requires fresh approval through the existing Scheduler.
+
+Published findings carry their investigation identity in the Bot outbox. Select text in a Bot reply and choose **Quote selection** from its context menu to attach it to the composer. Quotes survive draft reload, queueing and send recovery; feedback can resolve a single quoted finding without asking the model to reconstruct its record ID. The selected model is stored with the plan; changing the chat model alone does not change an existing plan.

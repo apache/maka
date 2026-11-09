@@ -328,6 +328,10 @@ export type RuntimeProtocol =
   | OperationReply
   | ResourceMetadata;
 /**
+ * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
+ */
+export type CaptureTime = number;
+/**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
 export type InstanceId = string[];
@@ -2221,6 +2225,12 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
@@ -2253,6 +2263,7 @@ export type AgentSchedules =
       result?: AgentScheduleResult | null;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
+export type AgentInvestigationPhase = 'investigating' | 'delivering' | 'stopping';
 export type Intent = {
   kind: 'text';
   body: string;
@@ -3101,10 +3112,6 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
-/**
- * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
- */
-export type CaptureTime = number;
 export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
@@ -4532,6 +4539,7 @@ export interface ClientDraft {
   revision: number;
   text: string;
   attachments: ClientDraftAttachment[];
+  quotes?: QuoteRef[];
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -4542,11 +4550,28 @@ export interface ClientDraftAttachment {
   mimeType: string;
   bytes: number;
 }
+export interface QuoteRef {
+  sourceMessageId?: string | null;
+  text: string;
+  label?: string | null;
+  sourceTurnId?: string | null;
+  source?: SessionQuoteSource | null;
+}
+/**
+ * Display provenance of an immutable excerpt, never authority to read its source.
+ */
+export interface SessionQuoteSource {
+  sessionId: string;
+  sessionName: string;
+  capturedAt: CaptureTime;
+  truncated: boolean;
+}
 /**
  * One complete editor revision, including the upload receipts it has handled.
  */
 export interface ClientDraftEdit {
   text: string;
+  quotes?: QuoteRef[];
   attachments?: ClientDraftAttachment[];
   settledUploads?: string[];
 }
@@ -6754,12 +6779,18 @@ export interface AgentScheduledSummary {
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
+  investigation?: AgentScheduledInvestigation | null;
   revision: number;
   task: Task;
   timezone: string;
   misfire: Misfire;
   approved: boolean;
   pendingFire?: string | null;
+}
+export interface AgentScheduledInvestigation {
+  sessionId: string;
+  turnId: string;
+  phase: AgentInvestigationPhase;
 }
 export interface Task {
   id: string;
@@ -7198,21 +7229,6 @@ export interface AgentSend {
   backend?: AgentBackendPreference | null;
   sessionId: string;
   message: string;
-}
-export interface QuoteRef {
-  text: string;
-  label?: string | null;
-  sourceTurnId?: string | null;
-  source?: SessionQuoteSource | null;
-}
-/**
- * Display provenance of an immutable excerpt, never authority to read its source.
- */
-export interface SessionQuoteSource {
-  sessionId: string;
-  sessionName: string;
-  capturedAt: CaptureTime;
-  truncated: boolean;
 }
 export interface AgentStop {
   sessionId: string;

@@ -134,7 +134,8 @@ enum Input {
     /// Bot only: attach user feedback to a finding. Omit message_id only when this
     /// Turn began with one user message. For steering use its exact message ID.
     Feedback {
-        record: String,
+        /// Omit when one published discovery is quoted. Its stored outbox identity resolves the record.
+        record: Option<String>,
         note: String,
         message_id: Option<String>,
     },
@@ -401,7 +402,7 @@ impl Owner {
         context: &ToolCallContext,
         record: &str,
         reason: &str,
-    ) -> Result<(), ToolError> {
+    ) -> Result<DiscoveryPublication, ToolError> {
         text(reason).map_err(ToolError::Failed)?;
         let entry = self
             .discovery_memory(
@@ -411,10 +412,16 @@ impl Owner {
                 },
             )
             .await?;
-        if entry["content"]["kind"] != "investigation" {
+        let entry: Entry =
+            serde_json::from_value(entry).map_err(|e| ToolError::Failed(e.to_string()))?;
+        if !matches!(entry.content, Content::Investigation { .. }) {
             return Err(ToolError::Failed("reference_original_investigation".into()));
         }
-        Ok(())
+        Ok(DiscoveryPublication {
+            record_id: entry.id,
+            worker_session_id: entry.source.session_id,
+            worker_turn_id: entry.source.turn_id,
+        })
     }
     pub(in crate::owner) async fn record_discovery_decision(
         &self,
@@ -705,6 +712,40 @@ impl Owner {
                             ));
                         }
                         let original = &proof.source().unprepared_content;
+                        let mut linked = std::collections::BTreeSet::new();
+                        for quote in original.quotes.iter().flatten() {
+                            if quote.source.as_ref().is_some_and(|source| {
+                                source.session_id == context.invocation.session_id
+                            }) && let Some(sequence) = quote
+                                .source_message_id
+                                .as_deref()
+                                .and_then(|id| id.strip_prefix("bot/"))
+                                .and_then(|id| id.parse::<u64>().ok())
+                            {
+                                let sent = self
+                                    .bot
+                                    .outbox_message(&context.invocation.session_id, sequence)
+                                    .await
+                                    .map_err(fail)?
+                                    .ok_or_else(|| fail("quoted_bot_message_unavailable".into()))?;
+                                if sent.turn_id != quote.source_turn_id {
+                                    return Err(fail("quoted_bot_message_changed".into()));
+                                }
+                                if let Some(discovery) = sent.discovery {
+                                    linked.insert(discovery.record_id);
+                                }
+                            }
+                        }
+                        let record = match record {
+                            Some(record) if linked.is_empty() || linked.contains(&record) => record,
+                            Some(_) => {
+                                return Err(fail("feedback_does_not_match_quoted_discovery".into()));
+                            }
+                            None if linked.len() == 1 => {
+                                linked.into_iter().next().expect("one linked finding")
+                            }
+                            None => return Err(fail("choose_original_discovery_record".into())),
+                        };
                         if original.text.trim().is_empty()
                             && original
                                 .quotes

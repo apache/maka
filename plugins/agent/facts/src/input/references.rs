@@ -28,6 +28,8 @@ pub struct DirectoryReference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuoteRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,

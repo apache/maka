@@ -119,6 +119,7 @@ impl Handler for CounterHandler {
                 | "requestSystemPermission"
                 | "create"
                 | "openBot"
+                | "schedule"
                 | "discoverModels"
                 | "loginCredential"
                 | "saveCredential"
@@ -242,6 +243,7 @@ impl Fixture {
                 "fork":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "create":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "openBot":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "schedule":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "discoverModels":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "loginCredential":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "saveCredential":{"mode":"mutation","input":{},"output":{},"resources":{"secret":{"type":{"name":"maka.text.utf8","version":1},"optional":false}}},
@@ -393,6 +395,7 @@ impl Fixture {
                                     "uploadAttachment".into(),
                                     "selectBackend".into(),
                                     "stop".into(),
+                                    "schedule".into(),
                                     "stopComputerApp".into(),
                                     "respond".into(),
                                     "requestSystemPermission".into(),
@@ -834,4 +837,40 @@ async fn bot_read_receipt_uses_shell_control_custody() {
     receipt.close().await.unwrap();
     client.close().await.unwrap();
     fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_controls_keep_service_custody_and_recover_without_resubmission() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let id = Uuid::new_v4();
+        let control = client
+            .control(
+                id,
+                "schedule",
+                json!({"kind":"trigger_now","taskId":"plan","revision":2}),
+            )
+            .await
+            .unwrap();
+        let original = client.operation_for_control(id).await.unwrap();
+        assert!(original.session_id.is_none());
+        control.prepare().await.unwrap();
+        control.confirm().await.unwrap();
+        client.close().await.unwrap();
+        let client = fixture.client().await;
+        assert!(matches!(
+            client.recover(id).await.unwrap().receipt,
+            Receipt::Recorded {
+                outcome: OperationOutcome::Returned { .. },
+                ..
+            }
+        ));
+        assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);
+        assert!(client.pending_controls().await.unwrap().is_empty());
+        client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .unwrap();
 }

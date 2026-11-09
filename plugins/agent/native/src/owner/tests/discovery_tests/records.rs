@@ -105,7 +105,7 @@ async fn discovery_records_survive_restart_and_carry_only_bounded_continuation()
 async fn discovery_records_keep_bot_decisions_and_exact_quote_only_feedback() {
     tokio::time::timeout(Duration::from_secs(120), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let (f, bot) = fixture(&listener, false).await;
+        let (mut f, bot) = fixture(&listener, false).await;
         let task = create(&f, &bot, "A finding").await;
         change(&f, "trigger_now", &task, json!({})).await;
         let (mut socket, _) = next(&listener).await;
@@ -130,11 +130,21 @@ async fn discovery_records_keep_bot_decisions_and_exact_quote_only_feedback() {
         assert_eq!(saved["recorded"], true, "{saved}");
         quiet(&f, &listener, &mut socket, &bot).await;
         let published = f.query("botOutbox", json!({})).await.unwrap()["messages"][0].clone();
-        let quote = json!({"text":format!("这个事项不要再提醒；此前结论已失效。{}", "引用".repeat(2500)),"label":"User correction","sourceTurnId":published["turnId"]});
+        let run = settled(&f, &task).await["task"]["runs"][0].clone();
+        assert_eq!(published["discovery"]["recordId"], record);
+        assert_eq!(published["discovery"]["workerSessionId"], run["sessionId"]);
+        assert_eq!(published["discovery"]["workerTurnId"], page["records"][0]["source"]["turn_id"]);
+        reopen(&mut f).await;
+        assert_eq!(f.query("botOutbox", json!({})).await.unwrap()["messages"][0], published);
+        let quote = json!({"text":format!("这个事项不要再提醒；此前结论已失效。{}", "引用".repeat(2500)),"label":"User correction","sourceTurnId":published["turnId"],
+            "sourceMessageId":format!("bot/{}",published["sequence"]),
+            "source":{"sessionId":bot,"sessionName":"Bot","capturedAt":now(),"truncated":false}});
         f.mutation(2,"send",json!({"sessionId":bot,"message":"","quotes":[quote],
             "delivery":"queue","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = next(&listener).await;
-        let (mut socket, saved) = memory(&listener, &mut socket, json!({"action":"feedback","record":record,"note":"User asks to stop reminders and invalidates the old conclusion."})).await;
+        let (mut socket, rejected) = memory(&listener, &mut socket, json!({"action":"feedback","record":"different-investigation","note":"Wrong target"})).await;
+        assert!(rejected.to_string().contains("feedback_does_not_match_quoted_discovery"), "{rejected}");
+        let (mut socket, saved) = memory(&listener, &mut socket, json!({"action":"feedback","note":"User asks to stop reminders and invalidates the old conclusion."})).await;
         assert_eq!(saved["recorded"], true, "{saved}");
         let feedback = saved["record"].clone();
         let (mut socket, source) = memory(&listener, &mut socket, json!({"action":"feedback_source","record":feedback})).await;

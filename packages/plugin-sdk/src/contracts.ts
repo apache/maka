@@ -322,6 +322,18 @@ export const contracts = {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -354,6 +366,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },
@@ -14288,6 +14316,18 @@ export const contracts = {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -14320,6 +14360,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },
@@ -22443,6 +22499,28 @@ export const contracts = {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -22722,6 +22800,16 @@ export const contracts = {
               AgentScheduledDetail: {
                 type: 'object',
                 properties: {
+                  investigation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInvestigation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -22745,6 +22833,26 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+              },
+              AgentScheduledInvestigation: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  phase: {
+                    $ref: '#/$defs/AgentInvestigationPhase',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'phase'],
+              },
+              AgentInvestigationPhase: {
+                type: 'string',
+                enum: ['investigating', 'delivering', 'stopping'],
               },
               Task: {
                 type: 'object',
@@ -24267,6 +24375,9 @@ export const contracts = {
               QuoteRef: {
                 type: 'object',
                 properties: {
+                  sourceMessageId: {
+                    type: ['string', 'null'],
+                  },
                   text: {
                     type: 'string',
                   },
@@ -28698,6 +28809,18 @@ export const contracts = {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -28730,6 +28853,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },
@@ -29143,6 +29282,28 @@ export const contracts = {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -29422,6 +29583,16 @@ export const contracts = {
               AgentScheduledDetail: {
                 type: 'object',
                 properties: {
+                  investigation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInvestigation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -29445,6 +29616,26 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+              },
+              AgentScheduledInvestigation: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  phase: {
+                    $ref: '#/$defs/AgentInvestigationPhase',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'phase'],
+              },
+              AgentInvestigationPhase: {
+                type: 'string',
+                enum: ['investigating', 'delivering', 'stopping'],
               },
               Task: {
                 type: 'object',

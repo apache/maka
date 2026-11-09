@@ -337,6 +337,7 @@ mod language_tests {
     fn external_instructions_and_context_keep_original_data() {
         let mut content: maka_agent_facts::input::MessageInput = "User text 原文".into();
         content.quotes = Some(vec![QuoteRef {
+            source_message_id: None,
             text: "Quoted text 結果".into(),
             label: None,
             source_turn_id: None,

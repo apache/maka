@@ -106,6 +106,59 @@ mod tests {
     }
 
     #[test]
+    fn discovery_panel_approves_scope_controls_runs_and_rejects_stale_edits() {
+        let mut registry = crate::bindings::ui_registry();
+        registry.value("host", || Instance::new(CompletionHost));
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/discovery.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(1100.0), px(900.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                ..Environment::default()
+            },
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+        app.wait_for("role:button[View investigation]").unwrap();
+        app.press("role:button[View investigation] >> nth=0")
+            .unwrap();
+        app.wait_for("text:Opened original-worker").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("text:/sample-command-code/").unwrap();
+        app.wait_for("text:/isolated.sample/").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Pause]").unwrap();
+        app.wait_for("role:button[Approve and resume]").unwrap();
+        app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("role:button[Approve and save]").unwrap();
+        app.press_key("mod+u").unwrap();
+        app.press("role:button[Approve and save]").unwrap();
+        app.wait_for("text:/The plan changed/").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[Check now]").unwrap();
+        app.press("role:button[Check now]").unwrap();
+        app.wait_for("text:Investigating").unwrap();
+        app.press("role:button[View investigation] >> nth=0")
+            .unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.wait_for("text:Opened original-worker").unwrap();
+    }
+
+    #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));

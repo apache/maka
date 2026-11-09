@@ -312,6 +312,7 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
             &key,
             Some(journal.load_draft(&key).await.unwrap().unwrap().revision),
             DraftEdit {
+                quotes: vec![],
                 text: "adopt rejected upload".into(),
                 attachments: vec![],
                 settled_uploads: vec![eligible[1].id],
@@ -434,6 +435,7 @@ async fn terminal_unknown_releases_waiting_and_keeps_the_unsent_draft_and_failed
                     &key,
                     Some(1),
                     DraftEdit {
+                        quotes: vec![],
                         text: "unsent work".into(),
                         attachments: vec![],
                         settled_uploads: vec![original.id],

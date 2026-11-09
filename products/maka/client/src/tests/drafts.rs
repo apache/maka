@@ -122,6 +122,7 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             bytes: 21,
         };
         let edit = DraftEdit {
+            quotes: vec![],
             text: String::new(),
             attachments: vec![attachment.clone()],
             settled_uploads: vec![upload.id()],
@@ -202,6 +203,7 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
                 "composer",
                 Some(1),
                 DraftEdit {
+                    quotes: vec![],
                     text: String::new(),
                     settled_uploads: vec![unknown.id()],
                     ..Default::default()
@@ -432,4 +434,39 @@ async fn queue_delivery_requires_native_confirmation_and_stopped_messages_can_re
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quote_only_draft_survives_reopen_frozen_retry_and_newer_edits() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new().await;
+        let client = fixture.client().await;
+        let quote = json!({"text":"A published finding","sourceMessageId":"bot/4","sourceTurnId":"original-bot-turn",
+            "source":{"sessionId":"session-one","sessionName":"Bot","capturedAt":1234,"truncated":false}});
+        let edit: DraftEdit = serde_json::from_value(json!({"text":"","quotes":[quote],"attachments":[],"settledUploads":[]})).unwrap();
+        let saved = client.save_draft("agent","session-one","composer",None,edit.clone()).await.unwrap();
+        client.close().await.unwrap();
+        let client = fixture.client().await;
+        assert_eq!(client.load_draft("agent","session-one","composer").await.unwrap().unwrap().quotes,edit.quotes);
+        let original = Uuid::new_v4();
+        let frozen = client.reserve_send_draft(original,"agent","session-one","composer",saved.revision,json!({"quotes":[{"text":"forged"}]})).await.unwrap();
+        assert!(client.load_draft("agent","session-one","composer").await.unwrap().unwrap().quotes.is_empty());
+        let newer = client.save_draft("agent","session-one","composer",Some(saved.revision),"Later unrelated draft".into()).await.unwrap();
+        assert!(client.save_draft("agent","session-one","composer",Some(saved.revision),edit).await.is_err());
+        drop(frozen);
+        client.close().await.unwrap();
+        let client = fixture.client().await;
+        assert!(client.recover(original).await.is_err());
+        let retry = client.retry_send(original,Uuid::new_v4(),json!({"delivery":"queue","quotes":[]})).await.unwrap().open().await.unwrap();
+        retry.prepare().await.unwrap(); retry.confirm().await.unwrap();
+        let sent = fixture.counter.messages.lock().unwrap().clone();
+        assert_eq!(sent.len(),1);
+        assert_eq!(sent[0]["quotes"],json!([quote]));
+        assert_eq!(sent[0]["message"],"");
+        assert_eq!(client.load_draft("agent","session-one","composer").await.unwrap().unwrap().text,newer.text);
+        let send = client.reserve_send_draft(Uuid::new_v4(),"agent","session-one","composer",newer.revision,json!({"quotes":[{"text":"injected"}]})).await.unwrap().open().await.unwrap();
+        send.prepare().await.unwrap();send.confirm().await.unwrap();
+        assert_eq!(fixture.counter.messages.lock().unwrap()[1]["quotes"],json!([]));
+        client.close().await.unwrap();fixture.finish().await;
+    }).await.unwrap();
 }

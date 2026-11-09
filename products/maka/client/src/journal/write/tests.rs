@@ -95,6 +95,7 @@ async fn grouped_cas_rejection_rolls_back_upload_adoption_and_preserves_peers_on
         key: key.clone(),
         expected: Some(1),
         edit: DraftEdit {
+            quotes: vec![],
             text: "loser".into(),
             settled_uploads: vec![upload.id],
             attachments: vec![],

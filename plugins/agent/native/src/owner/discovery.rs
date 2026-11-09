@@ -113,6 +113,25 @@ pub(super) fn permissions() -> WorkspacePermissions {
 }
 
 impl scheduler::Scheduler {
+    pub(in crate::owner) async fn discovery_status(
+        &self,
+        task: &str,
+    ) -> Result<Option<ScheduledInvestigation>, String> {
+        Ok(self
+            .investigation()
+            .await?
+            .1
+            .filter(|job| job.task_id == task)
+            .map(|job| ScheduledInvestigation {
+                session_id: job.admission.invocation.session_id,
+                turn_id: job.admission.invocation.turn_id,
+                phase: match job.phase {
+                    Phase::Investigating { .. } => InvestigationPhase::Investigating,
+                    Phase::Delivering { .. } => InvestigationPhase::Delivering,
+                    Phase::Stopping => InvestigationPhase::Stopping,
+                },
+            }))
+    }
     async fn investigation(&self) -> Result<(Option<u64>, Option<Job>), String> {
         let record = self.storage.read(ACTIVE.into()).await.map_err(reason)?;
         let revision = record.as_ref().map(|record| record.revision);
@@ -138,6 +157,7 @@ impl scheduler::Scheduler {
             )?])
             .await?;
         *self.investigation.write().unwrap() = Some(job.admission.invocation.clone());
+        self.notify_status_changed();
         Ok(written[0].revision)
     }
     pub(super) fn discovery_tool(self: &Arc<Self>) -> ToolRegistration {

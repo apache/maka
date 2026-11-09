@@ -1750,7 +1750,15 @@ async fn bot_outbox_preview_is_bounded_in_characters() {
         let session = opened["sessionId"].as_str().unwrap();
         f.owner
             .bot
-            .append(session, "turn", "long", "long", &["界".repeat(200)], 1)
+            .append(
+                session,
+                "turn",
+                "long",
+                "long",
+                &["界".repeat(200)],
+                1,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(outbox(&f).await["preview"], "界".repeat(160));
@@ -1776,6 +1784,7 @@ async fn bot_read_receipts_are_monotonic_and_do_not_clear_new_messages() {
                 "first",
                 &["one".into(), "two\nlines".into()],
                 1,
+                None,
             )
             .await
             .unwrap();
@@ -1796,7 +1805,15 @@ async fn bot_read_receipts_are_monotonic_and_do_not_clear_new_messages() {
         // A new message arrives while another window is acknowledging the old head.
         f.owner
             .bot
-            .append(session, "turn", "second", "second", &["three".into()], 2)
+            .append(
+                session,
+                "turn",
+                "second",
+                "second",
+                &["three".into()],
+                2,
+                None,
+            )
             .await
             .unwrap();
         let seen = f

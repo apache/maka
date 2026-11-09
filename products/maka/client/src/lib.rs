@@ -69,6 +69,7 @@ const CONTROL_METHODS: &[&str] = &[
     "fork",
     "openBot",
     "changeGoal",
+    "schedule",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -777,8 +778,8 @@ impl Client {
         }
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
-        // Creation targets no existing Session.
-        let session_id = if matches!(method, "create" | "openBot") {
+        // Creation and scheduler actions are scoped to the service, not an existing Session.
+        let session_id = if matches!(method, "create" | "openBot" | "schedule") {
             None
         } else {
             Some(
@@ -909,7 +910,7 @@ impl Client {
         if draft.revision != revision {
             return Err("saved draft revision changed before sending".into());
         }
-        if draft.text.trim().is_empty() && draft.attachments.is_empty() {
+        if draft.text.trim().is_empty() && draft.attachments.is_empty() && draft.quotes.is_empty() {
             return Err("saved draft is empty or already consumed".into());
         }
         if !selection.is_object() {
@@ -1386,6 +1387,10 @@ impl DraftSend {
             serde_json::to_value(&self.operation.session_id).map_err(error)?,
         );
         input.insert("message".into(), Value::String(snapshot.draft.text));
+        input.insert(
+            "quotes".into(),
+            serde_json::to_value(snapshot.draft.quotes).map_err(error)?,
+        );
         input.insert(
             "attachments".into(),
             serde_json::to_value(

@@ -900,3 +900,38 @@ async fn discovery_pause_then_resume_still_cancels_the_original_fire() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn discovery_desktop_lists_only_the_target_and_observes_the_original_investigation() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        let id = create(&f, &bot, "Desktop discovery").await;
+        let mut reminder = detail(&f, &id).await["task"].clone();
+        reminder["effect"] = json!({"kind":"reminder"});
+        let input = json!({"task":{"title":"Unrelated reminder","intentBody":"Other task","schedule":reminder["schedule"],"effect":reminder["effect"],"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"});
+        let created = f.mutation(2,"schedule",json!({"kind":"create","input":input}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(created["kind"],"committed");
+        let page = f.query("schedules",json!({"kind":"discovery","sessionId":bot})).await.unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(),1);
+        assert_eq!(page["tasks"][0]["id"],id);
+        let unrelated = f.create("Other session").await;
+        assert_eq!(f.query("schedules",json!({"kind":"discovery","sessionId":unrelated})).await.unwrap()["tasks"],json!([]));
+        change(&f,"trigger_now",&id,json!({})).await;
+        let (mut socket,_) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        let active = detail(&f,&id).await;
+        let investigation = active["investigation"].clone();
+        assert_eq!(investigation["phase"],"investigating");
+        assert_ne!(investigation["sessionId"],bot);
+        let mut updates = f.owner.schedule_changes();
+        finish(&mut socket,json!({"kind":"no_report","note":"No material change"})).await;
+        updates.changed().await.unwrap();
+        let done = settled(&f,&id).await;
+        assert!(done["investigation"].is_null());
+        assert_eq!(done["task"]["runs"][0]["sessionId"],investigation["sessionId"]);
+        assert!(!investigation["turnId"].as_str().unwrap().is_empty());
+        assert_eq!(f.query("schedules",json!({"kind":"discovery","sessionId":bot,"expectedRevision":page["revision"]})).await.unwrap()["kind"],"changed");
+        close(&f).await;
+    }).await.unwrap();
+}

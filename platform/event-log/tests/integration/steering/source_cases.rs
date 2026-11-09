@@ -57,6 +57,7 @@ fn resource(
 ) -> PendingMessageAdmission {
     let mut pending = queue::admission(invocation, id, disposition);
     pending.source.unprepared_content.quotes = Some(vec![QuoteRef {
+        source_message_id: None,
         text: format!("captured immutable {id}"),
         label: Some(id.into()),
         source_turn_id: None,
