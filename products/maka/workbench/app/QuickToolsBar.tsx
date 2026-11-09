@@ -70,11 +70,11 @@ export function QuickToolsBar(props: {
       {props.children}
       <If when={props.showSettings !== false}>
         <View style={props.expanding ? { height: quickFieldHeight, justifyContent: 'center' } : {}}>
-        <IconButton
-          label={quickToolsLabel('快捷工具设置')}
-          icon="settings"
-          onPress={props.openSettings}
-        />
+          <IconButton
+            label={quickToolsLabel('快捷工具设置')}
+            icon="settings"
+            onPress={props.openSettings}
+          />
         </View>
       </If>
     </View>

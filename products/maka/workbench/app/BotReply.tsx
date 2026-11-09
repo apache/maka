@@ -51,88 +51,101 @@ export function BotReply(props: {
       selectable
       style={{ width: '100%', paddingVertical: props.compact ? 6 : 8, gap: props.compact ? 8 : 16 }}
     >
-      <Each
-        of={props.messages()}
-        key={(message) => String(message.sequence)}
-      >
+      <Each of={props.messages()} key={(message) => String(message.sequence)}>
         {(message) => (
-          <QuickMessageTools enabled={Boolean(props.compact)} timestamp={message().at} text={() => message().text}>
-          <View
-            style={{ flexDirection: 'row', gap: props.compact ? 8 : 0, alignItems: 'flex-start' }}
+          <QuickMessageTools
+            enabled={Boolean(props.compact)}
+            timestamp={message().at}
+            text={() => message().text}
           >
-            <If when={props.compact}>
-              <View
-                style={{
-                  width: 24,
-                  height: 24,
-                  flexShrink: 0,
-                  borderRadius: 6,
-                  backgroundColor: C.surface,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginTop: 2,
-                }}
-              >
-                <Text style={{ fontSize: 16, lineHeight: 24 }}>🤖</Text>
-              </View>
-            </If>
             <View
-              style={
-                props.compact
-                  ? {
-                      backgroundColor: C.raised,
-                      borderRadius: 8,
-                      paddingHorizontal: 10,
-                      paddingVertical: 7,
-                      flex: 1,
-                      marginRight: 32,
-                      minWidth: 0,
-                    }
-                  : { width: '100%' }
-              }
+              style={{ flexDirection: 'row', gap: props.compact ? 8 : 0, alignItems: 'flex-start' }}
             >
-              <TextView
-                markdown={closeCjkEmphasis(message().text)}
-                extensions={mermaidExtensions}
-                renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
-                sourceId={`bot/${message().sequence}`}
-                selectable
-                contentStyle={{ rowGap: props.compact ? 8 : 16 }}
-                options={{ preserveLineBreaks: true }}
-                labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-                onScrollIntent={props.userScroll}
-                onLinkPress={(event) => void props.openLink(event.url, () => false)}
-                styles={{
-                  root: {
-                    ...bodyTextStyle,
-                    color: C.text,
-                    ...(props.compact
-                      ? {
-                          fontSize: 14,
-                          lineHeight: 22,
-                        }
-                      : {}),
-                  },
-                  paragraph: props.compact ? { fontSize: 14, lineHeight: 22 } : bodyTextStyle,
-                  code: { color: C.accentHover, backgroundColor: C.card },
-                }}
-              />
-              <If when={props.isNew?.(message().sequence)}>
+              <If when={props.compact}>
                 <View
-                  accessibilityLabel={tr('New assistant reply')}
-                  style={{ position: 'absolute', right: 2, top: 2, width: 5, height: 5,
-                    borderRadius: 3, backgroundColor: C.accent, pointerEvents: 'none' }}
+                  style={{
+                    width: 24,
+                    height: 24,
+                    flexShrink: 0,
+                    borderRadius: 6,
+                    backgroundColor: C.surface,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginTop: 2,
+                  }}
+                >
+                  <Text style={{ fontSize: 16, lineHeight: 24 }}>🤖</Text>
+                </View>
+              </If>
+              <View
+                style={
+                  props.compact
+                    ? {
+                        backgroundColor: C.raised,
+                        borderRadius: 8,
+                        paddingHorizontal: 10,
+                        paddingVertical: 7,
+                        flex: 1,
+                        marginRight: 32,
+                        minWidth: 0,
+                      }
+                    : { width: '100%' }
+                }
+              >
+                <TextView
+                  markdown={closeCjkEmphasis(message().text)}
+                  extensions={mermaidExtensions}
+                  renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
+                  sourceId={`bot/${message().sequence}`}
+                  selectable
+                  contentStyle={{ rowGap: props.compact ? 8 : 16 }}
+                  options={{ preserveLineBreaks: true }}
+                  labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                  onScrollIntent={props.userScroll}
+                  onLinkPress={(event) => void props.openLink(event.url, () => false)}
+                  styles={{
+                    root: {
+                      ...bodyTextStyle,
+                      color: C.text,
+                      ...(props.compact
+                        ? {
+                            fontSize: 14,
+                            lineHeight: 22,
+                          }
+                        : {}),
+                    },
+                    paragraph: props.compact ? { fontSize: 14, lineHeight: 22 } : bodyTextStyle,
+                    code: { color: C.accentHover, backgroundColor: C.card },
+                  }}
                 />
-              </If>
-              <If when={props.compact && message().sequence === props.messages().at(-1)?.sequence}>
-                <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
-              </If>
+                <If when={props.isNew?.(message().sequence)}>
+                  <View
+                    accessibilityLabel={tr('New assistant reply')}
+                    style={{
+                      position: 'absolute',
+                      right: 2,
+                      top: 2,
+                      width: 5,
+                      height: 5,
+                      borderRadius: 3,
+                      backgroundColor: C.accent,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                </If>
+                <If
+                  when={props.compact && message().sequence === props.messages().at(-1)?.sequence}
+                >
+                  <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
+                </If>
+              </View>
             </View>
-          </View>
           </QuickMessageTools>
         )}
       </Each>
-      <If when={!props.compact}><View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} /></If>
+      <If when={!props.compact}>
+        <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
+      </If>
       <If when={props.worker?.exists()}>
         <Button
           accessibilityLabel={recordLabel()}

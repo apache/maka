@@ -60,9 +60,17 @@ import {
 
 export const conversationMessages = {
   'New assistant reply': ['New assistant reply', '助手的新回复', '助手的新回覆'],
-  'Checked · delivery is still unconfirmed.': ['Checked · delivery is still unconfirmed.', '已检查，仍未确认送达。', '已檢查，仍未確認送達。'],
+  'Checked · delivery is still unconfirmed.': [
+    'Checked · delivery is still unconfirmed.',
+    '已检查，仍未确认送达。',
+    '已檢查，仍未確認送達。',
+  ],
   'Not sent': ['Not sent', '未发送', '未傳送'],
-  'Message status ({count})': ['Message status ({count})', '发送状态（{count}）', '傳送狀態（{count}）'],
+  'Message status ({count})': [
+    'Message status ({count})',
+    '发送状态（{count}）',
+    '傳送狀態（{count}）',
+  ],
   'Dismiss reminder': ['Dismiss reminder', '忽略提示', '忽略提示'],
   'Approve child decision': ['Approve child decision', '批准子会话决定', '核准子對話決定'],
   'Deny child decision': ['Deny child decision', '拒绝子会话决定', '拒絕子對話決定'],

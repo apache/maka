@@ -50,7 +50,10 @@ export default {
         },
         'quick-tools': {
           kind: 'settings',
-          title: { fallback: 'Quick Tools', translations: { 'zh-CN': '快捷工具', 'zh-TW': '快捷工具' } },
+          title: {
+            fallback: 'Quick Tools',
+            translations: { 'zh-CN': '快捷工具', 'zh-TW': '快捷工具' },
+          },
         },
         connections: {
           kind: 'settings',

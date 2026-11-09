@@ -54,8 +54,17 @@ import {
 function ErrorHint(props: { message: string }) {
   return (
     <View style={{ flexDirection: 'row', gap: 6, alignItems: 'flex-start' }}>
-      <Text accessibilityElementsHidden style={{ fontSize: 14, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}>ⓘ</Text>
-      <Text style={{ flex: 1, fontSize: 12, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}>{props.message}</Text>
+      <Text
+        accessibilityElementsHidden
+        style={{ fontSize: 14, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}
+      >
+        ⓘ
+      </Text>
+      <Text
+        style={{ flex: 1, fontSize: 12, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}
+      >
+        {props.message}
+      </Text>
     </View>
   );
 }
@@ -175,7 +184,12 @@ export function QuickToolsSurface(props: {
     change('');
   };
   surfaceHost.on('quickTools.visibility', (value) => {
-    const event = value as { visible: boolean; home?: boolean; settings?: boolean; source?: { pid?: number } };
+    const event = value as {
+      visible: boolean;
+      home?: boolean;
+      settings?: boolean;
+      source?: { pid?: number };
+    };
     if (event.visible) {
       engine.setSource(event.source?.pid);
       if (event.home) resetHome();
@@ -186,11 +200,14 @@ export function QuickToolsSurface(props: {
   effect(() => {
     if (surfaceHost.params.quickToolsPanel && props.opened())
       void surfaceHost
-        .call('quickTools.resize', { height: settings() || (editor() && editor()?.plugin !== 'maka.links') ? 560 : 400 })
+        .call('quickTools.resize', {
+          height: settings() || (editor() && editor()?.plugin !== 'maka.links') ? 560 : 400,
+        })
         .catch(report);
   });
   const started = engine.start(locale());
-  if (surfaceHost.params.quickToolsPanel) serveQuickSettings(engine, started, version, ready, locale);
+  if (surfaceHost.params.quickToolsPanel)
+    serveQuickSettings(engine, started, version, ready, locale);
   void started
     .then(() => {
       if (alive) ready.set(true);
@@ -688,10 +705,7 @@ export function QuickToolsSurface(props: {
               overflow: 'hidden',
             }}
           >
-            <QuickToolsBar
-              showSettings={!settings()}
-              openSettings={() => settings.set(true)}
-            >
+            <QuickToolsBar showSettings={!settings()} openSettings={() => settings.set(true)}>
               <If when={page() || editor() || settings()} else={<QuickToolsMark />}>
                 <IconButton label={qt('返回')} icon="back" onPress={back} />
               </If>
@@ -756,7 +770,9 @@ export function QuickToolsSurface(props: {
               </If>
             </QuickToolsBar>
             <If when={error()}>
-              <View style={{ paddingHorizontal: 20, paddingVertical: 8 }}><ErrorHint message={error()} /></View>
+              <View style={{ paddingHorizontal: 20, paddingVertical: 8 }}>
+                <ErrorHint message={error()} />
+              </View>
             </If>
             <If when={settings()}>
               <Scroll style={{ flex: 1, padding: 20 }}>
@@ -1072,9 +1088,12 @@ export function QuickToolsSurface(props: {
                                   color: C.text,
                                   padding: 8,
                                   borderWidth: 1,
-                                  borderColor: fieldError()?.field === field().id
-                                    ? (isDark() ? C.danger : '#b96761')
-                                    : C.line,
+                                  borderColor:
+                                    fieldError()?.field === field().id
+                                      ? isDark()
+                                        ? C.danger
+                                        : '#b96761'
+                                      : C.line,
                                   borderRadius: 6,
                                   minHeight: field().type === 'textarea' ? 112 : 40,
                                   backgroundColor: C.background,
@@ -1086,9 +1105,7 @@ export function QuickToolsSurface(props: {
                               accessibilityLabel={field().label}
                               checked={Boolean(values()[field().id])}
                               disabled={busy()}
-                              onChange={({ checked }) =>
-                                editValue(field().id, checked)
-                              }
+                              onChange={({ checked }) => editValue(field().id, checked)}
                               style={{ alignSelf: 'flex-end', padding: 6 }}
                               indicatorStyle={{
                                 width: 20,

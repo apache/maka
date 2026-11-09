@@ -265,7 +265,10 @@ export function MessageRow({
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
-        const menu = platform.idiom === 'terminal' || compact() || quickTools ? undefined : createMessageMenu();
+        const menu =
+          platform.idiom === 'terminal' || compact() || quickTools
+            ? undefined
+            : createMessageMenu();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
@@ -479,70 +482,81 @@ export function MessageRow({
                 </If>
               }
             >
-              <QuickMessageTools enabled={Boolean(quickTools)} user timestamp={row().timestamp}
-                text={async current => {
+              <QuickMessageTools
+                enabled={Boolean(quickTools)}
+                user
+                timestamp={row().timestamp}
+                text={async (current) => {
                   const item = row();
                   if (!item.position || item.field !== 'body') return item.text;
-                  return readOriginal(host, {
-                    sessionId, key: rowKey(item), role: 'user', position: item.position,
-                    through: item.metadataThrough ?? through(),
-                  }, current);
-                }}>
-              <View
-                style={{
-                  alignSelf: 'flex-end',
-                  maxWidth: quickTools ? '80%' : '78%',
-                  paddingHorizontal: quickTools ? 10 : 16,
-                  paddingVertical: quickTools ? 7 : 16,
-                  borderRadius: quickTools ? 8 : 20,
-                  backgroundColor: quickTools ? C.raised : C.card,
-                  gap: 8,
+                  return readOriginal(
+                    host,
+                    {
+                      sessionId,
+                      key: rowKey(item),
+                      role: 'user',
+                      position: item.position,
+                      through: item.metadataThrough ?? through(),
+                    },
+                    current,
+                  );
                 }}
               >
-                <SkillMessage row={row} sourceId={sourceId()} />
-                <If when={(row().attachments?.length ?? 0) > 0}>
-                  <HistoryAttachments
-                    userScroll={userScroll}
-                    sessionId={sessionId}
-                    through={row().metadataThrough ?? through()}
-                    position={row().position}
-                    attachments={row().attachments!}
-                    preview={previewImage}
-                  />
-                </If>
-              </View>
+                <View
+                  style={{
+                    alignSelf: 'flex-end',
+                    maxWidth: quickTools ? '80%' : '78%',
+                    paddingHorizontal: quickTools ? 10 : 16,
+                    paddingVertical: quickTools ? 7 : 16,
+                    borderRadius: quickTools ? 8 : 20,
+                    backgroundColor: quickTools ? C.raised : C.card,
+                    gap: 8,
+                  }}
+                >
+                  <SkillMessage row={row} sourceId={sourceId()} />
+                  <If when={(row().attachments?.length ?? 0) > 0}>
+                    <HistoryAttachments
+                      userScroll={userScroll}
+                      sessionId={sessionId}
+                      through={row().metadataThrough ?? through()}
+                      position={row().position}
+                      attachments={row().attachments!}
+                      preview={previewImage}
+                    />
+                  </If>
+                </View>
               </QuickMessageTools>
               <If when={!quickTools}>
-              <View
-                class={revealed}
-                style={{
-                  alignSelf: 'flex-end',
-                  width: '78%',
-                  minWidth: 0,
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  justifyContent: 'flex-end',
-                  gap: 8,
-                  paddingTop: 4,
-                  // The last glyph ends where the bubble does.
-                  marginRight: platform.idiom === 'terminal' ? 0 : -8,
-                }}
-              >
-                <If when={messageTime(row().timestamp)}>
-                  <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-                    {messageTime(row().timestamp)}
-                  </Text>
-                </If>
-                <MessageCopy
-                  row={row}
-                  ownerKey={() => rowKey(row())}
-                  sessionId={sessionId}
-                  through={through}
-                  menu={menu}
-                />
-                {!quickTools && editMessage?.(row, () => rowKey(row()), menu)}
-              </View>
+                <View
+                  class={revealed}
+                  style={{
+                    alignSelf: 'flex-end',
+                    width: '78%',
+                    minWidth: 0,
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'flex-end',
+                    gap: 8,
+                    paddingTop: 4,
+                    // The last glyph ends where the bubble does.
+                    marginRight: platform.idiom === 'terminal' ? 0 : -8,
+                  }}
+                >
+                  <If when={messageTime(row().timestamp)}>
+                    <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                      {messageTime(row().timestamp)}
+                    </Text>
+                  </If>
+                  <MessageCopy
+                    row={row}
+                    ownerKey={() => rowKey(row())}
+                    sessionId={sessionId}
+                    through={through}
+                    menu={menu}
+                  />
+                  {!quickTools && editMessage?.(row, () => rowKey(row()), menu)}
+                </View>
               </If>
             </If>
           </View>

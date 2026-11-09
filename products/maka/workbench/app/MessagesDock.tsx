@@ -73,7 +73,7 @@ export function createMessagesDock(
 ) {
   const queue = session.queue;
   const connected = session.connected;
-  const sends = computed(() => compact ? [] : session.sends());
+  const sends = computed(() => (compact ? [] : session.sends()));
   const items = computed(
     () => queue.snapshot()?.entries.filter((row) => row.kind === 'followup') ?? [],
   );
@@ -279,11 +279,11 @@ export function createMessagesDock(
       compact && messages().length
         ? tr('Message status ({count})', { count: messages().length })
         : problems().length
-        ? tr('{count} · {problems} to review', {
-            count: messages().length,
-            problems: problems().length,
-          })
-        : String(messages().length),
+          ? tr('{count} · {problems} to review', {
+              count: messages().length,
+              problems: problems().length,
+            })
+          : String(messages().length),
     preview: () =>
       problems()[0]?.detail ||
       (connected() && error()) ||

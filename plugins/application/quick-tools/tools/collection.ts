@@ -80,7 +80,10 @@ export async function collection(ctx: Context, options: Options): Promise<Plugin
         try {
           options.validate(value);
         } catch (error) {
-          throw new FieldError(options.field, error instanceof Error ? error.message : String(error));
+          throw new FieldError(
+            options.field,
+            error instanceof Error ? error.message : String(error),
+          );
         }
         if (data !== undefined && !items.some((x) => x.id === data))
           throw Error(qt('此项目已不存在'));

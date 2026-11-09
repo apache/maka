@@ -7,8 +7,9 @@ import { C, textTooltip } from './ui';
 export function messageTime(value?: number) {
   if (!value) return '';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' :
-    [date.getHours(), date.getMinutes()].map(part => String(part).padStart(2, '0')).join(':');
+  return Number.isNaN(date.getTime())
+    ? ''
+    : [date.getHours(), date.getMinutes()].map((part) => String(part).padStart(2, '0')).join(':');
 }
 
 export function QuickMessageTools(props: {
@@ -48,20 +49,44 @@ export function QuickMessageTools(props: {
       }
     }
   };
-  const label = () => props.user ? tr('Copy user message') : tr('Copy message');
+  const label = () => (props.user ? tr('Copy user message') : tr('Copy message'));
   return (
-    <View onMouseEnter={() => hovered.set(true)} onMouseLeave={() => hovered.set(false)}
-      style={{ width: '100%' }}>
+    <View
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      style={{ width: '100%' }}
+    >
       {props.children}
-      <View style={{ height: 22, flexDirection: 'row', alignItems: 'center', gap: 4,
-        alignSelf: props.user ? 'flex-end' : 'flex-start', marginLeft: props.user ? 0 : 32,
-        opacity: hovered() || focused() || busy() || result() ? 1 : 0 }}>
+      <View
+        style={{
+          height: 22,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          alignSelf: props.user ? 'flex-end' : 'flex-start',
+          marginLeft: props.user ? 0 : 32,
+          opacity: hovered() || focused() || busy() || result() ? 1 : 0,
+        }}
+      >
         <Text style={{ color: C.muted, fontSize: 11 }}>{messageTime(props.timestamp)}</Text>
-        <View role="button" focusable accessibilityLabel={label()} tooltip={textTooltip(label)}
-          onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
+        <View
+          role="button"
+          focusable
+          accessibilityLabel={label()}
+          tooltip={textTooltip(label)}
+          onFocus={() => focused.set(true)}
+          onBlur={() => focused.set(false)}
           onPress={() => void copy()}
-          style={{ height: 22, width: 24, borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}
-          hoverStyle={{ backgroundColor: C.raised }} focusStyle={{ backgroundColor: C.raised }}>
+          style={{
+            height: 22,
+            width: 24,
+            borderRadius: 4,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.raised }}
+        >
           <Icon name={result() === 'copied' ? 'check' : 'copy'} size={14} color={C.muted} />
         </View>
         <If when={result()}>

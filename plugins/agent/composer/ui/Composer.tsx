@@ -527,7 +527,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
-                <If when={!props.quickTools}><ComposerDetails session={owner} /></If>
+                <If when={!props.quickTools}>
+                  <ComposerDetails session={owner} />
+                </If>
               </View>
             );
           }}
@@ -706,9 +708,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     >
                       <SkillInput
                         fieldText={props.quickTools ? quickFieldText : undefined}
-                        onContentHeight={props.quickTools ? (height) => {
-                          measuredRows.set(Math.max(1, Math.round(height / quickFieldText.lineHeight)));
-                        } : undefined}
+                        onContentHeight={
+                          props.quickTools
+                            ? (height) => {
+                                measuredRows.set(
+                                  Math.max(1, Math.round(height / quickFieldText.lineHeight)),
+                                );
+                              }
+                            : undefined
+                        }
                         ref={(node) => {
                           editor.set(node);
                           props.attach(node);
@@ -828,7 +836,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             color: C.text,
                             ...bodyTextStyle,
                             ...(props.quickTools
-                              ? { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, paddingTop: quickEditorInset }
+                              ? {
+                                  position: 'absolute',
+                                  top: 0,
+                                  bottom: 0,
+                                  left: 0,
+                                  right: 0,
+                                  paddingTop: quickEditorInset,
+                                }
                               : {}),
                             ...(owner !== null && suggestedMessage() !== null
                               ? {

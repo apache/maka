@@ -177,7 +177,10 @@ export function SkillInput(props: Props) {
   };
   return (
     <View
-      style={[props.style, props.onContentHeight ? {} : { height: height(), minHeight: fieldText().lineHeight }]}
+      style={[
+        props.style,
+        props.onContentHeight ? {} : { height: height(), minHeight: fieldText().lineHeight },
+      ]}
       onFileDrop={props.onFileDrop}
       onFileDragEnter={props.onFileDragEnter}
       onFileDragLeave={props.onFileDragLeave}

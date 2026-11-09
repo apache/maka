@@ -1,6 +1,6 @@
 /* Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE. */
-import { cleanup, effect, host } from "nsh";
-import type { QuickTools } from "../../../../plugins/application/quick-tools/runtime/engine";
+import { cleanup, effect, host } from 'nsh';
+import type { QuickTools } from '../../../../plugins/application/quick-tools/runtime/engine';
 
 export type CommandSetting = {
   id: string;
@@ -20,30 +20,25 @@ export type QuickSettings = {
   }[];
 };
 export type SettingsCommand =
-  | { kind: "read" }
-  | { kind: "launcher"; enabled: boolean }
-  | { kind: "shortcut"; value: string }
-  | { kind: "plugin"; id: string; enabled: boolean }
+  | { kind: 'read' }
+  | { kind: 'launcher'; enabled: boolean }
+  | { kind: 'shortcut'; value: string }
+  | { kind: 'plugin'; id: string; enabled: boolean }
   | {
-      kind: "item";
+      kind: 'item';
       plugin: string;
       id: string;
-      field: "alias" | "shortcut";
+      field: 'alias' | 'shortcut';
       value: string;
     };
 type Request = { id: string; command: SettingsCommand };
 type Reply = { id?: string; settings?: QuickSettings; error?: string };
-const settingsEvent = "quickTools.settings";
+const settingsEvent = 'quickTools.settings';
 let sequence = 0;
-export function requestSettings(
-  command: SettingsCommand,
-): Promise<QuickSettings> {
+export function requestSettings(command: SettingsCommand): Promise<QuickSettings> {
   const id = String(++sequence);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => finish(undefined, "Quick Tools did not respond"),
-      10000,
-    );
+    const timer = setTimeout(() => finish(undefined, 'Quick Tools did not respond'), 10000);
     const off = host.on(settingsEvent, (data) => {
       const reply = data as Reply;
       if (reply.id === id) finish(reply.settings, reply.error);
@@ -52,7 +47,7 @@ export function requestSettings(
       clearTimeout(timer);
       off();
       if (settings) resolve(settings);
-      else reject(Error(error ?? "Quick Tools settings unavailable"));
+      else reject(Error(error ?? 'Quick Tools settings unavailable'));
     }
     void host
       .call(settingsEvent, { id, command })
@@ -97,9 +92,7 @@ export function serveQuickSettings(
     })),
   });
   const reply = (value: Reply) =>
-    host
-      .call(settingsEvent, value)
-      .catch((cause) => console.warn(String(cause)));
+    host.call(settingsEvent, value).catch((cause) => console.warn(String(cause)));
   effect(() => {
     revision();
     locale();
@@ -113,44 +106,39 @@ export function serveQuickSettings(
         .then(async () => {
           await started;
           switch (command.kind) {
-            case "launcher":
+            case 'launcher':
               await engine.setLauncherEnabled(command.enabled);
               break;
-            case "shortcut":
+            case 'shortcut':
               await engine.setShortcut(command.value);
               break;
-            case "plugin":
-              if (
-                !engine
-                  .installed()
-                  .some(({ manifest }) => manifest.id === command.id)
-              )
-                throw Error("Unknown plugin");
+            case 'plugin':
+              if (!engine.installed().some(({ manifest }) => manifest.id === command.id))
+                throw Error('Unknown plugin');
               await engine.enable(command.id, command.enabled);
               break;
-            case "item": {
+            case 'item': {
               const manifest = engine
                 .installed()
                 .find((p) => p.manifest.id === command.plugin)?.manifest;
               const entry = manifest?.commands.find((c) => c.id === command.id);
-              if (!manifest || !entry) throw Error("Unknown command");
+              if (!manifest || !entry) throw Error('Unknown command');
               const row = {
                 ...entry,
                 plugin: manifest.id,
                 pluginName: manifest.name,
               };
-              if (command.field === "shortcut")
-                await engine.setShortcut(command.value, row);
+              if (command.field === 'shortcut') await engine.setShortcut(command.value, row);
               else
                 await engine.preference(row, {
                   alias: command.value.trim().slice(0, 80),
                 });
               break;
             }
-            case "read":
+            case 'read':
               break;
             default:
-              throw Error("Unknown Quick Tools setting");
+              throw Error('Unknown Quick Tools setting');
           }
           await reply({ id, settings: snapshot() });
         })

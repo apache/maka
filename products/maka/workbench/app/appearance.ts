@@ -117,7 +117,12 @@ function createAppearanceOwner() {
   return {
     supported: ownTitleBar,
     ready,
-    sync(value: { theme: ColorTheme; textSize: number; palette: PaletteId; custom: PaletteRecipe }) {
+    sync(value: {
+      theme: ColorTheme;
+      textSize: number;
+      palette: PaletteId;
+      custom: PaletteRecipe;
+    }) {
       theme.set(value.theme);
       setColorScheme(value.theme);
       textSize.set(value.textSize);

@@ -78,9 +78,10 @@ export function ModelSettings(props: {
   const operations = props.operations;
   const navigation = signal<Registration | null>(null);
   const rail = () => windowSize().width >= 880 && !compact();
-  const sections = () => runtime.settings().filter((item) =>
-    item.id !== 'quick-tools' || surfaceHost.params.nativeQuickTools === true
-  );
+  const sections = () =>
+    runtime
+      .settings()
+      .filter((item) => item.id !== 'quick-tools' || surfaceHost.params.nativeQuickTools === true);
   const contributed = () => sections().find((item) => matches(item, props.route()));
   const page = () => {
     const registered = navigation();
@@ -93,8 +94,7 @@ export function ModelSettings(props: {
   });
   effect(() => {
     if (!runtime.ready() || contributed()) return;
-    const fallback =
-      sections().find((item) => matches(item, props.defaultRoute)) ?? sections()[0];
+    const fallback = sections().find((item) => matches(item, props.defaultRoute)) ?? sections()[0];
     props.route.set(fallback ? { instance: fallback.instance.instance, id: fallback.id } : null);
   });
   const choose = (request: { from: string | null; to: string }) => {

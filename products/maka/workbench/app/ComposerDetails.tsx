@@ -101,7 +101,7 @@ export function ComposerDetails(props: {
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
-    messages: () => props.compact ? panels.messages.summary() : tr('Messages'),
+    messages: () => (props.compact ? panels.messages.summary() : tr('Messages')),
   };
   let alive = true;
   cleanup(() => {

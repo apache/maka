@@ -2180,10 +2180,7 @@ export function createConversationUi(
                             openBeside={shell()?.openBeside}
                             focusComposer={focusComposer}
                             confirming={() =>
-                              connectionLost() ||
-                              !owner.connected() ||
-                              busy() ||
-                              !controlsKnown()
+                              connectionLost() || !owner.connected() || busy() || !controlsKnown()
                             }
                           />
                         )}
@@ -2262,9 +2259,7 @@ export function createConversationUi(
                   }}
                 >
                   <If when={error()}>
-                    <Text
-                      style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}
-                    >
+                    <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
                       {error()}
                     </Text>
                   </If>
@@ -2291,10 +2286,9 @@ export function createConversationUi(
                           color: C.muted,
                         }}
                       >
-                        {tr(
-                          'This is a fork of {title}. The original conversation is unchanged.',
-                          { title: forkNotice()!.title },
-                        )}
+                        {tr('This is a fork of {title}. The original conversation is unchanged.', {
+                          title: forkNotice()!.title,
+                        })}
                       </Text>
                       <Button
                         onPress={inputAction(openBrowsed, {
@@ -2367,8 +2361,7 @@ export function createConversationUi(
                       running={() => owner.invocation() !== null}
                       instance={() => {
                         const current = overlay();
-                        return current?.kind === 'models' &&
-                          current.sessionId === owner.sessionId
+                        return current?.kind === 'models' && current.sessionId === owner.sessionId
                           ? current.instance
                           : null;
                       }}
@@ -2457,7 +2450,10 @@ export function createConversationUi(
                 </View>
                 <View style={{ flex: 1, minWidth: 0 }}>{composer()}</View>
               </QuickToolsBar>
-              <Each of={composerSession() ? [composerSession()!] : []} key={(owner) => owner.sessionId}>
+              <Each
+                of={composerSession() ? [composerSession()!] : []}
+                key={(owner) => owner.sessionId}
+              >
                 {(owner) => <ComposerDetails session={owner()} compact />}
               </Each>
             </If>
