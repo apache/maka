@@ -816,3 +816,22 @@ async fn automatic_recovery_does_not_cancel_an_opening_in_an_independent_client(
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bot_read_receipt_uses_shell_control_custody() {
+    let fixture = Fixture::new().await;
+    let client = fixture.client().await;
+    let receipt = client
+        .control(
+            Uuid::new_v4(),
+            "markBotRead",
+            json!({"sessionId":"session-one","through":2}),
+        )
+        .await
+        .unwrap();
+    let original = client.operation_for_control(receipt.id()).await.unwrap();
+    assert_eq!(original.session_id.as_deref(), Some("session-one"));
+    receipt.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.finish().await;
+}

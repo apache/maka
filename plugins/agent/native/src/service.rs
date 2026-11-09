@@ -238,6 +238,10 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "markBotRead" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(owner.mark_bot_read(decode(input)?).await?)
+                }
                 "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
                 "watchBotOutbox" => {
                     let input: BotOutboxRead = decode(input)?;
@@ -246,7 +250,7 @@ impl Handler for Agent {
                     loop {
                         changes.borrow_and_update();
                         let page = owner.bot_outbox(&input).await?;
-                        let observed = (page.session_id.clone(), page.through);
+                        let observed = (page.session_id.clone(), page.through, page.read_through);
                         if through.as_ref() != Some(&observed) {
                             through = Some(observed);
                             context.emit(encode(page)?).await?;

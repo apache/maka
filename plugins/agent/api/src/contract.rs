@@ -1796,6 +1796,10 @@ pub fn contract() -> Contract {
                     method::<BotOpen, BotOpened>(MethodMode::Mutation),
                 ),
                 (
+                    "markBotRead".into(),
+                    method::<BotMarkRead, BotOutbox>(MethodMode::Mutation),
+                ),
+                (
                     "botOutbox".into(),
                     method::<BotOutboxRead, BotOutbox>(MethodMode::Query),
                 ),
