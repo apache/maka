@@ -156,11 +156,15 @@ mod tests {
             .host
             .push("terminal.exit".into());
         let bundle = nsh_engine::Bundle::source(
-            "import { host } from 'nsh';
+            "import { host, mount } from 'nsh';
+             import { element } from 'nsh:rt';
              import { currentWindow } from 'nsh/desktop';
-             currentWindow().set({ closeOnPress: false });
-             host.post('terminal.exit');"
-                .into(),
+             mount(() => {
+               currentWindow().set({ closeOnPress: false });
+               host.post('terminal.exit');
+               return element('view');
+             });"
+            .into(),
         )
         .with_policy(policy);
         let config = shell.attach(nsh_engine::EngineConfig::new(bundle));
