@@ -551,6 +551,21 @@ test('back navigation offers a way to keep unsaved connection edits', async () =
   assert.equal(owner.page(), 'connections');
 });
 
+test('leaving a connection runs the exit at once when clean and only after discarding edits', async () => {
+  const { owner } = connectionEditor();
+  const ran = [];
+  owner.leave(() => ran.push('clean'));
+  owner.edit('name', 'A personal name');
+  owner.leave(() => ran.push('kept'));
+  assert.equal(owner.discardTarget(), 'connection');
+  owner.keepEditing();
+  assert.equal(owner.editor().name, 'A personal name');
+  owner.leave(() => ran.push('discarded'));
+  owner.discardEdits(owner.action());
+  assert.deepEqual(ran, ['clean', 'discarded']);
+  assert.equal(owner.page(), 'connections');
+});
+
 test('a new connection returns to its provider search without treating its suggested unique ID as an edit', async () => {
   const { owner, provider } = connectionEditor();
   owner.connections.set([{ slug: 'chatgpt' }, { slug: 'chatgpt-2' }]);

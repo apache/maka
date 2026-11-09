@@ -32,6 +32,7 @@ import { LoadingIndicator } from './Loading';
 import { RootUiSettings } from './RootUiSettings';
 import {
   SettingsBody,
+  SettingsDiscard,
   SettingsFormFooter,
   SettingsInput,
   SettingsLede,
@@ -49,35 +50,46 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
   const owner = props.owner;
   return (
     <If
-      when={owner.inventory()}
+      when={!owner.discarding.asking()}
       else={
-        <SettingsBody>
-          <If
-            when={owner.loading()}
-            else={
-              <SettingsProblem
-                message={tr('Plugin settings are unavailable on this connection.')}
-                retry={inputAction(owner.reload, owner.action())}
-              />
-            }
-          >
-            <LoadingIndicator label={tr('Reading plugins…')} />
-          </If>
-        </SettingsBody>
+        <SettingsDiscard
+          name={owner.editor()?.field.label}
+          onDiscard={owner.discarding.discard}
+          onKeep={owner.discarding.keep}
+        />
       }
     >
-      <Each of={[owner.navigation()]} key={(identity) => identity}>
-        {() => {
-          const request = owner.action();
-          return (
-            <If when={owner.selected()} else={<PluginList owner={owner} request={request} />}>
-              <If when={owner.editor()} else={<PluginDetail owner={owner} request={request} />}>
-                <PluginField owner={owner} request={request} />
-              </If>
+      <If
+        when={owner.inventory()}
+        else={
+          <SettingsBody>
+            <If
+              when={owner.loading()}
+              else={
+                <SettingsProblem
+                  message={tr('Plugin settings are unavailable on this connection.')}
+                  retry={inputAction(owner.reload, owner.action())}
+                />
+              }
+            >
+              <LoadingIndicator label={tr('Reading plugins…')} />
             </If>
-          );
-        }}
-      </Each>
+          </SettingsBody>
+        }
+      >
+        <Each of={[owner.navigation()]} key={(identity) => identity}>
+          {() => {
+            const request = owner.action();
+            return (
+              <If when={owner.selected()} else={<PluginList owner={owner} request={request} />}>
+                <If when={owner.editor()} else={<PluginDetail owner={owner} request={request} />}>
+                  <PluginField owner={owner} request={request} />
+                </If>
+              </If>
+            );
+          }}
+        </Each>
+      </If>
     </If>
   );
 }
@@ -262,7 +274,7 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
           canSave={!owner.disabled()}
           busy={owner.busy()}
           save={inputAction(owner.save, { request, value: value() })}
-          cancel={() => owner.back()}
+          cancel={owner.cancel}
         />
       }
     >

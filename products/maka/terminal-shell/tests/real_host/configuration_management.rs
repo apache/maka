@@ -225,6 +225,12 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
     click(&mut view, "Use this workspace folder").await;
     click(&mut view, "Add MCP server").await;
     fill(&mut view, "Server name", "docs").await;
+    click(&mut view, "Settings section Skills").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Discard unsaved changes?")
+    })
+    .await;
+    click(&mut view, "Keep editing").await;
     click(&mut view, "Streamable HTTP").await;
     fill(&mut view, "Server URL", "https://example.invalid/mcp").await;
     support::evidence("mcp-project-editor", &view.snapshot());
@@ -333,6 +339,21 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
     click(&mut view, "Delete").await;
     wait_view(&mut view, |screen| {
         screen.contains("MCP server deleted.") && !screen.contains("local-docs")
+    })
+    .await;
+    click(&mut view, "Add MCP server").await;
+    fill(&mut view, "Server name", "abandoned").await;
+    click(&mut view, "Close settings").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Discard unsaved changes?")
+    })
+    .await;
+    click(&mut view, "Discard changes").await;
+    wait_view_state(&mut view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Close settings")
     })
     .await;
     let sessions = client

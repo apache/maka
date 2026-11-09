@@ -348,6 +348,7 @@ function Preview() {
         nested: () => owner.page() !== 'connections' || !!owner.confirmation(),
         navigation: owner.navigation,
         back: owner.back,
+        leave: owner.leave,
         busy: owner.busy,
       }),
     );

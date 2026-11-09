@@ -25,6 +25,7 @@ import type { NetworkSettingsOwner } from './networkSettingsState.ts';
 import {
   SettingsBody,
   SettingsButton,
+  SettingsDiscard,
   SettingsInput,
   SettingsLede,
   SettingsProblem,
@@ -37,6 +38,18 @@ import {
 const protocols: ProxyProtocol[] = ['http', 'https', 'socks5'];
 
 export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
+  const owner = props.owner;
+  return (
+    <If
+      when={!owner.discarding.asking()}
+      else={<SettingsDiscard onDiscard={owner.discarding.discard} onKeep={owner.discarding.keep} />}
+    >
+      <NetworkForm owner={owner} />
+    </If>
+  );
+}
+
+function NetworkForm(props: { owner: NetworkSettingsOwner }) {
   const owner = props.owner;
   const value = () => owner.draft()!;
   const disabled = () => owner.disabled();
