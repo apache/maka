@@ -346,8 +346,9 @@ impl Rv {
                     continue;
                 }
                 let rv = rv.clone();
+                let input = rv.input;
                 let event = spec.event.clone();
-                on_key_with(
+                input.on_key_with(
                     &spec.keystroke,
                     KeyOptions {
                         when: When::Always,

@@ -1010,11 +1010,10 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
     set_changing(surface, true);
     if old.as_ref() != view {
         let moved_to = view.is_some();
-        let events_before = surface.events_sent();
         move_focus(surface, old, view);
-        if wants_text(surface) && surface.events_sent() > events_before {
+        if wants_text(surface) && surface.events_handled() < surface.events_sent() {
             arm(surface);
-        } else if moved_to && !has_pending(surface) {
+        } else if moved_to && !behind(surface) && !has_pending(surface) {
             disarm(surface);
         }
     } else if view.is_some() {
@@ -1784,7 +1783,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         )
     };
     *input.config.borrow_mut() = config.clone();
-    if became_readonly {
+    if became_readonly && input.focused.get() {
         surface.terminal_focus_generation.set(
             surface
                 .terminal_focus_generation
@@ -1792,16 +1791,14 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
                 .checked_add(1)
                 .expect("native focus generation exhausted"),
         );
-        if input.focused.get() {
-            cancel_composition(surface);
-            if input.model.borrow_mut().composition.take().is_some() {
-                input.relayout();
-                report_composition(surface, view, &input);
-                view.changed();
-            }
+        cancel_composition(surface);
+        if input.model.borrow_mut().composition.take().is_some() {
+            input.relayout();
+            report_composition(surface, view, &input);
+            view.changed();
         }
     }
-    if became_editable {
+    if became_editable && input.focused.get() {
         surface.terminal_focus_generation.set(
             surface
                 .terminal_focus_generation
@@ -3492,6 +3489,62 @@ mod tests {
         assert!(!input_of(&sink).unwrap().focused.get());
         assert!(surface.focus_path().is_empty());
         assert!(surface.terminal_focus_generation.get() > generation);
+        surface.stop();
+    }
+
+    #[test]
+    fn unfocused_input_readonly_transitions_do_not_advance_focus_generation() {
+        let surface = Surface::new(Default::default());
+        let first = NshView::new(2, nsh_core::ViewKind::Input);
+        let second = NshView::new(3, nsh_core::ViewKind::Input);
+        first.insert_before(&surface.root, None);
+        second.insert_before(&surface.root, None);
+        create(&surface, &first);
+        create(&surface, &second);
+        config(&surface, &first, &InputConfig::default());
+        focus_view(&surface, &first);
+        assert!(input_of(&first).unwrap().focused.get());
+        assert!(!input_of(&second).unwrap().focused.get());
+
+        let generation = surface.terminal_focus_generation.get();
+        config(
+            &surface,
+            &second,
+            &InputConfig {
+                editable: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(surface.terminal_focus_generation.get(), generation);
+        config(
+            &surface,
+            &second,
+            &InputConfig {
+                editable: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(surface.terminal_focus_generation.get(), generation);
+
+        config(
+            &surface,
+            &first,
+            &InputConfig {
+                editable: false,
+                ..Default::default()
+            },
+        );
+        let readonly_generation = surface.terminal_focus_generation.get();
+        assert!(readonly_generation > generation);
+        config(
+            &surface,
+            &first,
+            &InputConfig {
+                editable: true,
+                ..Default::default()
+            },
+        );
+        assert!(surface.terminal_focus_generation.get() > readonly_generation);
         surface.stop();
     }
 }

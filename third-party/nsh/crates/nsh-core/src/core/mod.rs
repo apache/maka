@@ -2669,6 +2669,7 @@ impl<M: TextEngine> Core<M> {
             }
             self.mount.push(MountItem::TreeOrder(order));
         }
+        self.overlay_state.pressed.clear();
         if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
             self.mount.clear();
             None
@@ -3283,10 +3284,24 @@ impl<M: TextEngine> Core<M> {
     /// ([`Self::grid_role`]).
     fn sync_grid_role(&mut self, key: Key) {
         if let Some(layout) = self.nodes[key as usize].layout {
+            let was_hidden = self.layout.displays_none(layout);
             let role = self.grid_role(key);
             if self.layout.set_role(layout, role) {
                 self.needs_layout = true;
+                self.sync_layout_hidden(key, was_hidden);
             }
+        }
+    }
+
+    #[inline]
+    pub(super) fn sync_layout_hidden(&mut self, key: Key, was_hidden: bool) {
+        let node = &self.nodes[key as usize];
+        if node.created
+            && node
+                .layout
+                .is_some_and(|l| self.layout.displays_none(l) != was_hidden)
+        {
+            self.mark(key, dirty::VIEW);
         }
     }
 
@@ -3537,8 +3552,10 @@ impl<M: TextEngine> Core<M> {
         if node.fixed_view {
             style.position = Position::Fixed;
         }
+        let was_hidden = self.layout.displays_none(layout);
         self.layout.set_style(layout, style);
         self.needs_layout = true;
+        self.sync_layout_hidden(key, was_hidden);
     }
 
     fn set_inline_style(
@@ -3694,6 +3711,7 @@ impl<M: TextEngine> Core<M> {
         }
         let flipped = node.rtl != rtl;
         node.rtl = rtl;
+        let was_hidden = node.layout.is_some_and(|l| self.layout.displays_none(l));
         // `objectPosition` is the image's (`MountItem::Image`), not the view's.
         let position_changed = node.view_style.object_position != view.object_position;
         let view_changed = if position_changed {
@@ -3762,8 +3780,11 @@ impl<M: TextEngine> Core<M> {
             self.layout.set_style(l, layout);
             self.needs_layout = true;
         }
+        let hidden_changed = self.nodes[key as usize]
+            .layout
+            .is_some_and(|l| self.layout.displays_none(l) != was_hidden);
         let mut flags = 0;
-        if view_changed {
+        if view_changed || hidden_changed {
             flags |= dirty::VIEW;
             // A drawing filling with the view's background paints the new
             // one.
@@ -6008,8 +6029,10 @@ impl<M: TextEngine> Core<M> {
         let kind = node.kind;
         node.frame = Bounds::UNSET;
         node.emitted = None;
+        let mut hidden_in_layout = false;
         if let Some(layout) = node.layout {
             self.layout.mark_stale(layout);
+            hidden_in_layout = self.layout.displays_none(layout);
         }
         let node = &mut self.nodes[key as usize];
         // A list in its parent's viewport is a plain view clipping its
@@ -6017,6 +6040,7 @@ impl<M: TextEngine> Core<M> {
         let parent_list = node.list.as_ref().is_some_and(|l| l.parent);
         let mut flags = 0;
         if node.view_style != ViewStyle::default()
+            || hidden_in_layout
             || node.elevation != Points::ZERO
             || node.backdrop_material != crate::BackdropMaterial::default()
             || node.macos_backdrop.is_some()
@@ -7033,8 +7057,21 @@ impl<M: TextEngine> Core<M> {
         if self.measure_cache.set_cell(cell) {
             self.fonts_changed();
         }
+        let toggled_grid = self.layout.grid().is_some() != grid.is_some();
+        let before: Vec<(Key, bool)> = if toggled_grid {
+            self.nodes
+                .iter()
+                .filter(|(_, n)| n.created)
+                .filter_map(|(k, n)| Some((k as Key, self.layout.displays_none(n.layout?))))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if self.layout.set_grid(grid) {
             self.needs_layout = true;
+            for (key, was_hidden) in before {
+                self.sync_layout_hidden(key, was_hidden);
+            }
         }
     }
 

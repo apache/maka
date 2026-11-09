@@ -551,8 +551,20 @@ pub(crate) fn watch_keys(surface: &Rc<Surface>, window: &gtk::Window, root: &Nsh
                 {
                     return glib::Propagation::Stop;
                 }
+                let plain = !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SHIFT_MASK
+                        | gdk::ModifierType::SUPER_MASK,
+                );
                 let window_closes = root.id() != nsh_core::ROOT_ID
-                    && crate::window::closes_on_escape(&surface, root.id(), key, modifiers);
+                    && key == gdk::Key::Escape
+                    && plain
+                    && surface
+                        .windows
+                        .borrow()
+                        .get(&root.id())
+                        .is_some_and(|w| w.attributes.close_on_escape == Some(true));
                 if !window_closes
                     && crate::keymap::unhandled(&surface, &root, keys.current_event().as_ref())
                 {

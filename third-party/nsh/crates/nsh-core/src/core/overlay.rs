@@ -32,7 +32,7 @@
 //! (`nsh-base`'s `Tooltip`) can decide instead ([`OverlayConfig::open`]). An element's `tooltip` is a
 //! hint overlay the core makes inside the element ([`Core::set_tooltip`]).
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use taffy::NodeId as LayoutId;
 
 use super::{Core, Key, Kind, NO_KEY, definite};
@@ -139,6 +139,12 @@ pub(super) struct Overlays {
     /// The anchors of the hints in the view listening to the pointer
     /// (desktops), checked by id.
     pub(super) hinting: Vec<(Key, NodeId)>,
+    /// Active touch pointers (`(pointer_id, path)`), so focus landing on an
+    /// anchor while a pointer presses it does not open a keyboard-focus hint.
+    pub(super) touches: Vec<(u32, Vec<NodeId>)>,
+    /// Nodes pressed by a touch start since the last commit, so a same-batch
+    /// click + release still suppresses a deferred keyboard-focus hint.
+    pub(super) pressed: FxHashSet<NodeId>,
     /// The elements with a `tooltip`, by id: the nodes made for it.
     pub(super) tooltips: FxHashMap<NodeId, CoreTooltip>,
 }
@@ -267,6 +273,7 @@ impl<M: TextEngine> Core<M> {
             self.overlay_released(key, wrapper);
         }
         self.roots.retain(|&k| k != key);
+        let was_hidden = self.layout.displays_none(layout);
         let node = &mut self.nodes[key as usize];
         node.fixed_view = false;
         node.root = None;
@@ -277,6 +284,7 @@ impl<M: TextEngine> Core<M> {
             node.base_layout = None;
         }
         self.needs_layout = true;
+        self.sync_layout_hidden(key, was_hidden);
     }
 
     /// Overlay `key` is released: forgets it and drops its wrapper (its own
@@ -682,24 +690,33 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// Nearest hint anchor on the live focus chain, stopping at an overlay
+    /// boundary so focus inside a popup does not count for its trigger's hint.
+    fn focus_hint_target(&self) -> Option<Key> {
+        let (mut k, _) = self
+            .focus
+            .filter(|&(k, id)| self.nodes.get(k as usize).is_some_and(|n| n.id == id))?;
+        while k != NO_KEY {
+            if self.overlays.iter().any(|&h| {
+                self.overlay(h).is_some_and(|s| s.config.hint.is_some())
+                    && self.hint_anchor(h) == Some(k)
+            }) {
+                return Some(k);
+            }
+            if self.nodes[k as usize].is_overlay() {
+                break;
+            }
+            k = self.nodes[k as usize].parent;
+        }
+        None
+    }
+
     /// The keyboard focus moved: the hints whose anchor it came to show,
     /// those it left hide. The focus counts for the nearest hint's anchor
     /// on its chain, up to the overlay it is in (a popup's focus is not on
     /// its trigger's hint).
     pub(super) fn focus_hints(&mut self) {
-        let mut target = None;
-        for &(k, _) in &self.focus_chain {
-            if self.overlays.iter().any(|&h| {
-                self.overlay(h).is_some_and(|s| s.config.hint.is_some())
-                    && self.hint_anchor(h) == Some(k)
-            }) {
-                target = Some(k);
-                break;
-            }
-            if self.nodes[k as usize].is_overlay() {
-                break;
-            }
-        }
+        let target = self.focus_hint_target();
         let hints: Vec<Key> = self
             .overlays
             .iter()
@@ -707,7 +724,18 @@ impl<M: TextEngine> Core<M> {
             .filter(|&k| self.overlay(k).is_some_and(|s| s.config.hint.is_some()))
             .collect();
         for key in hints {
-            let on = target.is_some() && self.hint_anchor(key) == target;
+            let anchor = self.hint_anchor(key);
+            let on = target.is_some() && anchor == target;
+            let pressed = on
+                && anchor.is_some_and(|k| {
+                    let id = self.nodes[k as usize].id;
+                    self.overlay_state.pressed.contains(&id)
+                        || self
+                            .overlay_state
+                            .touches
+                            .iter()
+                            .any(|(_, path)| path.contains(&id))
+                });
             let Some(state) = self.overlay_mut(key) else {
                 continue;
             };
@@ -716,7 +744,7 @@ impl<M: TextEngine> Core<M> {
             }
             state.focus_on = on;
             let was = state.hint_shown();
-            state.focus_shown = on;
+            state.focus_shown = on && !pressed;
             let now = state.hint_shown();
             if was != now {
                 self.hint_changed(key, now, HintReason::Focus);
@@ -748,26 +776,29 @@ impl<M: TextEngine> Core<M> {
     /// A finger or button went down: the hints whose anchors it is on hide
     /// (and wait for the pointer to come again).
     fn hint_touches(&mut self, touch: &TouchEvent) {
+        let focus_target = self.focus_hint_target();
         let hints: Vec<Key> = self
             .overlays
             .iter()
             .copied()
-            .filter(|&k| {
-                self.overlay(k).is_some_and(|s| {
-                    s.config.hint.is_some() && (s.hint_shown() || s.waiting.is_some())
-                })
-            })
+            .filter(|&k| self.overlay(k).is_some_and(|s| s.config.hint.is_some()))
             .collect();
         for key in hints {
-            let Some(anchor) = self.hint_anchor(key).map(|k| self.nodes[k as usize].id) else {
+            let Some(anchor_key) = self.hint_anchor(key) else {
                 continue;
             };
+            let anchor = self.nodes[anchor_key as usize].id;
             let pressed = touch
                 .points
                 .iter()
                 .any(|p| p.changed && p.path.contains(&anchor));
             if pressed {
                 self.hide_hint(key, true, HintReason::Pointer);
+                if focus_target == Some(anchor_key)
+                    && let Some(state) = self.overlay_mut(key)
+                {
+                    state.focus_on = true;
+                }
             }
         }
     }
@@ -981,10 +1012,23 @@ impl<M: TextEngine> Core<M> {
     /// A touch on the surface: `onPressOutside` of the shown overlays
     /// watching presses that a finger went down outside of.
     pub(super) fn overlay_touches(&mut self, touch: &TouchEvent) {
-        if touch.phase != TouchPhase::Start {
-            return;
+        match touch.phase {
+            TouchPhase::Start => {
+                for p in touch.points.iter().filter(|p| p.changed) {
+                    self.overlay_state.pressed.extend(p.path.iter().copied());
+                    self.overlay_state.touches.retain(|(id, _)| *id != p.id);
+                    self.overlay_state.touches.push((p.id, p.path.clone()));
+                }
+            }
+            TouchPhase::End | TouchPhase::Cancel => {
+                for p in touch.points.iter().filter(|p| p.changed) {
+                    self.overlay_state.touches.retain(|(id, _)| *id != p.id);
+                }
+                return;
+            }
+            TouchPhase::Move => return,
         }
-        if !self.overlay_state.hinting.is_empty() {
+        if !self.overlays.is_empty() {
             self.hint_touches(touch);
         }
         if self.overlay_state.watched.is_empty() {

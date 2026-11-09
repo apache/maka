@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use nsh_base::{SelectEntry, SelectEvent, SelectItem, select};
+use nsh_base::{SelectEntry, SelectEvent, SelectItem, input, select};
 use nsh_core::{
     AccessibilityRole, Bounds, Command, MountItem, NodeId, Size, ViewProps,
     element::Root,
@@ -607,6 +607,100 @@ fn return_and_space_choose_the_highlighted_item_and_close() {
     app.gone("role:listbox");
     app.log_ends("openChange:true:TriggerPress open openChange:false:Select close");
     assert_eq!(app.log().matches("change:blueberry").count(), 1);
+}
+
+#[test]
+fn open_list_keys_and_typeahead_work_while_a_text_field_keeps_focus() {
+    #[component]
+    fn ComposerWithSelect() -> impl IntoElement {
+        let draft = signal(String::new());
+        let submitted = signal(String::from("none"));
+        let chosen = signal(String::from("none"));
+        let sink = element_ref();
+        sink.on_key_with(
+            "enter",
+            KeyOptions {
+                when: nsh_core::keymap::When::Always,
+                ..Default::default()
+            },
+            move |_| {
+                submitted.set(draft.get_untracked());
+                draft.set(String::new());
+            },
+        );
+        view()
+            .pt(px(40.0))
+            .pl(px(40.0))
+            .gap(px(12.0))
+            .child(
+                input()
+                    .element_ref(&sink)
+                    .label("Draft")
+                    .value(move || draft.get())
+                    .on_change(move |next: &str| draft.set(next.to_owned()))
+                    .w(px(200.0))
+                    .h(px(32.0)),
+            )
+            .child(
+                select()
+                    .items(fruits())
+                    .default_value(SharedString::from("celery"))
+                    .accessibility_label("Food")
+                    .item_class("focus:opacity-50")
+                    .trigger(view().w(px(160.0)).h(px(30.0)).child(text("Pick")))
+                    .render_item(|e: &SelectEntry| text(e.title.clone()))
+                    .on_change(move |v: &Option<SharedString>| {
+                        chosen.set(v.as_deref().unwrap_or("none").to_owned());
+                    })
+                    .w(px(200.0)),
+            )
+            .child(text(move || format!("Draft: {}", draft.get())))
+            .child(text(move || format!("Submitted: {}", submitted.get())))
+            .child(text(move || format!("Chosen: {}", chosen.get())))
+    }
+
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<ComposerWithSelect>(|| ()))
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.first_render().unwrap();
+    app.type_text("label:Draft", "UNSENT_LOCAL_ONLY").unwrap();
+    app.wait_for("text:Draft: UNSENT_LOCAL_ONLY").unwrap();
+
+    // Pressing the select's trigger on desktop leaves responder focus in the
+    // editing field; the open non-searchable list still owns Home, arrows,
+    // typeahead, Return and Space without mutating or submitting the draft.
+    app.press("role:combobox").unwrap();
+    app.wait_for("role:listbox").unwrap();
+    app.press_key("home").unwrap();
+    app.press_key("down").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for_gone("role:listbox", Duration::from_secs(5))
+        .unwrap();
+    app.wait_for("text:Chosen: blueberry").unwrap();
+    app.wait_for("text:Draft: UNSENT_LOCAL_ONLY").unwrap();
+    app.wait_for("text:Submitted: none").unwrap();
+
+    // Focus the draft again, open the select by press, use typeahead + Space.
+    app.type_text("label:Draft", "").unwrap();
+    app.press("role:combobox").unwrap();
+    app.wait_for("role:listbox").unwrap();
+    app.press_key("r").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for_gone("role:listbox", Duration::from_secs(5))
+        .unwrap();
+    app.wait_for("text:Chosen: rice").unwrap();
+    app.wait_for("text:Draft: UNSENT_LOCAL_ONLY").unwrap();
+    app.wait_for("text:Submitted: none").unwrap();
+
+    // Once closed and refocused, Return in the draft field submits normally.
+    app.type_text("label:Draft", "").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("text:Submitted: UNSENT_LOCAL_ONLY").unwrap();
+    app.wait_for("text:Draft: ").unwrap();
 }
 
 #[test]

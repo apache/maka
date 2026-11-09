@@ -1073,8 +1073,8 @@ fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>)
     );
 }
 
-/// Tracks a native context menu in the window of the last pointer event.
-pub(crate) fn track_menu(surface: &Rc<Surface>, menu: &Retained<NSMenu>, at: Option<(f32, f32)>) {
+/// Shows a native context menu and lets the test agent choose from it.
+pub(crate) fn track_menu(surface: &Rc<Surface>, menu: &NSMenu, at: Option<(f32, f32)>) {
     let root = crate::input::event_root(surface);
     let root = root.ns();
     // The root view is flipped: y goes down, as the app's. Without a
@@ -1091,7 +1091,7 @@ pub(crate) fn track_menu(surface: &Rc<Surface>, menu: &Retained<NSMenu>, at: Opt
         }
     };
     #[cfg(feature = "dev")]
-    OPEN_MENU.with(|open| *open.borrow_mut() = Some(menu.clone()));
+    OPEN_MENU.with(|open| *open.borrow_mut() = Some(menu.retain()));
     // Returns once the menu closed (the chosen item's action sent).
     menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(root));
     #[cfg(feature = "dev")]

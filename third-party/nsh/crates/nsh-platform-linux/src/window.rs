@@ -97,7 +97,7 @@ pub(crate) struct AppWindow {
     /// The root node of the window that owns it.
     parent: Option<NodeId>,
     /// Its attributes, as the core sent them.
-    attributes: WindowAttributes,
+    pub(crate) attributes: WindowAttributes,
     /// The size last reported to the core.
     reported: Option<Size<Points>>,
     /// Not shown yet: `Some(true)` once the commit that opened it is
@@ -455,33 +455,23 @@ fn window_key(surface: &Rc<Surface>, id: NodeId, key: gdk::Key, state: gdk::Modi
     if crate::navigation::key_pressed_in(surface, id, key, state) {
         return true;
     }
-    let escape = closes_on_escape(surface, id, key, state);
-    if escape {
-        policy_close(surface, id, WindowCloseCause::Escape);
-    }
-    escape
-}
-
-/// Whether this key is reserved for closing an app-owned window on Escape.
-pub(crate) fn closes_on_escape(
-    surface: &Surface,
-    id: NodeId,
-    key: gdk::Key,
-    state: gdk::ModifierType,
-) -> bool {
     let plain = !state.intersects(
         gdk::ModifierType::CONTROL_MASK
             | gdk::ModifierType::ALT_MASK
             | gdk::ModifierType::SHIFT_MASK
             | gdk::ModifierType::SUPER_MASK,
     );
-    key == gdk::Key::Escape
+    let escape = key == gdk::Key::Escape
         && plain
         && surface
             .windows
             .borrow()
             .get(&id)
-            .is_some_and(|w| w.attributes.close_on_escape == Some(true))
+            .is_some_and(|w| w.attributes.close_on_escape == Some(true));
+    if escape {
+        policy_close(surface, id, WindowCloseCause::Escape);
+    }
+    escape
 }
 
 /// Ctrl+W closes `window` as a press of the close key (a bubble-phase
