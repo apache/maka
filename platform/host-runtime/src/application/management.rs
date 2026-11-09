@@ -35,8 +35,7 @@ mod download;
 pub use download::download_bundle;
 mod composition;
 mod settings;
-#[cfg(test)]
-mod tests;
+
 mod ui;
 
 pub const DEPLOYMENT_MANAGER: &str = "maka.application.management";

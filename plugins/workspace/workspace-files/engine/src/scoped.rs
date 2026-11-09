@@ -574,6 +574,3 @@ fn io_error(error: std::io::Error) -> ToolError {
         message: format!("Read filesystem error: {error}"),
     }
 }
-
-#[cfg(test)]
-mod tests;

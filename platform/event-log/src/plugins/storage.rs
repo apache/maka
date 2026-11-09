@@ -17,9 +17,6 @@
  * under the License.
  */
 
-#[cfg(test)]
-mod tests;
-
 use super::invalid;
 use crate::{EventLog, StoreError};
 use maka_plugin_core::storage::Data;

@@ -106,11 +106,8 @@ impl Owner {
     }
 
     async fn checkpoint_file(&self, id: &str) -> Result<std::fs::File, String> {
-        self.store
-            .session(id)
-            .await
-            .map_err(failure)?
-            .with_resource_io(|| Ok(maka_event_log::root_store::create_request_file()?))
+        self.history_checkpoints()
+            .request_file(id)
             .await
             .map_err(failure)
     }

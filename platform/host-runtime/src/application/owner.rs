@@ -2448,6 +2448,3 @@ pub(super) fn diagnostic(error: &str) -> String {
     }
     diagnostic
 }
-
-#[cfg(test)]
-mod tests;

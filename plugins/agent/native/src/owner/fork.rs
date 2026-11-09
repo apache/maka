@@ -238,11 +238,13 @@ impl Owner {
             }
             _ => WorkspaceAccess::DangerFullAccess,
         };
-        let workspace = self
+        let (candidate, workspace_statement) = self
             .store
-            .attach_workspace(&self.prefix, &parent.workspace)
+            .prepare_creation_workspace(&self.prefix, &parent.workspace, None, &writer)
             .await
             .map_err(fork_failure)?;
+        let workspace = candidate.reference();
+        let stamp = candidate.stamp();
         let configuration = StoredSessionConfiguration {
             parent_session_id: scope
                 .identity
@@ -296,7 +298,9 @@ impl Owner {
                 },
             },
         );
-        let (prepared, planned) = match captured.source() {
+        let serialized_configuration =
+            serde_json::to_value(&configuration).map_err(|error| error.to_string())?;
+        let change = match captured.source() {
             ForkSnapshotSource::Empty => {
                 let planned = catalog
                     .planned_empty(&claim.session_id)
@@ -307,24 +311,40 @@ impl Owner {
                 let statement = captured
                     .guard(&history, guard, statement)
                     .map_err(fork_failure)?;
-                (
-                    self.store
-                        .prepare_plugin_session(&claim, &configuration, at, &writer, statement)
-                        .await,
-                    planned,
-                )
+                let statement = match self
+                    .store
+                    .prepare_plugin_session_with_workspace(
+                        &claim,
+                        &serialized_configuration,
+                        at,
+                        &writer,
+                        workspace_statement,
+                        statement,
+                    )
+                    .await
+                {
+                    Ok(statement) => statement,
+                    Err(error) => return publication_error(error),
+                };
+                writer
+                    .prepare_result(|_| {
+                        Ok(ForkPublication {
+                            statement,
+                            planned,
+                            source: self.data_source.clone(),
+                            caller: policy.caller,
+                        })
+                    })
+                    .map_err(fork_failure)?
             }
             ForkSnapshotSource::Canonical { .. } | ForkSnapshotSource::Imported => {
-                let binding = self
-                    .store
-                    .workspace_binding::<Workspace>(configuration.workspace.id)
-                    .await
-                    .map_err(fork_failure)?
-                    .ok_or("agent_workspace_binding_unavailable")?;
-                let stamp = binding.stamp();
                 let resolved = configuration
                     .clone()
-                    .resolve(binding.workspace, stamp)
+                    .resolve(
+                        serde_json::from_value(candidate.workspace)
+                            .map_err(|error| error.to_string())?,
+                        stamp,
+                    )
                     .map_err(|error| error.to_string())?;
                 let (mut spec, contents) = self
                     .history_source_spec(&claim.session_id, &resolved, snapshot, operation, scope)
@@ -350,27 +370,34 @@ impl Owner {
                 let statement = captured
                     .guard(&history, guard, statement)
                     .map_err(fork_failure)?;
-                (
-                    self.store
-                        .prepare_plugin_session(&claim, &configuration, at, &writer, statement)
-                        .await,
-                    planned,
-                )
+                let statement = match self
+                    .store
+                    .prepare_plugin_session_with_workspace(
+                        &claim,
+                        &serialized_configuration,
+                        at,
+                        &writer,
+                        workspace_statement,
+                        statement,
+                    )
+                    .await
+                {
+                    Ok(statement) => statement,
+                    Err(error) => return publication_error(error),
+                };
+                writer
+                    .prepare_result(|_| {
+                        Ok(ForkPublication {
+                            statement,
+                            planned,
+                            source: self.data_source.clone(),
+                            caller: policy.caller,
+                        })
+                    })
+                    .map_err(fork_failure)?
             }
         };
-        let (record, change) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => return publication_error(error),
-        };
-        Ok(NativeMutation::Commit {
-            value: ForkResult::Forked {
-                session: Box::new(crate::service::summary(
-                    self,
-                    planned.record(record).map_err(fork_failure)?,
-                )?),
-            },
-            change,
-        })
+        Ok(NativeMutation::Computed { change })
     }
 
     pub async fn fork_receipt(
@@ -397,6 +424,133 @@ impl Owner {
             })
         })
         .await
+    }
+}
+
+struct ForkPublication<S> {
+    statement: S,
+    planned: maka_agent_state::session_catalog::PlannedCatalog,
+    source: DataSource,
+    caller: Option<maka_agent_state::CallerFence>,
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct ForkPublicationValue<T> {
+    reply: Value,
+    #[serde(skip)]
+    inner: Option<T>,
+}
+impl<S, D> Statement for ForkPublication<S>
+where
+    S: Statement<Value = (SessionRecord, D)>,
+    D: std::marker::Send + 'static,
+{
+    type Value = ForkPublicationValue<S::Value>;
+    type Output = (Value, Option<S::Output>);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.statement.retain()
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        let rejected = |reply: ForkResult| -> Result<Prepared<Self::Value>, StoreError> {
+            Ok(Prepared {
+                value: ForkPublicationValue {
+                    reply: serde_json::to_value(reply)?,
+                    inner: None,
+                },
+                changed: false,
+                notification: Notification::NONE,
+            })
+        };
+        if let Some(caller) = &self.caller {
+            let reason = match caller.status(connection)? {
+                maka_agent_state::CallerStatus::Current => None,
+                maka_agent_state::CallerStatus::Unavailable => Some(Rejection::SessionUnavailable),
+                maka_agent_state::CallerStatus::AuthorizationChanged => {
+                    Some(Rejection::WorkspaceUnavailable)
+                }
+            };
+            if let Some(reason) = reason {
+                return rejected(ForkResult::Rejected { reason });
+            }
+        }
+        let written = creation::creation_sql(
+            connection,
+            || {
+                let installed = self.statement.execute(connection)?;
+                let record = self.planned.record(installed.value.0.clone())?;
+                let session =
+                    crate::service::summary_for(&self.source, record).map_err(|diagnostic| {
+                        StoreError::StatementRejected {
+                            cause: Arc::new(StoreError::InvalidTransition(diagnostic.clone())),
+                            diagnostic,
+                        }
+                    })?;
+                Ok(Prepared {
+                    value: ForkPublicationValue {
+                        reply: serde_json::to_value(ForkResult::Forked {
+                            session: Box::new(session),
+                        })?,
+                        inner: Some(installed.value),
+                    },
+                    changed: installed.changed,
+                    notification: installed.notification,
+                })
+            },
+            fork_rejection,
+        )?;
+        match written {
+            Ok(success) => Ok(success),
+            Err(reply) => rejected(reply),
+        }
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        (value.reply, value.inner.map(S::committed))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(error.underlying(), StoreError::StatementRejected { .. })
+            || S::isolated_rejection(error)
+    }
+}
+fn fork_rejection(error: &StoreError) -> Option<ForkResult> {
+    match creation::rejection_cause(error) {
+        StoreError::SessionRevisionConflict { expected, actual }
+        | StoreError::SessionCreationRejected(CreationRejection::SourceRevisionConflict {
+            expected,
+            actual,
+        }) => Some(ForkResult::RevisionConflict {
+            expected: *expected,
+            actual: *actual,
+        }),
+        StoreError::EventConflict => Some(ForkResult::Rejected {
+            reason: Rejection::HistoryUnavailable,
+        }),
+        StoreError::InvalidTransition(reason)
+            if matches!(
+                reason.as_str(),
+                "fork source cut splits a complete Turn"
+                    | "fork source has unresolved original effects or cleanup"
+                    | "history cut is not retained; explicit rebuild required"
+                    | "fork baseline is not an actual completed historical marker"
+                    | "fork baseline guard is not its actual complete marker fence"
+            ) =>
+        {
+            Some(ForkResult::Rejected {
+                reason: Rejection::HistoryUnavailable,
+            })
+        }
+        _ => creation::creation_rejection(error).map(|reason| ForkResult::Rejected { reason }),
     }
 }
 

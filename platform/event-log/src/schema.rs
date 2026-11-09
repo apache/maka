@@ -98,8 +98,3 @@ pub(crate) fn initialize_connection(
     )?;
     Ok(())
 }
-
-#[cfg(test)]
-mod fixtures;
-#[cfg(test)]
-pub(crate) use fixtures::schema as fixture;

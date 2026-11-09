@@ -24,6 +24,7 @@ use crate::projects::{
     ProjectError, ProjectMutation, ProjectRecord, ProjectRegistration, ProjectRelink,
     ProjectRelinkGuard,
 };
+use crate::writeback::{Prepared, Statement};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -54,6 +55,14 @@ impl RootStore {
     pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>, StoreError> {
         self.require_open()?;
         self.log.get_project(id).await
+    }
+
+    pub async fn project_by_identity(
+        &self,
+        identity: &str,
+    ) -> Result<Option<ProjectRecord>, StoreError> {
+        self.require_open()?;
+        self.log.project_by_identity(identity).await
     }
 
     pub async fn register_project(
@@ -192,6 +201,153 @@ impl RootStore {
         control
             .relink_project_if(guard, registration, now, selected_workspace)
             .await
+    }
+
+    pub async fn prepare_register_project_if(
+        &self,
+        registration: ProjectRegistration,
+        prefer: bool,
+        now: u64,
+        expected: Option<ProjectRecord>,
+        writer: &DataWriter,
+    ) -> Result<
+        impl Statement<
+            Value = Result<ProjectRecord, ProjectError>,
+            Output = Result<ProjectRecord, ProjectError>,
+        > + use<>,
+        StoreError,
+    > {
+        self.validate_data_writer(writer)?;
+        let statement = EventLog::prepare_project_registration(
+            registration,
+            prefer,
+            now,
+            expected,
+            uuid::Uuid::new_v4(),
+        )?;
+        let control = self.project_writer().await?;
+        Ok(ProjectStatement {
+            statement,
+            control: Arc::new(control),
+        })
+    }
+
+    pub async fn prepare_mutate_project_if(
+        &self,
+        expected: ProjectRecord,
+        mutation: ProjectMutation,
+        now: u64,
+        writer: &DataWriter,
+    ) -> Result<
+        impl Statement<
+            Value = Result<ProjectRecord, ProjectError>,
+            Output = Result<ProjectRecord, ProjectError>,
+        > + use<>,
+        StoreError,
+    > {
+        self.validate_data_writer(writer)?;
+        let statement = EventLog::prepare_project_mutation(expected, mutation, now)?;
+        let control = self.project_writer().await?;
+        Ok(ProjectStatement {
+            statement,
+            control: Arc::new(control),
+        })
+    }
+
+    pub async fn prepare_relink_project_if(
+        &self,
+        guard: ProjectRelinkGuard,
+        fence: &WorkspaceFence,
+        registration: ProjectRegistration,
+        now: u64,
+        selected_workspace: Value,
+        writer: &DataWriter,
+    ) -> Result<
+        impl Statement<
+            Value = Result<ProjectRelink, ProjectError>,
+            Output = Result<ProjectRelink, ProjectError>,
+        > + use<>,
+        StoreError,
+    > {
+        self.validate_data_writer(writer)?;
+        let (control, guard) = self
+            .prepare_relink(
+                &guard.source.id,
+                &guard.owner_scope,
+                &registration,
+                Some(&guard),
+                fence,
+            )
+            .await?;
+        let statement =
+            EventLog::prepare_project_relink(guard, registration, now, selected_workspace)?;
+        Ok(ProjectStatement {
+            statement,
+            control: Arc::new(control),
+        })
+    }
+
+    /// No project mutex is acquired: the final Session creation owns it once.
+    pub async fn plan_available_project(
+        &self,
+        registration: ProjectRegistration,
+        now: u64,
+        writer: &DataWriter,
+    ) -> Result<ProjectWorkspacePlan, StoreError> {
+        self.require_open()?;
+        self.validate_data_writer(writer)?;
+        let control = Arc::new(writer.scoped()?);
+        let expected = control.project_by_identity(&registration.identity).await?;
+        if expected
+            .as_ref()
+            .is_some_and(|record| record.archived_at.is_some())
+        {
+            return Err(ProjectError::Archived.into());
+        }
+        let id = match &expected {
+            Some(record) => uuid::Uuid::parse_str(&record.id)
+                .map_err(|_| invalid("invalid stored project UUID"))?,
+            None => uuid::Uuid::new_v4(),
+        };
+        let _validated = EventLog::prepare_available_project_registration(
+            registration.clone(),
+            now,
+            expected.clone(),
+            id,
+        )?;
+        Ok(ProjectWorkspacePlan {
+            id,
+            now,
+            kind: WorkspaceProject::Register {
+                registration,
+                expected,
+            },
+            control,
+        })
+    }
+
+    pub fn plan_selected_project(
+        &self,
+        expected: ProjectRecord,
+        available_paths: Vec<String>,
+        now: u64,
+        writer: &DataWriter,
+    ) -> Result<ProjectWorkspacePlan, StoreError> {
+        self.require_open()?;
+        self.validate_data_writer(writer)?;
+        let id = uuid::Uuid::parse_str(&expected.id)
+            .map_err(|_| invalid("invalid stored project UUID"))?;
+        let _validated =
+            EventLog::prepare_project_selection(expected.clone(), available_paths.clone(), now)?;
+        Ok(ProjectWorkspacePlan {
+            id,
+            now,
+            kind: WorkspaceProject::Select {
+                expected,
+                available_paths,
+            },
+            control: Arc::new(writer.scoped()?),
+        })
     }
 
     async fn project_writer(&self) -> Result<EventLog, StoreError> {
@@ -335,5 +491,100 @@ fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
 }
 
-#[cfg(test)]
-mod tests;
+/// Immutable Project candidate for the final Root Session transaction. The
+/// candidate id is business data; only its SQL CAS permits attachment to it.
+pub struct ProjectWorkspacePlan {
+    id: uuid::Uuid,
+    now: u64,
+    kind: WorkspaceProject,
+    control: Arc<EventLog>,
+}
+enum WorkspaceProject {
+    Register {
+        registration: ProjectRegistration,
+        expected: Option<ProjectRecord>,
+    },
+    Select {
+        expected: ProjectRecord,
+        available_paths: Vec<String>,
+    },
+}
+impl ProjectWorkspacePlan {
+    pub fn project_id(&self) -> uuid::Uuid {
+        self.id
+    }
+}
+impl Statement for ProjectWorkspacePlan {
+    type Value = Result<ProjectRecord, ProjectError>;
+    type Output = Self::Value;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        vec![self.control.clone()]
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        self.control.connection.require_same_writer(connection)?;
+        self.control.owned_root()?;
+        match self.kind {
+            WorkspaceProject::Register {
+                registration,
+                expected,
+            } => EventLog::prepare_available_project_registration(
+                registration,
+                self.now,
+                expected,
+                self.id,
+            )?
+            .execute(connection),
+            WorkspaceProject::Select {
+                expected,
+                available_paths,
+            } => {
+                let selected =
+                    EventLog::prepare_project_selection(expected, available_paths, self.now)?
+                        .execute(connection)?;
+                Ok(Prepared {
+                    value: selected.value.map(|(record, _)| record),
+                    changed: selected.changed,
+                    notification: selected.notification,
+                })
+            }
+        }
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        value
+    }
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
+    }
+}
+
+struct ProjectStatement<S> {
+    statement: S,
+    control: Arc<EventLog>,
+}
+impl<S: Statement> Statement for ProjectStatement<S> {
+    type Value = S::Value;
+    type Output = S::Output;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.statement.retain();
+        retained.push(self.control.clone());
+        retained
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        self.control.connection.require_same_writer(connection)?;
+        self.control.owned_root()?;
+        self.statement.execute(connection)
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        S::committed(value)
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+    }
+}

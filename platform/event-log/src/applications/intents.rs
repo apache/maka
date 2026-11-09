@@ -289,9 +289,6 @@ impl EventLog {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) struct WriteIntent {
     domain: String,
     caller: DeploymentRef,

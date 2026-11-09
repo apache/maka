@@ -288,7 +288,7 @@ async fn decode<T: serde::de::DeserializeOwned + Send + 'static>(
             Ok(serde_json::from_reader::<_, T>(reader))
         })
         .await?
-        .map_err(RunError::Checkpoint)
+        .map_err(RunError::Json)
 }
 async fn close_result<T>(
     result: Result<T, RunError>,

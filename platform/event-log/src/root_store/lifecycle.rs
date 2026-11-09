@@ -165,10 +165,7 @@ impl Lifecycle {
             .send(())
             .map_err(|_| StoreError::ConnectionClosed)
     }
-    #[cfg(test)]
-    pub(super) fn receipt(&self) -> Shared<BoxFuture<'static, Result<(), String>>> {
-        self.closed.clone()
-    }
+
     pub(super) async fn wait(&self) -> Result<(), StoreError> {
         self.closed.clone().await.map_err(StoreError::CloseFailed)
     }

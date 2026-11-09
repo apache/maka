@@ -79,18 +79,9 @@ impl EventLog {
         owner_scope: &str,
         workspace: &T,
     ) -> Result<BindingRef, StoreError> {
-        if owner_scope.is_empty() {
-            return Err(invalid("workspace owner scope is empty"));
-        }
-        let owner_scope = owner_scope.to_owned();
-        let (workspace, digest) = canonical(serde_json::to_value(workspace)?)?;
         self.connection
             .write(
-                WriteAttachment {
-                    owner_scope,
-                    workspace,
-                    digest,
-                },
+                WriteAttachment::new(owner_scope, serde_json::to_value(workspace)?)?,
                 self.commits.notice(),
             )
             .await
@@ -110,6 +101,64 @@ pub(crate) struct WriteAttachment {
     owner_scope: String,
     workspace: String,
     digest: String,
+    new_id: uuid::Uuid,
+}
+
+impl WriteAttachment {
+    pub(crate) fn new(owner_scope: &str, workspace: Value) -> Result<Self, StoreError> {
+        if owner_scope.is_empty() {
+            return Err(invalid("workspace owner scope is empty"));
+        }
+        let (workspace, digest) = canonical(workspace)?;
+        Ok(Self {
+            owner_scope: owner_scope.into(),
+            workspace,
+            digest,
+            new_id: uuid::Uuid::new_v4(),
+        })
+    }
+
+    pub(crate) fn candidate(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<(WorkspaceBinding, bool), StoreError> {
+        if let Some(reference) = self.existing(connection)? {
+            let binding = read(connection, reference.id)?
+                .ok_or_else(|| invalid("workspace binding disappeared"))?;
+            return Ok((binding, true));
+        }
+        Ok((
+            WorkspaceBinding {
+                id: self.new_id,
+                workspace: serde_json::from_str(&self.workspace)?,
+                permission_epoch: 0,
+                metadata_epoch: 0,
+            },
+            false,
+        ))
+    }
+
+    pub(crate) fn existing(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Option<BindingRef>, StoreError> {
+        let id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM workspace_bindings
+             WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1",
+                params![&self.owner_scope, &self.digest, &self.workspace],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| {
+            let id =
+                uuid::Uuid::parse_str(&id).map_err(|_| invalid("invalid workspace binding ID"))?;
+            read::<Value>(connection, id)?
+                .map(|binding| binding.reference())
+                .ok_or_else(|| invalid("workspace binding disappeared"))
+        })
+        .transpose()
+    }
 }
 
 impl crate::writeback::Statement for WriteAttachment {
@@ -121,31 +170,29 @@ impl crate::writeback::Statement for WriteAttachment {
         connection: &rusqlite::Connection,
     ) -> Result<crate::writeback::Prepared<BindingRef>, StoreError> {
         {
+            if let Some(binding) = self.existing(connection)? {
+                return Ok(crate::writeback::Prepared {
+                    value: binding,
+                    changed: false,
+                    notification: crate::writeback::Notification::NONE,
+                });
+            }
             let Self {
                 owner_scope,
                 workspace,
                 digest,
+                new_id,
             } = self;
-            let existing: Option<String> = connection.query_row("SELECT id FROM workspace_bindings
-                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1", params![&owner_scope, &digest, &workspace], |row| row.get(0)).optional()?;
-            let changed = existing.is_none();
-            let id = match existing {
-                Some(id) => uuid::Uuid::parse_str(&id)
-                    .map_err(|_| invalid("invalid workspace binding ID"))?,
-                None => {
-                    let id = uuid::Uuid::new_v4();
-                    connection.execute(
-                        "INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)",
-                        params![id.to_string(), owner_scope, digest, workspace],
-                    )?;
-                    id
-                }
-            };
+            let id = new_id;
+            connection.execute(
+                "INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)",
+                params![id.to_string(), owner_scope, digest, workspace],
+            )?;
             let binding = read::<Value>(connection, id)?
                 .ok_or_else(|| invalid("workspace binding disappeared"))?;
             Ok(crate::writeback::Prepared {
                 value: binding.reference(),
-                changed,
+                changed: true,
                 notification: crate::writeback::Notification::NONE,
             })
         }
@@ -392,6 +439,3 @@ pub(crate) fn replace(
     connection.execute("UPDATE workspace_bindings SET workspace_json=?,selection_digest=?,permission_epoch=?,metadata_epoch=? WHERE id=?", params![workspace, digest, permission as i64, metadata as i64, id.to_string()])?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

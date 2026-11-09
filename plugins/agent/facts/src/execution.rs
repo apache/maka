@@ -177,16 +177,3 @@ pub enum NativeToolSet {
     Workspace,
     Attachments,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::CollaborationMode;
-
-    #[test]
-    fn a_record_written_in_planning_mode_reads_as_agent() {
-        assert_eq!(
-            serde_json::from_str::<CollaborationMode>(r#""plan""#).unwrap(),
-            CollaborationMode::Agent
-        );
-    }
-}

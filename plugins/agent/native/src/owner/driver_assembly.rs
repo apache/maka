@@ -348,7 +348,7 @@ impl Owner {
                         let inputs = driver_executor_inputs::NativeInputs::new(self.clone(), access.clone(), claim.clone()).map_err(|error| RunError::InvalidInput(error.to_string()))?;
                         let instructions: Option<SystemPrompt> = self.run_content(view.run, &view.spec.system_prompt).await?;
                         let state_root = self.store.owned_root()?.canonical_path().to_path_buf();
-                        driver::NativeBackend::Executor(Arc::new(driver_executor::DriverExecutor { state: state.clone(), backend, access: access.clone(), inputs: Arc::new(inputs), instructions: instructions.map(|prompt| prompt.text), cancellation: work_cancellation.clone(), root_observation: cancellation.child_token(), cleanup: cleanup.clone(), workers: workers.clone(), retained: Arc::default(), state_root, prepared_private: Default::default(), candidate_capture: Default::default(), publication: Default::default(), #[cfg(test)] closed_tail: Default::default() }))
+                        driver::NativeBackend::Executor(Arc::new(driver_executor::DriverExecutor { state: state.clone(), backend, access: access.clone(), inputs: Arc::new(inputs), instructions: instructions.map(|prompt| prompt.text), cancellation: work_cancellation.clone(), root_observation: cancellation.child_token(), cleanup: cleanup.clone(), workers: workers.clone(), retained: Arc::default(), state_root, prepared_private: Default::default(), candidate_capture: Default::default(), publication: Default::default() }))
                     }
                     _ => return Err(RunError::InvalidInput("Run has no unique current backend".into())),
                 };

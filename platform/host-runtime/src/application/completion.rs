@@ -73,6 +73,7 @@ pub(crate) fn state_rejected(error: &maka_event_log::StoreError) -> bool {
     match error {
         maka_event_log::StoreError::Shared(error) => state_rejected(error),
         maka_event_log::StoreError::StatementRejected { .. }
+        | maka_event_log::StoreError::SessionRevisionConflict { .. }
         | maka_event_log::StoreError::RevisionConflict { .. }
         | maka_event_log::StoreError::SessionNotFound
         | maka_event_log::StoreError::InvalidTransition(_) => true,

@@ -71,7 +71,7 @@ pub async fn validate_continuation(
     let first = state.request(original.run, first_step).await?;
     let source_bytes = state.content(original.run, first.source_capture).await?;
     let source: crate::preparation::RequestSource =
-        serde_json::from_slice(&source_bytes).map_err(RunError::Checkpoint)?;
+        serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
     if source.cut.through_sequence != claim.base.high_water
         || source.cut.digest != claim.base.digest
     {

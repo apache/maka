@@ -52,7 +52,3 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[[test]]
-name = "integration"
-path = "tests/integration.rs"

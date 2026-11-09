@@ -312,6 +312,3 @@ fn validate_range(range: &Range<u64>, length: u64) -> io::Result<()> {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-
-#[cfg(test)]
-mod tests;

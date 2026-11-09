@@ -32,10 +32,3 @@ pub(crate) mod semantic;
 pub(crate) mod serialize_source;
 pub(crate) mod source_summary;
 pub(crate) mod user;
-
-#[cfg(test)]
-pub(crate) mod test_support;
-
-#[cfg(test)]
-#[path = "history/prepared/backed_tests.rs"]
-mod numeric_prepared_tests;

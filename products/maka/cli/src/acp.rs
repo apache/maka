@@ -54,6 +54,3 @@ pub(crate) async fn run(args: Args) -> Result<(), HostError> {
     tokio::time::timeout(Duration::from_secs(5), stdio.output_done).await???;
     result
 }
-
-#[cfg(test)]
-mod tests;

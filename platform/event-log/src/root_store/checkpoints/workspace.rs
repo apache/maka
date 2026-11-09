@@ -29,9 +29,6 @@ use std::{
     path::Path,
 };
 
-#[cfg(test)]
-thread_local! { pub(super) static AFTER_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Inventory {
@@ -212,12 +209,6 @@ pub(super) fn capture(
     validate_alias(dir, &source_path)?;
     let before_root = stamp(&dir.dir_metadata()?)?;
     let before = scan(dir, &source_path)?;
-    #[cfg(test)]
-    AFTER_SCAN.with(|hook| {
-        if let Some(action) = hook.borrow_mut().take() {
-            action();
-        }
-    });
     let mut entries = Vec::new();
     let mut linked = false;
     for (path, expected) in &before {

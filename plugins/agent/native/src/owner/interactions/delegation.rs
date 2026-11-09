@@ -91,7 +91,7 @@ impl Owner {
         input: InteractionRespond,
         operation: &RecoveryRef,
         context: &Context,
-    ) -> Result<InteractionResult, String> {
+    ) -> Result<NativeMutation<InteractionResult>, String> {
         let scope = context.scope();
         let native_access = if scope.identity.agent().is_some() {
             let native = context
@@ -138,33 +138,35 @@ impl Owner {
         operation: &RecoveryRef,
         scope: &Scope,
         native_access: Option<&dyn NativeCallAccess>,
-    ) -> Result<InteractionResult, String> {
+    ) -> Result<NativeMutation<InteractionResult>, String> {
         if let Some(reason) = self.interaction_rejection(scope, &input.session_id).await? {
-            return Ok(InteractionResult::Rejected { reason });
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }));
         }
         let Some(record) = self
             .find_interaction(&input.session_id, &input.request_id)
             .await?
         else {
-            return Ok(InteractionResult::Rejected {
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                 reason: InteractionRejection::Unavailable,
-            });
+            }));
         };
         if input.answer.validate_for_request(&record.request).is_err() {
-            return Ok(InteractionResult::Rejected {
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                 reason: InteractionRejection::InvalidAnswer,
-            });
+            }));
         }
         if let Some(execution) = scope.identity.agent() {
             if matches!(record.request, InteractionRequest::SessionApproval { .. }) {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::HumanActionRequired,
-                });
+                }));
             }
             if record.outcome.is_some() {
-                return Ok(InteractionResult::Recorded {
+                return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                     record: Box::new(record),
-                });
+                }));
             }
             let access = self.access_for_scope(scope).await?;
             let parent = access
@@ -179,9 +181,9 @@ impl Owner {
                 if !parent.permissions.request_permissions
                     && matches!(record.request, InteractionRequest::Permissions { .. })
                 {
-                    return Ok(InteractionResult::Rejected {
+                    return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                         reason: InteractionRejection::PermissionRequestsDisabled,
-                    });
+                    }));
                 }
                 match self
                     .confirm_child_response(
@@ -200,27 +202,27 @@ impl Owner {
                         human_denied = true;
                     }
                     ChildConfirmation::Withdrawn => {
-                        return Ok(InteractionResult::Rejected {
+                        return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                             reason: InteractionRejection::Unavailable,
-                        });
+                        }));
                     }
                     ChildConfirmation::ChildSettled => {
-                        return Ok(InteractionResult::Recorded {
+                        return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                             record: Box::new(
                                 self.interaction(&input.session_id, &input.request_id)
                                     .await?,
                             ),
-                        });
+                        }));
                     }
                 }
             }
-            // Permission edits and Stop use this same owner gate. Never hold it
-            // while waiting for a person; only the final check and commit are fenced.
-            let runs = self.runs.lock().await;
+            // Do not hold owner state while waiting for a person. The final SQL
+            // transaction also rechecks the caller's Run and permission basis.
+            let runs = Arc::new(self.runs.lock().await);
             if runs.closing || scope.cancellation.is_cancelled() {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::Unavailable,
-                });
+                }));
             }
             let current = access
                 .live_configuration()
@@ -229,13 +231,19 @@ impl Owner {
             // A committed human denial grants nothing; a permission edit must
             // not discard it. Stop and Run liveness still fence settlement.
             if !human_denied && current.permission_basis() != parent.permission_basis() {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::AuthorizationChanged,
-                });
+                }));
             }
-            return self.commit_response_unlocked(input).await;
+            let caller = maka_agent_state::CallerFence {
+                execution: execution.clone(),
+                expected_basis: (!human_denied).then(|| current.permission_basis()),
+            };
+            return self
+                .prepare_response_locked(input, runs, Some(caller))
+                .await;
         }
-        self.commit_response(input).await
+        self.prepare_response(input).await
     }
 
     async fn may_approve(

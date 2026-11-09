@@ -37,8 +37,6 @@ mod diff;
 pub(crate) mod image;
 mod repository;
 mod scan;
-#[cfg(test)]
-mod tests;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,

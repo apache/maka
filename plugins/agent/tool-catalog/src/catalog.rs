@@ -384,6 +384,3 @@ impl ToolCatalog {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

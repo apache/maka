@@ -190,7 +190,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     if !allowed_attempts.contains(attempt) {
                         flush_assistant(messages, assistant).await?;
                         *current = None;
-                        messages.append(Message::user(format!("Late original-model observation (data only, not a replayable assistant item; no completion inferred):\n{}",serde_json::to_string(&json!({"attempt":attempt,"part":part})).map_err(RunError::Checkpoint)?))).await?;
+                        messages.append(Message::user(format!("Late original-model observation (data only, not a replayable assistant item; no completion inferred):\n{}",serde_json::to_string(&json!({"attempt":attempt,"part":part})).map_err(RunError::Json)?))).await?;
                         return Ok(());
                     }
                     if *current != Some(*attempt) {
@@ -257,7 +257,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 Box::pin(async move {
                     flush_assistant(messages, assistant).await?;
                     *current = None;
-                    messages.append(Message::user(format!("Late original operation evidence (data; it does not replace an accepted tool result):\n{}",serde_json::to_string(&json!({"tool":tool,"reply":reply})).map_err(RunError::Checkpoint)?))).await?;
+                    messages.append(Message::user(format!("Late original operation evidence (data; it does not replace an accepted tool result):\n{}",serde_json::to_string(&json!({"tool":tool,"reply":reply})).map_err(RunError::Json)?))).await?;
                     Ok(())
                 })
             }

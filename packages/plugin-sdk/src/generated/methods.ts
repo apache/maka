@@ -1350,11 +1350,6 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
     };
-    goalReceipt: {
-      mode: 'query';
-      input: Runtime.AgentGoalReceiptRead;
-      output: Runtime.AgentGoalResult | null;
-    };
     history: {
       mode: 'query';
       input: Runtime.AgentHistoryRead;

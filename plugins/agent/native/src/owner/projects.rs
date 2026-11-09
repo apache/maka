@@ -22,9 +22,13 @@ use crate::contract::{
     Project, ProjectChange, ProjectCursor, ProjectLocation, ProjectRef, ProjectResult,
     ProjectsPage, ProjectsRead,
 };
-use maka_event_log::StoreError;
 use maka_event_log::projects::{
     ProjectError, ProjectMutation, ProjectRecord, ProjectRegistration, ProjectRelinkGuard,
+};
+use maka_event_log::{
+    StoreError,
+    root_store::{DataWriter, ProjectWorkspacePlan},
+    writeback::{Prepared, Statement},
 };
 use maka_fs_tools::workspace::project as filesystem;
 
@@ -39,11 +43,13 @@ fn reference(record: &ProjectRecord) -> ProjectRef {
         revision: digest(record),
     }
 }
-fn stored(error: StoreError) -> Result<ProjectResult, String> {
+fn stored(error: StoreError) -> Result<NativeMutation<ProjectResult>, String> {
     match error {
-        StoreError::SessionBusy => Ok(ProjectResult::Busy),
-        StoreError::Project(ProjectError::Changed) => Ok(ProjectResult::Changed),
-        StoreError::Project(_) => Ok(ProjectResult::Unavailable),
+        StoreError::SessionBusy => Ok(NativeMutation::Returned(ProjectResult::Busy)),
+        StoreError::Project(ProjectError::Changed) => {
+            Ok(NativeMutation::Returned(ProjectResult::Changed))
+        }
+        StoreError::Project(_) => Ok(NativeMutation::Returned(ProjectResult::Unavailable)),
         _ => Err("agent_project_commit_unknown".into()),
     }
 }
@@ -259,18 +265,22 @@ impl Owner {
     pub(super) async fn create_project_workspace(
         &self,
         path: &str,
-    ) -> Result<Option<Workspace>, String> {
+    ) -> Result<Option<PreparedProjectWorkspace>, String> {
         let Some((registration, path)) = self.project_directory(path).await? else {
             return Ok(None);
         };
-        let record = match self
+        let writer = self
             .store
-            .register_available_project(registration, now())
+            .data_writer()
+            .map_err(|error| error.to_string())?;
+        let project = match self
+            .store
+            .plan_available_project(registration, now(), &writer)
             .await
         {
-            Ok(record) => record,
+            Ok(project) => project,
             Err(StoreError::Project(_)) => return Ok(None),
-            Err(_) => return Err("agent_project_registration_unknown".into()),
+            Err(error) => return Err(error.to_string()),
         };
         let root = self
             .store
@@ -288,9 +298,8 @@ impl Owner {
         else {
             return Ok(None);
         };
-        workspace.project_id =
-            Some(Uuid::parse_str(&record.id).map_err(|_| "agent_project_unavailable")?);
-        Ok(Some(workspace))
+        workspace.project_id = Some(project.project_id());
+        Ok(Some(PreparedProjectWorkspace { workspace, project }))
     }
 
     pub(super) async fn project_accepts_session(
@@ -311,7 +320,7 @@ impl Owner {
         &self,
         selected: ProjectRef,
         path: &str,
-    ) -> Result<Option<Workspace>, String> {
+    ) -> Result<Option<PreparedProjectWorkspace>, String> {
         let Some(record) = self.project_record(selected.id).await? else {
             return Ok(None);
         };
@@ -329,15 +338,14 @@ impl Owner {
         {
             return Ok(None);
         }
-        let record = match self
+        let writer = self
             .store
-            .select_project_if(record, vec![registration.path], now())
-            .await
-        {
-            Ok((record, _)) => record,
-            Err(StoreError::Project(_)) => return Ok(None),
-            Err(_) => return Err("agent_project_selection_unknown".into()),
-        };
+            .data_writer()
+            .map_err(|error| error.to_string())?;
+        let project = self
+            .store
+            .plan_selected_project(record, vec![registration.path], now(), &writer)
+            .map_err(|error| error.to_string())?;
         let root = self
             .store
             .owned_root()
@@ -354,61 +362,186 @@ impl Owner {
         else {
             return Ok(None);
         };
-        workspace.project_id =
-            Some(Uuid::parse_str(&record.id).map_err(|_| "agent_project_unavailable")?);
-        Ok(Some(workspace))
+        workspace.project_id = Some(project.project_id());
+        Ok(Some(PreparedProjectWorkspace { workspace, project }))
     }
 
-    pub async fn project(&self, input: ProjectChange) -> Result<ProjectResult, String> {
+    fn computed_project<S, T, F>(
+        &self,
+        writer: &DataWriter,
+        statement: S,
+        availability: ProjectAvailability,
+        caller: Option<maka_agent_state::CallerFence>,
+        record: F,
+    ) -> Result<NativeMutation<ProjectResult>, String>
+    where
+        S: Statement<Value = Result<T, ProjectError>>,
+        T: std::marker::Send + 'static,
+        F: FnOnce(T) -> ProjectRecord + std::marker::Send + 'static,
+    {
+        let change = writer
+            .prepare_result(|_| {
+                Ok(ProjectCompletion {
+                    statement,
+                    availability,
+                    caller,
+                    record,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(NativeMutation::Computed { change })
+    }
+
+    pub async fn project(
+        self: &Arc<Self>,
+        input: ProjectChange,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<NativeMutation<ProjectResult>, String> {
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move { owner.prepare_project(input, &scope).await })
+        })
+        .await
+    }
+
+    async fn prepare_project(
+        &self,
+        input: ProjectChange,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<NativeMutation<ProjectResult>, String> {
         let runs = self.runs.lock().await;
         if runs.closing {
-            return Ok(ProjectResult::Unavailable);
+            return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
         }
+        let writer = if let Some(execution) = scope.identity.agent() {
+            let custody = scope.work_custody().ok_or("agent_work_unavailable")?;
+            self.store
+                .data_writer_for_work(custody.as_ref(), &execution.session_id)
+        } else {
+            self.store.data_writer()
+        }
+        .map_err(|error| error.to_string())?;
+        let caller = if let Some(execution) = scope.identity.agent() {
+            let view = self
+                .durable
+                .with_data_writer(writer.clone())
+                .map_err(|error| error.to_string())?
+                .frontier(execution.run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if view.run != execution.run_id
+                || view.spec.session_id != execution.session_id
+                || !matches!(
+                    view.spec.origin,
+                    maka_agent_facts::durable::RunOrigin::Local
+                )
+                || view.stopped
+                || view.terminal.is_some()
+            {
+                return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
+            }
+            Some(maka_agent_state::CallerFence {
+                execution: execution.clone(),
+                expected_basis: Some(view.spec.permission_basis),
+            })
+        } else {
+            None
+        };
         let archiving = matches!(&input, ProjectChange::Archive { .. });
-        let result = match input {
+        match input {
             ProjectChange::Register { path, expected } => {
                 let Some((registration, _)) = self.project_directory(&path).await? else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 let current = self
-                    .project_records()
-                    .await?
-                    .into_iter()
-                    .find(|record| record.identity == registration.identity);
-                if current.as_ref().map(reference) != expected {
-                    return Ok(ProjectResult::Changed);
-                }
-                self.store
-                    .register_project_if(registration, true, now(), current)
+                    .store
+                    .project_by_identity(&registration.identity)
                     .await
+                    .map_err(|error| error.to_string())?;
+                if current.as_ref().map(reference) != expected {
+                    return Ok(NativeMutation::Returned(ProjectResult::Changed));
+                }
+                let mut paths = match &current {
+                    Some(record) => self.project_paths(record).await?,
+                    None => Vec::new(),
+                };
+                paths.push(registration.path.clone());
+                let availability = ProjectAvailability {
+                    identity: registration.identity.clone(),
+                    paths,
+                };
+                match self
+                    .store
+                    .prepare_register_project_if(registration, true, now(), current, &writer)
+                    .await
+                {
+                    Ok(statement) => {
+                        self.computed_project(&writer, statement, availability, caller, |record| {
+                            record
+                        })
+                    }
+                    Err(error) => stored(error),
+                }
             }
             ProjectChange::Rename { project, name } => {
                 if name.trim().is_empty() || name.chars().any(char::is_control) {
-                    return Ok(ProjectResult::Invalid);
+                    return Ok(NativeMutation::Returned(ProjectResult::Invalid));
                 }
                 let Some(current) = self.project_record(project.id).await? else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 if reference(&current) != project {
-                    return Ok(ProjectResult::Changed);
+                    return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
-                self.store
-                    .mutate_project_if(current, ProjectMutation::Rename(name), now())
+                let availability = ProjectAvailability {
+                    identity: current.identity.clone(),
+                    paths: self.project_paths(&current).await?,
+                };
+                match self
+                    .store
+                    .prepare_mutate_project_if(
+                        current,
+                        ProjectMutation::Rename(name),
+                        now(),
+                        &writer,
+                    )
                     .await
+                {
+                    Ok(statement) => {
+                        self.computed_project(&writer, statement, availability, caller, |record| {
+                            record
+                        })
+                    }
+                    Err(error) => stored(error),
+                }
             }
             ProjectChange::Archive { project } | ProjectChange::Restore { project } => {
                 let Some(current) = self.project_record(project.id).await? else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 if reference(&current) != project {
-                    return Ok(ProjectResult::Changed);
+                    return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
                 let mutation = if archiving {
                     ProjectMutation::Archive
                 } else {
                     ProjectMutation::Restore
                 };
-                self.store.mutate_project_if(current, mutation, now()).await
+                let availability = ProjectAvailability {
+                    identity: current.identity.clone(),
+                    paths: self.project_paths(&current).await?,
+                };
+                match self
+                    .store
+                    .prepare_mutate_project_if(current, mutation, now(), &writer)
+                    .await
+                {
+                    Ok(statement) => {
+                        self.computed_project(&writer, statement, availability, caller, |record| {
+                            record
+                        })
+                    }
+                    Err(error) => stored(error),
+                }
             }
             ProjectChange::Relocate {
                 project,
@@ -416,21 +549,21 @@ impl Owner {
                 destination,
             } => {
                 let Some(current) = self.project_record(project.id).await? else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 if reference(&current) != project {
-                    return Ok(ProjectResult::Changed);
+                    return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
                 let Some((registration, path)) = self.project_directory(&path).await? else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 let other = self
-                    .project_records()
-                    .await?
-                    .into_iter()
-                    .find(|record| record.identity == registration.identity);
+                    .store
+                    .project_by_identity(&registration.identity)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 if other.as_ref().map(reference) != destination {
-                    return Ok(ProjectResult::Changed);
+                    return Ok(NativeMutation::Returned(ProjectResult::Changed));
                 }
                 let mut workspaces = Vec::new();
                 for path in std::iter::once(path.as_str()).chain(
@@ -448,7 +581,7 @@ impl Owner {
                     )
                     .await?
                     else {
-                        return Ok(ProjectResult::Unavailable);
+                        return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                     };
                     let directory = workspace::open_directory(
                         &self.workspace_roots,
@@ -483,7 +616,7 @@ impl Owner {
                     .values()
                     .any(|control| affected(&control.basis.workspace))
                 {
-                    return Ok(ProjectResult::Busy);
+                    return Ok(NativeMutation::Returned(ProjectResult::Busy));
                 }
                 let mut after = None;
                 loop {
@@ -508,7 +641,7 @@ impl Owner {
                             continue;
                         }
                         if affected(&self.session(id).await?.configuration.workspace) {
-                            return Ok(ProjectResult::Busy);
+                            return Ok(NativeMutation::Returned(ProjectResult::Busy));
                         }
                         previous = Some(id.as_str());
                     }
@@ -528,11 +661,21 @@ impl Owner {
                 )
                 .await?
                 else {
-                    return Ok(ProjectResult::Unavailable);
+                    return Ok(NativeMutation::Returned(ProjectResult::Unavailable));
                 };
                 selected.project_id = Some(project.id);
-                self.store
-                    .relink_project_if(
+                let mut paths = match &other {
+                    Some(record) => self.project_paths(record).await?,
+                    None => Vec::new(),
+                };
+                paths.push(registration.path.clone());
+                let availability = ProjectAvailability {
+                    identity: registration.identity.clone(),
+                    paths,
+                };
+                match self
+                    .store
+                    .prepare_relink_project_if(
                         ProjectRelinkGuard {
                             source: current,
                             destination: other,
@@ -542,16 +685,115 @@ impl Owner {
                         registration,
                         now(),
                         serde_json::to_value(selected).map_err(|_| "agent_project_invalid")?,
+                        &writer,
                     )
                     .await
-                    .map(|result| result.project)
+                {
+                    Ok(statement) => self.computed_project(
+                        &writer,
+                        statement,
+                        availability,
+                        caller,
+                        |result: maka_event_log::projects::ProjectRelink| result.project,
+                    ),
+                    Err(error) => stored(error),
+                }
             }
-        };
-        match result {
-            Ok(record) => Ok(ProjectResult::Committed {
-                project: self.project_summary(&record).await?,
-            }),
-            Err(error) => stored(error),
         }
+    }
+}
+
+pub(super) struct PreparedProjectWorkspace {
+    pub(super) workspace: Workspace,
+    pub(super) project: ProjectWorkspacePlan,
+}
+
+struct ProjectAvailability {
+    identity: String,
+    paths: Vec<String>,
+}
+impl ProjectAvailability {
+    fn summary(&self, record: ProjectRecord) -> Project {
+        let path = if record.identity == self.identity {
+            record
+                .locations
+                .iter()
+                .filter(|location| self.paths.contains(&location.path))
+                .min_by(|a, b| {
+                    b.last_used_at
+                        .cmp(&a.last_used_at)
+                        .then_with(|| a.path.cmp(&b.path))
+                })
+                .map(|location| location.path.clone())
+        } else {
+            None
+        };
+        Project {
+            reference: reference(&record),
+            name: record.name,
+            archived: record.archived_at.is_some(),
+            available: path.is_some(),
+            path,
+        }
+    }
+}
+
+struct ProjectCompletion<S, F> {
+    statement: S,
+    availability: ProjectAvailability,
+    caller: Option<maka_agent_state::CallerFence>,
+    record: F,
+}
+impl<S, T, F> Statement for ProjectCompletion<S, F>
+where
+    S: Statement<Value = Result<T, ProjectError>>,
+    T: std::marker::Send + 'static,
+    F: FnOnce(T) -> ProjectRecord + std::marker::Send + 'static,
+{
+    type Value = Value;
+    type Output = Value;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.statement.retain()
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<Value>, StoreError> {
+        if let Some(caller) = &self.caller {
+            match caller.status(connection)? {
+                maka_agent_state::CallerStatus::Current => {}
+                maka_agent_state::CallerStatus::Unavailable
+                | maka_agent_state::CallerStatus::AuthorizationChanged => {
+                    return Ok(Prepared {
+                        value: serde_json::to_value(ProjectResult::Unavailable)?,
+                        changed: false,
+                        notification: maka_event_log::writeback::Notification::NONE,
+                    });
+                }
+            }
+        }
+        let prepared = self.statement.execute(connection)?;
+        let result = match prepared.value {
+            Ok(record) => ProjectResult::Committed {
+                project: self.availability.summary((self.record)(record)),
+            },
+            Err(ProjectError::Changed) => ProjectResult::Changed,
+            Err(_) => ProjectResult::Unavailable,
+        };
+        Ok(Prepared {
+            value: serde_json::to_value(result)?,
+            changed: prepared.changed,
+            notification: prepared.notification,
+        })
+    }
+    fn committed(value: Value) -> Value {
+        value
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
     }
 }

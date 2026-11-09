@@ -357,10 +357,7 @@ impl Owner {
             // are caught by the read; later changes remain pending on this receiver.
             let mut commits = self.store.session(session).await.map_err(|error| error.to_string())?.subscribe_commits().map_err(|error| error.to_string())?;
             commits.borrow_and_update();
-            #[cfg(not(all(test, target_os = "macos")))]
             let native_hints = true;
-            #[cfg(all(test, target_os = "macos"))]
-            let native_hints = self.file_native_hints.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_os = "macos")]
             let mut next_scan;
             #[cfg(target_os = "macos")]

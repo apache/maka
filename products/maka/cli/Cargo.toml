@@ -45,6 +45,31 @@ test = false
 name = "integration"
 path = "tests/integration/main.rs"
 
+[[test]]
+name = "mainline_reopen"
+path = "tests/mainline_reopen.rs"
+
+[[test]]
+name = "journal_recovery"
+path = "tests/journal_recovery.rs"
+
+[[test]]
+name = "desktop_new_session"
+path = "tests/desktop_new_session.rs"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "codemode_reopen"
+path = "tests/codemode_reopen.rs"
+
+[[test]]
+name = "external_jobs"
+path = "tests/external_jobs.rs"
+
+[[test]]
+name = "producer_reopen"
+path = "tests/producer_reopen.rs"
+
 [dependencies]
 jiff.workspace = true
 maka-tools.workspace = true

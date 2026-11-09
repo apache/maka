@@ -19,7 +19,9 @@
 
 use super::*;
 use maka_agent_facts::{durable::UnixMillis, history_snapshot::SnapshotId};
+use maka_agent_state::session_history::snapshot::Adoption;
 use maka_agent_state::session_history::snapshot::ImportedCaptureRequest;
+use maka_event_log::writeback::{Prepared, Statement};
 
 impl Owner {
     pub(super) async fn import_copy(
@@ -129,11 +131,20 @@ impl Owner {
             .await
             .map_err(|_| Failure::Unknown)?
             .ok_or(Failure::Unavailable)?;
-        let binding = self
+        let (candidate, workspace_statement) = self
             .store
-            .attach_workspace(&self.prefix, &workspace)
+            .prepare_creation_workspace(
+                &self.prefix,
+                &workspace.workspace,
+                Some(workspace.project),
+                &writer,
+            )
             .await
             .map_err(Failure::from)?;
+        let binding = candidate.reference();
+        let stamp = candidate.stamp();
+        let selected_workspace: Workspace =
+            serde_json::from_value(candidate.workspace).map_err(|_| Failure::Invalid)?;
         let policy = self
             .creation_policy(scope)
             .await
@@ -155,16 +166,9 @@ impl Owner {
             permissions: policy.permissions,
             boundary_revision: 0,
         };
-        let actual_binding = self
-            .store
-            .workspace_binding::<Workspace>(configuration.workspace.id)
-            .await
-            .map_err(Failure::from)?
-            .ok_or(Failure::Unavailable)?;
-        let stamp = actual_binding.stamp();
         let resolved = configuration
             .clone()
-            .resolve(actual_binding.workspace, stamp)
+            .resolve(selected_workspace, stamp)
             .map_err(|_| Failure::Changed)?;
         let (spec, contents) = self
             .history_source_spec(&target, &resolved, &snapshot, operation, scope)
@@ -199,21 +203,166 @@ impl Owner {
                 .agent()
                 .map(|source| source.session_id.clone()),
         };
-        let (record, change) = self
+        let configuration = serde_json::to_value(configuration).map_err(|_| Failure::Invalid)?;
+        let statement = self
             .store
-            .prepare_plugin_session(&claim, &configuration, at, &writer, adoption)
+            .prepare_plugin_session_with_workspace(
+                &claim,
+                &configuration,
+                at,
+                &writer,
+                workspace_statement,
+                adoption,
+            )
             .await
             .map_err(Failure::from)?;
-        let record = planned.record(record).map_err(Failure::from)?;
-        let session = crate::service::summary(self, record).map_err(|_| Failure::Unavailable)?;
-        Ok(NativeMutation::Commit {
-            value: ImportResult::Imported {
-                session: Box::new(session),
-            },
-            change,
-        })
+        let source = self.data_source.clone();
+        let change = writer
+            .prepare_result(|_| {
+                Ok(ImportedPublication {
+                    statement,
+                    planned,
+                    source,
+                    caller: policy.caller,
+                })
+            })
+            .map_err(Failure::from)?;
+        Ok(NativeMutation::Computed { change })
     }
 }
+struct ImportedPublication<S> {
+    statement: S,
+    planned: maka_agent_state::session_catalog::PlannedCatalog,
+    source: DataSource,
+    caller: Option<maka_agent_state::CallerFence>,
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct ImportedResult {
+    reply: Value,
+    #[serde(skip)]
+    inner: Option<(SessionRecord, Adoption)>,
+}
+impl<S> Statement for ImportedPublication<S>
+where
+    S: Statement<Value = (SessionRecord, Adoption)>,
+{
+    type Value = ImportedResult;
+    type Output = (Value, Option<S::Output>);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.statement.retain()
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        let rejected = |reply: ImportResult| -> Result<Prepared<Self::Value>, StoreError> {
+            Ok(Prepared {
+                value: ImportedResult {
+                    reply: serde_json::to_value(reply)?,
+                    inner: None,
+                },
+                changed: false,
+                notification: maka_event_log::writeback::Notification::NONE,
+            })
+        };
+        if let Some(caller) = &self.caller {
+            let reply = match caller.status(connection)? {
+                maka_agent_state::CallerStatus::Current => None,
+                maka_agent_state::CallerStatus::Unavailable => Some(ImportResult::Unavailable),
+                maka_agent_state::CallerStatus::AuthorizationChanged => Some(ImportResult::Changed),
+            };
+            if let Some(reply) = reply {
+                return rejected(reply);
+            }
+        }
+        let written = creation::creation_sql(
+            connection,
+            || {
+                let installed = self.statement.execute(connection)?;
+                let record = self.planned.record(installed.value.0.clone())?;
+                let session =
+                    crate::service::summary_for(&self.source, record).map_err(|diagnostic| {
+                        StoreError::StatementRejected {
+                            cause: Arc::new(StoreError::InvalidTransition(diagnostic.clone())),
+                            diagnostic,
+                        }
+                    })?;
+                Ok(Prepared {
+                    value: ImportedResult {
+                        reply: serde_json::to_value(ImportResult::Imported {
+                            session: Box::new(session),
+                        })?,
+                        inner: Some(installed.value),
+                    },
+                    changed: installed.changed,
+                    notification: installed.notification,
+                })
+            },
+            import_rejection,
+        )?;
+        match written {
+            Ok(success) => Ok(success),
+            Err(reply) => rejected(reply),
+        }
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        (value.reply, value.inner.map(S::committed))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(error.underlying(), StoreError::StatementRejected { .. })
+            || S::isolated_rejection(error)
+    }
+}
+fn import_rejection(error: &StoreError) -> Option<ImportResult> {
+    use maka_event_log::{projects::ProjectError, root_store::CreationRejection};
+    match creation::rejection_cause(error) {
+        StoreError::Project(ProjectError::Changed)
+        | StoreError::RevisionConflict { .. }
+        | StoreError::SessionRevisionConflict { .. }
+        | StoreError::EventConflict
+        | StoreError::SessionConflict
+        | StoreError::SessionCreationRejected(
+            CreationRejection::IdentityConflict
+            | CreationRejection::SourceRevisionConflict { .. }
+            | CreationRejection::StaleWorkspaceBinding,
+        ) => Some(ImportResult::Changed),
+        StoreError::Project(
+            ProjectError::Archived
+            | ProjectError::NotFound
+            | ProjectError::Unavailable
+            | ProjectError::PathMismatch,
+        )
+        | StoreError::SessionNotFound
+        | StoreError::SessionRetired
+        | StoreError::SessionBusy
+        | StoreError::SessionCreationRejected(
+            CreationRejection::MissingDependency
+            | CreationRejection::Retired
+            | CreationRejection::MissingWorkspaceBinding,
+        ) => Some(ImportResult::Unavailable),
+        StoreError::InvalidTransition(reason)
+            if matches!(
+                reason.as_str(),
+                "prepared workspace binding changed"
+                    | "prepared project identity changed"
+                    | "historical source cannot replace an active execution"
+            ) =>
+        {
+            Some(ImportResult::Changed)
+        }
+        _ => None,
+    }
+}
+
 fn snapshot_id(operation: &RecoveryRef) -> Result<SnapshotId, Failure> {
     let encoded =
         serde_json::to_vec(&("maka.import.capture.v1", operation)).map_err(|_| Failure::Invalid)?;

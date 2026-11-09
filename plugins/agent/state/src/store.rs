@@ -36,6 +36,51 @@ pub(crate) fn invalid(reason: impl Into<String>) -> StoreError {
     StoreError::InvalidTransition(reason.into())
 }
 
+/// A captured caller's data checks, never an authority token or a new admission.
+#[derive(Clone)]
+pub struct CallerFence {
+    pub execution: ExecutionIdentity,
+    pub expected_basis: Option<maka_sandbox::workspace::PermissionBasis>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallerStatus {
+    Current,
+    Unavailable,
+    AuthorizationChanged,
+}
+impl CallerFence {
+    pub fn status(&self, connection: &Connection) -> Result<CallerStatus, StoreError> {
+        if !crate::interactions::sql::active_session(connection, &self.execution.session_id)? {
+            return Ok(CallerStatus::Unavailable);
+        }
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE run=?1 AND session=?2)",
+            rusqlite::params![self.execution.run_id.to_string(), self.execution.session_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(CallerStatus::Unavailable);
+        }
+        let view = sql::load(connection, self.execution.run_id, &[], false)?;
+        if view.run != self.execution.run_id
+            || view.spec.session_id != self.execution.session_id
+            || !matches!(view.spec.origin, RunOrigin::Local)
+            || view.stopped
+            || view.terminal.is_some()
+        {
+            return Ok(CallerStatus::Unavailable);
+        }
+        if let Some(expected) = self.expected_basis
+            && (view.spec.permission_basis != expected
+                || crate::interactions::sql::current_basis(connection, &self.execution.session_id)?
+                    != Some(expected))
+        {
+            return Ok(CallerStatus::AuthorizationChanged);
+        }
+        Ok(CallerStatus::Current)
+    }
+}
+
 mod admission;
 mod content;
 pub(crate) mod fallback;

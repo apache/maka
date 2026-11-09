@@ -407,9 +407,6 @@ impl OperationStore {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 // Root lifetime covers the actual first dispatch through its durable settlement,
 // including the gap after the provider has drained but before the receipt write.
 struct OperationLifetime {

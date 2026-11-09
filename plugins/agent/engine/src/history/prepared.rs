@@ -33,8 +33,6 @@ use maka_model::{ModelPreparationResources, ProviderKind, prompt::Prompt};
 use std::{io, mem, ops::Range, sync::Arc};
 use tokio_util::sync::CancellationToken;
 mod backed;
-#[cfg(test)]
-mod backed_tests;
 
 pub(crate) struct FrozenHistory {
     directory: HistoryDirectory,

@@ -32,22 +32,6 @@ use maka_plugin_core::{
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-// Test Roots are fresh. Keep the initial owner through SQL startup: dropping and
-// reacquiring it can race a parallel child's inherited OFD lease before exec.
-#[cfg(test)]
-pub(super) async fn create(root: std::path::PathBuf) -> Result<RootStore, HostError> {
-    use maka_event_log::root::{RootNamespaces, RootOwner};
-    let owner = tokio::task::spawn_blocking(move || {
-        RootOwner::create(&root, &RootNamespaces::for_current_account()?)
-    })
-    .await??;
-    Ok(maka_transport::open_store(
-        std::sync::Arc::new(owner),
-        &maka_product_native::root_migrations(),
-    )
-    .await?)
-}
-
 pub(super) fn decode_packages(
     files: Vec<BTreeMap<String, String>>,
 ) -> Result<Vec<Package>, HostError> {

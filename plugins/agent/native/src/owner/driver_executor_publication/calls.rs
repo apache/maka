@@ -75,7 +75,6 @@ struct Live {
     access: Arc<RunAccess>,
     task: ExternalTaskId,
     preparer: Option<ExecutorPublication>,
-    services: NativeServices,
     files: Result<SelectedFiles, String>,
     prepared: OnceCell<Arc<PreparedPublication>>,
     preparation: Mutex<Option<watch::Receiver<Option<PreparedResult>>>>,
@@ -163,7 +162,6 @@ impl LivePublication {
                 access,
                 task,
                 preparer,
-                services: owner.services.clone(),
                 files,
                 prepared: OnceCell::new(),
                 preparation: Mutex::new(None),
@@ -478,16 +476,14 @@ impl ExternalPublicationPorts for LivePublication {
                 let result = async {
                     let request = live.request(&io, key)?;
                     reader = Some(request.clone());
-                    if bound.is_none() {
-                        let original = live
-                            .lookup(&request, key)
-                            .await?
-                            .ok_or_else(|| unknown(key))?;
-                        if original != reference {
-                            return Err(invalid(
-                                "publication observation differs from original CallerIntent",
-                            ));
-                        }
+                    let original = live
+                        .lookup(&request, key)
+                        .await?
+                        .ok_or_else(|| unknown(key))?;
+                    if original != reference {
+                        return Err(invalid(
+                            "publication observation differs from original CallerIntent",
+                        ));
                     }
                     ack(&io, witness.bound(reference.clone(), timestamp()).await)?;
                     let reply = live.recover(&request, reference).await;
@@ -579,6 +575,7 @@ impl Live {
             .upgrade()
             .ok_or_else(|| invalid("actual publication owner closed"))?;
         let request = self
+            .selected_files(key.publication)?
             .services
             .request_with_work(
                 Identity::Agent {
@@ -724,6 +721,8 @@ impl Live {
         request: &NativeRequest,
         key: ExternalPublicationKey,
     ) -> Result<Option<RecoveryRef>, RunError> {
+        let bound = self.original_key(key).await?;
+        let files = self.selected_files(key.publication)?;
         let operation = crate::tools::operation_uuid(self.access.execution(), &operation_id(key));
         let unavailable = |diagnostic| {
             RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
@@ -737,17 +736,21 @@ impl Live {
             .await
             .map_err(unavailable)?;
         let Some(intent) = intent else {
+            if bound.is_some() {
+                return Err(unknown(key));
+            }
             return Ok(None);
         };
-        if intent.recovery != recovery(key) || intent.consumer != *request.requester().instance() {
+        if intent.recovery != recovery(key)
+            || intent.consumer != *request.requester().instance()
+            || intent.consumer != *files.binding.consumer().instance()
+        {
             return Err(invalid(
                 "original publication CallerIntent differs from fixed item",
             ));
         }
-        self.check_reference(key, &intent.reference)?;
-        if self
-            .original_key(key)
-            .await?
+        self.check_fresh_reference(key, &intent.reference)?;
+        if bound
             .as_ref()
             .is_some_and(|original| original != &intent.reference)
         {
@@ -761,9 +764,24 @@ impl Live {
         &self,
         publication: ExternalPublicationId,
     ) -> Result<&SelectedFiles, RunError> {
-        self.files
+        let files = self
+            .files
             .as_ref()
-            .map_err(|diagnostic| unavailable(publication, diagnostic))
+            .map_err(|diagnostic| unavailable(publication, diagnostic))?;
+        let owner = self
+            .owner
+            .upgrade()
+            .ok_or_else(|| unavailable(publication, "actual Files owner is unavailable"))?;
+        let actual = owner
+            .services
+            .imports()
+            .find(|(name, _)| *name == files.import.as_str())
+            .and_then(|(_, bindings)| bindings.get(files.member))
+            .ok_or_else(|| unavailable(publication, "captured Files binding is unavailable"))?;
+        if actual.execution_basis() != files.binding.execution_basis() {
+            return Err(unavailable(publication, "captured Files binding changed"));
+        }
+        Ok(files)
     }
     async fn original_key(
         &self,

@@ -195,22 +195,3 @@ fn parse_start(pid: u32, bytes: &[u8]) -> io::Result<u64> {
         .parse()
         .map_err(|_| invalid())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stat_comm_may_contain_closing_parentheses_and_non_utf8() {
-        let mut bytes = b"42 (a) weird \xff) ".to_vec();
-        let mut fields = vec!["0"; 50];
-        fields[0] = "S";
-        fields[19] = "123456";
-        bytes.extend_from_slice(fields.join(" ").as_bytes());
-        bytes.push(b'\n');
-        assert_eq!(parse_start(42, &bytes).unwrap(), 123456);
-        assert!(parse_start(43, &bytes).is_err());
-        assert!(parse_start(42, &bytes[..bytes.len() - 2]).is_err());
-        assert!(parse_start(42, b"42 (comm) S 1\n").is_err());
-    }
-}

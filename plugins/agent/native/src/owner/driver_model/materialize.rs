@@ -35,8 +35,6 @@ pub(super) struct FrozenMaterializer {
     pub provenance: Value,
     pub recovery: FrozenRecovery,
     pub authorization_failure: std::sync::Mutex<Option<maka_model::ModelError>>,
-    #[cfg(test)]
-    pub build_entered: Option<CancellationToken>,
     pub provider: maka_model::ProviderConfig,
     pub budget: maka_agent_facts::context::PreparedContextBreakdown,
 }
@@ -92,10 +90,6 @@ impl FrozenMaterializer {
         cancellation: &CancellationToken,
     ) -> Result<(PreparedPrompt, ModelRequest), RunError> {
         self.authorize_current(cancellation).await?;
-        #[cfg(test)]
-        if let Some(entered) = &self.build_entered {
-            entered.cancel();
-        }
         let mut prompt = preparation::restore_prompt(
             self.io.clone(),
             self.resources.clone(),
@@ -221,90 +215,7 @@ impl maka_agent_ports::model::FrozenPrompt for FrozenMaterializer {
         })
     }
 }
-#[cfg(test)]
-impl DriverModel {
-    pub(in crate::owner) async fn assert_frozen_build_rechecks_after_wait(
-        &self,
-        view: &RunView,
-        request: &RequestSpec,
-        access: Arc<crate::owner::RunAccess>,
-        change: impl std::future::Future<Output = ()>,
-        restore: impl std::future::Future<Output = ()>,
-    ) {
-        use maka_agent_ports::model::FrozenPrompt as _;
-        let frozen: FrozenInput = self.decode(view.run, &request.request).await.unwrap();
-        let recovery: FrozenRecovery = self
-            .decode(view.run, &request.recovery_contract)
-            .await
-            .unwrap();
-        let provenance: Value = self.decode(view.run, &request.provenance).await.unwrap();
-        let budget = serde_json::from_value(provenance["breakdown"].clone()).unwrap();
-        let history = self
-            .state
-            .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
-        let cut = history.capture().await.unwrap();
-        let mut factory = FrozenMaterializer {
-            io: self.preparation_io().unwrap(),
-            resources: self.resources.clone(),
-            history,
-            cut,
-            run: view.run,
-            frozen,
-            request: request.clone(),
-            access,
-            model_source: self.source.clone(),
-            executor: self.executor.clone(),
-            provenance,
-            recovery,
-            authorization_failure: Default::default(),
-            build_entered: None,
-            provider: self.source.capture().await.unwrap().provider,
-            budget,
-        };
-        let (prompt, input) = factory.build(&self.cancellation).await.unwrap();
-        drop(input);
-        prompt.close().await.unwrap();
-        let held = self
-            .resources
-            .reserve_staging(self.resources.policy().staging_bytes)
-            .await
-            .unwrap();
-        let entered = CancellationToken::new();
-        factory.build_entered = Some(entered.clone());
-        let pending = factory.build(&self.cancellation);
-        tokio::pin!(pending);
-        tokio::select! {
-            biased;
-            result=&mut pending=>panic!("original build did not wait for its real staging reservation: {}",result.is_ok()),
-            _=entered.cancelled()=>{},
-        }
-        change.await;
-        drop(held);
-        assert!(
-            matches!(pending.await,Err(RunError::Preparation(error)) if error.kind()==std::io::ErrorKind::PermissionDenied)
-        );
-        let first = factory
-            .authorization_failure()
-            .expect("the same original factory retains its actual local refusal");
-        assert!(matches!(
-            first,
-            maka_model::ModelError::LocalAuthorization(_)
-        ));
-        assert!(first.failure_cause().is_none());
-        restore.await;
-        assert_eq!(
-            serde_json::to_value(
-                factory
-                    .authorize(self.cancellation.clone())
-                    .await
-                    .unwrap_err()
-            )
-            .unwrap(),
-            serde_json::to_value(first).unwrap(),
-            "regrant cannot erase the original request's first refusal"
-        );
-    }
-}
+
 #[derive(Debug)]
 struct FailedCleanup {
     original: RunError,

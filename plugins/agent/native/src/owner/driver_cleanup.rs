@@ -44,26 +44,7 @@ pub(super) struct RetainedScope {
     close_round_finished: CancellationToken,
     observer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
-#[cfg(test)]
-impl RetainedScope {
-    pub(super) fn original_driver_for_test(
-        &self,
-        run: maka_agent_facts::durable::RunId,
-    ) -> Result<Arc<driver::NativeDriver>, &'static str> {
-        let material = self.material.try_lock().map_err(|_| "busy")?;
-        let material = material.as_ref().ok_or("released")?;
-        match material.original.as_ref() {
-            OriginalScope::Driver {
-                driver: Some(driver),
-                ..
-            } if driver.access.execution().run_id == run => Ok(driver.clone()),
-            OriginalScope::Driver {
-                driver: Some(_), ..
-            } => Err("other_run"),
-            _ => Err("absent"),
-        }
-    }
-}
+
 impl RetainedScope {
     async fn release(self: &Arc<Self>, owner: &Arc<Owner>, session: &str) {
         let mut runs = owner.runs.state().await;
@@ -176,76 +157,6 @@ impl Owner {
             };
             tracing::warn!(scope_kind = kind, run_id = ?run, "Original retained Scope has no positive Root cleanup fence");
         }
-    }
-    #[cfg(test)]
-    pub(super) async fn lose_retained_partial_ack_once(&self, session: &str) -> bool {
-        let scopes = self
-            .runs
-            .state()
-            .await
-            .retained_cleanup
-            .get(session)
-            .cloned()
-            .unwrap_or_default();
-        for scope in scopes {
-            let material = scope.material.lock().unwrap();
-            let Some(material) = material.as_ref() else {
-                continue;
-            };
-            let model = match material.original.as_ref() {
-                OriginalScope::Driver {
-                    driver: Some(driver),
-                    ..
-                } => match &driver.backend {
-                    driver::NativeBackend::Model { model, .. } => Some(model),
-                    _ => None,
-                },
-                OriginalScope::Preparation(model) => model.as_ref(),
-                _ => None,
-            };
-            if let Some(model) = model {
-                model.original_cleanup.lose_next_partial_ack();
-                return true;
-            }
-        }
-        false
-    }
-    #[cfg(test)]
-    pub(super) async fn retained_tool_returns(
-        &self,
-        session: &str,
-    ) -> Vec<(
-        maka_agent_facts::durable::ToolKey,
-        maka_agent_facts::durable::FactId,
-        maka_agent_facts::durable::ContentRef,
-    )> {
-        let scopes = self
-            .runs
-            .state()
-            .await
-            .retained_cleanup
-            .get(session)
-            .cloned()
-            .unwrap_or_default();
-        let mut returns = Vec::new();
-        for scope in scopes {
-            let original = scope
-                .material
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|material| material.original.clone());
-            if let Some(original) = original {
-                if let OriginalScope::Driver {
-                    driver: Some(driver),
-                    ..
-                } = original.as_ref()
-                {
-                    returns.extend(driver.frozen_tool_returns().await);
-                }
-            }
-        }
-        returns
     }
 
     pub(super) async fn retain_original_preparation(

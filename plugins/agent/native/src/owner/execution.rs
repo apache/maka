@@ -234,6 +234,9 @@ impl Owner {
                 ContinuationResult::Rejected { reason },
             ))
         };
+        if !self.may_control(parent, &input.session_id).await? {
+            return rejected(ContinuationRejection::SourceMissing);
+        }
         let Some(source) = self
             .session_run(&input.session_id, input.source_run_id)
             .await?

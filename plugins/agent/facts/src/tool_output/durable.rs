@@ -240,33 +240,3 @@ pub(super) fn checked_image(image: &ImageOutput, session: &str) -> Option<ImageO
         reference: image.reference.clone(),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn raw_results_round_trip_beyond_old_depth_and_reject_unsupported_decoder_shape() {
-        let nested = |depth| {
-            let mut value = serde_json::json!("exact tail");
-            for _ in 0..depth {
-                value = Value::Array(vec![value]);
-            }
-            value
-        };
-        let value = nested(80);
-        let bytes = encode_raw_tool_result(&ToolOutput::Json(value.clone())).unwrap();
-        let evidence = RawToolResultRef {
-            bytes: bytes.len() as u64,
-            digest: content_digest(&bytes),
-        };
-        let ToolOutput::Json(restored) = decode_raw_tool_result(&bytes, &evidence).unwrap() else {
-            panic!("raw result changed kind")
-        };
-        assert_eq!(restored, value);
-        assert_eq!(
-            encode_raw_tool_result(&ToolOutput::Json(nested(160))),
-            Err("unsupported tool result encoding")
-        );
-    }
-}

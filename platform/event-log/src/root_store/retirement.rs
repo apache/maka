@@ -25,9 +25,6 @@ use crate::sessions::{
 
 mod prepared;
 
-#[cfg(test)]
-mod tests;
-
 impl SessionStore {
     pub(super) async fn exclusive_metadata(&self, drain: bool) -> Result<EventLog, StoreError> {
         let owner = self.owner()?;

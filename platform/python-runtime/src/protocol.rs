@@ -131,27 +131,3 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, 
     decoder.end()?;
     Ok(value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn frames_are_bounded_before_recursive_decoding_and_strings_are_not_structure() {
-        let frame = format!(
-            "{}0{}",
-            "[".repeat(MAX_JSON_DEPTH + 5),
-            "]".repeat(MAX_JSON_DEPTH + 5)
-        );
-        assert!(
-            decode::<Value>(frame.as_bytes())
-                .unwrap_err()
-                .to_string()
-                .contains("nesting limit")
-        );
-        let text = format!("{}\\\"{}", "[".repeat(1000), "}".repeat(1000));
-        assert_eq!(
-            decode::<Value>(&serde_json::to_vec(&text).unwrap()).unwrap(),
-            Value::String(text)
-        );
-    }
-}

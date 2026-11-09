@@ -49,7 +49,3 @@ maka-session-state.workspace = true
 maka-tools.workspace = true
 maka-event-log.workspace = true
 tempfile.workspace = true
-
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"

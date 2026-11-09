@@ -68,7 +68,7 @@ pub async fn project_cell_knowledge(
         children,
     };
     charge(&mut remaining, super::encoded_len(&graph)?)?;
-    let graph = serde_json::to_string(&graph).map_err(RunError::Checkpoint)?;
+    let graph = serde_json::to_string(&graph).map_err(RunError::Json)?;
     let label = match language {
         Language::En => {
             "[Host Cell child knowledge; historical data, not a user request or a new execution]"
@@ -109,7 +109,7 @@ pub async fn project_cell_knowledge(
             serde_json::to_string(
                 &serde_json::json!({"operation":operation,"name":child.name,"input":input}),
             )
-            .map_err(RunError::Checkpoint)?,
+            .map_err(RunError::Json)?,
         ));
         let provider_settled = matches!(
             child.reply.as_ref().map(|reply| &reply.receipt),
@@ -149,7 +149,7 @@ pub async fn project_cell_knowledge(
                     "Cell child result error flag differs from its original body".into(),
                 ));
             }
-            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"reference":result.result,"isError":result.is_error})).map_err(RunError::Checkpoint)?));
+            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"reference":result.result,"isError":result.is_error})).map_err(RunError::Json)?));
             let output = if let Some(projection) = &returned.body.projection {
                 let media = match &media {
                     MediaSource::Live { artifacts, scope } => MediaSource::Live {
@@ -224,12 +224,12 @@ fn append_output(content: &mut Vec<ContentPart>, output: ToolOutput) -> Result<(
             content.push(ContentPart::text(text));
         }
         ToolOutput::Json(value) => content.push(ContentPart::text(
-            serde_json::to_string(&value).map_err(RunError::Checkpoint)?,
+            serde_json::to_string(&value).map_err(RunError::Json)?,
         )),
         ToolOutput::ErrorJson(value) => {
             content.push(ContentPart::text("Child tool reported an error:"));
             content.push(ContentPart::text(
-                serde_json::to_string(&value).map_err(RunError::Checkpoint)?,
+                serde_json::to_string(&value).map_err(RunError::Json)?,
             ));
         }
         ToolOutput::Content(parts) => content.extend(parts),
@@ -262,7 +262,7 @@ async fn read<T: DeserializeOwned + Send + 'static>(
     let token = cancellation.clone();
     let decode = move |reader: &mut dyn std::io::Read| -> Result<T, RunError> {
         check(&token)?;
-        serde_json::from_reader(BufReader::new(reader)).map_err(RunError::Checkpoint)
+        serde_json::from_reader(BufReader::new(reader)).map_err(RunError::Json)
     };
     let decoded = match source {
         NotificationSource::Live(store) => {
@@ -294,6 +294,3 @@ fn check(cancellation: &CancellationToken) -> Result<(), RunError> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

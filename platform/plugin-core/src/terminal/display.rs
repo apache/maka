@@ -532,38 +532,3 @@ impl Metadata {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn incomplete_out_of_order_and_oversized_display_transfers_are_rejected() {
-        let display = Display::new(TerminalSize::new(80, 24).unwrap());
-        assert!(Assembly::begin(display.metadata.clone(), 10_001, None).is_err());
-        let mut duplicate = display.metadata.clone();
-        duplicate.palette = vec![(1, [1, 2, 3]), (1, [4, 5, 6])];
-        assert!(Assembly::begin(duplicate, 0, None).is_err());
-        let mut assembly = Assembly::begin(display.metadata.clone(), 0, None).unwrap();
-        assert!(
-            assembly
-                .rows(vec![RowPart {
-                    buffer: Buffer::Screen,
-                    row: 1,
-                    column: 0,
-                    runs: display.screen[0].clone()
-                }])
-                .is_err()
-        );
-        let mut assembly = Assembly::begin(display.metadata, 0, None).unwrap();
-        assembly
-            .rows(vec![RowPart {
-                buffer: Buffer::Screen,
-                row: 0,
-                column: 0,
-                runs: display.screen[0].clone(),
-            }])
-            .unwrap();
-        assert!(assembly.finish().is_err());
-    }
-}

@@ -63,9 +63,9 @@ pub(crate) async fn open(
     bound: Option<&[u8]>,
     retirement: CancellationToken,
 ) -> Result<Box<dyn ExternalCleanupSource>, RunError> {
-    let accepted: Accepted = serde_json::from_slice(backend).map_err(RunError::Checkpoint)?;
+    let accepted: Accepted = serde_json::from_slice(backend).map_err(RunError::Json)?;
     let prepared: TaskDescriptor<Value> =
-        serde_json::from_slice(prepared).map_err(RunError::Checkpoint)?;
+        serde_json::from_slice(prepared).map_err(RunError::Json)?;
     if prepared.protocol != NATIVE_TASK_PROTOCOL
         || prepared.payload.get("recovery") != Some(&Value::Null)
     {
@@ -77,7 +77,7 @@ pub(crate) async fn open(
         None => None,
         Some(bytes) => {
             let mut binding: TaskDescriptor<Value> =
-                serde_json::from_slice(bytes).map_err(RunError::Checkpoint)?;
+                serde_json::from_slice(bytes).map_err(RunError::Json)?;
             let recovery = binding
                 .payload
                 .as_object_mut()
@@ -89,14 +89,10 @@ pub(crate) async fn open(
                     "Original cleanup binding differs from its prepare record",
                 ));
             }
-            Some(
-                serde_json::from_value::<RecoveryDescriptor>(recovery)
-                    .map_err(RunError::Checkpoint)?,
-            )
+            Some(serde_json::from_value::<RecoveryDescriptor>(recovery).map_err(RunError::Json)?)
         }
     };
-    let input: PreparedInput =
-        serde_json::from_value(prepared.payload).map_err(RunError::Checkpoint)?;
+    let input: PreparedInput = serde_json::from_value(prepared.payload).map_err(RunError::Json)?;
     let execution = ExecutionIdentity {
         session_id: frontier.session_id.clone(),
         turn_id: frontier.turn_id.clone(),
@@ -298,7 +294,7 @@ pub(crate) async fn open(
                         task_id: frontier.task,
                         after_index: None,
                     })
-                    .map_err(RunError::Checkpoint)?,
+                    .map_err(RunError::Json)?,
                     maka_capabilities::call::Attachments::default(),
                 )
                 .map_err(unavailable)?,

@@ -41,6 +41,9 @@ use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
+
 pub type CellFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ToolError>> + Send + 'a>>;
 #[derive(Clone, Debug)]
 pub struct CellChange {
@@ -307,7 +310,7 @@ impl CodeCells {
         drop(cells);
         self.0.displayed.lock().unwrap().clear();
         match failure {
-            Some(error) => Err(error),
+            Some(error) => Err(cell_failure(error)),
             None => Ok(()),
         }
     }
@@ -476,7 +479,8 @@ impl CodeCells {
         // Absence in the live map has no historical meaning, including after restart.
         let mut canonical = port
             .read(id)
-            .await?
+            .await
+            .map_err(cell_failure)?
             .ok_or_else(|| ToolError::Failed("Cell was not recorded in this session".into()))?;
         let live = self.0.live.lock().unwrap().get(&id).cloned();
         let _observer = live
@@ -502,12 +506,8 @@ impl CodeCells {
                     _=tokio::time::sleep(yield_time)=>{},
                 }
             }
-            if let Some(Err(error)) = &*done.borrow() {
-                return Err(error.clone());
-            }
-            if let Some(error) = live.context.failure() {
-                return Err(error);
-            }
+            // Worker failures fence Cell execution, not this control call's Host
+            // operation. The Cell owner retains child and VM cleanup obligations.
             {
                 let mut output = live.output.lock().unwrap();
                 new_output = live.context.take_output();
@@ -515,8 +515,34 @@ impl CodeCells {
             }
             canonical = port
                 .read(id)
-                .await?
+                .await
+                .map_err(cell_failure)?
                 .ok_or_else(|| ToolError::Persistence("admitted Cell disappeared".into()))?;
+            if matches!(canonical.status, CellStatus::Running) {
+                let finished = done.borrow().clone();
+                match finished {
+                    Some(Err(error)) => return Err(cell_failure(error)),
+                    Some(Ok(())) => {
+                        canonical = port
+                            .read(id)
+                            .await
+                            .map_err(cell_failure)?
+                            .ok_or_else(|| persistence("admitted Cell disappeared"))?;
+                        if matches!(canonical.status, CellStatus::Running) {
+                            return Err(persistence(
+                                "Cell worker completed without a canonical terminal observation",
+                            ));
+                        }
+                    }
+                    None => {
+                        if !live.cancel.is_cancelled()
+                            && let Some(error) = live.context.failure()
+                        {
+                            return Err(cell_failure(error));
+                        }
+                    }
+                }
+            }
         }
         let evidence = match &canonical.status {
             CellStatus::Running => CellReplyState::Running,
@@ -528,17 +554,12 @@ impl CodeCells {
             },
         };
         let observation = match canonical.status {
-            CellStatus::Running => {
-                if live.is_none() {
-                    return Err(ToolError::OutcomeUnknown("Cell interpreter and old handles expired at Host restart; original child effects must be reconciled before replanning".into()));
-                }
-                CellObservation::Running {
-                    cell_id: id,
-                    content: new_output,
-                }
-            }
+            CellStatus::Running => CellObservation::Running {
+                cell_id: id,
+                content: new_output,
+            },
             CellStatus::Completed { result, .. } => {
-                let bytes = port.content(id, result).await?;
+                let bytes = port.content(id, result).await.map_err(cell_failure)?;
                 let completion = tokio::task::spawn_blocking(move || {
                     serde_json::from_slice::<CellObservation>(&bytes).map_err(persistence)
                 })
@@ -548,7 +569,7 @@ impl CodeCells {
                 completion
             }
             CellStatus::Interrupted { report } => {
-                let bytes = port.content(id, report).await?;
+                let bytes = port.content(id, report).await.map_err(cell_failure)?;
                 self.0.live.lock().unwrap().remove(&id);
                 let report = tokio::task::spawn_blocking(move || {
                     serde_json::from_slice(&bytes).map_err(persistence)
@@ -595,6 +616,7 @@ async fn run_cell(
         catalog,
         execution: state.execution.clone(),
         context: live.context.clone(),
+        cell_cancel: live.cancel.clone(),
     });
     let prepared = match state
         .executor
@@ -893,6 +915,7 @@ struct Nested {
     catalog: ToolCatalog,
     execution: Arc<tokio::sync::RwLock<()>>,
     context: CellContext,
+    cell_cancel: CancellationToken,
 }
 impl ToolExecutor for Nested {
     fn names(&self) -> Vec<String> {
@@ -904,6 +927,7 @@ impl ToolExecutor for Nested {
         let catalog = self.catalog.clone();
         let gate = self.execution.clone();
         let context = self.context.clone();
+        let cell_cancel = self.cell_cancel.clone();
         let parallel = catalog.semantics(&name) == Ok(crate::ToolSemantics::Parallel);
         Box::pin(async move {
             let _gate = if parallel {
@@ -912,6 +936,7 @@ impl ToolExecutor for Nested {
                 futures_util::future::Either::Right(gate.write_owned().await)
             };
             if let Some(error) = context.failure() {
+                cell_cancel.cancel();
                 return Err(error);
             }
             let result = port
@@ -926,6 +951,7 @@ impl ToolExecutor for Nested {
             ) = &result
             {
                 context.fail(error.clone());
+                cell_cancel.cancel();
             }
             let value = result?
                 .into_code_value()
@@ -933,6 +959,7 @@ impl ToolExecutor for Nested {
             context
                 .stage_loaded(std::collections::BTreeSet::from([name]))
                 .map_err(|_| {
+                    cell_cancel.cancel();
                     context
                         .failure()
                         .expect("loaded draft failure remains fatal")
@@ -943,6 +970,18 @@ impl ToolExecutor for Nested {
 }
 fn persistence(error: impl std::fmt::Display) -> ToolError {
     ToolError::Persistence(error.to_string())
+}
+fn cell_failure(error: ToolError) -> ToolError {
+    match error {
+        ToolError::OperationUnknown { message, .. } => ToolError::OutcomeUnknown(message),
+        ToolError::OperationCleanupUnconfirmed { message, .. } => {
+            ToolError::CleanupUnconfirmed(message)
+        }
+        error @ (ToolError::Persistence(_)
+        | ToolError::OutcomeUnknown(_)
+        | ToolError::CleanupUnconfirmed(_)) => error,
+        error => ToolError::OutcomeUnknown(error.to_string()),
+    }
 }
 impl CodeCells {
     pub fn project_observation(

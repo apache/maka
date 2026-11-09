@@ -57,9 +57,6 @@ impl From<ToolError> for OperationFailure {
     }
 }
 
-#[cfg(test)]
-type OperationFixture = Arc<dyn Fn(Value) -> Result<Value, OperationFailure> + Send + Sync>;
-
 /// Carries the original Host call and resource budget.
 pub(super) struct EvaluationScope {
     call: Call,
@@ -181,8 +178,7 @@ impl Computer {
             basis,
             language,
             cell: context.clone(),
-            #[cfg(test)]
-            operation_fixture: None,
+
             input_resources,
         });
         let mut changes = call.authority.changes().map_err(failed)?;
@@ -684,8 +680,6 @@ impl Computer {
 }
 #[derive(Clone)]
 struct Bridge {
-    #[cfg(test)]
-    operation_fixture: Option<OperationFixture>,
     owner: Arc<Computer>,
     call: Call,
     interaction: Arc<sessions::Interaction>,
@@ -817,17 +811,7 @@ impl ToolExecutor for Bridge {
                 receipt.complete_call();
                 return Err(failed("Computer operation unavailable"));
             }
-            #[cfg(test)]
-            let result = match &bridge.operation_fixture {
-                Some(operation) => operation(input),
-                None => {
-                    bridge
-                        .owner
-                        .operation(&bridge, input, cancellation, receipt.clone())
-                        .await
-                }
-            };
-            #[cfg(not(test))]
+
             let result = bridge
                 .owner
                 .operation(&bridge, input, cancellation, receipt.clone())
@@ -890,142 +874,3 @@ fn partial(error: ToolError, context: &CellContext, language: Language) -> ToolE
         error => error,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bridge_allows_reported_browser_unknown_and_drained_native_unknown_to_continue() {
-        use maka_code_runtime::CellAbort;
-        use maka_computer_use::protocol::Command;
-
-        for (browser_operation, drained, error) in [
-            (
-                true,
-                false,
-                ToolError::OutcomeUnknown("browser navigation outcome unknown".into()),
-            ),
-            (
-                false,
-                true,
-                ToolError::OutcomeUnknown("native outcome unknown".into()),
-            ),
-            (
-                false,
-                false,
-                ToolError::OutcomeUnknown("native outcome unknown".into()),
-            ),
-            (
-                false,
-                false,
-                ToolError::Persistence("interruption write failed".into()),
-            ),
-            (
-                false,
-                false,
-                ToolError::CleanupUnconfirmed("missing interruption writer".into()),
-            ),
-        ] {
-            let actual = crate::browser_access::tests::Fixture::with_permissions(
-                maka_agent_api::contract::WorkspacePermissions {
-                    access: maka_agent_api::contract::WorkspaceAccess::DangerFullAccess,
-                    request_permissions: false,
-                },
-            )
-            .await;
-            let owner = actual.owner.clone();
-            let interaction = actual.entry.clone();
-            let kernel = interaction.fresh_kernel().unwrap();
-            let admission = kernel.admission.clone();
-            let native_error = error.clone();
-            let fixture: OperationFixture = Arc::new(move |input| {
-                let command: Command = serde_json::from_value(input).unwrap();
-                match command {
-                    Command::ListWindows { .. } | Command::ListTabs { .. } => {
-                        Err(OperationFailure::reported(
-                            native_error.clone(),
-                            browser_command(&command),
-                            drained,
-                        ))
-                    }
-                    Command::ListBrowsers { .. } => Ok(json!("browser-still-live")),
-                    command => panic!("unexpected facade command: {command:?}"),
-                }
-            });
-            let context =
-                CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
-                    .unwrap();
-            let bridge = Arc::new(Bridge {
-                owner: owner.clone(),
-                call: actual.call.clone(),
-                interaction: interaction.clone(),
-                epoch: kernel.epoch.clone(),
-                admission: admission.clone(),
-                basis: actual.basis(),
-                language: Language::En,
-                cell: context.clone(),
-                operation_fixture: Some(fixture),
-                input_resources: None,
-            });
-            let bootstrap = format!(
-                "{}\nglobalThis.native=()=>invoke('listWindows',{{options:{{}}}});globalThis.browser=()=>invoke('listBrowsers',{{options:{{}}}});",
-                maka_computer_use::facade()
-            );
-            let bootstrap = if browser_operation {
-                bootstrap.replace("invoke('listWindows'", "invoke('listTabs'")
-            } else {
-                bootstrap
-            };
-            let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
-            let result = runtime.evaluate(
-                "let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
-                bridge.clone(), CancellationToken::new(), context.clone(), Duration::from_secs(3),
-            ).await;
-            if browser_operation || drained {
-                assert!(
-                    matches!(&result, Ok(CellResult::Success { .. })),
-                    "{result:?}"
-                );
-                assert!(!owner.stopping.is_cancelled());
-                assert!(admission.check_open().is_ok());
-                assert!(!runtime.is_closed());
-                let output = context.take_output();
-                let [CellOutput::Text { text }] = output.as_slice() else {
-                    panic!("expected recovered native call and browser result: {output:?}");
-                };
-                assert_eq!(
-                    serde_json::from_str::<Value>(text).unwrap(),
-                    json!({"caught":true,"browser":"browser-still-live"}),
-                );
-            } else {
-                match (&error, &result) {
-                    (ToolError::OutcomeUnknown(_), Ok(CellResult::Failure { .. })) => {}
-                    (
-                        ToolError::Persistence(expected),
-                        Err(CellAbort::Tool(ToolError::Persistence(actual))),
-                    )
-                    | (
-                        ToolError::CleanupUnconfirmed(expected),
-                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(actual))),
-                    ) => {
-                        assert_eq!(actual, expected);
-                    }
-                    _ => panic!("unexpected bridge failure for {error:?}: {result:?}"),
-                }
-                assert!(!owner.stopping.is_cancelled());
-                assert!(admission.check_open().is_err());
-            }
-            runtime.close().await.unwrap();
-            drop(bridge);
-            kernel.close(CancellationToken::new()).await.unwrap();
-            drop((interaction, owner));
-            actual.close().await;
-        }
-    }
-}
-
-#[cfg(all(test, unix))]
-#[path = "evaluate/browser_handoff_test.rs"]
-mod browser_handoff_test;

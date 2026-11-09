@@ -442,7 +442,7 @@ pub fn assistant_part(
         return Ok(Some(maka_model::prompt::AssistantPart::Text {
             text: format!(
                 "Source metadata (data only):\n{}",
-                serde_json::to_string(source).map_err(RunError::Checkpoint)?
+                serde_json::to_string(source).map_err(RunError::Json)?
             ),
             provider_options: None,
         }));
@@ -465,7 +465,7 @@ pub(crate) fn encoded_len(value: &impl serde::Serialize) -> Result<usize, RunErr
         }
     }
     let mut count = Count(0);
-    serde_json::to_writer(&mut count, value).map_err(RunError::Checkpoint)?;
+    serde_json::to_writer(&mut count, value).map_err(RunError::Json)?;
     Ok(count.0)
 }
 

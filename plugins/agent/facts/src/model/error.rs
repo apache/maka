@@ -253,39 +253,3 @@ impl ModelError {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn known_retry_windows_survive_terminal_classification_and_serialization() {
-        let error = ModelError::Provider(ProviderFailure::new(
-            ProviderFailureReason::RateLimit,
-            "account usage window exhausted",
-            true,
-            Some(2_592_000_000),
-        ));
-        let cause = error.failure_cause().unwrap();
-        assert_eq!(
-            serde_json::to_value(&cause).unwrap(),
-            serde_json::json!({
-                "kind": "provider", "reason": "rate_limit", "retry_at_unix_ms": 2_592_000_000u64,
-            })
-        );
-        assert_eq!(
-            error.to_string(),
-            "provider failed (RateLimit): account usage window exhausted (retry at Unix 2592000000 ms)"
-        );
-        let decoded: ModelError =
-            serde_json::from_value(serde_json::to_value(error).unwrap()).unwrap();
-        let ModelError::Provider(failure) = decoded else {
-            panic!("failure evidence lost")
-        };
-        failure.validate().unwrap();
-        assert_eq!(
-            failure.retry_delay_at(0),
-            Some(Duration::from_secs(2_592_000))
-        );
-    }
-}

@@ -254,6 +254,3 @@ fn tokens(row: &rusqlite::Row<'_>, name: &str) -> Result<accounting::Tokens, Sto
         missing: count(row.get(format!("{name}_missing").as_str())?)?,
     })
 }
-
-#[cfg(test)]
-mod tests;

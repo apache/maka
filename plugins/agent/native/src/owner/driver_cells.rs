@@ -22,8 +22,9 @@ use super::{
     driver::{LocalCompletion, PreparedTool},
     now,
 };
+use asyncband::completion::{self, Completion};
 use futures_util::FutureExt;
-use futures_util::future::{BoxFuture, Shared};
+use futures_util::future::BoxFuture;
 use maka_agent_engine::{
     RunError,
     cleanup::Evidence,
@@ -111,10 +112,9 @@ enum PublicationState {
     },
     Settled(PublicationOutcome),
 }
-type VmPublicationResult = Shared<BoxFuture<'static, Result<(), ToolError>>>;
 struct PendingVmPublication {
     original: Arc<VmPublication>,
-    result: VmPublicationResult,
+    result: Completion<Result<(), ToolError>>,
 }
 struct VmPublication {
     cell: CellId,
@@ -278,7 +278,7 @@ impl RunCells {
             }
             for (operation, child) in &current.children {
                 if child.admitted && !child.physical_cleanup_confirmed() {
-                    self.recover_child(cell, *operation, child, None)
+                    self.recover_child(cell, *operation, child)
                         .await
                         .map_err(RunError::Tool)?;
                 }
@@ -349,8 +349,13 @@ impl RunCells {
         catalog: ToolCatalog,
         cancellation: CancellationToken,
         steering: CancellationToken,
-    ) -> Result<maka_agent_facts::tools::PreparedEffect, maka_agent_facts::tool_call::ToolRejection>
-    {
+    ) -> Result<
+        (
+            maka_agent_facts::tools::PreparedEffect,
+            super::driver::DispatchSource,
+        ),
+        maka_agent_facts::tool_call::ToolRejection,
+    > {
         let port = NativeCellPort::new(self.clone(), parent)
             .await
             .map_err(
@@ -358,8 +363,15 @@ impl RunCells {
                     message: error.to_string(),
                 },
             )?;
-        self.coordinator
-            .prepare(name, input, catalog, port, cancellation, steering)
+        let effect =
+            self.coordinator
+                .prepare(name, input, catalog, port.clone(), cancellation, steering)?;
+        let source = if name == "wait" {
+            super::driver::DispatchSource::CellWait(OwnedCellWait { port })
+        } else {
+            super::driver::DispatchSource::Ordinary
+        };
+        Ok((effect, source))
     }
     fn now(&self) -> UnixMillis {
         UnixMillis(now().try_into().expect("Unix milliseconds"))
@@ -611,40 +623,40 @@ impl RunCells {
             .await
             .map_err(persistence)?
             .ok_or_else(|| persistence("Cell not recorded"))?;
-        if current.children.get(&operation).is_some_and(|child| {
-            child.reference.as_ref() == Some(&reply.reference)
-                && child.reply.as_ref() == Some(&reply)
-        }) {
+        let child = current
+            .children
+            .get(&operation)
+            .ok_or_else(|| persistence("Cell child not recorded"))?;
+        if child.reference.as_ref() == Some(&reply.reference)
+            && child.reply.as_ref() == Some(&reply)
+        {
             return Ok(());
         }
         let at = self.now();
-        self.publish(
-            vec![
-                Change::new(
-                    Fact::Cell {
-                        event: CellEvent::ChildBound {
-                            cell,
-                            operation,
-                            reference: reply.reference.clone(),
-                        },
+        let mut changes = Vec::new();
+        if child.reference.is_none() {
+            changes.push(Change::new(
+                Fact::Cell {
+                    event: CellEvent::ChildBound {
+                        cell,
+                        operation,
+                        reference: reply.reference.clone(),
                     },
-                    at,
-                ),
-                Change::new(
-                    Fact::Cell {
-                        event: CellEvent::ChildObserved {
-                            cell,
-                            operation,
-                            reply,
-                        },
-                    },
-                    at,
-                ),
-            ],
-            vec![],
-            vec![],
-        )
-        .await?;
+                },
+                at,
+            ));
+        }
+        changes.push(Change::new(
+            Fact::Cell {
+                event: CellEvent::ChildObserved {
+                    cell,
+                    operation,
+                    reply,
+                },
+            },
+            at,
+        ));
+        self.publish(changes, vec![], vec![]).await?;
         Ok(())
     }
     /// Observation always uses the actual current scope. A historical operation
@@ -693,16 +705,88 @@ impl RunCells {
         cell: CellId,
         operation: Uuid,
         child: &CellChild,
-        current_operation: Option<&str>,
     ) -> Result<Option<OperationReply>, ToolError> {
         self.finish_readers().await?;
+        self.check_work()?;
+        let execution = self.access.execution();
+        let view = self
+            .state
+            .frontier(execution.run_id)
+            .await
+            .map_err(persistence)?;
+        if view.run != execution.run_id
+            || view.spec != *self.access.spec()
+            || view.spec.session_id != execution.session_id
+            || view.spec.turn_id != execution.turn_id
+            || view.spec.owner != self.owner.run_owner()
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Cell recovery differs from the original actual Run".into(),
+            ));
+        }
+        let canonical = self
+            .cells
+            .read(&execution.session_id, cell)
+            .await
+            .map_err(persistence)?
+            .ok_or_else(|| ToolError::OutcomeUnknown("Original Cell is unavailable".into()))?;
+        let CellOwner::Agent { link, call } = &canonical.owner else {
+            return Err(ToolError::OutcomeUnknown(
+                "Cell recovery has no original Agent owner".into(),
+            ));
+        };
+        if canonical.id != cell
+            || link.run != execution.run_id
+            || CellId::for_agent(*link, call) != cell
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Cell owner belongs to another original Run".into(),
+            ));
+        }
+        let original = canonical.children.get(&operation).ok_or_else(|| {
+            ToolError::OutcomeUnknown("Original admitted Cell child is unavailable".into())
+        })?;
+        if !original.admitted
+            || original.rejected.is_some()
+            || !child.admitted
+            || child.rejected.is_some()
+            || original.name != child.name
+            || original.semantics != child.semantics
+            || original.input != child.input
+            || original.resources != child.resources
+            || child
+                .reference
+                .as_ref()
+                .is_some_and(|reference| original.reference.as_ref() != Some(reference))
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Cell recovery differs from its canonical child".into(),
+            ));
+        }
+        let child = original;
+        let bytes = self
+            .state
+            .content(execution.run_id, self.access.spec().tool_selection.clone())
+            .await
+            .map_err(persistence)?;
+        let selection: crate::tools::SelectionSnapshot =
+            serde_json::from_slice(&bytes).map_err(persistence)?;
+        let selected = selection
+            .selected_service(&self.owner.services, &self.owner.tool_basis, &child.name)
+            .map_err(ToolError::OutcomeUnknown)?
+            .ok_or_else(|| {
+                ToolError::OutcomeUnknown(
+                    "Cell child has no original selected native service".into(),
+                )
+            })?;
+        let operation_id = child_operation(cell, operation);
         let request = Arc::new(
-            self.owner
-                .services
+            selected
+                .1
                 .request_with_work(
                     Identity::Agent {
-                        execution: self.access.execution().clone(),
-                        operation_id: current_operation.map(str::to_owned),
+                        execution: execution.clone(),
+                        operation_id: Some(operation_id.clone()),
                     },
                     self.owner.stop.child_token(),
                     self.access.custody().clone(),
@@ -714,24 +798,40 @@ impl RunCells {
             .map_err(persistence)?
             .push(request.clone());
         let result = async {
-            let reference = match &child.reference {
-                Some(reference) => reference.clone(),
-                None => {
-                    let id = crate::tools::operation_uuid(
-                        self.access.execution(),
-                        &child_operation(cell, operation),
-                    );
-                    let Some(intent) = request
-                        .lookup_intent(id)
-                        .map_err(persistence)?
-                        .await
-                        .map_err(persistence)?
-                    else {
-                        return Ok(None);
-                    };
-                    intent.reference
-                }
-            };
+            let id = crate::tools::operation_uuid(execution, &operation_id);
+            let intent = request
+                .lookup_intent(id)
+                .map_err(persistence)?
+                .await
+                .map_err(persistence)?
+                .ok_or_else(|| {
+                    ToolError::OutcomeUnknown("Original Cell CallerIntent is unavailable".into())
+                })?;
+            if intent.reference.operation != id
+                || child
+                    .reference
+                    .as_ref()
+                    .is_some_and(|reference| reference != &intent.reference)
+                || child
+                    .reply
+                    .as_ref()
+                    .is_some_and(|reply| reply.reference != intent.reference)
+            {
+                return Err(ToolError::OutcomeUnknown(
+                    "Cell CallerIntent differs from its canonical child reference".into(),
+                ));
+            }
+            selection
+                .validate_recovery_service(
+                    &self.owner.services,
+                    &self.owner.tool_basis,
+                    &intent,
+                    execution,
+                    &operation_id,
+                    &selected,
+                )
+                .map_err(ToolError::OutcomeUnknown)?;
+            let reference = intent.reference;
             let receipt = match request
                 .recover(reference.clone())
                 .map_err(persistence)?
@@ -927,7 +1027,7 @@ impl RunCells {
     fn pending_vm_publication(
         &self,
         cell: CellId,
-    ) -> Result<Option<VmPublicationResult>, ToolError> {
+    ) -> Result<Option<Completion<Result<(), ToolError>>>, ToolError> {
         Ok(self
             .closures
             .lock()
@@ -968,14 +1068,7 @@ impl RunCells {
                         at: self.now(),
                         batch: Mutex::new(None),
                     });
-                    let (send, receive) = oneshot::channel();
-                    let result = async move {
-                        receive.await.map_err(|_| {
-                            persistence("Original VM publication worker disappeared")
-                        })?
-                    }
-                    .boxed()
-                    .shared();
+                    let (complete, result) = completion::new();
                     entry.insert(PendingVmPublication {
                         original: original.clone(),
                         result: result.clone(),
@@ -997,13 +1090,19 @@ impl RunCells {
                         } else if let Err(error) = &outcome {
                             run.cleanup.observe_tool(error);
                         }
-                        let _ = send.send(outcome);
+                        let _ = complete.complete(outcome);
                     });
                     result
                 }
             }
         };
-        result.await
+        result
+            .wait()
+            .await
+            .map_err(|_| {
+                ToolError::CleanupUnconfirmed("Original VM publication worker disappeared".into())
+            })?
+            .clone()
     }
     async fn publish_vm_gone(&self, original: &VmPublication) -> Result<(), ToolError> {
         let current = self
@@ -1140,7 +1239,15 @@ impl RunCells {
             return Ok(canonical.vm_uncertainty.is_none());
         }
         if let Some(pending) = self.pending_vm_publication(canonical.id)? {
-            pending.await?;
+            pending
+                .wait()
+                .await
+                .map_err(|_| {
+                    ToolError::CleanupUnconfirmed(
+                        "Original VM publication worker disappeared".into(),
+                    )
+                })?
+                .clone()?;
             return Ok(true);
         }
         let Some(vm) = &canonical.vm else {
@@ -1184,11 +1291,7 @@ impl RunCells {
             }
         }
     }
-    async fn read_current(
-        &self,
-        cell: CellId,
-        current_operation: Option<&str>,
-    ) -> Result<Option<CellView>, ToolError> {
+    async fn read_current(&self, cell: CellId) -> Result<Option<CellView>, ToolError> {
         self.check_work()?;
         let Some(view) = self
             .cells
@@ -1205,8 +1308,7 @@ impl RunCells {
         {
             for (operation, child) in &view.children {
                 if needs_observation(child) {
-                    self.recover_child(cell, *operation, child, current_operation)
-                        .await?;
+                    self.recover_child(cell, *operation, child).await?;
                 }
             }
             return self
@@ -1225,6 +1327,68 @@ pub(super) struct NativeCellPort {
     parent: ToolCallContext,
     link: AgentStepLink,
     admission_closed: CancellationToken,
+    observed_cell: Arc<std::sync::OnceLock<CellId>>,
+}
+
+pub(super) struct OwnedCellWait {
+    port: Arc<NativeCellPort>,
+}
+impl OwnedCellWait {
+    pub(super) async fn settlement(
+        &self,
+        access: &Arc<RunAccess>,
+        key: &ToolKey,
+        cells_cleanup_confirmed: bool,
+    ) -> Result<Option<ToolSettlement>, RunError> {
+        if !Arc::ptr_eq(access, &self.port.run.access)
+            || self.port.link.run != access.execution().run_id
+            || self.port.link.attempt != key.attempt
+            || self.port.parent.call.tool_call_id != key.call
+        {
+            return Err(RunError::InvalidInput(
+                "Cell wait source differs from its original control".into(),
+            ));
+        }
+        if !cells_cleanup_confirmed {
+            return Ok(None);
+        }
+        let view = access
+            .fresh()
+            .await
+            .map_err(|error| RunError::Tool(persistence(error)))?;
+        let tool = view
+            .tools
+            .get(&tool_key(key))
+            .ok_or_else(|| RunError::InvalidInput("Original Cell wait is unavailable".into()))?;
+        if !tool.admitted || tool.original.is_some() || tool.call.provider_executed {
+            return Err(RunError::InvalidInput(
+                "Cell wait has a different original admission".into(),
+            ));
+        }
+        let Some(cell) = self.port.observed_cell.get().copied() else {
+            // This actual prepared wait has returned, and never entered its port.
+            // Wait cannot create a VM; no claim is made about any other Cell.
+            return Ok(Some(ToolSettlement::Failed));
+        };
+        self.port.run.check_work().map_err(RunError::Tool)?;
+        let canonical = self
+            .port
+            .run
+            .cells
+            .read(&access.execution().session_id, cell)
+            .await?;
+        Ok(Some(match canonical {
+            Some(cell)
+                if !matches!(cell.status, CellStatus::Running)
+                    && cell.children.values().all(CellChild::known)
+                    && !cell.blocks_effect_admission() =>
+            {
+                ToolSettlement::Failed
+            }
+            // Source physical closure does not resolve logical Cell uncertainty.
+            _ => ToolSettlement::Unknown,
+        }))
+    }
 }
 impl NativeCellPort {
     async fn new(run: Arc<RunCells>, parent: ToolCallContext) -> Result<Arc<Self>, ToolError> {
@@ -1259,6 +1423,7 @@ impl NativeCellPort {
             parent,
             link,
             admission_closed: CancellationToken::new(),
+            observed_cell: Arc::default(),
         }))
     }
     fn cell_owner(&self) -> CellOwner {
@@ -1467,9 +1632,7 @@ impl NativeCellPort {
                 return Err(persistence("Cell child original input changed"));
             }
             if needs_observation(child) {
-                self.run
-                    .recover_child(cell, operation, child, Some(&self.parent.operation_id))
-                    .await?;
+                self.run.recover_child(cell, operation, child).await?;
             }
             let current = self.original_cell(cell).await?;
             return self
@@ -1716,16 +1879,23 @@ impl NativeCellPort {
         let (blob, body, artifacts) = normalized;
         let mut changes = Vec::new();
         let event = if let ToolOutput::Operation(reply) = &body.output {
-            changes.push(Change::new(
-                Fact::Cell {
-                    event: CellEvent::ChildBound {
-                        cell,
-                        operation,
-                        reference: reply.reference.clone(),
+            let current = self.original_cell(cell).await?;
+            let child = current
+                .children
+                .get(&operation)
+                .ok_or_else(|| persistence("Cell child not recorded"))?;
+            if child.reference.is_none() {
+                changes.push(Change::new(
+                    Fact::Cell {
+                        event: CellEvent::ChildBound {
+                            cell,
+                            operation,
+                            reference: reply.reference.clone(),
+                        },
                     },
-                },
-                self.now(),
-            ));
+                    self.now(),
+                ));
+            }
             changes.push(Change::new(
                 Fact::Cell {
                     event: CellEvent::ChildObserved {
@@ -1785,9 +1955,13 @@ impl CellPersistence for NativeCellPort {
     }
     fn read(&self, cell: CellId) -> CellFuture<'_, Option<CellView>> {
         Box::pin(async move {
-            self.run
-                .read_current(cell, Some(&self.parent.operation_id))
-                .await
+            self.run.check_work()?;
+            if self.observed_cell.get_or_init(|| cell) != &cell {
+                return Err(persistence(
+                    "Cell control changed its original observation target",
+                ));
+            }
+            self.run.read_current(cell).await
         })
     }
     fn content(&self, cell: CellId, reference: ContentRef) -> CellFuture<'_, Vec<u8>> {
@@ -1945,7 +2119,7 @@ impl CellPorts for RunCells {
                 }
             }
             let canonical = self
-                .read_current(cell.id, None)
+                .read_current(cell.id)
                 .await
                 .map_err(RunError::Tool)?
                 .ok_or_else(|| RunError::InvalidInput("Original Cell is unavailable".into()))?;

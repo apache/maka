@@ -63,12 +63,12 @@ mod operations;
 mod tool_execution;
 pub use operations::{OperationStore, OperationWork, ProviderJournal, RecoveredOperation};
 mod projects;
+pub use projects::ProjectWorkspacePlan;
 mod session_metadata;
 pub use session_metadata::SessionRevisionGuard;
 mod session_store;
 pub use creation::CreationRejection;
-#[cfg(test)]
-mod applications_tests;
+
 mod routes;
 
 /// Session and operation handles never extend the lifetime of an idle SQL owner.

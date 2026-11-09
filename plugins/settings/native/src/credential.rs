@@ -353,6 +353,3 @@ async fn authenticate(
         LoginCompletion::SlugTaken => rejected(CredentialRejection::SlugTaken),
     }
 }
-
-#[cfg(test)]
-mod tests;

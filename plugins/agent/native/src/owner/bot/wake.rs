@@ -52,6 +52,14 @@ impl Bot {
         worker: &str,
         route: crate::owner::notifications::ReturnRoute,
     ) -> Result<(), StoreError> {
+        let mutation = self.watch_mutation(worker, route).await?;
+        self.storage.batch(vec![mutation]).await.map(drop)
+    }
+    async fn watch_mutation(
+        &self,
+        worker: &str,
+        route: crate::owner::notifications::ReturnRoute,
+    ) -> Result<Mutation, StoreError> {
         let key = watch_key(worker);
         // Read the record itself: one an earlier build wrote may no longer decode, and a
         // refresh has to be able to replace it. What it had reported is then unknown.
@@ -72,10 +80,7 @@ impl Bot {
             binding: route.binding,
             notified,
         };
-        self.storage
-            .batch(vec![Self::mutation(key, revision, &watch)?])
-            .await
-            .map(drop)
+        Self::mutation(key, revision, &watch)
     }
     /// Every stored watch with its revision. A record that does not decode is returned as
     /// its error, so the caller can still retire it when its worker is gone.
@@ -106,33 +111,7 @@ impl Bot {
             }
         }
     }
-    /// A watch this build cannot read, as an older build might have written.
-    #[cfg(test)]
-    pub(in crate::owner) async fn plant_unreadable_watch(&self, worker: &str) {
-        let stale = serde_json::json!({"route": {"model": {"context": {}}}, "notified": null});
-        let revision = self
-            .storage
-            .read(watch_key(worker))
-            .await
-            .expect("read watch")
-            .map(|record| record.revision);
-        self.storage
-            .batch(vec![Mutation {
-                key: watch_key(worker),
-                expected_revision: revision,
-                data: Data::Present(stale),
-            }])
-            .await
-            .expect("plant watch");
-    }
-    #[cfg(test)]
-    pub(in crate::owner) async fn has_watch(&self, worker: &str) -> bool {
-        self.storage
-            .read(watch_key(worker))
-            .await
-            .expect("read watch")
-            .is_some_and(|record| record.data.value().is_some())
-    }
+
     async fn forget(&self, worker: &str, revision: Option<u64>) -> Result<(), StoreError> {
         self.storage
             .batch(vec![Mutation {
@@ -146,17 +125,41 @@ impl Bot {
 }
 
 impl Owner {
-    /// After the Bot creates or sends to a conversation, remember to wake it when
-    /// that conversation finishes. Best effort: the effect already happened, and
-    /// the next send refreshes the watch.
+    pub(in crate::owner) async fn prepare_bot_watch(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        worker: &str,
+    ) -> Result<Vec<Mutation>, String> {
+        let Some(source) = scope.identity.agent() else {
+            return Ok(Vec::new());
+        };
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
+        if !self.bot.is(&source.session_id) || !self.owns(worker) {
+            return Ok(Vec::new());
+        }
+        let route = self.return_route(source).await?;
+        self.bot
+            .watch_mutation(worker, route)
+            .await
+            .map(|mutation| vec![mutation])
+            .map_err(|error| error.to_string())
+    }
+
+    /// Refresh an existing worker's watch after a send. Creation installs its
+    /// initial watch inside the original Session/receipt transaction.
     pub(crate) async fn bot_watch(&self, scope: &maka_capabilities::call::Scope, worker: &str) {
         let Some(source) = scope.identity.agent() else {
             return;
         };
-        if !self.bot.is(&source.session_id) || !self.owns(worker) {
-            return;
-        }
         let result = async {
+            if self.settings.bot {
+                self.bot.load().await.map_err(|error| error.to_string())?;
+            }
+            if !self.bot.is(&source.session_id) || !self.owns(worker) {
+                return Ok(());
+            }
             let route = self.return_route(source).await?;
             self.bot
                 .watch(worker, route)
@@ -215,7 +218,11 @@ impl Owner {
                 let Some(producer) = owner.producer().await else {
                     return;
                 };
-                let result = owner.wake_bot_pass().await;
+                let result = async {
+                    owner.bot.load().await.map_err(|error| error.to_string())?;
+                    owner.wake_bot_pass().await
+                }
+                .await;
                 drop(producer);
                 match result {
                     Ok(()) => previous_error = None,

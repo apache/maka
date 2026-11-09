@@ -20,6 +20,7 @@
 import { readFileSync } from 'node:fs';
 
 export const taskHelperConsumers = [
+  'maka-cli',
   'maka-agent-native',
   'maka-agent-engine',
   'maka-computer-native',
@@ -68,7 +69,7 @@ const distributionInputs = [
   'scripts/rust/licenses',
 ];
 const embeddedInputs = [
-  'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
+  'products/maka/cli/tests/support/external_codex_cli.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
   'platform/computer-use/skills',
@@ -83,7 +84,6 @@ export const suites = {
     profile: 'ci',
     extraInputs: [
       ...embeddedInputs,
-      'plugins/agent/native/tests/support',
       ...distributionInputs,
       'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
     ],
@@ -106,18 +106,12 @@ export const suites = {
   desktop: {
     workspace: 'root',
     packages: ['maka-cli'],
-    cargoArgs: [
-      '--locked',
-      '-p',
-      'maka-cli',
-      '--no-default-features',
-      '--features',
-      'desktop-tests',
-      '--test',
-      'integration',
+    cargoArgs: ['--locked', '--workspace', '--features', 'maka-cli/desktop-tests'],
+    filter: 'binary_id(=maka-cli::desktop_new_session)',
+    extraInputs: [
+      ...embeddedInputs,
+      'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
     ],
-    filter: 'test(terminal::desktop_new_session)',
-    extraInputs: embeddedInputs,
   },
   'native-build': {
     workspace: 'root',
@@ -129,7 +123,6 @@ export const suites = {
     packages: ['maka-schema', 'maka-workbench'],
     extraInputs: [
       ...productInputs,
-      'products/maka/terminal-shell/tests/fixtures',
       'products/maka/terminal-shell/tests/real_host',
       'skills/maka-plugin-authoring/assets',
     ],
@@ -212,6 +205,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-skills-native'],
     cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
+    extraInputs: embeddedInputs,
   },
   'windows-ci': {
     workspace: 'root',
@@ -247,21 +241,18 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
-  'macos-terminal': {
+  'macos-agent-execution': {
     workspace: 'root',
-    packages: ['maka-agent-native'],
-    cargoArgs: ['--locked', '-p', 'maka-agent-native', '--lib'],
-    filter:
-      'test(=owner::tests::terminal::terminal_raw_bytes_full_resize_replay_and_observer_cancellation_preserve_native_owner)',
-    extraInputs: [
-      'plugins/agent/native/src/owner/tests/terminal.rs',
-      'plugins/agent/native/src/owner/tests/processes.rs',
-      'plugins/agent/native/src/owner/tests/service_tools',
-      'plugins/workspace/workspace-processes/native',
-      'platform/process',
-      'platform/sandbox/src/seatbelt',
-      'plugins/agent/providers/data',
-    ],
+    packages: ['maka-cli'],
+    cargoArgs: ['--locked', '--workspace'],
+    filter: [
+      'binary_id(=maka-cli::mainline_reopen)',
+      'binary_id(=maka-cli::journal_recovery)',
+      'binary_id(=maka-cli::codemode_reopen)',
+      'binary_id(=maka-cli::external_jobs)',
+      'binary_id(=maka-cli::producer_reopen)',
+    ].join(' | '),
+    extraInputs: embeddedInputs,
   },
   'windows-shell': {
     workspace: 'root',
@@ -361,7 +352,7 @@ export const workers = [
             'windows-ci',
           ]
         : os === 'macos'
-          ? ['native', 'macos-host', 'macos-terminal']
+          ? ['native', 'macos-host', 'macos-agent-execution']
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',

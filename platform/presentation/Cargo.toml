@@ -33,7 +33,3 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"

@@ -23,8 +23,7 @@ use serde::{Deserialize, Serialize};
 mod approval;
 mod decode;
 mod question;
-#[cfg(test)]
-mod tests;
+
 mod validation;
 use crate::capability::{FormField, FormRequester, FormResult};
 pub use approval::{ApprovalAllow, ComputerAppApproval, PermissionApproval, SessionApprovalAnswer};

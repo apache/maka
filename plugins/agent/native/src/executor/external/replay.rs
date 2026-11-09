@@ -62,9 +62,7 @@ impl Stream {
                 return if row.is_empty() {
                     Ok(None)
                 } else {
-                    Err(Error::Invalid(
-                        "Original protocol has an unterminated row".into(),
-                    ))
+                    Err(Error::Unknown)
                 };
             }
             let count = available
@@ -87,9 +85,7 @@ impl Stream {
         }
     }
     pub async fn required(&mut self) -> Result<Value, Error> {
-        self.next().await?.ok_or_else(|| {
-            Error::Invalid("Original protocol ended before its native terminal".into())
-        })
+        self.next().await?.ok_or(Error::Unknown)
     }
 }
 

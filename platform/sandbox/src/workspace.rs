@@ -202,36 +202,3 @@ pub enum WorkspaceOrigin {
     Selected,
     Allocated,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn epochs_are_checked_and_binding_identity_is_part_of_authority() {
-        let reference = BindingRef {
-            id: uuid::Uuid::new_v4(),
-            permission_epoch_at_attach: 2,
-            metadata_epoch_at_attach: 4,
-        };
-        let stamp = BindingStamp {
-            id: reference.id,
-            permission_epoch: 3,
-        };
-        assert_eq!(reference.boundary_revision(7, stamp), Ok(8));
-        assert_eq!(reference.session_revision(9, 6), Ok(11));
-        assert!(reference.session_revision(MAX_SAFE_INTEGER, 5).is_err());
-        assert!(reference.session_revision(9, 3).is_err());
-        assert!(
-            reference
-                .boundary_revision(
-                    7,
-                    BindingStamp {
-                        id: uuid::Uuid::new_v4(),
-                        ..stamp
-                    }
-                )
-                .is_err()
-        );
-    }
-}

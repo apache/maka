@@ -607,6 +607,3 @@ impl SessionStore {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

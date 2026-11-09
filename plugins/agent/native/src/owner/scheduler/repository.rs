@@ -18,7 +18,11 @@
  */
 
 use super::*;
-use maka_plugin_core::operation::RecoveryRef;
+use maka_event_log::{
+    StoreError,
+    root_store::DataWriter,
+    writeback::{Notification, Prepared, Statement},
+};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
@@ -76,20 +80,6 @@ pub(in crate::owner) struct Catalog {
     ids: Vec<String>,
     ready_revision: Option<u64>,
     pub ready: ReadyIndex,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Receipt {
-    reference: RecoveryRef,
-    result: ScheduleResult,
-}
-fn receipt_key(operation: &RecoveryRef) -> String {
-    format!(
-        "receipt:{}",
-        hex::encode(Sha256::digest(
-            serde_json::to_vec(operation).expect("operation reference")
-        ))
-    )
 }
 fn task_key(id: &str) -> String {
     format!("task:{id}")
@@ -267,41 +257,13 @@ impl Scheduler {
         }
         Ok(catalog)
     }
-    pub(super) async fn receipt(
-        &self,
-        reference: &RecoveryRef,
-    ) -> Result<Option<ScheduleResult>, String> {
-        let record = self
-            .storage
-            .read(receipt_key(reference))
-            .await
-            .map_err(reason)?;
-        let Some(record) = record else {
-            return Ok(None);
-        };
-        let receipt: Receipt = serde_json::from_value(
-            record
-                .data
-                .value()
-                .cloned()
-                .ok_or("scheduler_receipt_invalid")?,
-        )
-        .map_err(reason)?;
-        if receipt.reference != *reference {
-            return Err("scheduler_receipt_conflict".into());
-        }
-        Ok(Some(receipt.result))
-    }
-    pub(super) async fn remember(
-        &self,
-        reference: &RecoveryRef,
-        result: &ScheduleResult,
-    ) -> Result<(), String> {
-        self.storage
-            .batch(vec![receipt_mutation(reference, result)?])
-            .await
-            .map_err(reason)?;
-        Ok(())
+    pub(super) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
+        let record = self.storage.read(task_key(id)).await.map_err(reason)?;
+        record
+            .map(|record| decode_saved(record, id))
+            .transpose()
+            .map(Option::flatten)
+            .map_err(reason)
     }
     pub(in crate::owner) async fn commit(
         &self,
@@ -310,48 +272,7 @@ impl Scheduler {
         plan: Option<Plan>,
         receipt: Option<Mutation>,
     ) -> Result<(), String> {
-        if let Some(plan) = &plan {
-            plan.validate().map_err(reason)?;
-        }
-        let mut ids = catalog
-            .ids
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        if plan.is_some() {
-            ids.insert(id.into());
-        } else {
-            ids.remove(id);
-        }
-        let expected = catalog.plans.get(id).map(|saved| saved.revision);
-        let mut ready = catalog.ready.clone();
-        ready.update(
-            id,
-            catalog.plans.get(id).map(|saved| &saved.plan),
-            plan.as_ref(),
-        );
-        let ids: Vec<_> = ids.into_iter().collect();
-        let mut mutations = vec![
-            Mutation {
-                key: "index".into(),
-                expected_revision: catalog.revision,
-                data: value(&Index { ids: ids.clone() })?,
-            },
-            Mutation {
-                key: task_key(id),
-                expected_revision: expected,
-                data: plan
-                    .as_ref()
-                    .map(value)
-                    .transpose()?
-                    .unwrap_or(Data::Deleted),
-            },
-        ];
-        mutations.push(Mutation {
-            key: "ready".into(),
-            expected_revision: catalog.ready_revision,
-            data: value(&ready)?,
-        });
+        let (mut mutations, ids, ready) = prepare_commit(catalog, id, plan.as_ref())?;
         if let Some(receipt) = receipt {
             mutations.push(receipt);
         }
@@ -375,18 +296,254 @@ impl Scheduler {
         Ok(())
     }
 }
-pub(super) fn receipt_mutation(
-    reference: &RecoveryRef,
-    result: &ScheduleResult,
-) -> Result<Mutation, String> {
-    Ok(Mutation {
-        key: receipt_key(reference),
-        expected_revision: None,
-        data: value(&Receipt {
-            reference: reference.clone(),
-            result: result.clone(),
-        })?,
-    })
+fn prepare_commit(
+    catalog: &Catalog,
+    id: &str,
+    plan: Option<&Plan>,
+) -> Result<(Vec<Mutation>, Vec<String>, ReadyIndex), String> {
+    if let Some(plan) = plan {
+        plan.validate().map_err(reason)?;
+    }
+    let mut ids = catalog
+        .ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if plan.is_some() {
+        ids.insert(id.into());
+    } else {
+        ids.remove(id);
+    }
+    let expected = catalog.plans.get(id).map(|saved| saved.revision);
+    let mut ready = catalog.ready.clone();
+    ready.update(id, catalog.plans.get(id).map(|saved| &saved.plan), plan);
+    let ids: Vec<_> = ids.into_iter().collect();
+    let mut mutations = vec![
+        Mutation {
+            key: "index".into(),
+            expected_revision: catalog.revision,
+            data: value(&Index { ids: ids.clone() })?,
+        },
+        Mutation {
+            key: task_key(id),
+            expected_revision: expected,
+            data: plan.map(value).transpose()?.unwrap_or(Data::Deleted),
+        },
+    ];
+    mutations.push(Mutation {
+        key: "ready".into(),
+        expected_revision: catalog.ready_revision,
+        data: value(&ready)?,
+    });
+
+    Ok((mutations, ids, ready))
+}
+
+fn decode_saved(
+    record: maka_plugin_core::storage::Record,
+    id: &str,
+) -> Result<Option<Saved>, StoreError> {
+    let Some(value) = record.data.value() else {
+        return Ok(None);
+    };
+    let plan: Plan = serde_json::from_value(value.clone())?;
+    plan.validate()
+        .map_err(|error| StoreError::InvalidTransition(reason(error)))?;
+    if plan.task.id != id {
+        return Err(StoreError::InvalidTransition(
+            "scheduler_catalog_invalid".into(),
+        ));
+    }
+    Ok(Some(Saved {
+        revision: record.revision,
+        plan,
+    }))
+}
+
+pub(super) struct ScheduleMutation {
+    pub(super) scheduler: Arc<Scheduler>,
+    pub(super) gate: Arc<tokio::sync::OwnedMutexGuard<()>>,
+    pub(super) writer: DataWriter,
+    pub(super) input: ScheduleChange,
+    pub(super) id: String,
+    pub(super) approval: Result<Option<PreparedScheduleApproval>, String>,
+}
+impl ScheduleMutation {
+    fn read(
+        &self,
+        connection: &rusqlite::Connection,
+        id: &str,
+    ) -> Result<Option<Saved>, StoreError> {
+        self.scheduler
+            .storage
+            .read_in_transaction(connection, &task_key(id), &self.writer)?
+            .map(|record| decode_saved(record, id))
+            .transpose()
+            .map(Option::flatten)
+    }
+    fn catalog(
+        &self,
+        connection: &rusqlite::Connection,
+        saved: Option<Saved>,
+    ) -> Result<Catalog, StoreError> {
+        let record =
+            self.scheduler
+                .storage
+                .read_in_transaction(connection, "index", &self.writer)?;
+        let revision = record.as_ref().map(|record| record.revision);
+        let index: Index = record
+            .and_then(|record| record.data.value().cloned())
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or(Index { ids: vec![] });
+        let record =
+            self.scheduler
+                .storage
+                .read_in_transaction(connection, "ready", &self.writer)?;
+        let ready_revision = record.as_ref().map(|record| record.revision);
+        let mut plans = BTreeMap::new();
+        if let Some(saved) = saved {
+            plans.insert(self.id.clone(), saved);
+        }
+        let ready = if let Some(value) = record.as_ref().and_then(|record| record.data.value()) {
+            serde_json::from_value(value.clone())?
+        } else {
+            let mut ready = ReadyIndex::default();
+            for id in &index.ids {
+                if !plans.contains_key(id) {
+                    let saved = self.read(connection, id)?.ok_or_else(|| {
+                        StoreError::InvalidTransition("scheduler_task_missing".into())
+                    })?;
+                    plans.insert(id.clone(), saved);
+                }
+                ready.update(id, None, plans.get(id).map(|saved| &saved.plan));
+            }
+            ready
+        };
+        Ok(Catalog {
+            revision,
+            plans,
+            ids: index.ids,
+            ready_revision,
+            ready,
+        })
+    }
+    fn apply(
+        &self,
+        connection: &rusqlite::Connection,
+        saved: Option<Saved>,
+    ) -> Result<(ScheduleResult, Vec<Mutation>), StoreError> {
+        let actual = saved.as_ref().map(|saved| saved.revision);
+        if expected_revision(&self.input) != actual {
+            return Ok((ScheduleResult::Conflict { actual }, vec![]));
+        }
+        let rejected = |reason: String| (ScheduleResult::Rejected { reason }, vec![]);
+        let mut plan = match schedule_candidate(&self.id, &self.input, saved.as_ref(), now() as i64)
+        {
+            Ok(plan) => plan,
+            Err(error) => return Ok(rejected(error)),
+        };
+        if needs_approval(&self.input) {
+            let approval = match &self.approval {
+                Ok(Some(approval)) => approval,
+                Err(error) => return Ok(rejected(error.clone())),
+                Ok(None) => return Ok(rejected("scheduler_authorization_changed".into())),
+            };
+            let Some(plan) = plan.as_mut() else {
+                return Err(StoreError::InvalidTransition(
+                    "scheduler_approval_missing".into(),
+                ));
+            };
+            if plan.task.effect != approval.effect {
+                return Ok(rejected("scheduler_authorization_changed".into()));
+            }
+            if let Some(metadata) = &approval.metadata {
+                match metadata.validate(connection) {
+                    Ok(()) => {}
+                    Err(
+                        StoreError::SessionRevisionConflict { .. }
+                        | StoreError::SessionNotFound
+                        | StoreError::SessionRetired,
+                    ) => return Ok(rejected("scheduler_authorization_changed".into())),
+                    Err(error) => return Err(error),
+                }
+            }
+            plan.authorization = Some(approval.authorization.clone());
+        }
+        let catalog = self.catalog(connection, saved)?;
+        let (mutations, _, _) = prepare_commit(&catalog, &self.id, plan.as_ref())
+            .map_err(StoreError::InvalidTransition)?;
+        Ok((
+            ScheduleResult::Committed {
+                task_id: self.id.clone(),
+                revision: actual.unwrap_or(0) + 1,
+            },
+            mutations,
+        ))
+    }
+}
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(super) struct ScheduleCompletion {
+    result: ScheduleResult,
+    #[serde(skip)]
+    scheduler: Arc<Scheduler>,
+    #[serde(skip)]
+    index_revision: Option<u64>,
+}
+impl Statement for ScheduleMutation {
+    type Value = ScheduleCompletion;
+    type Output = ScheduleResult;
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        vec![self.gate.clone()]
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<ScheduleCompletion>, StoreError> {
+        let saved = self.read(connection, &self.id)?;
+        let (result, mutations) = self.apply(connection, saved)?;
+        let (changed, notification, index_revision) = if mutations.is_empty() {
+            (false, Notification::NONE, None)
+        } else {
+            let prepared = self
+                .scheduler
+                .storage
+                .prepare_statement(mutations, &self.writer)?
+                .execute(connection)?;
+            (
+                prepared.changed,
+                prepared.notification,
+                Some(prepared.value[0].revision),
+            )
+        };
+        Ok(Prepared {
+            value: ScheduleCompletion {
+                result,
+                scheduler: self.scheduler,
+                index_revision,
+            },
+            changed,
+            notification,
+        })
+    }
+    fn committed(value: ScheduleCompletion) -> ScheduleResult {
+        if let Some(revision) = value.index_revision {
+            value.scheduler.changed.send_replace(revision);
+            value.scheduler.wake.notify_one();
+        }
+        value.result
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error.underlying(),
+            StoreError::StatementRejected { .. }
+                | StoreError::RevisionConflict { .. }
+                | StoreError::InvalidTransition(_)
+                | StoreError::SessionNotFound
+                | StoreError::EventConflict
+        )
+    }
 }
 impl Saved {
     pub fn summary(&self) -> ScheduledSummary {

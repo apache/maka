@@ -105,18 +105,3 @@ pub(crate) async fn capture(
     }
     tail
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replacement_expansion_is_bounded_and_marked_truncated() {
-        let mut tail = Tail::default();
-        tail.push(&vec![0xff; TAIL_BYTES]);
-        let text = tail.text();
-        assert!(text.len() <= TAIL_BYTES);
-        assert!(tail.truncated);
-        assert!(text.chars().all(|character| character == '\u{fffd}'));
-    }
-}

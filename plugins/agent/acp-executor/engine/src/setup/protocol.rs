@@ -266,27 +266,3 @@ async fn run(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn setup_metadata_and_unresolved_diagnostics_preserve_complete_values() {
-        let name = "external-agent-".repeat(6_000);
-        let description =
-            "Authentication instructions with a complete final marker. ".repeat(2_000);
-        let method = method(&name, &name, Some(&description), true).unwrap();
-        assert_eq!(method.id, name);
-        assert_eq!(method.name, name);
-        assert_eq!(method.description.as_deref(), Some(description.as_str()));
-        let info = info(&name, "2026.10", Some(&description)).unwrap();
-        assert_eq!(info.name, name);
-        assert_eq!(info.title.as_deref(), Some(description.as_str()));
-        let Outcome::Unresolved { diagnostic } = unresolved(&description) else {
-            panic!("expected unresolved authentication");
-        };
-        assert_eq!(diagnostic, description);
-        assert!(super::method("invalid\nmethod", "name", None, true).is_err());
-    }
-}

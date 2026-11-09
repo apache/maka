@@ -58,27 +58,6 @@ pub(super) struct Tools {
 }
 
 impl Tools {
-    #[cfg(test)]
-    pub(super) fn for_test(
-        catalog: ToolCatalog,
-        execution: ExecutionIdentity,
-        custody: Arc<dyn WorkCustody>,
-        task: ExternalTaskId,
-        source: maka_agent_facts::executor::Binding,
-        effects: Arc<dyn HostEffects>,
-    ) -> Self {
-        Self {
-            tools: Some(HostTools {
-                catalog,
-                resource_reads: Vec::new(),
-                effects,
-            }),
-            execution,
-            custody,
-            task,
-            source,
-        }
-    }
     pub async fn bind(
         mut tools: Option<HostTools>,
         request: &Request,

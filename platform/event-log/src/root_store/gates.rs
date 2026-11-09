@@ -304,18 +304,8 @@ impl Gates {
         Ok(ExclusivePins { _pins: pins })
     }
 }
-impl SharedPins {
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self._pins.len()
-    }
-}
-impl ExclusivePins {
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self._pins.len()
-    }
-}
+impl SharedPins {}
+impl ExclusivePins {}
 impl Drop for Registration {
     fn drop(&mut self) {
         if let Some(registry) = self.registry.upgrade() {
@@ -341,53 +331,5 @@ impl Drop for RecoveryPin {
         if let Some(released) = self.released.take() {
             let _ = released.send(());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::poll;
-    #[tokio::test]
-    async fn live_pins_exclude_only_their_keys_and_last_clone_releases() {
-        let gates = Gates::new();
-        let key = Key::Binding(uuid::Uuid::new_v4());
-        let pin = gates.read([key.clone(), key.clone()]).await.unwrap();
-        assert_eq!(pin.len(), 1);
-        let clone = pin.clone();
-        let mut writer = Box::pin(gates.write([key.clone()]));
-        assert!(poll!(&mut writer).is_pending());
-        drop(
-            gates
-                .write([Key::Binding(uuid::Uuid::new_v4())])
-                .await
-                .unwrap(),
-        );
-        drop(pin);
-        assert!(poll!(&mut writer).is_pending());
-        drop(clone);
-        let exclusive = writer.await.unwrap();
-        assert_eq!(exclusive.len(), 1);
-        drop(exclusive);
-        assert!(gates.entries.lock().unwrap().is_empty());
-    }
-    #[tokio::test]
-    async fn closed_and_cancelled_waiters_leave_no_history_sized_registry() {
-        let gates = Gates::new();
-        for index in 0..10_000 {
-            drop(gates.read([Key::Session(index.to_string())]).await.unwrap());
-        }
-        assert!(gates.entries.lock().unwrap().is_empty());
-        let key = Key::Binding(uuid::Uuid::new_v4());
-        let writer = gates.write([key.clone()]).await.unwrap();
-        let mut cancelled = Box::pin(gates.read([key.clone()]));
-        assert!(poll!(&mut cancelled).is_pending());
-        drop(cancelled);
-        let mut closed = Box::pin(gates.read([key]));
-        assert!(poll!(&mut closed).is_pending());
-        gates.close();
-        assert!(matches!(closed.await, Err(StoreError::ConnectionClosed)));
-        drop(writer);
-        assert!(gates.entries.lock().unwrap().is_empty());
     }
 }

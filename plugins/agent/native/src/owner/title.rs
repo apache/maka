@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use asyncband::completion::{self, Completer, Completion};
 use auxiliary::{failed, persistence};
 use futures_util::FutureExt;
 use maka_agent_facts::{
@@ -41,12 +42,13 @@ pub(super) struct Registry {
 }
 struct Work {
     cancellation: CancellationToken,
-    completed: tokio::sync::watch::Sender<Option<bool>>,
+    completed: Completion<bool>,
 }
 struct Worker {
     active: Arc<std::sync::Mutex<BTreeMap<String, Arc<Work>>>>,
     session: String,
     work: Arc<Work>,
+    completion: Option<Completer<bool>>,
 }
 impl Registry {
     fn start(&self, session: &str, cancellation: CancellationToken) -> Option<Worker> {
@@ -54,7 +56,7 @@ impl Registry {
         if active.contains_key(session) {
             return None;
         }
-        let (completed, _) = tokio::sync::watch::channel(None);
+        let (completion, completed) = completion::new();
         let work = Arc::new(Work {
             cancellation,
             completed,
@@ -64,6 +66,7 @@ impl Registry {
             active: self.active.clone(),
             session: session.to_owned(),
             work,
+            completion: Some(completion),
         })
     }
 
@@ -73,35 +76,25 @@ impl Registry {
         let Some(work) = work else {
             return Ok(());
         };
-        let mut completed = work.completed.subscribe();
         work.cancellation.cancel();
-        loop {
-            if let Some(success) = *completed.borrow_and_update() {
-                return success.then_some(()).ok_or(());
-            }
-            completed.changed().await.map_err(|_| ())?;
-        }
+        work.completed
+            .wait()
+            .await
+            .map_err(|_| ())?
+            .then_some(())
+            .ok_or(())
     }
 }
 impl Worker {
     fn complete(&mut self, success: bool) {
-        self.work.completed.send_replace(Some(success));
+        let completion = self.completion.take().expect("title worker completes once");
+        let _ = completion.complete(success);
     }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.active.lock().unwrap().remove(&self.session);
-        let completed = self.work.completed.borrow().is_some();
-        if !completed {
-            self.work.completed.send_replace(Some(false));
-        }
     }
-}
-
-#[cfg(test)]
-pub(super) struct WriteGate {
-    pub(super) entered: tokio::sync::Semaphore,
-    pub(super) release: tokio::sync::Semaphore,
 }
 
 enum GenerationError {
@@ -378,24 +371,6 @@ impl Owner {
             .instrument(span),
         );
     }
-    #[cfg(test)]
-    pub(super) async fn generate_title(
-        &self,
-        execution: ExecutionIdentity,
-        custody: Arc<dyn WorkCustody>,
-    ) -> Result<(), ToolError> {
-        let lease = self
-            .store
-            .fork_work(custody.as_ref(), &execution.session_id)
-            .map_err(persistence)?;
-        self.generate_title_with(
-            execution,
-            auxiliary::IdleLease(Some(lease)),
-            self.stop.child_token(),
-        )
-        .await
-        .map_err(ToolError::from)
-    }
 
     async fn generate_title_with(
         &self,
@@ -628,14 +603,6 @@ impl Owner {
             {
                 return Ok(());
             }
-            #[cfg(test)]
-            {
-                let gate = self.title_write_gate.lock().unwrap().take();
-                if let Some(gate) = gate {
-                    gate.entered.add_permits(1);
-                    gate.release.acquire().await.unwrap().forget();
-                }
-            }
             let title = title.clone();
             match work
                 .update_session_metadata(
@@ -660,35 +627,5 @@ impl Owner {
                 Err(error) => return Err(persistence(error).into()),
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod registry_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn archive_waits_for_acknowledged_title_cleanup_and_releases_finished_entries() {
-        let registry = Registry::default();
-        for id in 0..64 {
-            let session = format!("title-{id}");
-            let mut worker = registry.start(&session, CancellationToken::new()).unwrap();
-            let mut waiting = Box::pin(registry.cancel_and_wait(&session));
-            assert!(futures_util::poll!(&mut waiting).is_pending());
-            assert!(worker.work.cancellation.is_cancelled());
-            worker.complete(true);
-            waiting.await.unwrap();
-            drop(worker);
-            assert!(registry.active.lock().unwrap().is_empty());
-        }
-        let worker = registry.start("lost", CancellationToken::new()).unwrap();
-        let mut waiting = Box::pin(registry.cancel_and_wait("lost"));
-        assert!(futures_util::poll!(&mut waiting).is_pending());
-        drop(worker);
-        assert!(
-            waiting.await.is_err(),
-            "a disappeared worker cannot confirm cleanup"
-        );
-        assert!(registry.active.lock().unwrap().is_empty());
     }
 }

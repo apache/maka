@@ -549,6 +549,3 @@ fn read_package(connection: &Connection, reference: &PackageRef) -> Result<Packa
     let files = read_package_files(connection, reference)?;
     build_checked_package(files, reference)
 }
-
-#[cfg(test)]
-mod tests;

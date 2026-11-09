@@ -64,11 +64,6 @@ pub(crate) struct ToolCard {
     pub meta: Meta,
 }
 
-#[cfg(test)]
-pub(crate) fn wire(update: &Update) -> Result<Value, serde_json::Error> {
-    serde_json::to_value(crate::transport::v2::update(update.clone()))
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum State {
     Running,

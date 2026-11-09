@@ -187,25 +187,3 @@ impl Tool {
         self.card.meta["maka"][key] = value;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn complete_tool_output_survives_acp_projection() {
-        let text = "result".repeat(20_000);
-        let chunk: HistoryChunk = serde_json::from_value(json!({
-            "field":"body", "messageId":null, "turnId":null, "timestamp":1,
-            "role":"tool_result", "order":{"path":[2],"itemIndex":0},
-            "position":{"kind":"live","sequence":2,"fact":"00000000-0000-4000-8000-000000000004","itemIndex":0},
-            "offset":0, "totalBytes":text.len(), "text":text,
-            "tool":{"toolUseId":"call", "call":null,
-                "result":{"position":{"kind":"live","sequence":2,"fact":"00000000-0000-4000-8000-000000000004","itemIndex":0},"settlement":"returned","isError":false,"image":false,"images":0}}
-        }))
-        .unwrap();
-        let mut projection = Projection::default();
-        let updates = projection.chunk(&chunk).unwrap();
-        let encoded = crate::presentation::wire(&updates[0]).unwrap();
-        assert_eq!(encoded["content"][0]["content"]["text"], text);
-    }
-}

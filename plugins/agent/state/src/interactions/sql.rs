@@ -75,7 +75,8 @@ pub(crate) fn current_basis(
 ) -> Result<Option<PermissionBasis>, StoreError> {
     let raw: Option<String> = c
         .query_row(
-            "SELECT configuration FROM session_control WHERE id=? AND archived=0",
+            "SELECT configuration FROM session_control WHERE id=?1 AND archived=0
+             AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 AND remove_session!=0)",
             [session],
             |r| r.get(0),
         )
@@ -344,6 +345,35 @@ pub(super) fn establish(
         params![session, bind_u64(record.created_at)?, record.request_id],
     )?;
     Ok((record, true))
+}
+pub(crate) fn active_session(c: &Connection, session: &str) -> Result<bool, StoreError> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?1 AND archived=0)
+         AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 AND remove_session!=0)",
+        [session], |row| row.get(0),
+    )?)
+}
+pub(super) fn fenced_answer(
+    c: &Connection,
+    session: &str,
+    request: &str,
+    outcome: InteractionOutcome,
+    caller: Option<&CallerFence>,
+) -> Result<(AnswerSettlement, bool), StoreError> {
+    if !active_session(c, session)? {
+        return Ok((AnswerSettlement::Unavailable, false));
+    }
+    if let Some(caller) = caller {
+        match caller.status(c)? {
+            CallerStatus::Current => {}
+            CallerStatus::Unavailable => return Ok((AnswerSettlement::Unavailable, false)),
+            CallerStatus::AuthorizationChanged => {
+                return Ok((AnswerSettlement::AuthorizationChanged, false));
+            }
+        }
+    }
+    let (record, changed) = answer(c, session, request, outcome)?;
+    Ok((AnswerSettlement::Recorded(record), changed))
 }
 pub(super) fn answer(
     c: &Connection,

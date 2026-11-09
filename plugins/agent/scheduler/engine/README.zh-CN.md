@@ -21,6 +21,6 @@
 
 [English](README.md)
 
-管理定时任务定义、调度决策和投递状态。`controller` 驱动流程，`repository` 持久化任务，`authorization` 检查任务权限。任务到期仍需正常执行准入；投递与恢复记录用于避免将结果不确定误当作再次派发的许可。
+提供定时任务时间、cron／时区计算、漏触发策略，以及 `TaskPlan<E, A>` 的认领、结算和编辑纯领域规则。Agent 所有者提供效果与审批类型，在自身 Root 中持久化计划，并经共享的持久 Run driver 提交执行。冻结的 Fire 数据在恢复时保留原投递身份，本身不授予执行权限。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)

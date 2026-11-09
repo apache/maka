@@ -60,20 +60,12 @@ pub(super) struct DriverExecutor {
     pub workers: TaskTracker,
     /// Actual accepted owners, not a second durable task registry.
     pub retained: Arc<Mutex<Vec<RetainedSource>>>,
-    #[cfg(test)]
-    pub closed_tail: std::sync::OnceLock<ClosedTailGate>,
 }
 pub(super) enum RetainedSource {
     Resources(Settlement),
     Cleanup(Arc<ExternalCleanupPublication>),
 }
-#[cfg(test)]
-#[derive(Clone)]
-pub(super) struct ClosedTailGate {
-    pub entered: CancellationToken,
-    pub release: CancellationToken,
-    owner_stop: CancellationToken,
-}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
@@ -99,8 +91,6 @@ struct Publications {
     root_observation: CancellationToken,
     cleanup_proof: Mutex<OperationCleanup>,
     retained: Arc<Mutex<Vec<RetainedSource>>>,
-    #[cfg(test)]
-    closed_tail: Option<ClosedTailGate>,
 }
 type TaskClosure = (Terminal, Option<String>, Option<ExternalFinalMessage>);
 enum MessageState {
@@ -387,14 +377,6 @@ impl TaskBinding for Publications {
             }
             publication.closed = Some(closure);
             drop(publication);
-            #[cfg(test)]
-            if let Some(gate) = &self.closed_tail {
-                gate.entered.cancel();
-                tokio::select! {
-                    () = gate.release.cancelled() => {},
-                    () = gate.owner_stop.cancelled() => {},
-                }
-            }
             Ok(())
         })
     }
@@ -723,25 +705,6 @@ impl DriverExecutor {
                 },
             },
         )?;
-        #[cfg(test)]
-        let closed_tail = if fresh
-            && frozen.payload.request.settings.runtime.as_deref() == Some("codex")
-            && frozen.payload.request.content.text == "wait-cancel-terminal"
-        {
-            self.access.owner.upgrade().map(|owner| {
-                let gate = ClosedTailGate {
-                    entered: CancellationToken::new(),
-                    release: CancellationToken::new(),
-                    owner_stop: owner.stop.clone(),
-                };
-                self.closed_tail
-                    .set(gate.clone())
-                    .unwrap_or_else(|_| panic!("original source tail gate already installed"));
-                gate
-            })
-        } else {
-            None
-        };
         let publications = Arc::new(Publications {
             publication_source,
             state: self.state.clone(),
@@ -763,8 +726,6 @@ impl DriverExecutor {
             }),
             cleanup_proof: Mutex::new(task.cleanup.clone()),
             retained: self.retained.clone(),
-            #[cfg(test)]
-            closed_tail,
         });
         let backend = self.backend.clone();
         let custody = self.access.custody().clone();

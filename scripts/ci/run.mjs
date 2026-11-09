@@ -305,7 +305,7 @@ export function executor(
   });
   const nextest = async (id, noRun = false, filter = suites[id].filter ?? 'all()', extra = []) => {
     const environment = suiteEnv(id);
-    if (['macos-terminal', 'windows-shell'].includes(id)) {
+    if (id === 'windows-shell') {
       for (const artifact of taskHelperBinaries) {
         const output = await cargo(
           [
@@ -399,7 +399,7 @@ export function executor(
         'windows-skills',
         'windows-nsh',
         'macos-host',
-        'macos-terminal',
+        'macos-agent-execution',
         'windows-shell',
       ].includes(id)
     ) {
@@ -464,8 +464,10 @@ export function executor(
       for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
-    } else if (id === 'macos-terminal') {
-      await nextest(id, false, filter, extra);
+    } else if (id === 'macos-agent-execution') {
+      await verifyRoot(filter ?? suites[id].filter, ['--test-threads', '1', ...extra], id);
+    } else if (id === 'desktop') {
+      await verifyRoot(filter ?? suites[id].filter, ['--test-threads', '1', ...extra], id);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([
@@ -481,9 +483,7 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (
-      ['desktop', 'gpui', 'windows-desktop', 'windows-skills', 'windows-nsh'].includes(id)
-    ) {
+    } else if (['gpui', 'windows-desktop', 'windows-skills', 'windows-nsh'].includes(id)) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);
@@ -528,14 +528,88 @@ export function executor(
     }
   }
 
-  async function verifyRoot(filter, extra) {
+  async function prepareRuntimeHelpers(listing, binaries, args) {
+    if (!binaries.some((suite) => taskHelperConsumers.includes(suite['package-name']))) return;
+    const metadata = listing['rust-build-meta'];
+    const missing = taskHelperBinaries.flatMap((artifact) => {
+      const packages = new Set(
+        Object.values(listing['rust-suites'])
+          .filter((suite) => suite['package-name'] === artifact.package)
+          .map((suite) => suite['package-id']),
+      );
+      if (packages.size !== 1)
+        throw new Error(
+          `Expected one native runtime package in test metadata: ${artifact.package}`,
+        );
+      const [packageId] = packages;
+      const found = (metadata['non-test-binaries']?.[packageId] ?? []).filter(
+        (binary) =>
+          binary.name === artifact.binary &&
+          binary.kind === 'bin-exe' &&
+          binary['build-platform'] === 'target',
+      );
+      if (found.length > 1)
+        throw new Error(
+          `Ambiguous native runtime binary metadata: ${artifact.package}/${artifact.binary}`,
+        );
+      return found.length ? [] : [{ artifact, packageId }];
+    });
+    if (!missing.length) return;
+    // Non-test workers are not emitted by cargo test. Build the real programs
+    // with the consumer's workspace feature selection and retain Cargo evidence.
+    const output = await cargo(
+      ['build', ...args, '--bins', '--message-format=json-render-diagnostics'],
+      { capture: true },
+    );
+    const artifacts = output
+      .split('\n')
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line));
+    for (const { artifact, packageId } of missing) {
+      const candidates = artifacts.filter(
+        (built) =>
+          built.reason === 'compiler-artifact' &&
+          built.package_id === packageId &&
+          built.target?.name === artifact.binary &&
+          built.target.kind.includes('bin') &&
+          !built.profile.test &&
+          typeof built.executable === 'string',
+      );
+      if (candidates.length !== 1)
+        throw new Error(
+          `Missing or ambiguous compiled runtime helper: ${artifact.package}/${artifact.binary}`,
+        );
+      const [{ executable }] = candidates;
+      const path = relative(metadata['target-directory'], executable);
+      if (
+        !isAbsolute(executable) ||
+        !path ||
+        isAbsolute(path) ||
+        path === '..' ||
+        path.startsWith(`..${sep}`)
+      )
+        throw new Error(
+          `Compiled runtime helper is outside the archive target directory: ${executable}`,
+        );
+      metadata['non-test-binaries'] ??= {};
+      metadata['non-test-binaries'][packageId] ??= [];
+      metadata['non-test-binaries'][packageId].push({
+        name: artifact.binary,
+        kind: 'bin-exe',
+        'build-platform': 'target',
+        path: path.replaceAll('\\', '/'),
+      });
+    }
+  }
+
+  async function verifyRoot(filter, extra, id = 'root') {
     const separator = extra.indexOf('--');
     if (
       extra
         .slice(0, separator < 0 ? extra.length : separator)
         .some((arg) => ['--help', '-h', '--no-run'].includes(arg))
     ) {
-      await nextest('root', false, filter, extra);
+      await nextest(id, false, filter, extra);
       return;
     }
     const {
@@ -543,7 +617,7 @@ export function executor(
       runtime,
       filters,
       configFile,
-      profile = suites.root.profile,
+      profile = suites[id].profile ?? suites.root.profile,
     } = rootArguments(extra);
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-run-'));
     try {
@@ -552,7 +626,7 @@ export function executor(
           [
             'nextest',
             'list',
-            ...suites.root.cargoArgs,
+            ...suites[id].cargoArgs,
             ...build,
             ...(filter === 'all()' ? [] : ['-E', filter]),
             ...filters,
@@ -567,12 +641,18 @@ export function executor(
         ),
       );
       const binaries = Object.values(listing['rust-suites']).filter((suite) =>
-        Object.values(suite.testcases).some((entry) => entry['filter-match'].status === 'matches'),
+        Object.values(suite.testcases).some(
+          (entry) => !entry.ignored && entry['filter-match'].status === 'matches',
+        ),
       );
-      const archiveFilter =
-        binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ') || 'none()';
+      if (!binaries.length)
+        throw new Error(`The planned ${id} test selection was unexpectedly empty: ${filter}`);
+      const archiveFilter = binaries
+        .map((suite) => `binary_id(=${suite['binary-id']})`)
+        .join(' | ');
       const config = join(temporary, 'nextest.toml');
       const archiveProfile = basename(temporary);
+      await prepareRuntimeHelpers(listing, binaries, [...suites[id].cargoArgs, ...build]);
       const generated = archiveConfiguration(
         readFileSync(resolve(root, configFile ?? '.config/nextest.toml'), 'utf8'),
         listing,
@@ -586,7 +666,7 @@ export function executor(
         cargo([
           'nextest',
           'archive',
-          ...suites.root.cargoArgs,
+          ...suites[id].cargoArgs,
           ...build,
           '-E',
           archiveFilter,
@@ -684,9 +764,11 @@ export function executor(
       .flatMap((suite) => Object.values(suite.testcases))
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
     console.log(`Selected ${count} ${id} tests for archive replay`);
-    if (!count && plan.suites[id].filter === 'all()')
-      throw new Error('The full root test selection was unexpectedly empty');
-    if (!count) return [];
+    if (!count)
+      throw new Error(
+        `The planned ${id} test selection was unexpectedly empty: ${plan.suites[id].filter}`,
+      );
+    await prepareRuntimeHelpers(listing, selected, args);
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
     const groups = [];
     for (const [group, shards, name] of [

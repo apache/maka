@@ -183,7 +183,9 @@ impl Storage {
         mut mutations: Vec<Mutation>,
         writer: &maka_event_log::root_store::DataWriter,
     ) -> Result<
-        impl maka_event_log::writeback::Statement<Value = Vec<Record>, Output = Vec<Record>> + Clone,
+        impl maka_event_log::writeback::Statement<Value = Vec<Record>, Output = Vec<Record>>
+        + Clone
+        + use<>,
         maka_event_log::StoreError,
     > {
         if self.drain.is_cancelled() {

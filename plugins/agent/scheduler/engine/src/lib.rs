@@ -18,46 +18,20 @@
  */
 
 //! Scheduled-task business policy, separate from plugin lifecycle and Host admission.
-pub mod authorization;
+//! Scheduling policy only. The Agent owner persists plans and authorizes dispatch.
+
 pub mod command;
-pub mod controller;
 mod cron;
-pub mod delivery;
-pub mod owner;
 pub mod plan;
-pub mod repository;
 pub mod schedule;
 pub mod task;
-pub mod view;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Authority(#[from] maka_capabilities::authorization::CommandError),
-    #[error(transparent)]
-    Resource(#[from] maka_agent_facts::tools::ToolError),
-    #[error("scheduled task does not exist")]
-    NotFound,
-    #[error("scheduled task changed since it was read")]
-    RevisionConflict,
-    #[error("scheduled-task creation identity was used for different input")]
-    CreationConflict,
-    #[error("Approve background access in the Scheduler UI before creating this task")]
-    AuthorizationRequired,
-    #[error("scheduler is closed")]
-    Closed,
-    #[error("scheduler command queue is full")]
-    Busy,
-    #[error("scheduler unavailable: {0}")]
-    Unavailable(String),
-    #[error("scheduled-task mutation outcome is unknown")]
-    OutcomeUnknown,
     #[error("invalid scheduled task: {0}")]
     Invalid(String),
     #[error(transparent)]
     Time(#[from] jiff::Error),
-    #[error(transparent)]
-    Storage(#[from] maka_plugin_core::storage::StoreError),
 }
 
 fn invalid(message: impl Into<String>) -> Error {

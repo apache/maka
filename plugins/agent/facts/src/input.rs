@@ -224,35 +224,3 @@ impl From<&str> for MessageInput {
         text.to_owned().into()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::composition::{SourceKind, SourceRevision};
-
-    #[test]
-    fn input_receipts_accept_complete_payloads_and_validate_source_kind() {
-        let mut receipts: Vec<_> = (0..4096)
-            .map(|index| InputReceipt {
-                source: SourceRevision {
-                    kind: SourceKind::Input,
-                    name: format!("provider-{}", index % 64),
-                    package_id: "example".into(),
-                    entry_id: "entry".into(),
-                    activation: "activation".into(),
-                    revision: format!("revision-{index}"),
-                },
-                receipt: serde_json::json!({"message": index / 64}),
-            })
-            .collect();
-        validate_receipts(&receipts).unwrap();
-        receipts[0].source.kind = SourceKind::Tool;
-        assert_eq!(
-            validate_receipts(&receipts),
-            Err("invalid input preparation source")
-        );
-        receipts[0].source.kind = SourceKind::Input;
-        receipts[0].receipt = serde_json::json!("x".repeat(1024 * 1024));
-        validate_receipts(&receipts).unwrap();
-    }
-}

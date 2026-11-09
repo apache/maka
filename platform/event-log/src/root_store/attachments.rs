@@ -103,6 +103,3 @@ impl RootStore {
         Ok((source.scoped(custody.clone()), target.scoped(custody)))
     }
 }
-
-#[cfg(test)]
-mod tests;

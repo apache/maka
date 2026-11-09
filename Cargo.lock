@@ -707,6 +707,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "asyncband"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2050892d4691cf110586070786712b504985a4d37ed64a9cd8a402718e1706"
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7443,6 +7449,7 @@ dependencies = [
 name = "maka-agent-native"
 version = "0.2.0"
 dependencies = [
+ "asyncband",
  "axum",
  "base64 0.23.1",
  "cap-fs-ext",
@@ -8485,21 +8492,12 @@ dependencies = [
 name = "maka-scheduler"
 version = "0.2.0"
 dependencies = [
- "futures-util",
- "hex",
  "jiff",
  "maka-agent-facts",
- "maka-capabilities",
- "maka-event-log",
- "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "tempfile",
  "thiserror 2.0.21",
- "tokio",
- "tokio-util",
  "uuid",
 ]
 

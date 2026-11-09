@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/index.js';
 import type { CompositionConfiguration } from './composition.js';
 
 /** Trusted launcher inputs. Product defaults live with the ordinary composition. */
@@ -176,7 +177,7 @@ export function installation(
     [
       'observe',
       'SessionRead',
-      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected backend and active invocation. Use its actual state and invocation IDs rather than assuming an earlier send has completed.',
+      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected backend and active Run. Use its actual state and Run IDs rather than assuming an earlier send has completed.',
     ],
     [
       'history',
@@ -211,12 +212,12 @@ export function installation(
     [
       'stop',
       'SessionStop',
-      'Request Stop for the exact active invocation read from SessionRead. Cancellation may still be settling; inspect SessionWork before reporting that the work has stopped or starting a replacement.',
+      'Request Stop for the exact active Run read from SessionRead. Cancellation may still be settling; inspect SessionWork before reporting that the work has stopped or starting a replacement.',
     ],
     [
-      'resume',
-      'SessionResume',
-      'Resume the original suspended execution using its source invocation and exact returned high-water mark. This is not a resend; use SessionExecution/SessionWork to reconcile the original result first.',
+      'continueRun',
+      'SessionContinueRun',
+      'Continue from an eligible terminal native-model Run (completed, failed or cancelled) using its exact sourceRunId and sourceHighWater returned by SessionExecution. Supply model: { connectionId, modelId } from a ModelList kind=model choice and its native thinkingLevel, not a tagged backend/executor selection. This admits a new continuation Run, never replays the original request or resumes an old process. First reconcile all original effects and cleanup with SessionExecution/SessionWork.',
     ],
     [
       'pendingInteractions',
@@ -246,14 +247,14 @@ export function installation(
     [
       'work',
       'SessionWork',
-      'Observe progress or completion for an original message or invocation. Continue with the returned cursor; running or admitted is not a completed result. Read final output before reporting success.',
+      'Observe progress or completion for an original message or Run. Continue with the returned cursor; running or admitted is not a completed result. Read final output before reporting success.',
     ],
     [
       'execution',
       'SessionExecution',
-      'Resolve the original message execution by invocationId, including its final outcome. Reconcile this record after uncertainty instead of blindly repeating the delegated task.',
+      'Resolve the original Run by runId, including its state, waits/blockers and highWater fence. Reconcile this record after uncertainty instead of blindly repeating the delegated task.',
     ],
-  ] as const)
+  ] as const satisfies readonly (readonly [keyof ServiceMethods['agent'], string, string])[])
     tools.push({
       target: { kind: 'export', name: 'agent' },
       method,

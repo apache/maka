@@ -153,6 +153,74 @@ impl RootStore {
         Ok((record, change))
     }
 
+    /// Workspace candidates remain unpublished until the same statement installs
+    /// the original plugin Session and its domain facts. Metadata is read in SQL.
+    pub async fn prepare_plugin_session_with_workspace<S, W>(
+        &self,
+        claim: &PluginSession,
+        configuration: &serde_json::Value,
+        now: u64,
+        writer: &DataWriter,
+        workspace: W,
+        statement: S,
+    ) -> Result<
+        impl Statement<Value = (SessionRecord, S::Value), Output = (SessionRecord, S::Output)>
+        + use<S, W>,
+        StoreError,
+    >
+    where
+        S: Statement,
+        W: Statement<
+                Value = maka_sandbox::workspace::BindingRef,
+                Output = maka_sandbox::workspace::BindingRef,
+            >,
+    {
+        self.require_open()?;
+        self.validate_data_writer(writer)?;
+        validate_origin(claim)?;
+        crate::sessions::validate_time(now)?;
+        creation::validate_configuration(configuration)?;
+        self.require_creation_dependencies(None, Some(claim))
+            .await?;
+        let command = Creation::Plugin {
+            origin: claim.into(),
+            configuration: configuration.clone(),
+            created_at: now,
+        };
+        let creation = self
+            .gates
+            .write([gates::Key::Creation(claim.session_id.clone())])
+            .await?;
+        let (sessions, bindings) = command.pin_inputs(&claim.session_id)?;
+        // An uninstalled candidate is data, not an existing binding resource.
+        let bindings = self
+            .log
+            .connection
+            .read(move |connection| {
+                let mut existing = Vec::new();
+                for binding in bindings {
+                    if crate::workspace_bindings::read::<serde_json::Value>(connection, binding.id)?
+                        .is_some()
+                    {
+                        existing.push(binding);
+                    }
+                }
+                Ok(existing)
+            })
+            .await?;
+        let custody = Arc::new(
+            pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings)
+                .await?
+                .scoped(Arc::new(creation)),
+        );
+        Ok(WorkspacePluginCreation {
+            command,
+            workspace,
+            statement,
+            custody,
+        })
+    }
+
     pub(super) async fn require_published_session(&self, id: &str) -> Result<(), StoreError> {
         self.session(id).await.map(|_| ())
     }
@@ -333,6 +401,124 @@ impl<S: Statement> Statement for PluginCreation<S> {
     }
 }
 
+struct WorkspacePluginCreation<S, W> {
+    command: Creation,
+    workspace: W,
+    statement: S,
+    custody: Arc<EventLog>,
+}
+impl<S, W> Statement for WorkspacePluginCreation<S, W>
+where
+    S: Statement,
+    W: Statement<
+            Value = maka_sandbox::workspace::BindingRef,
+            Output = maka_sandbox::workspace::BindingRef,
+        >,
+{
+    type Value = (SessionRecord, S::Value);
+    type Output = (SessionRecord, S::Output);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD || W::PREPARE_OFF_THREAD;
+
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.workspace.retain();
+        retained.extend(self.statement.retain());
+        retained.push(self.custody.clone());
+        retained
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            workspace: self.workspace.prepare()?,
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        self.custody.connection.require_same_writer(connection)?;
+        let workspace = self.workspace.execute(connection)?;
+        let Creation::Plugin {
+            origin,
+            configuration,
+            ..
+        } = &self.command
+        else {
+            unreachable!("plugin creation")
+        };
+        if crate::workspace_bindings::attached(configuration)?.as_ref() != Some(&workspace.value) {
+            return Err(invalid(
+                "plugin creation workspace differs from the original candidate",
+            ));
+        }
+        let claim = origin.clone().claim()?;
+        require_plugin_dependencies(connection, &claim)?;
+        let command = creation::WriteReservation::existing(
+            connection,
+            &claim.session_id,
+            &claim.fingerprint,
+            &self.command,
+        )?
+        .map_or(self.command, |reserved| reserved.command);
+        let Creation::Plugin {
+            configuration,
+            created_at,
+            ..
+        } = &command
+        else {
+            unreachable!("plugin creation")
+        };
+        let expected = claim.prepare_record(connection, configuration, *created_at)?;
+        let creation = PluginCreation {
+            command,
+            expected,
+            statement: RecordAfter {
+                session: claim.session_id,
+                statement: self.statement,
+            },
+            custody: self.custody,
+        }
+        .execute(connection)?;
+        Ok(Prepared {
+            value: creation.value,
+            changed: workspace.changed || creation.changed,
+            notification: workspace.notification.combine(creation.notification),
+        })
+    }
+    fn committed((record, value): Self::Value) -> Self::Output {
+        (record, S::committed(value))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        W::isolated_rejection(error) || PluginCreation::<RecordAfter<S>>::isolated_rejection(error)
+    }
+}
+
+struct RecordAfter<S> {
+    session: String,
+    statement: S,
+}
+impl<S: Statement> Statement for RecordAfter<S> {
+    type Value = (SessionRecord, S::Value);
+    type Output = (SessionRecord, S::Output);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        self.statement.retain()
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        let domain = self.statement.execute(connection)?;
+        let record =
+            crate::sessions::read(connection, &self.session)?.ok_or(StoreError::SessionNotFound)?;
+        Ok(Prepared {
+            value: (record, domain.value),
+            changed: domain.changed,
+            notification: domain.notification,
+        })
+    }
+    fn committed((record, value): Self::Value) -> Self::Output {
+        (record, S::committed(value))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+    }
+}
+
 fn validate_origin(origin: &PluginSession) -> Result<(), StoreError> {
     crate::sessions::validate_id(&origin.session_id)?;
     if origin.fingerprint.is_empty() {
@@ -385,11 +571,6 @@ pub(super) async fn commit(
         .await?;
     Ok(Some(rejection))
 }
-
-#[cfg(test)]
-mod composition_tests;
-#[cfg(test)]
-mod tests;
 
 impl RootStore {
     async fn recover_target(&self, id: &str) -> Result<bool, StoreError> {

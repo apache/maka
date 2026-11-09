@@ -36,9 +36,10 @@ mod sql;
 mod store;
 pub mod usage;
 pub use store::{
-    Admission, AdmissionGuard, AnswerPage, Change, CleanupFrontier, Commit, ContentBlob,
-    DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody, PublicationRead,
-    ReadyRun, RunObservation, SessionObligation, SessionQuiescence, SessionQuiescenceGuard, Store,
+    Admission, AdmissionGuard, AnswerPage, CallerFence, CallerStatus, Change, CleanupFrontier,
+    Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
+    PublicationRead, ReadyRun, RunObservation, SessionObligation, SessionQuiescence,
+    SessionQuiescenceGuard, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[

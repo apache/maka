@@ -48,6 +48,8 @@ pub(super) struct OriginalEffects {
 pub(super) struct OriginalEffect {
     custody: Option<EffectCustody>,
     key: ToolKey,
+    selected: Option<(crate::tools::SelectedTool, NativeServices)>,
+    source: DispatchSource,
     physical: PhysicalCleanup,
     batch: Option<OriginalBatch>,
     acknowledged: bool,
@@ -197,28 +199,217 @@ pub(super) fn request(
         .map_err(RunError::Internal)
 }
 
+fn recovery_unavailable(diagnostic: impl Into<String>) -> RunError {
+    RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
+        stage: AuthorityStage::BackendScope,
+        diagnostic: diagnostic.into(),
+    })
+}
+
 impl OriginalEffects {
-    #[cfg(test)]
-    pub(super) async fn frozen_returns(&self) -> Vec<(ToolKey, FactId, ContentRef)> {
-        let originals = self.retained.lock().unwrap().clone();
-        let mut returns = Vec::new();
-        for original in originals {
-            let original = original.lock().await;
-            if let Some(batch) = &original.batch {
-                for change in &batch.changes {
-                    match &change.fact {
-                        Fact::LocalToolReturned { tool, result, .. }
-                        | Fact::HostToolResultRecorded { tool, result, .. } => {
-                            returns.push((tool.clone(), change.id, result.clone()))
-                        }
-                        _ => {}
-                    }
+    async fn selection(&self) -> Result<crate::tools::SelectionSnapshot, RunError> {
+        let bytes = self
+            .state
+            .content(
+                self.access.execution().run_id,
+                self.access.spec().tool_selection.clone(),
+            )
+            .await?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            recovery_unavailable(format!("original tool selection is unavailable: {error}"))
+        })
+    }
+    pub(super) async fn selected_for_tool(
+        &self,
+        name: &str,
+    ) -> Result<Option<(crate::tools::SelectedTool, NativeServices)>, RunError> {
+        let owner = self
+            .access
+            .owner
+            .upgrade()
+            .ok_or_else(|| recovery_unavailable("original native owner is unavailable"))?;
+        self.selection()
+            .await?
+            .selected_service(&self.services, &owner.tool_basis, name)
+            .map_err(recovery_unavailable)
+    }
+    async fn canonical_tool(&self, source: &ReadSource) -> Result<Tool, RunError> {
+        let execution = self.access.execution();
+        let mut view = self.state.frontier(execution.run_id).await?;
+        if view.run != execution.run_id
+            || view.spec != *self.access.spec()
+            || view.spec.session_id != execution.session_id
+            || view.spec.turn_id != execution.turn_id
+        {
+            return Err(recovery_unavailable(
+                "original recovery Run differs from actual execution",
+            ));
+        }
+        let key = match source {
+            ReadSource::Intent(key) => key.clone(),
+            ReadSource::Operation(reference) => {
+                let mut originals = view.tools.values().filter(|tool| {
+                    !tool.call.provider_executed
+                        && tool.admitted
+                        && tool.original.as_ref() == Some(reference)
+                });
+                let tool = originals.next().ok_or_else(|| {
+                    recovery_unavailable("original operation has no canonical tool binding")
+                })?;
+                if originals.next().is_some() {
+                    return Err(recovery_unavailable(
+                        "original operation has ambiguous canonical tool bindings",
+                    ));
+                }
+                tool.key.clone()
+            }
+        };
+        let tool = view
+            .tools
+            .remove(&tool_key(&key))
+            .ok_or_else(|| recovery_unavailable("original canonical tool is unavailable"))?;
+        if tool.key != key || tool.call.provider_executed {
+            return Err(recovery_unavailable(
+                "original tool is not a canonical Host tool",
+            ));
+        }
+        match source {
+            ReadSource::Intent(_) => {
+                if !tool.admitted && !matches!(&tool.decision, Some(ToolDecision::Approved { .. }))
+                {
+                    return Err(recovery_unavailable(
+                        "original tool has no approval or admission",
+                    ));
+                }
+            }
+            ReadSource::Operation(reference) => {
+                let operation = crate::tools::operation_uuid(
+                    execution,
+                    &format!("{}:{}", key.attempt, key.call),
+                );
+                if !tool.admitted
+                    || reference.operation != operation
+                    || tool.original.as_ref() != Some(reference)
+                {
+                    return Err(recovery_unavailable(
+                        "original operation differs from its canonical tool",
+                    ));
                 }
             }
         }
-        returns
+        Ok(tool)
     }
-
+    pub(super) async fn recovery_request(
+        &self,
+        source: &ReadSource,
+        pinned: Option<&(crate::tools::SelectedTool, NativeServices)>,
+        expected: Option<&RecoveryRef>,
+    ) -> Result<Option<(RecoveryRef, NativeRequest)>, RunError> {
+        self.finish_readers(Some(source)).await?;
+        let tool = self.canonical_tool(source).await?;
+        let owner = self
+            .access
+            .owner
+            .upgrade()
+            .ok_or_else(|| recovery_unavailable("original native owner is unavailable"))?;
+        let selection = self.selection().await?;
+        let selected = selection
+            .selected_service(&self.services, &owner.tool_basis, &tool.call.name)
+            .map_err(recovery_unavailable)?;
+        let selected = match (pinned, selected) {
+            (Some(pinned), Some(selected)) if pinned.0 == selected.0 => Some(pinned.clone()),
+            (Some(_), _) => {
+                return Err(recovery_unavailable(
+                    "retained native scope differs from canonical tool",
+                ));
+            }
+            (None, selected) => selected,
+        };
+        let operation_id = format!("{}:{}", tool.key.attempt, tool.key.call);
+        let operation = crate::tools::operation_uuid(self.access.execution(), &operation_id);
+        if expected.is_some_and(|reference| {
+            reference.operation != operation
+                || tool
+                    .original
+                    .as_ref()
+                    .is_some_and(|original| original != reference)
+        }) {
+            return Err(recovery_unavailable(
+                "expected operation differs from canonical tool",
+            ));
+        }
+        if selected.is_none() && matches!(source, ReadSource::Operation(_)) {
+            return Err(recovery_unavailable(
+                "original operation has no selected native service",
+            ));
+        }
+        // Non-service tools may observe intent absence; disclosure of any Some
+        // still passes the Host's independent original-receipt policy gate.
+        let lookup = request(
+            selected
+                .as_ref()
+                .map_or(&self.services, |selected| &selected.1),
+            &self.access,
+            Some(operation_id.clone()),
+        )?;
+        let intent = match lookup.lookup_intent(operation) {
+            Ok(observer) => observer.await,
+            Err(error) => Err(error),
+        };
+        let validated = (|| {
+            let intent = intent.map_err(recovery_unavailable)?;
+            let Some(intent) = intent else {
+                return if expected.is_some()
+                    || tool.original.is_some()
+                    || matches!(source, ReadSource::Operation(_))
+                {
+                    Err(recovery_unavailable(
+                        "original caller intent is unavailable",
+                    ))
+                } else {
+                    Ok(None)
+                };
+            };
+            if intent.reference.operation != operation
+                || expected.is_some_and(|reference| reference != &intent.reference)
+                || tool
+                    .original
+                    .as_ref()
+                    .is_some_and(|reference| reference != &intent.reference)
+                || matches!(source, ReadSource::Operation(reference) if reference != &intent.reference)
+            {
+                return Err(recovery_unavailable(
+                    "caller intent differs from canonical original operation",
+                ));
+            }
+            let selected = selected.as_ref().ok_or_else(|| {
+                recovery_unavailable("non-service tool has an unexpected Host caller intent")
+            })?;
+            selection
+                .validate_recovery_service(
+                    &self.services,
+                    &owner.tool_basis,
+                    &intent,
+                    self.access.execution(),
+                    &operation_id,
+                    selected,
+                )
+                .map_err(recovery_unavailable)?;
+            Ok(Some(intent.reference))
+        })();
+        match validated {
+            Ok(Some(reference)) => Ok(Some((reference, lookup))),
+            result => {
+                if let Err(error) = lookup.finish().await {
+                    self.retain_reader(source.clone(), lookup);
+                    return Err(RunError::Tool(ToolError::CleanupUnconfirmed(error)));
+                }
+                result.map(|_| None)
+            }
+        }
+    }
+}
+impl OriginalEffects {
     pub(super) fn new(
         state: maka_agent_state::Store,
         services: NativeServices,
@@ -326,10 +517,18 @@ impl OriginalEffects {
             });
     }
 
-    pub(super) fn own(&self, custody: EffectCustody, key: ToolKey) -> Arc<Mutex<OriginalEffect>> {
+    pub(super) fn own(
+        &self,
+        custody: EffectCustody,
+        key: ToolKey,
+        selected: Option<(crate::tools::SelectedTool, NativeServices)>,
+        source: DispatchSource,
+    ) -> Arc<Mutex<OriginalEffect>> {
         let original = Arc::new(Mutex::new(OriginalEffect {
             custody: Some(custody),
             key,
+            selected,
+            source,
             physical: PhysicalCleanup::Unobservable,
             batch: None,
             acknowledged: false,
@@ -357,6 +556,43 @@ impl OriginalEffects {
         local: Option<super::LocalCompletion>,
     ) -> Result<DispatchOutcome, RunError> {
         let mut material = original.lock().await;
+        let result = if matches!(&material.source, DispatchSource::CellWait(_)) {
+            match result {
+                Err(
+                    error @ (ToolError::OutcomeUnknown(_)
+                    | ToolError::CleanupUnconfirmed(_)
+                    | ToolError::Persistence(_)
+                    | ToolError::OperationUnknown { .. }
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ) => {
+                    // The control callback failed; its original Cell still owns
+                    // uncertainty. Keep this batch private until source closure.
+                    material.batch = Some(
+                        prepare_local_result(
+                            self.access.execution(),
+                            &material.key,
+                            ToolSuccess::from(ToolOutput::Text(error.to_string()))
+                                .reporting_error(true),
+                            maka_agent_facts::tool_call::ToolSettlement::Unknown,
+                        )
+                        .await?,
+                    );
+                    let error = match error {
+                        ToolError::OperationUnknown { message, .. } => {
+                            ToolError::OutcomeUnknown(message)
+                        }
+                        ToolError::OperationCleanupUnconfirmed { message, .. } => {
+                            ToolError::CleanupUnconfirmed(message)
+                        }
+                        error => error,
+                    };
+                    return Err(RunError::Tool(error));
+                }
+                result => result,
+            }
+        } else {
+            result
+        };
         material.physical = match &result {
             Err(
                 ToolError::OperationUnknown { observation, .. }
@@ -462,14 +698,46 @@ impl OriginalEffects {
         cells_cleanup_confirmed: bool,
     ) -> Result<bool, RunError> {
         let mut material = original.lock().await;
+        if !matches!(material.physical, PhysicalCleanup::Confirmed)
+            && let DispatchSource::CellWait(source) = &material.source
+        {
+            let Some(settlement) = source
+                .settlement(&self.access, &material.key, cells_cleanup_confirmed)
+                .await?
+            else {
+                return Ok(false);
+            };
+            let batch = material.batch.as_mut().ok_or_else(|| {
+                RunError::Internal("Cell wait callback has not supplied its original result".into())
+            })?;
+            let Some(Change {
+                fact:
+                    Fact::LocalToolReturned {
+                        settlement: original,
+                        ..
+                    },
+                ..
+            }) = batch.changes.first_mut()
+            else {
+                return Err(RunError::Internal(
+                    "Cell wait lost its local result material".into(),
+                ));
+            };
+            // Classify once, before any SQL attempt. Publication retries retain
+            // these exact facts even if logical knowledge subsequently advances.
+            *original = settlement;
+            material.physical = PhysicalCleanup::Confirmed;
+        }
         if material.batch.is_some() {
             if !material.acknowledged {
                 self.publish_material(&mut material).await?;
                 material.acknowledged = true;
             }
         }
-        if !matches!(material.physical, PhysicalCleanup::Confirmed) {
-            if let Some(reply) = material.observe(&self.services, &self.access).await? {
+        if matches!(&material.source, DispatchSource::Ordinary)
+            && !matches!(material.physical, PhysicalCleanup::Confirmed)
+        {
+            if let Some(reply) = material.observe(self).await? {
                 if cleanup_confirmed(&reply) {
                     material.physical = PhysicalCleanup::Confirmed;
                 }
@@ -494,6 +762,7 @@ impl OriginalEffects {
             }
         }
         if cells_cleanup_confirmed
+            && matches!(&material.source, DispatchSource::Ordinary)
             && material.batch.is_none()
             && !matches!(material.physical, PhysicalCleanup::Confirmed)
         {
@@ -546,8 +815,7 @@ fn cleanup_confirmed(reply: &OperationReply) -> bool {
 impl OriginalEffect {
     async fn observe(
         &mut self,
-        services: &NativeServices,
-        access: &RunAccess,
+        effects: &OriginalEffects,
     ) -> Result<Option<OperationReply>, RunError> {
         if let Some(reader) = &self.reader {
             if reader.scope().resources.has_pending() {
@@ -560,55 +828,37 @@ impl OriginalEffect {
                 .await
                 .map_err(|error| RunError::Tool(ToolError::CleanupUnconfirmed(error)))?;
             self.reader = None;
-            if let Some(reply) = self.reader_observation.take() {
+            if let Some(reply) = self.reader_observation.take().filter(cleanup_confirmed) {
                 return Ok(Some(reply));
             }
         }
-        let operation_id = format!("{}:{}", self.key.attempt, self.key.call);
-        let reader = request(services, access, Some(operation_id.clone()))?;
-        let reference = match &self.physical {
-            PhysicalCleanup::Host(reference) => Ok(Some(reference.clone())),
-            PhysicalCleanup::Unobservable => {
-                let unavailable = |diagnostic| {
-                    RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
-                        stage: AuthorityStage::BackendScope,
-                        diagnostic,
-                    })
-                };
-                match reader.lookup_intent(crate::tools::operation_uuid(
-                    access.execution(),
-                    &operation_id,
-                )) {
-                    Ok(original) => original
-                        .await
-                        .map(|intent| intent.map(|intent| intent.reference))
-                        .map_err(unavailable),
-                    Err(error) => Err(unavailable(error)),
-                }
-            }
+        let expected = match &self.physical {
+            PhysicalCleanup::Host(reference) => Some(reference),
+            PhysicalCleanup::Unobservable => None,
             PhysicalCleanup::Confirmed => unreachable!("confirmed sources are not read again"),
         };
-        let observation = match reference {
-            Ok(Some(reference)) => {
-                self.physical = PhysicalCleanup::Host(reference.clone());
-                match reader.recover(reference.clone()) {
-                    Ok(original) => original
-                        .await
-                        .map(|observation| {
-                            observation.map(|observation| OperationReply {
-                                reference,
-                                receipt: Receipt::Recorded {
-                                    outcome: observation.outcome,
-                                    cleanup: observation.cleanup,
-                                },
-                            })
-                        })
-                        .map_err(RunError::Internal),
-                    Err(error) => Err(RunError::Internal(error)),
-                }
-            }
-            Ok(None) => Ok(None),
-            Err(error) => Err(error),
+        let source = ReadSource::Intent(self.key.clone());
+        let Some((reference, reader)) = effects
+            .recovery_request(&source, self.selected.as_ref(), expected)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.physical = PhysicalCleanup::Host(reference.clone());
+        let observation = match reader.recover(reference.clone()) {
+            Ok(original) => original
+                .await
+                .map(|observation| {
+                    observation.map(|observation| OperationReply {
+                        reference,
+                        receipt: Receipt::Recorded {
+                            outcome: observation.outcome,
+                            cleanup: observation.cleanup,
+                        },
+                    })
+                })
+                .map_err(recovery_unavailable),
+            Err(error) => Err(recovery_unavailable(error)),
         };
         if let Err(error) = reader.finish().await {
             self.reader_observation = observation.ok().flatten();
@@ -643,6 +893,16 @@ async fn prepare_result(
             ToolSettlement::Failed,
         ),
     };
+    prepare_local_result(execution, key, result, settlement).await
+}
+
+async fn prepare_local_result(
+    execution: &ExecutionIdentity,
+    key: &ToolKey,
+    result: ToolSuccess,
+    settlement: maka_agent_facts::tool_call::ToolSettlement,
+) -> Result<OriginalBatch, RunError> {
+    let at = UnixMillis(now().try_into().expect("Unix milliseconds"));
     let execution = execution.clone();
     let key = key.clone();
     // The original worker retains its physical leases across this CPU work.

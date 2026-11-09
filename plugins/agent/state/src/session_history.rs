@@ -382,7 +382,7 @@ pub(crate) fn pending_interaction_count(
     session: &str,
 ) -> Result<u64, StoreError> {
     Ok(c.query_row(
-        "SELECT count(*) FROM agent_interaction_pending p JOIN agent_interaction_requests r ON r.request=p.request WHERE p.session=?1 AND r.run=?2",
+        "SELECT count(*) FROM agent_interaction_pending p JOIN agent_interaction_requests r ON r.request=p.request JOIN agent_runs ar ON ar.run=r.run WHERE p.session=?1 AND r.run=?2 AND ar.local=1 AND ar.stopped=0 AND ar.terminal IS NULL",
         rusqlite::params![session, run.to_string()],
         |row| sql::read_u64(row, 0),
     )?)

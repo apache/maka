@@ -139,7 +139,7 @@ impl RunAccess {
                     })?
                     .clone(),
             )
-            .map_err(RunError::Checkpoint)?
+            .map_err(RunError::Json)?
         } else {
             BTreeMap::new()
         };

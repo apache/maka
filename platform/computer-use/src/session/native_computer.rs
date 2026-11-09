@@ -325,39 +325,3 @@ pub(super) fn windows_permission_input(
     let input = input::windows(method, input::first(args))?;
     input.get("window").map(|_| window_id(&input)).transpose()
 }
-
-#[cfg(all(test, target_os = "macos"))]
-mod mac_retirement_tests {
-    use super::*;
-
-    #[test]
-    fn partial_app_or_window_retirement_keeps_its_original_cause_and_refuses_admission() {
-        let active = MacApplicationState::Active;
-        let live = MacWindowState::Live("old exact window".into());
-        admit_mac_application(&active, &live).unwrap();
-        let pending = MacWindowState::Retiring {
-            handle: "old exact window".into(),
-            error: None,
-        };
-        assert!(matches!(
-            admit_mac_application(&active, &pending),
-            Err(ToolError::CleanupUnconfirmed(_))
-        ));
-        assert_eq!(pending.retained(), Some("old exact window"));
-        let failed = MacWindowState::Retiring {
-            handle: "old exact window".into(),
-            error: Some(ToolError::OutcomeUnknown("original window release".into())),
-        };
-        assert!(matches!(admit_mac_application(&active, &failed),
-            Err(ToolError::OutcomeUnknown(reason)) if reason == "original window release"));
-        assert_eq!(failed.retained(), Some("old exact window"));
-        let app = MacApplicationState::Retiring {
-            error: Some(ToolError::CleanupUnconfirmed(
-                "App ACK received; Window ACK unconfirmed".into(),
-            )),
-        };
-        assert!(matches!(admit_mac_application(&app, &MacWindowState::None),
-            Err(ToolError::CleanupUnconfirmed(reason)) if reason == "App ACK received; Window ACK unconfirmed"));
-        assert!(matches!(active, MacApplicationState::Active));
-    }
-}

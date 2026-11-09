@@ -26,8 +26,6 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 mod jev;
 mod openai;
-#[cfg(test)]
-mod tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

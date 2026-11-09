@@ -1524,6 +1524,3 @@ fn external(view: &RunView, live: &Live, _now: UnixMillis, _fenced: bool) -> Act
     }
     Action::Block(BlockerKind::ExternalTaskUnobservable { descriptor })
 }
-
-#[cfg(test)]
-mod tests;

@@ -149,7 +149,12 @@ impl Executors {
         if let Some(configuration) =
             external.filter(|configuration| configuration.enabled_runtimes().next().is_some())
         {
-            let owner = external::External::capture(context, configuration)?;
+            let services = context.services();
+            let declaration =
+                services.binding(&maka_plugin_core::contract::ServiceTarget::Export {
+                    name: maka_agent_api::EXPORT.into(),
+                })?;
+            let owner = external::External::capture(context, configuration, declaration)?;
             let backend = Backend {
                 accepted: Accepted {
                     selection: Selection {
@@ -205,13 +210,7 @@ impl Executors {
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub(crate) fn captured_external(&self) -> Option<&Arc<external::External>> {
-        match &self.0.get("external")?.implementation {
-            Implementation::External(owner) => Some(owner),
-            Implementation::Service(_) => None,
-        }
-    }
+
     pub async fn external_query(
         &self,
         cwd: String,
@@ -548,6 +547,21 @@ impl Backend {
                 Settlement::new(result, root_cleanup, RequestOwner::one(call))
             }
             (Implementation::External(owner), RecoveryDescriptor::Native { binding }) => {
+                if request.settings != self.accepted.selection.settings {
+                    return Settlement::new(
+                        Err(Error::Blocked {
+                            reason:
+                                maka_agent_facts::durable::BlockerKind::ExternalTaskUnobservable {
+                                    descriptor,
+                                },
+                            diagnostic:
+                                "Original native task settings differ from the accepted backend"
+                                    .into(),
+                        }),
+                        OperationCleanup::Confirmed,
+                        (),
+                    );
+                }
                 let result = async {
                     match owner
                         .observe_task(

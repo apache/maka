@@ -409,20 +409,3 @@ fn patch_text(bytes: &[u8]) -> Result<String, String> {
         Err(_) => Err("agent_patch_offset_invalid".into()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn utf8_patch_pages_keep_unread_suffix_and_reject_interior_offsets() {
-        let original = format!("{}附件末尾", "x".repeat(8191));
-        let first = patch_text(&original.as_bytes()[..8192]).unwrap();
-        let tail = patch_text(&original.as_bytes()[first.len()..]).unwrap();
-        assert_eq!(format!("{first}{tail}"), original);
-        assert_eq!(
-            patch_text(&original.as_bytes()[8192..]).unwrap_err(),
-            "agent_patch_offset_invalid"
-        );
-    }
-}

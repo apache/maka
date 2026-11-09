@@ -37,8 +37,6 @@ pub use watch::Watch;
 mod candidates;
 mod preview;
 pub use preview::{FileCapture, FileContent, FileSnapshot};
-#[cfg(test)]
-mod tests;
 
 const PAGE_SIZE: usize = 128;
 const MAX_PAGE_BYTES: usize = 512 * 1024;

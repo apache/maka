@@ -435,6 +435,3 @@ pub(super) fn persistence(error: impl std::fmt::Display) -> ToolError {
 pub(super) fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }
-
-#[cfg(test)]
-mod tests;

@@ -30,7 +30,7 @@ mod owner;
 mod service;
 mod source_path;
 mod tools;
-use maka_agent_api::{Configuration, EXPORT, IMPLEMENTATION, ModelSelection, configuration_schema};
+use maka_agent_api::{Configuration, EXPORT, IMPLEMENTATION, configuration_schema};
 use maka_host_runtime::application::{NativeActivation, NativeContext, NativeRegistry};
 use maka_workspace_support as workspace;
 use std::sync::Arc;

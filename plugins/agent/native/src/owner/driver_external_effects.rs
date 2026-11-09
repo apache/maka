@@ -461,44 +461,28 @@ impl NativeExternalEffects {
         key: ExternalEffectKey,
         reference: Option<RecoveryRef>,
     ) -> Result<bool, ToolError> {
-        let operation_id = format!("external:{}:{}", key.task, key.operation);
-        let request = self.request(Some(operation_id.clone()))?;
-        let reference = match reference {
-            Some(reference) => Ok(Some(reference)),
-            None => match request.lookup_intent(crate::tools::operation_uuid(
-                self.access.execution(),
-                &operation_id,
-            )) {
-                Ok(original) => original
-                    .await
-                    .map(|intent| intent.map(|intent| intent.reference))
-                    .map_err(ToolError::OutcomeUnknown),
-                Err(error) => Err(ToolError::OutcomeUnknown(error)),
-            },
+        let Some((reference, request)) =
+            self.recovery_request(key, None, reference.as_ref()).await?
+        else {
+            return Ok(false);
         };
-        let reply = match reference {
-            Ok(Some(reference)) => {
-                if let Some(active) = &self.active {
-                    active.lock().await.host = Some(reference.clone());
-                }
-                match request.recover(reference.clone()) {
-                    Ok(original) => original
-                        .await
-                        .map(|observation| {
-                            observation.map(|observation| OperationReply {
-                                reference,
-                                receipt: Receipt::Recorded {
-                                    outcome: observation.outcome,
-                                    cleanup: observation.cleanup,
-                                },
-                            })
-                        })
-                        .map_err(ToolError::OutcomeUnknown),
-                    Err(error) => Err(ToolError::OutcomeUnknown(error)),
-                }
-            }
-            Ok(None) => Ok(None),
-            Err(error) => Err(error),
+        if let Some(active) = &self.active {
+            active.lock().await.host = Some(reference.clone());
+        }
+        let reply = match request.recover(reference.clone()) {
+            Ok(original) => original
+                .await
+                .map(|observation| {
+                    observation.map(|observation| OperationReply {
+                        reference,
+                        receipt: Receipt::Recorded {
+                            outcome: observation.outcome,
+                            cleanup: observation.cleanup,
+                        },
+                    })
+                })
+                .map_err(ToolError::OutcomeUnknown),
+            Err(error) => Err(ToolError::OutcomeUnknown(error)),
         };
         self.finish_request(request).await?;
         let Some(reply) = reply? else {
@@ -969,16 +953,113 @@ impl NativeExternalEffects {
         }
     }
 
-    fn request(
+    async fn recovery_request(
         &self,
-        operation: Option<String>,
-    ) -> Result<maka_host_runtime::application::NativeRequest, ToolError> {
-        self.owner
-            .services
+        key: ExternalEffectKey,
+        expected_descriptor: Option<&ExternalEffectDescriptor>,
+        expected_reference: Option<&RecoveryRef>,
+    ) -> Result<Option<(RecoveryRef, maka_host_runtime::application::NativeRequest)>, ToolError>
+    {
+        let execution = self.access.execution();
+        let view = self
+            .state
+            .frontier(self.claim.run())
+            .await
+            .map_err(persistence)?;
+        if view.run != execution.run_id
+            || view.spec != *self.access.spec()
+            || view.spec.session_id != execution.session_id
+            || view.spec.turn_id != execution.turn_id
+            || view
+                .external
+                .as_ref()
+                .is_none_or(|task| task.task != key.task || !task.admitted)
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Original external parent task is unavailable".into(),
+            ));
+        }
+        let effect = self
+            .state
+            .external_effect(view.run, key)
+            .await
+            .map_err(persistence)?
+            .ok_or_else(|| {
+                ToolError::OutcomeUnknown("Original external effect is unavailable".into())
+            })?;
+        if !effect.admitted || effect.rejected.is_some() {
+            return Err(ToolError::OutcomeUnknown(
+                "Original external effect has no admission".into(),
+            ));
+        }
+        let bytes = self
+            .state
+            .content(view.run, effect.descriptor)
+            .await
+            .map_err(persistence)?;
+        let descriptor: ExternalEffectDescriptor =
+            serde_json::from_slice(&bytes).map_err(persistence)?;
+        let operation_id = format!("external:{}:{}", key.task, key.operation);
+        if descriptor.schema_version != SCHEMA_VERSION
+            || descriptor.protocol != PROTOCOL
+            || descriptor.execution != *execution
+            || descriptor.key != key
+            || !matches!(&descriptor.origin, ToolOrigin::External { task, operation, .. }
+                if *task == key.task && *operation == key.operation)
+            || descriptor.operation_id != operation_id
+            || descriptor.definition.name != descriptor.name
+            || !descriptor.resources.is_empty()
+            || expected_descriptor.is_some_and(|expected| expected != &descriptor)
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Original external effect descriptor differs".into(),
+            ));
+        }
+        let selection: crate::tools::SelectionSnapshot = self
+            .owner
+            .run_content(view.run, &view.spec.tool_selection)
+            .await
+            .map_err(persistence)?;
+        if !selection.definitions.contains(&descriptor.definition) {
+            return Err(ToolError::OutcomeUnknown(
+                "Original external tool definition changed".into(),
+            ));
+        }
+        let selected = selection
+            .selected_service(
+                &self.owner.services,
+                &self.owner.tool_basis,
+                &descriptor.name,
+            )
+            .map_err(ToolError::OutcomeUnknown)?
+            .ok_or_else(|| {
+                ToolError::OutcomeUnknown(
+                    "Original external service selection is unavailable".into(),
+                )
+            })?;
+        let operation = crate::tools::operation_uuid(execution, &operation_id);
+        if effect
+            .reference
+            .as_ref()
+            .is_some_and(|reference| reference.operation != operation)
+            || expected_reference.is_some_and(|reference| {
+                reference.operation != operation
+                    || effect
+                        .reference
+                        .as_ref()
+                        .is_some_and(|original| original != reference)
+            })
+        {
+            return Err(ToolError::OutcomeUnknown(
+                "Original external reference differs".into(),
+            ));
+        }
+        let request = selected
+            .1
             .request_with_work(
                 Identity::Agent {
-                    execution: self.access.execution().clone(),
-                    operation_id: operation,
+                    execution: execution.clone(),
+                    operation_id: Some(operation_id.clone()),
                 },
                 CancellationToken::new(),
                 self.access.custody().clone(),
@@ -986,7 +1067,86 @@ impl NativeExternalEffects {
             .and_then(|request| {
                 request.with_sandbox_floor(&self.access.spec().permission_ceiling.sandbox)
             })
-            .map_err(ToolError::Failed)
+            .map_err(ToolError::OutcomeUnknown)?;
+        let intent = match request.lookup_intent(operation) {
+            Ok(observer) => observer.await,
+            Err(error) => Err(error),
+        };
+        let validated = (|| {
+            let Some(intent) = intent.map_err(ToolError::OutcomeUnknown)? else {
+                return if effect.reference.is_some() || expected_reference.is_some() {
+                    Err(ToolError::OutcomeUnknown(
+                        "Original external caller intent is unavailable".into(),
+                    ))
+                } else {
+                    Ok(None)
+                };
+            };
+            if intent.reference.operation != operation
+                || effect
+                    .reference
+                    .as_ref()
+                    .is_some_and(|reference| reference != &intent.reference)
+                || expected_reference.is_some_and(|reference| reference != &intent.reference)
+            {
+                return Err(ToolError::OutcomeUnknown(
+                    "External caller intent differs from original reference".into(),
+                ));
+            }
+            selection
+                .validate_recovery_service(
+                    &self.owner.services,
+                    &self.owner.tool_basis,
+                    &intent,
+                    execution,
+                    &operation_id,
+                    &selected,
+                )
+                .map_err(ToolError::OutcomeUnknown)?;
+            // The external bridge accepts only JSON service inputs. Decode the
+            // same contract projection used by the original Service preparer.
+            let declaration: crate::contract::ServiceTool =
+                serde_json::from_value(intent.recovery["selection"].clone())
+                    .map_err(persistence)?;
+            if declaration.input != crate::contract::ToolInput::Json {
+                return Err(ToolError::OutcomeUnknown(
+                    "External original is not a JSON service input".into(),
+                ));
+            }
+            let binding = self
+                .owner
+                .services
+                .binding(&declaration.target)
+                .map_err(ToolError::OutcomeUnknown)?;
+            let maka_plugin_core::contract::Interface::Service { methods } =
+                &binding.contract().interface
+            else {
+                return Err(ToolError::OutcomeUnknown(
+                    "External original service contract changed".into(),
+                ));
+            };
+            let method = methods.get(&declaration.method).ok_or_else(|| {
+                ToolError::OutcomeUnknown("External original service method changed".into())
+            })?;
+            let (projection, _) =
+                maka_tool_catalog::input::Projection::project(method.input.as_ref().clone());
+            let input = projection
+                .decode(descriptor.input.clone())
+                .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?;
+            if intent.recovery.get("input") != Some(&input) {
+                return Err(ToolError::OutcomeUnknown(
+                    "External original input differs from caller intent".into(),
+                ));
+            }
+            Ok(Some(intent.reference))
+        })();
+        match validated {
+            Ok(Some(reference)) => Ok(Some((reference, request))),
+            result => {
+                self.finish_request(request).await?;
+                result.map(|_| None)
+            }
+        }
     }
 
     async fn recover(
@@ -995,35 +1155,22 @@ impl NativeExternalEffects {
         descriptor: &ExternalEffectDescriptor,
         reference: Option<RecoveryRef>,
     ) -> Result<ReturnedToolResult, ToolError> {
-        let reference = match reference {
-            Some(reference) => reference,
-            None => {
-                let request = self.request(Some(descriptor.operation_id.clone()))?;
-                let operation =
-                    crate::tools::operation_uuid(&descriptor.execution, &descriptor.operation_id);
-                let original = match request.lookup_intent(operation) {
-                    Ok(observer) => observer.await,
-                    Err(error) => Err(error),
-                };
-                self.finish_request(request).await?;
-                match original.map_err(|message| ToolError::OutcomeUnknown(message))? {
-                    Some(intent) => intent.reference,
-                    None => {
-                        self.block(key).await?;
-                        return Err(ToolError::OutcomeUnknown("Original admitted Host effect has no observable reference; it will not be reexecuted".into()));
-                    }
-                }
+        let (reference, request) = match self
+            .recovery_request(key, Some(descriptor), reference.as_ref())
+            .await
+        {
+            Ok(Some(original)) => original,
+            Ok(None) => {
+                self.block(key).await?;
+                return Err(ToolError::OutcomeUnknown(
+                    "Original admitted Host effect has no observable reference; it will not be reexecuted".into(),
+                ));
+            }
+            Err(error) => {
+                self.block(key).await?;
+                return Err(error);
             }
         };
-        self.observe(
-            vec![change(ExternalEffectEvent::Bound {
-                key,
-                reference: reference.clone(),
-            })],
-            vec![],
-        )
-        .await?;
-        let request = self.request(None)?;
         let original = match request.recover(reference.clone()) {
             Ok(observer) => observer.await,
             Err(error) => Err(error),
@@ -1076,6 +1223,18 @@ impl NativeExternalEffects {
     ) -> Result<(), ToolError> {
         if let Some(active) = &self.active {
             let mut source = active.lock().await;
+            // A successful tool wrapper is not the provider's physical ACK.
+            if source.execution_owned
+                && !matches!(
+                    &reply.receipt,
+                    Receipt::Recorded {
+                        cleanup: OperationCleanup::Confirmed,
+                        ..
+                    }
+                )
+            {
+                source.physical = false;
+            }
             if source.observation.as_ref() == Some(reply) {
                 return Ok(());
             }
@@ -1311,7 +1470,8 @@ impl HostEffects for NativeExternalEffects {
             {
                 let mut source = call.lock().await;
                 source.worker_done = true;
-                if result.is_ok() || !source.execution_owned && !source.observing_prior {
+                // Observers own their readers and SQL, never the prior execution.
+                if result.is_ok() || !source.execution_owned {
                     source.physical = true;
                 }
             }

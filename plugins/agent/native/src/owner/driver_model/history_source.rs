@@ -135,7 +135,7 @@ impl<'a> HistorySource<'a> {
             }
             Self::Snapshot(snapshot, _) => snapshot.with_content(run, reference, consume).await?,
         };
-        decoded.map_err(RunError::Checkpoint)
+        decoded.map_err(RunError::Json)
     }
     pub(super) fn content_source(&self) -> preparation::ContentSource<'_> {
         match self {

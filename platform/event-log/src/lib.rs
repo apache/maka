@@ -199,15 +199,6 @@ impl EventLog {
         Ok(())
     }
 
-    // Primitive storage tests can own a single database. Production Roots must
-    // use RootStore so every Session and operation follows its durable route.
-    #[cfg(test)]
-    pub(crate) async fn for_root(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
-        owner.validate_current()?;
-        let path = owner.canonical_path().join(root::ROOT_DATABASE);
-        Self::open_owned(&path, Some(owner), OpenPurpose::Execution, ROOT_MIGRATIONS).await
-    }
-
     /// Inspect saved application state without migrations, derived initialization
     /// or stored member/byte changes. Retains the original Root and database lease until
     /// SQL close. Only application SELECT APIs using the owned connection belong
@@ -426,6 +417,3 @@ fn sequence_number(value: i64) -> Result<u64, StoreError> {
     u64::try_from(value)
         .map_err(|_| StoreError::InvalidTransition("negative ledger sequence".into()))
 }
-
-#[cfg(test)]
-extern crate self as maka_event_log;

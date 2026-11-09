@@ -191,7 +191,7 @@ impl DriverModel {
             let start=covered.tail_start(&original).await?;
             let directory=original.recipes().ok_or_else(||unsupported("pending-main-directory"))?;
             let mut provenance:Value=reader.decode(view.run,&request.provenance).await?;
-            let context:maka_agent_facts::context::RequestContextEvidence=serde_json::from_value(provenance.clone()).map_err(RunError::Checkpoint)?;
+            let context:maka_agent_facts::context::RequestContextEvidence=serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
             let settings=PromptSettings{operation:frozen.operation,codex:context.model_context.as_ref().and_then(|context|context.codex.as_ref()),language:frozen.language,provider:&model.provider,options:request.composition.provider_options.as_ref().ok_or_else(||unsupported("frozen-main-options"))?,context_window:context.model_context.as_ref().and_then(|context|context.model_context_window),tool_choice:frozen.tool_choice};
             let definitions:Vec<_>=bound.definitions.into_iter().map(Arc::new).collect();
             let mut builder=preparation::PromptBuilder::new(self.preparation_io()?,self.resources.clone(),&self.cancellation).await?;

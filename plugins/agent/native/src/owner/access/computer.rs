@@ -140,39 +140,61 @@ impl BoundCall {
         Ok(computer::ComputerStore::new(data))
     }
     async fn original(&self, reference: &RecoveryRef) -> Result<(), ToolError> {
+        self.current().await?;
+        let operation_id = match &self.target {
+            AuthorizationObligation::Tool { tool } => format!("{}:{}", tool.attempt, tool.call),
+            AuthorizationObligation::Cell { cell, operation } => format!("cell:{cell}:{operation}"),
+            AuthorizationObligation::External { task, operation } => {
+                format!("external:{task}:{operation}")
+            }
+        };
+        let operation = crate::tools::operation_uuid(&self.call.execution, &operation_id);
+        if self.call.operation_id != operation_id || reference.operation != operation {
+            return Err(ToolError::Failed(
+                "Native original differs from actual call obligation".into(),
+            ));
+        }
         let owner = self.access.owner().map_err(ToolError::Failed)?;
-        let request = owner
-            .services
+        let selection: crate::tools::SelectionSnapshot = owner
+            .run_content(self.call.execution.run_id, &self.access.spec.tool_selection)
+            .await
+            .map_err(|error| ToolError::Persistence(error.to_string()))?;
+        let selected = selection
+            .selected_service(&owner.services, &owner.tool_basis, &self.tool)
+            .map_err(ToolError::Failed)?
+            .ok_or_else(|| {
+                ToolError::Failed("Native original has no captured service selection".into())
+            })?;
+        let request = selected
+            .1
             .request_with_work(
                 maka_capabilities::call::Identity::Agent {
                     execution: self.call.execution.clone(),
-                    operation_id: Some(self.call.operation_id.clone()),
+                    operation_id: Some(operation_id.clone()),
                 },
                 self.cancellation.child_token(),
                 self.access.custody.clone(),
             )
             .map_err(ToolError::Failed)?;
-        let lookup = async {
-            request
-                .lookup_intent(crate::tools::operation_uuid(
-                    &self.call.execution,
-                    &self.call.operation_id,
-                ))
-                .map_err(ToolError::Failed)?
-                .await
-                .map_err(ToolError::Failed)
-        }
-        .await;
-        request
-            .finish()
-            .await
-            .map_err(ToolError::CleanupUnconfirmed)?;
-        if lookup?.is_none_or(|intent| intent.reference != *reference) {
-            return Err(ToolError::Failed(
-                "Computer original caller intent differs".into(),
-            ));
-        }
-        Ok(())
+        let request = self.access.track_binding_request(request).await;
+        let lookup = match request.lookup_intent(operation) {
+            Ok(observer) => observer.await.map_err(ToolError::Failed),
+            Err(error) => Err(ToolError::Failed(error)),
+        };
+        self.access.settle_binding_request(&request).await?;
+        let intent = lookup?
+            .filter(|intent| intent.reference == *reference)
+            .ok_or_else(|| ToolError::Failed("Native original caller intent differs".into()))?;
+        selection
+            .validate_recovery_service(
+                &owner.services,
+                &owner.tool_basis,
+                &intent,
+                &self.call.execution,
+                &operation_id,
+                &selected,
+            )
+            .map_err(ToolError::Failed)
     }
     async fn subject(&self, operation: &str) -> Result<computer::Subject, ToolError> {
         let subject = self

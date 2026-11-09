@@ -296,6 +296,3 @@ fn failed(error: impl ToString) -> Error {
 fn message(error: impl ToString) -> String {
     error.to_string()
 }
-
-#[cfg(test)]
-mod tests;

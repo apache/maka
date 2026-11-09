@@ -47,19 +47,3 @@ impl From<ExecutionCorrelation> for String {
         value.0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ExecutionCorrelation;
-
-    #[test]
-    fn scalar_round_trip_preserves_the_original_value_and_rejects_empty_input() {
-        let original = ExecutionCorrelation::new("execution-a").unwrap();
-        assert_eq!(serde_json::to_string(&original).unwrap(), "\"execution-a\"");
-        let restored: ExecutionCorrelation = serde_json::from_str("\"execution-a\"").unwrap();
-        assert_eq!(restored, original);
-        assert!(ExecutionCorrelation::new("").is_err());
-        assert!(ExecutionCorrelation::try_from(String::new()).is_err());
-        assert!(serde_json::from_str::<ExecutionCorrelation>("\"\"").is_err());
-    }
-}

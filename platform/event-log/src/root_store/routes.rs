@@ -124,30 +124,6 @@ impl RootStore {
         Ok(self.handle(id.to_owned()))
     }
 
-    #[cfg(test)]
-    pub(super) async fn reserve_family(
-        &self,
-        id: &str,
-        fingerprint: &str,
-        command: Creation,
-        members: Vec<String>,
-    ) -> Result<Creation, StoreError> {
-        let reserved = self
-            .log
-            .connection
-            .write(
-                creation::WriteReservation {
-                    id: id.to_owned(),
-                    fingerprint: fingerprint.to_owned(),
-                    command,
-                    members,
-                },
-                self.log.commits.notice(),
-            )
-            .await?;
-        Ok(reserved.command)
-    }
-
     pub(super) async fn finish_creation(
         &self,
         id: &str,

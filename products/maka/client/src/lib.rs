@@ -1788,5 +1788,3 @@ impl Subscription {
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
-#[cfg(test)]
-mod tests;

@@ -32,6 +32,7 @@ mod compaction;
 mod computer_apps;
 mod context;
 mod continuation;
+mod creation;
 mod execution;
 pub(crate) use access::RunAccess;
 mod capture;
@@ -190,6 +191,7 @@ impl Runs {
 struct CreationPolicy {
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
+    caller: Option<maka_agent_state::CallerFence>,
 }
 
 fn intersect_tools(
@@ -255,16 +257,6 @@ pub(crate) struct Owner {
     cleanup_workers: TaskTracker,
     producers: TaskTracker,
     producer_gate: Arc<Mutex<()>>,
-    #[cfg(test)]
-    title_write_gate: std::sync::Mutex<Option<Arc<title::WriteGate>>>,
-    #[cfg(test)]
-    mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool,
-    #[cfg(test)]
-    continuation_preparation: std::sync::Mutex<Option<BoxFuture<'static, Result<(), RunError>>>>,
-    #[cfg(test)]
-    tool_preparation: std::sync::Mutex<Option<BoxFuture<'static, Result<(), RunError>>>>,
-    #[cfg(all(test, target_os = "macos"))]
-    file_native_hints: std::sync::atomic::AtomicBool,
     stop: CancellationToken,
 }
 impl Owner {
@@ -638,16 +630,6 @@ impl Owner {
             cleanup_workers: TaskTracker::new(),
             producers: TaskTracker::new(),
             producer_gate: Arc::default(),
-            #[cfg(test)]
-            title_write_gate: std::sync::Mutex::default(),
-            #[cfg(test)]
-            mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
-            continuation_preparation: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            tool_preparation: std::sync::Mutex::new(None),
-            #[cfg(all(test, target_os = "macos"))]
-            file_native_hints: std::sync::atomic::AtomicBool::new(true),
             stop,
         });
         if let Err(error) = owner.durable.ensure_diagnostics(owner.run_owner()).await {
@@ -781,6 +763,7 @@ impl Owner {
             return Ok(CreationPolicy {
                 permissions: self.settings.permissions.clone(),
                 tools: None,
+                caller: None,
             });
         };
         let store = self.caller_store(scope)?;
@@ -791,14 +774,47 @@ impl Owner {
             .filter(|session| !session.archived)
             .ok_or("agent_session_unavailable")?;
         let caller = resolve_session(caller)?.configuration;
+        let custody = scope.work_custody().ok_or("agent_work_custody_required")?;
+        let writer = self
+            .store
+            .data_writer_for_work(custody.as_ref(), &invocation.session_id)
+            .map_err(|error| error.to_string())?;
+        let view = self
+            .durable
+            .with_data_writer(writer)
+            .map_err(|error| error.to_string())?
+            .frontier(invocation.run_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if view.spec.session_id != invocation.session_id
+            || !matches!(
+                view.spec.origin,
+                maka_agent_facts::durable::RunOrigin::Local
+            )
+            || view.stopped
+            || view.terminal.is_some()
+        {
+            return Err("agent_execution_closed".into());
+        }
+        if view.spec.permission_basis != caller.permission_basis() {
+            return Err("agent_session_configuration_changed".into());
+        }
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
+        let fence = maka_agent_state::CallerFence {
+            execution: invocation.clone(),
+            expected_basis: Some(view.spec.permission_basis),
+        };
         Ok(CreationPolicy {
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
-            tools: if self.bot.is(&invocation.session_id) {
+            tools: if self.settings.bot && self.bot.is(&invocation.session_id) {
                 None
             } else {
                 caller.tools
             },
+            caller: Some(fence),
         })
     }
 
@@ -807,10 +823,15 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<Created, String> {
+    ) -> Result<NativeMutation<Created>, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.create_inner(input, &operation, &scope).await })
+            Box::pin(async move {
+                owner
+                    .create_inner(input, &operation, &scope, creation::Purpose::Session)
+                    .await
+                    .map(creation::PreparedCreation::into_session)
+            })
         })
         .await
     }
@@ -819,23 +840,22 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<Created, String> {
+        purpose: creation::Purpose,
+    ) -> Result<creation::PreparedCreation, String> {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
-            return Ok(Created::Rejected { reason });
+            return Ok(creation::PreparedCreation::Rejected(reason));
         }
         if let Some(backend) = &input.backend
             && !self.backend_available(backend).await?
         {
-            return Ok(Created::Rejected {
-                reason: Rejection::ToolsUnavailable,
-            });
+            return Ok(creation::PreparedCreation::Rejected(
+                Rejection::ToolsUnavailable,
+            ));
         }
         let id = self.operation_id(operation);
         let admission = self.runs.session(&id).await;
         if admission.state().await.closing {
-            return Ok(Created::Rejected {
-                reason: Rejection::Closed,
-            });
+            return Ok(creation::PreparedCreation::Rejected(Rejection::Closed));
         }
         let policy = self.creation_policy(scope).await?;
         let mut permissions = policy.permissions;
@@ -860,49 +880,49 @@ impl Owner {
                 .iter()
                 .any(|name| name == bot::SEND_USER || name == bot::SLEEP)
         }) {
-            return Ok(Created::Rejected {
-                reason: Rejection::ToolsUnavailable,
-            });
+            return Ok(creation::PreparedCreation::Rejected(
+                Rejection::ToolsUnavailable,
+            ));
         }
         if let Some(names) = &mut tools {
             names.sort();
             if names.windows(2).any(|pair| pair[0] == pair[1]) {
-                return Ok(Created::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::ToolsUnavailable,
+                ));
             }
         }
-        let selected = match input.workspace {
+        let (selected, project) = match input.workspace {
             WorkspaceSelection::IsolatedGit { path } => {
                 let Some(workspace) = self.isolated_workspace(&path, operation, scope).await?
                 else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (workspace, None)
             }
             WorkspaceSelection::Project { project, path } => {
-                let Some(workspace) = self.select_project(project, &path).await? else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                let Some(prepared) = self.select_project(project, &path).await? else {
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (prepared.workspace, Some(prepared.project))
             }
             WorkspaceSelection::Directory { path } => {
-                let Some(workspace) = self.create_project_workspace(&path).await? else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                let Some(prepared) = self.create_project_workspace(&path).await? else {
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (prepared.workspace, Some(prepared.project))
             }
             WorkspaceSelection::Session { session_id } => {
                 if !self.owns(&session_id) {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 }
                 let Some(session) = self
                     .store
@@ -910,9 +930,9 @@ impl Owner {
                     .await
                     .map_err(|_| "agent_store_unavailable")?
                 else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 };
                 let session = resolve_session(session)?;
                 // A user may start a conversation in the workspace of one they archived;
@@ -922,9 +942,9 @@ impl Owner {
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
                 {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 }
                 if workspace::validate(
                     &self.workspace_roots,
@@ -934,11 +954,11 @@ impl Owner {
                 .await
                 .is_err()
                 {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 }
-                session.configuration.workspace
+                (session.configuration.workspace, None)
             }
         };
         if let Some(names) = &tools
@@ -965,45 +985,39 @@ impl Owner {
                 .iter()
                 .any(|name| !self.tools.contains(name) && !catalog.tools.contains(name))
             {
-                return Ok(Created::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::ToolsUnavailable,
+                ));
             }
         }
-        let binding = self
-            .store
-            .attach_workspace(&self.prefix, &selected)
-            .await
-            .map_err(|_| "agent_workspace_binding_unavailable")?;
-        let _record = self
-            .store
-            .create_session(
-                &id,
-                &operation.fingerprint,
-                &StoredSessionConfiguration {
-                    parent_session_id: scope
-                        .identity
-                        .agent()
-                        .map(|source| source.session_id.clone()),
-                    backend: input.backend,
-                    compaction_prompt: None,
-                    collaboration_mode: CollaborationMode::Agent,
-                    tools,
-                    title: input.title,
-                    title_is_manual: !input.automatic_title,
-                    pinned: false,
-                    labels: input.labels,
-                    workspace: binding,
-                    permissions,
-                    boundary_revision: 0,
-                },
-                now(),
-            )
-            .await
-            .map_err(|_| "agent_creation_failed")?;
-        Ok(Created::Created {
-            session: Box::new(self.session_summary(&id).await?),
-        })
+        let parent_session_id = scope
+            .identity
+            .agent()
+            .map(|source| source.session_id.clone());
+        self.prepare_created_session(
+            &id,
+            operation,
+            &selected,
+            project,
+            scope,
+            policy.caller,
+            purpose,
+            move |binding| StoredSessionConfiguration {
+                parent_session_id,
+                backend: input.backend,
+                compaction_prompt: None,
+                collaboration_mode: CollaborationMode::Agent,
+                tools,
+                title: input.title,
+                title_is_manual: !input.automatic_title,
+                pinned: false,
+                labels: input.labels,
+                workspace: binding,
+                permissions,
+                boundary_revision: 0,
+            },
+        )
+        .await
     }
     pub async fn metadata(
         self: &Arc<Self>,
@@ -1306,9 +1320,6 @@ fn public_error(error: RunError) -> String {
     }
     .into()
 }
-
-#[cfg(test)]
-pub(crate) mod tests;
 
 pub(crate) fn owns_session(prefix: &str, id: &str) -> bool {
     id.strip_prefix(prefix).is_some_and(|tail| {

@@ -22,6 +22,8 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::Value;
 
+mod prepared;
+
 /// Confirmed, rolled-back admission outcomes. Storage failures never become a
 /// rejected request; they retain their recovery obligation and original error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -271,6 +273,3 @@ fn prepared<T>(value: T, changed: bool) -> crate::writeback::Prepared<T> {
         notification: crate::writeback::Notification::NONE,
     }
 }
-
-#[cfg(test)]
-mod tests;

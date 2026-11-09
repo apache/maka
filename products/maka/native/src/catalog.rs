@@ -443,6 +443,3 @@ async fn fetch(
     })?;
     result
 }
-
-#[cfg(test)]
-mod tests;

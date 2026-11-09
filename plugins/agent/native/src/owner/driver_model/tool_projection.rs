@@ -238,5 +238,5 @@ async fn imported_identifier(
             "imported identity source was truncated".into(),
         ));
     }
-    serde_json::from_slice(&target.as_ref()[..length]).map_err(RunError::Checkpoint)
+    serde_json::from_slice(&target.as_ref()[..length]).map_err(RunError::Json)
 }

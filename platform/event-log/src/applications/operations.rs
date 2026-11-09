@@ -18,6 +18,9 @@
  */
 
 //! Original operation facts. Receipts never authorize a callback or a replay.
+#[cfg(test)]
+mod tests;
+
 use super::invalid;
 use crate::{EventLog, StoreError, root::RootOwner};
 use maka_plugin_core::{
@@ -851,9 +854,6 @@ pub(crate) fn require_pending(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) struct WriteDispatch {
     request: OperationRequest<RecoveryContract>,

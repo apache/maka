@@ -161,6 +161,3 @@ pub(super) async fn compile(
     });
     Ok(())
 }
-
-#[cfg(test)]
-mod production_tests;

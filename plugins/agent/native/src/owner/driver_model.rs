@@ -391,12 +391,12 @@ impl DriverModel {
                 )
                 .await?;
             let source: maka_agent_facts::message::RootSourceMessage =
-                serde_json::from_slice(&source_bytes).map_err(RunError::Checkpoint)?;
+                serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
             source
                 .validate()
                 .map_err(|error| RunError::InvalidInput(error.into()))?;
             let steering_input: RunInput =
-                serde_json::from_slice(&input_bytes).map_err(RunError::Checkpoint)?;
+                serde_json::from_slice(&input_bytes).map_err(RunError::Json)?;
             let RunInput::Message { content, .. } = &steering_input else {
                 return Err(RunError::InvalidInput(
                     "steering is not message input".into(),
@@ -408,9 +408,9 @@ impl DriverModel {
                 ));
             }
             let resources: Value =
-                serde_json::from_slice(&resource_bytes).map_err(RunError::Checkpoint)?;
+                serde_json::from_slice(&resource_bytes).map_err(RunError::Json)?;
             if resources["attachments"]
-                != serde_json::to_value(&content.attachments).map_err(RunError::Checkpoint)?
+                != serde_json::to_value(&content.attachments).map_err(RunError::Json)?
             {
                 return Err(RunError::InvalidInput(
                     "steering immutable resources differ from input".into(),
@@ -1325,7 +1325,7 @@ impl DriverModel {
             ContentPart::text(
                 "The original model attempt was interrupted. The following are Host-recorded observations and an explicit human risk decision, not a replayable assistant response or proof of upstream completion. Start a new plan from the legal request base; do not resend an operation whose original outcome remains unknown.",
             ),
-            ContentPart::text(serde_json::to_string(&report).map_err(RunError::Checkpoint)?),
+            ContentPart::text(serde_json::to_string(&report).map_err(RunError::Json)?),
         ];
         let mut source: RequestSource = reader.decode(view.run, &request.source_capture).await?;
         let mut after = source.current_revision;
@@ -1379,11 +1379,9 @@ impl DriverModel {
                     ToolOutput::Text(text) | ToolOutput::ErrorText(text) => {
                         content.push(ContentPart::text(text))
                     }
-                    ToolOutput::Json(value) | ToolOutput::ErrorJson(value) => {
-                        content.push(ContentPart::text(
-                            serde_json::to_string(&value).map_err(RunError::Checkpoint)?,
-                        ))
-                    }
+                    ToolOutput::Json(value) | ToolOutput::ErrorJson(value) => content.push(
+                        ContentPart::text(serde_json::to_string(&value).map_err(RunError::Json)?),
+                    ),
                     ToolOutput::Content(parts) => content.extend(parts),
                 }
             }
@@ -1413,7 +1411,7 @@ impl DriverModel {
         reference: &ContentRef,
     ) -> Result<T, RunError> {
         let bytes = self.state.content(run, reference.clone()).await?;
-        serde_json::from_slice(&bytes).map_err(RunError::Checkpoint)
+        serde_json::from_slice(&bytes).map_err(RunError::Json)
     }
 
     async fn protocol_data<T: serde::de::DeserializeOwned>(
@@ -1625,20 +1623,6 @@ impl DriverModel {
         language: maka_agent_facts::language::Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<(Option<String>, Vec<FrozenCellKnowledge>), RunError> {
-        if let Some(snapshot) = reader.as_snapshot() {
-            let manifest = snapshot.manifest().await?;
-            manifest
-                .validate()
-                .map_err(|error| RunError::InvalidInput(error.into()))?;
-            if matches!(
-                manifest.origin,
-                maka_agent_facts::history_snapshot::Origin::Imported { .. }
-            ) {
-                self.imported_messages(snapshot, reader.source_path(), vision, language, messages)
-                    .await?;
-                return Ok((None, Vec::new()));
-            }
-        }
         enum Base {
             Request {
                 sequence: u64,
@@ -1655,109 +1639,151 @@ impl DriverModel {
                 run: RunId,
             },
         }
-        let mut base = None;
-        let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
-        let mut after = 0;
-        loop {
-            let (items, next) = reader.page(after, 256).await?;
-            for item in items {
-                match &item.recorded.fact {
-                    Fact::RunAdmitted { .. } => {
-                        let source = reader.run_source(item.recorded.run).await?;
-                        if !matches!(source.spec.origin, RunOrigin::Local) {
-                            if !matches!(source.spec.backend, BackendSpec::Historical {}) {
-                                return Err(unsupported("historical-installation-backend"));
-                            }
-                            base = Some(Base::Snapshot {
-                                sequence: item.sequence,
-                                run: item.recorded.run,
-                            });
-                        }
-                    }
-                    Fact::StepPrepared { step, .. } => {
-                        let request = reader.request(item.recorded.run, *step).await?;
-                        if !request.adjudications.is_empty() {
-                            base = Some(Base::Request {
-                                sequence: item.sequence,
-                                run: item.recorded.run,
-                                request,
-                            });
-                        }
-                    }
-                    Fact::ContextCompacted { baseline } => {
-                        base = Some(Base::Compacted {
-                            id: item.recorded.id,
-                            run: item.recorded.run,
-                            baseline: baseline.clone(),
-                        })
-                    }
-                    _ => {}
+        struct Frame<'reader, 'source: 'reader> {
+            reader: std::borrow::Cow<'reader, HistorySource<'source>>,
+            covered: u64,
+            order: std::collections::BTreeMap<u64, (RunId, u64)>,
+        }
+        let mut current = std::borrow::Cow::Borrowed(reader);
+        let mut frames = Vec::new();
+        let (mut covered, previous_checkpoint_id, mut order) = loop {
+            let reader = current.as_ref();
+            if let Some(snapshot) = reader.as_snapshot() {
+                let manifest = snapshot.manifest().await?;
+                manifest
+                    .validate()
+                    .map_err(|error| RunError::InvalidInput(error.into()))?;
+                if matches!(
+                    manifest.origin,
+                    maka_agent_facts::history_snapshot::Origin::Imported { .. }
+                ) {
+                    self.imported_messages(
+                        snapshot,
+                        reader.source_path(),
+                        vision,
+                        language,
+                        messages,
+                    )
+                    .await?;
+                    break (None, None, std::collections::BTreeMap::new());
                 }
-                order
-                    .entry(item.admission_sequence)
-                    .and_modify(|entry| entry.1 = item.recorded.revision)
-                    .or_insert((item.recorded.run, item.recorded.revision));
             }
-            let Some(next) = next else {
-                break;
-            };
-            after = next;
-        }
-        let (covered, previous_checkpoint_id) = match base {
-            None => (None, None),
-            Some(Base::Request {
-                sequence,
-                run,
-                request,
-            }) => {
-                self.request_base(reader, run, &request, messages).await?;
-                (
-                    Some(sequence),
-                    self.request_checkpoint(reader, run, &request).await?,
-                )
+            let mut base = None;
+            let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
+            let mut after = 0;
+            loop {
+                let (items, next) = reader.page(after, 256).await?;
+                for item in items {
+                    match &item.recorded.fact {
+                        Fact::RunAdmitted { .. } => {
+                            let source = reader.run_source(item.recorded.run).await?;
+                            if !matches!(source.spec.origin, RunOrigin::Local) {
+                                if !matches!(source.spec.backend, BackendSpec::Historical {}) {
+                                    return Err(unsupported("historical-installation-backend"));
+                                }
+                                base = Some(Base::Snapshot {
+                                    sequence: item.sequence,
+                                    run: item.recorded.run,
+                                });
+                            }
+                        }
+                        Fact::StepPrepared { step, .. } => {
+                            let request = reader.request(item.recorded.run, *step).await?;
+                            if !request.adjudications.is_empty() {
+                                base = Some(Base::Request {
+                                    sequence: item.sequence,
+                                    run: item.recorded.run,
+                                    request,
+                                });
+                            }
+                        }
+                        Fact::ContextCompacted { baseline } => {
+                            base = Some(Base::Compacted {
+                                id: item.recorded.id,
+                                run: item.recorded.run,
+                                baseline: baseline.clone(),
+                            })
+                        }
+                        _ => {}
+                    }
+                    order
+                        .entry(item.admission_sequence)
+                        .and_modify(|entry| entry.1 = item.recorded.revision)
+                        .or_insert((item.recorded.run, item.recorded.revision));
+                }
+                let Some(next) = next else {
+                    break;
+                };
+                after = next;
             }
-            Some(Base::Compacted { id, run, baseline }) => {
-                let capture = self
-                    .append_compacted(reader, run, &baseline, target, messages)
-                    .await?;
-                (Some(capture.current.through_sequence), Some(id.to_string()))
-            }
-            Some(Base::Snapshot { sequence, run }) => {
-                let nested = reader.nested(run).await?;
-                let (previous, _) =
-                    Box::pin(self.project_history(target, &nested, vision, language, messages))
+            let (covered, previous_checkpoint_id) = match base {
+                None => (None, None),
+                Some(Base::Request {
+                    sequence,
+                    run,
+                    request,
+                }) => {
+                    self.request_base(reader, run, &request, messages).await?;
+                    (
+                        Some(sequence),
+                        self.request_checkpoint(reader, run, &request).await?,
+                    )
+                }
+                Some(Base::Compacted { id, run, baseline }) => {
+                    let capture = self
+                        .append_compacted(reader, run, &baseline, target, messages)
                         .await?;
-                (Some(sequence), previous)
-            }
+                    (Some(capture.current.through_sequence), Some(id.to_string()))
+                }
+                Some(Base::Snapshot { sequence, run }) => {
+                    let nested = reader.nested(run).await?;
+                    frames.push(Frame {
+                        reader: current,
+                        covered: sequence,
+                        order,
+                    });
+                    current = std::borrow::Cow::Owned(nested);
+                    continue;
+                }
+            };
+            break (covered, previous_checkpoint_id, order);
         };
-        let covered_revisions = match covered {
-            Some(through) => self.covered_revisions(reader, through).await?,
-            None => Default::default(),
-        };
-        let mut recovered_cells = Vec::new();
-        for (admission, (run, through)) in order {
-            let source = reader.run_source(run).await?;
-            if matches!(source.spec.backend, BackendSpec::Historical {}) {
-                continue;
-            }
-            let after = covered_revisions.get(&run).copied().unwrap_or(0);
-            if after >= through {
-                continue;
-            }
-            let view = reader.view(run).await?;
-            if !covered.is_some_and(|through| admission <= through) {
-                let input: RunInput = reader.decode(run, &view.spec.input).await?;
-                self.project_message_input(reader, &view, &input, vision, false, messages)
+        loop {
+            let reader = current.as_ref();
+            let covered_revisions = match covered {
+                Some(through) => self.covered_revisions(reader, through).await?,
+                None => Default::default(),
+            };
+            let mut recovered_cells = Vec::new();
+            for (admission, (run, through)) in order {
+                let source = reader.run_source(run).await?;
+                if matches!(source.spec.backend, BackendSpec::Historical {}) {
+                    continue;
+                }
+                let after = covered_revisions.get(&run).copied().unwrap_or(0);
+                if after >= through {
+                    continue;
+                }
+                let view = reader.view(run).await?;
+                if !covered.is_some_and(|through| admission <= through) {
+                    let input: RunInput = reader.decode(run, &view.spec.input).await?;
+                    self.project_message_input(reader, &view, &input, vision, false, messages)
+                        .await?;
+                }
+                let knowledge = self
+                    .semantic_tail(reader, &view, vision, &mut None, messages, after)
                     .await?;
+                if run == self.execution.run_id {
+                    recovered_cells = knowledge;
+                }
             }
-            let knowledge = self
-                .semantic_tail(reader, &view, vision, &mut None, messages, after)
-                .await?;
-            if run == self.execution.run_id {
-                recovered_cells = knowledge;
-            }
+            let Some(frame) = frames.pop() else {
+                return Ok((previous_checkpoint_id, recovered_cells));
+            };
+            current = frame.reader;
+            covered = Some(frame.covered);
+            order = frame.order;
         }
-        Ok((previous_checkpoint_id, recovered_cells))
     }
 
     async fn covered_revisions(
@@ -2227,7 +2253,7 @@ impl DriverModel {
                     .ok_or_else(|| unsupported("frozen-budget-signature"))?
                     .clone(),
             )
-            .map_err(RunError::Checkpoint)?;
+            .map_err(RunError::Json)?;
         if request.request_contents != frozen.content_refs() {
             return Err(unsupported("frozen-input-content-dependencies"));
         }
@@ -2354,8 +2380,6 @@ impl DriverModel {
                     provenance,
                     recovery,
                     authorization_failure: std::sync::Mutex::new(None),
-                    #[cfg(test)]
-                    build_entered: None,
                     provider: prepared.provider,
                     budget: expected_breakdown,
                 });
@@ -2474,7 +2498,7 @@ impl DriverModel {
                                     outcome,
                                     Some(diagnostic),
                                     Default::default(),
-                                    serde_json::to_value(protocol).map_err(RunError::Checkpoint)?,
+                                    serde_json::to_value(protocol).map_err(RunError::Json)?,
                                     partial()?,
                                     witnessed_at()?,
                                 )
@@ -2850,7 +2874,7 @@ impl DriverModel {
             .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
         {
             let protocol: maka_agent_facts::context::ModelFailureProtocol =
-                serde_json::from_value(closed.protocol.clone()).map_err(RunError::Checkpoint)?;
+                serde_json::from_value(closed.protocol.clone()).map_err(RunError::Json)?;
             Some(protocol.failure)
         } else {
             None
@@ -2973,11 +2997,11 @@ fn extend_observation(
             content.push(ContentPart::text(format!("Tool error: {text}")))
         }
         ToolOutput::Json(value) => content.push(ContentPart::text(
-            serde_json::to_string(&value).map_err(RunError::Checkpoint)?,
+            serde_json::to_string(&value).map_err(RunError::Json)?,
         )),
         ToolOutput::ErrorJson(value) => content.push(ContentPart::text(format!(
             "Tool error: {}",
-            serde_json::to_string(&value).map_err(RunError::Checkpoint)?
+            serde_json::to_string(&value).map_err(RunError::Json)?
         ))),
         ToolOutput::Content(parts) => content.extend(parts),
     }
@@ -3281,7 +3305,7 @@ async fn receive(
                 compaction: step.compaction,
                 summary,
             })
-            .map_err(RunError::Checkpoint)?;
+            .map_err(RunError::Json)?;
             let fact = observation
                 .witness
                 .closed_with_parts(

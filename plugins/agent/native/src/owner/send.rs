@@ -28,6 +28,9 @@ pub(crate) enum NativeMutation<T> {
         value: T,
         change: maka_event_log::root_store::DataChange,
     },
+    Computed {
+        change: maka_event_log::root_store::DataChange,
+    },
 }
 impl<T: serde::Serialize> NativeMutation<T> {
     pub(crate) fn complete(
@@ -42,6 +45,7 @@ impl<T: serde::Serialize> NativeMutation<T> {
                 serde_json::to_value(value).map_err(|e| e.to_string())?,
                 change,
             ),
+            Self::Computed { change } => context.complete_result(change),
         }
     }
 }
@@ -79,6 +83,9 @@ impl Owner {
     ) -> Result<CapturedRun, CaptureError> {
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_closed".into());
+        }
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
         }
         let session = self.mutable_session(id).await?;
         if session.archived {

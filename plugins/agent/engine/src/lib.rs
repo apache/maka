@@ -98,8 +98,8 @@ pub enum RunError {
     CleanupUnconfirmed,
     #[error("execution worker failed: {0}")]
     Internal(String),
-    #[error("activation checkpoint serialization failed: {0}")]
-    Checkpoint(#[source] serde_json::Error),
+    #[error("execution data JSON failed: {0}")]
+    Json(#[source] serde_json::Error),
     #[error("model input preparation failed: {0}")]
     Preparation(#[from] std::io::Error),
     #[error("model input cleanup was not confirmed: {0}")]

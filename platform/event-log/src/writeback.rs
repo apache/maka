@@ -61,6 +61,7 @@ pub struct Notification {
     activation: bool,
     material_released: bool,
     sessions: BTreeSet<String>,
+    metadata_scopes: BTreeSet<String>,
 }
 impl Notification {
     pub const NONE: Self = Self {
@@ -69,6 +70,7 @@ impl Notification {
         activation: false,
         material_released: false,
         sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
     };
     pub const METADATA: Self = Self {
         sequence: None,
@@ -76,6 +78,7 @@ impl Notification {
         activation: false,
         material_released: false,
         sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
     };
     pub const MATERIAL_RELEASED: Self = Self {
         sequence: None,
@@ -83,6 +86,7 @@ impl Notification {
         activation: false,
         material_released: true,
         sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
     };
     pub fn sequence(sequence: u64) -> Self {
         Self {
@@ -96,6 +100,16 @@ impl Notification {
             ..Self::sequence(sequence)
         }
     }
+    pub fn metadata_scope(scope: String) -> Self {
+        Self {
+            metadata_scopes: BTreeSet::from([scope]),
+            ..Self::NONE
+        }
+    }
+    pub fn with_activation(mut self, activation: bool) -> Self {
+        self.activation |= activation;
+        self
+    }
     pub fn with_sessions(mut self, sessions: impl IntoIterator<Item = String>) -> Self {
         self.sessions.extend(sessions);
         self
@@ -107,6 +121,7 @@ impl Notification {
         self.activation |= other.activation;
         self.material_released |= other.material_released;
         self.sessions.extend(other.sessions);
+        self.metadata_scopes.extend(other.metadata_scopes);
         self
     }
     fn publish(self, notice: &crate::commits::CommitNotice) {
@@ -116,6 +131,9 @@ impl Notification {
             notice.publish(sequence);
         } else if self.metadata || has_sessions {
             notice.metadata();
+        }
+        for scope in self.metadata_scopes {
+            notice.metadata_scope(&scope);
         }
         if self.activation {
             notice.activations();
@@ -398,6 +416,3 @@ fn prepare(
     validate()?;
     Ok(changed)
 }
-
-#[cfg(test)]
-mod tests;

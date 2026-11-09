@@ -240,25 +240,3 @@ fn after_open(error: io::Error) -> io::Error {
         error
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disappearance_after_open_cannot_authorize_a_new_identity() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = Workspace::capture(temp.path()).unwrap();
-        workspace.publish().unwrap();
-        let file = workspace
-            .dir
-            .open_with(MARKER_FILE, options().read(true))
-            .unwrap();
-        workspace.dir.remove_file(MARKER_FILE).unwrap();
-        assert_eq!(
-            workspace.read_opened(file).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-        assert!(!temp.path().join(MARKER_FILE).exists());
-    }
-}

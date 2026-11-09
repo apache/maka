@@ -1818,7 +1818,12 @@ pub(crate) fn work(
     }
     let text = String::from_utf8(bytes).map_err(|_| invalid("invalid canonical answer bytes"))?;
     let pending_interactions =
-        crate::session_history::pending_interaction_count(c, run, &view.spec.session_id)?;
+        if !view.stopped && view.terminal.is_none() && matches!(view.spec.origin, RunOrigin::Local)
+        {
+            crate::session_history::pending_interaction_count(c, run, &view.spec.session_id)?
+        } else {
+            0
+        };
     Ok(Some(crate::store::RunObservation {
         view,
         pending_interactions,

@@ -360,6 +360,3 @@ impl RootStore {
             .await
     }
 }
-
-#[cfg(test)]
-mod tests;

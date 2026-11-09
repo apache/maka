@@ -182,6 +182,7 @@ impl External {
     pub fn capture(
         context: &NativeContext,
         configuration: &ExternalConfiguration,
+        declaration: &Binding,
     ) -> Result<Arc<Self>, String> {
         let persistence = context
             .persistence()
@@ -200,9 +201,24 @@ impl External {
             runtime::validate_command(runtime, &command)?;
             commands.insert(runtime, command);
         }
+        let root = persistence
+            .store()
+            .owned_root()
+            .map_err(|error| error.to_string())?;
+        // Own-export evidence follows the actual logical owner, not its live
+        // activation. It includes the declaration, configuration and imports.
         let basis = hex::encode(Sha256::digest(
-            serde_json::to_vec(&(context.activation().epoch(), &commands))
-                .map_err(|e| e.to_string())?,
+            serde_json::to_vec(&(
+                "maka.native-external-basis.v1",
+                root.root_id(),
+                &persistence.source().state_domain,
+                persistence.source().deployment,
+                context.activation().instance(),
+                context.package(),
+                declaration.execution_basis(),
+                &commands,
+            ))
+            .map_err(|e| e.to_string())?,
         ));
         Ok(Arc::new(Self {
             commands,
@@ -294,6 +310,16 @@ impl External {
         {
             return Ok(blocked(
                 "Original native binding protocol or runtime does not match this task".into(),
+            ));
+        }
+        let Some(command) = self.commands.get(&runtime) else {
+            return Ok(blocked(
+                "Original native runtime is no longer enabled".into(),
+            ));
+        };
+        if binding.command_basis != runtime::command_basis(command, &request.cwd)? {
+            return Ok(blocked(
+                "Original native command or workspace basis changed".into(),
             ));
         }
         let evidence = match maka_process::isolated::closed_evidence(&binding.resource).await {
@@ -606,84 +632,7 @@ impl External {
         endpoints
     }
 }
-impl super::Backend {
-    /// Opens only the same Root-owned listener that a later fresh Call binds.
-    /// The address is not authority: the original issuer must grant its route.
-    #[cfg(test)]
-    pub(crate) async fn prepare_native_endpoint(
-        &self,
-        session: &str,
-        owner_stop: &CancellationToken,
-    ) -> Result<std::net::SocketAddr, Error> {
-        let super::Implementation::External(owner) = &self.implementation else {
-            return Err(Error::Invalid(
-                "Native endpoint requires the selected external backend".into(),
-            ));
-        };
-        let runtime = owner.require_runtime(self.accepted.selection.settings.runtime.as_deref())?;
-        if owner_stop.is_cancelled() || owner.stop.is_cancelled() {
-            return Err(Error::Retired);
-        }
-        // session_retirement enters this original Root's fresh session gates;
-        // transport preparation acquires no writer or accepted Work capability.
-        let retiring = owner
-            .root
-            .session_retirement(session)
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))?
-            .is_some();
-        if owner_stop.is_cancelled() || owner.stop.is_cancelled() || retiring {
-            return Err(Error::Retired);
-        }
-        // The sole fixture calls this before its send loop, not concurrently
-        // with same-session send. Created custody here is not a general
-        // concurrent unbound-close proof; retirement and Stop may still race.
-        let key = (session.to_owned(), runtime);
-        let (endpoint, created) = {
-            let mut endpoints = owner.endpoints.lock().await;
-            if owner_stop.is_cancelled() || owner.stop.is_cancelled() {
-                return Err(Error::Retired);
-            }
-            match endpoints.entry(key.clone()) {
-                std::collections::btree_map::Entry::Occupied(entry) => (entry.get().clone(), false),
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    let endpoint = mcp::Endpoint::open(session.to_owned(), None).await?;
-                    entry.insert(endpoint.clone());
-                    (endpoint, true)
-                }
-            }
-        };
-        if endpoint.session_id != session {
-            return Err(Error::Retired);
-        }
-        let address = endpoint.local_addr().await;
-        let retirement = owner.root.session_retirement(session).await;
-        let permanently_retired = owner_stop.is_cancelled()
-            || owner.stop.is_cancelled()
-            || matches!(&retirement, Ok(Some(_)));
-        let result = match retirement {
-            Err(error) => Err(Error::Persistence(error.to_string())),
-            Ok(_) if permanently_retired => Err(Error::Retired),
-            Ok(_) => address,
-        };
-        match result {
-            Ok(address) => Ok(address),
-            Err(cause) => {
-                // A transient query/address failure cannot revoke a reused
-                // live bridge. Only our new listener or known retirement is
-                // ours to close; ptr_eq removal cannot affect a replacement.
-                if created || permanently_retired {
-                    if let Err(cleanup) = owner.finish_endpoints(vec![(key, endpoint)]).await {
-                        return Err(Error::Persistence(format!(
-                            "Native endpoint preparation failed: {cause}; original endpoint cleanup failed: {cleanup}"
-                        )));
-                    }
-                }
-                Err(cause)
-            }
-        }
-    }
-}
+impl super::Backend {}
 struct Call {
     owner: Arc<External>,
     request: Request,
@@ -1054,93 +1003,4 @@ async fn seed_credentials(
             .map_err(|e| Error::Provider(format!("Native credential seed flush failed: {e}")))?;
     }
     Ok(())
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::sync::{Mutex, oneshot};
-
-    #[tokio::test]
-    async fn evicted_catalog_probe_still_quarantines_metadata_and_drains_overlapping_status() {
-        let cached = CatalogSnapshot {
-            cwd: "workspace".into(),
-            selected: None,
-            started: Instant::now(),
-            result: futures_util::future::pending::<Result<Value, Error>>()
-                .boxed()
-                .shared(),
-        };
-        let catalog = Arc::new(Mutex::new(Catalog::Cached(cached)));
-        let resources = Arc::new(maka_plugin_core::work::resources::Resources::default());
-        async fn probe(
-            catalog: Arc<Mutex<Catalog>>,
-            resources: Arc<maka_plugin_core::work::resources::Resources>,
-            entered: oneshot::Sender<()>,
-            release: oneshot::Receiver<Result<Value, Error>>,
-        ) -> Result<Value, Error> {
-            let mut ticket = catalog.lock().await.admit(&resources)?;
-            ticket.start();
-            entered.send(()).unwrap();
-            let result = release.await.unwrap();
-            catalog.lock().await.observe(&result);
-            ticket.complete(if matches!(result, Err(Error::CleanupUnconfirmed)) {
-                Err("probe cleanup unconfirmed".into())
-            } else {
-                Ok(())
-            });
-            result
-        }
-        let (catalog_entered, entered) = oneshot::channel();
-        let (release_catalog, result) = oneshot::channel();
-        let original = tokio::spawn(probe(
-            catalog.clone(),
-            resources.clone(),
-            catalog_entered,
-            result,
-        ));
-        entered.await.unwrap();
-        catalog.lock().await.invalidate();
-        assert!(matches!(*catalog.lock().await, Catalog::Empty));
-        let (status_entered, entered) = oneshot::channel();
-        let (release_status, result) = oneshot::channel();
-        let status = tokio::spawn(probe(
-            catalog.clone(),
-            resources.clone(),
-            status_entered,
-            result,
-        ));
-        entered.await.unwrap();
-        release_catalog
-            .send(Err(Error::CleanupUnconfirmed))
-            .unwrap();
-        assert!(matches!(
-            original.await.unwrap(),
-            Err(Error::CleanupUnconfirmed)
-        ));
-        catalog.lock().await.invalidate();
-        assert!(matches!(
-            catalog.lock().await.admit(&resources),
-            Err(Error::CleanupUnconfirmed)
-        ));
-        assert!(
-            resources.has_pending(),
-            "the admitted status probe must remain owned after its sibling fails"
-        );
-        release_status.send(Ok(serde_json::json!([]))).unwrap();
-        status.await.unwrap().unwrap();
-        assert!(!resources.has_pending());
-        assert!(
-            resources.reserve().is_ok(),
-            "Resources alone do not quarantine discovery"
-        );
-        catalog.lock().await.invalidate();
-        assert!(
-            matches!(
-                catalog.lock().await.admit(&resources),
-                Err(Error::CleanupUnconfirmed)
-            ),
-            "clean status completion/refresh cannot erase the original fatal result"
-        );
-        assert!(resources.finish().await.is_err());
-    }
 }

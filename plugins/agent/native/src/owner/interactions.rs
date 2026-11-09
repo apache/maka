@@ -19,6 +19,7 @@
 
 mod delegation;
 
+use super::send::NativeMutation;
 use super::{Owner, StoredSessionConfiguration, now};
 use crate::contract::*;
 use maka_agent_facts::interaction::InteractionAnswer;
@@ -114,27 +115,44 @@ impl Owner {
             .await
             .map_err(|error| error.to_string())
     }
-    async fn commit_response(
+    async fn prepare_response(
         &self,
         input: InteractionRespond,
-    ) -> Result<InteractionResult, String> {
-        let runs = self.runs.lock().await;
-        let reject = |reason| Ok(InteractionResult::Rejected { reason });
+    ) -> Result<NativeMutation<InteractionResult>, String> {
+        let runs = std::sync::Arc::new(self.runs.lock().await);
+        let reject = |reason| {
+            Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }))
+        };
         if runs.closing {
             return reject(InteractionRejection::Closed);
         }
-        self.commit_response_unlocked(input).await
+        self.prepare_response_locked(input, runs, None).await
     }
 
-    async fn commit_response_unlocked(
+    async fn prepare_response_locked(
         &self,
         input: InteractionRespond,
-    ) -> Result<InteractionResult, String> {
-        let reject = |reason| Ok(InteractionResult::Rejected { reason });
+        guard: std::sync::Arc<super::runs::Exclusive>,
+        caller: Option<maka_agent_state::CallerFence>,
+    ) -> Result<NativeMutation<InteractionResult>, String> {
+        let reject = |reason| {
+            Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }))
+        };
         if !self.owns(&input.session_id) {
             return reject(InteractionRejection::Unavailable);
         }
-        let session = self.session(&input.session_id).await?;
+        let Some(session) = self
+            .store
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return reject(InteractionRejection::Unavailable);
+        };
         if session.archived {
             return reject(InteractionRejection::Unavailable);
         }
@@ -195,23 +213,36 @@ impl Owner {
             return reject(InteractionRejection::InvalidAnswer);
         }
         if record.outcome.is_some() {
-            return Ok(InteractionResult::Recorded {
+            return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                 record: Box::new(record),
-            });
+            }));
         }
-        let committed = self
+        let change = self
             .durable
             .interactions()
-            .commit_outcome(
+            .prepare_outcome(
                 &record.execution.session_id,
                 &record.request_id,
                 input.answer.into_outcome(now()),
+                caller,
+                guard,
+                |settlement| {
+                    use maka_agent_state::interactions::AnswerSettlement;
+                    let result = match settlement {
+                        AnswerSettlement::Recorded(record) => InteractionResult::Recorded {
+                            record: Box::new(record),
+                        },
+                        AnswerSettlement::Unavailable => InteractionResult::Rejected {
+                            reason: InteractionRejection::Unavailable,
+                        },
+                        AnswerSettlement::AuthorizationChanged => InteractionResult::Rejected {
+                            reason: InteractionRejection::AuthorizationChanged,
+                        },
+                    };
+                    serde_json::to_value(result).map_err(maka_event_log::StoreError::from)
+                },
             )
-            .await
             .map_err(|error| error.to_string())?;
-        self.wake_notify.notify_one();
-        Ok(InteractionResult::Recorded {
-            record: Box::new(committed),
-        })
+        Ok(NativeMutation::Computed { change })
     }
 }

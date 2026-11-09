@@ -178,10 +178,11 @@ export function checkResults(plan, results, hasRootTests) {
   if (plan.suites.root) {
     if (typeof hasRootTests !== 'boolean')
       throw new Error('Root producer did not report whether tests were selected');
-    if (!hasRootTests && plan.suites.root.filter === 'all()')
-      throw new Error('The full root test selection was unexpectedly empty');
-    required.push('root-build');
-    if (hasRootTests) required.push('root-tests');
+    if (!hasRootTests)
+      throw new Error(
+        `The planned root test selection was unexpectedly empty: ${plan.suites.root.filter}`,
+      );
+    required.push('root-build', 'root-tests');
   }
   const failures = required.filter((id) => results[id]?.result !== 'success');
   if (failures.length) throw new Error(`Required CI jobs did not succeed: ${failures.join(', ')}`);

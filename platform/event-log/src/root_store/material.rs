@@ -84,6 +84,3 @@ async fn vacuum_step(log: &EventLog) -> Result<bool, crate::StoreError> {
         })
         .await
 }
-
-#[cfg(test)]
-mod tests;

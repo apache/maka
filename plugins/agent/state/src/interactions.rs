@@ -19,7 +19,7 @@
 
 //! Agent-owned human requests, answers and deterministic permission indexes.
 //! Stored approval bytes are evidence, never a live capability.
-use crate::{ContentBlob, DriverClaim, Head};
+use crate::{CallerFence, CallerStatus, ContentBlob, DriverClaim, Head};
 use maka_agent_facts::{durable::*, interaction::*};
 use maka_event_log::{
     StoreError,
@@ -31,12 +31,19 @@ use maka_plugin_core::operation::RecoveryRef;
 use maka_sandbox::{grant::Permissions, workspace::PermissionBasis};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub(crate) mod sql;
 pub(crate) use sql::{
     consume, consume_cell_approval, consume_external_approval, validate_approval,
     validate_approval_refusal, validate_cell_approval,
 };
+
+pub enum AnswerSettlement {
+    Recorded(InteractionRecord),
+    Unavailable,
+    AuthorizationChanged,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -147,14 +154,27 @@ impl InteractionsStore {
             .write(Answer(session.to_owned(), request.to_owned(), outcome))
             .await
     }
-    pub fn prepare_outcome(
+    pub fn prepare_outcome<F>(
         &self,
         session: &str,
         request: &str,
         outcome: InteractionOutcome,
-    ) -> DataChange {
-        self.data
-            .prepare(Answer(session.to_owned(), request.to_owned(), outcome))
+        caller: Option<CallerFence>,
+        guard: Arc<dyn Send + Sync>,
+        result: F,
+    ) -> Result<DataChange, StoreError>
+    where
+        F: FnOnce(AnswerSettlement) -> Result<serde_json::Value, StoreError> + Send + 'static,
+    {
+        let answer = Answer(session.to_owned(), request.to_owned(), outcome);
+        self.data.prepare_result(move |_| {
+            Ok(AnswerResult {
+                answer,
+                caller,
+                guard,
+                result,
+            })
+        })
     }
     pub async fn permission_grants(
         &self,
@@ -222,6 +242,42 @@ impl Statement for Establish {
     }
 }
 struct Answer(String, String, InteractionOutcome);
+struct AnswerResult<F> {
+    answer: Answer,
+    caller: Option<CallerFence>,
+    guard: Arc<dyn Send + Sync>,
+    result: F,
+}
+impl<F> Statement for AnswerResult<F>
+where
+    F: FnOnce(AnswerSettlement) -> Result<serde_json::Value, StoreError> + Send + 'static,
+{
+    type Value = serde_json::Value;
+    type Output = ();
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        vec![self.guard.clone()]
+    }
+    fn execute(self, connection: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let Answer(session, request, outcome) = self.answer;
+        let (value, changed) = sql::fenced_answer(
+            connection,
+            &session,
+            &request,
+            outcome,
+            self.caller.as_ref(),
+        )?;
+        let prepared = prepared(value, changed, session);
+        Ok(Prepared {
+            value: (self.result)(prepared.value)?,
+            changed: prepared.changed,
+            notification: prepared.notification,
+        })
+    }
+    fn committed(_: Self::Value) {}
+    fn isolated_rejection(error: &StoreError) -> bool {
+        rejection(error)
+    }
+}
 impl Statement for Answer {
     type Value = InteractionRecord;
     type Output = InteractionRecord;

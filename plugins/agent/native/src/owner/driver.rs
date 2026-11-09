@@ -41,10 +41,6 @@ use std::{collections::BTreeMap, panic::AssertUnwindSafe, sync::Arc, time::Syste
 use tokio::sync::{Mutex, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-#[cfg(test)]
-#[path = "driver_frozen_contract_tests.rs"]
-mod frozen_contract_tests;
-
 /// These are actual activation capabilities. No constructor accepts a serialized Scope.
 pub(super) struct NativeDriver {
     pub(super) owner: Arc<Owner>,
@@ -55,7 +51,7 @@ pub(super) struct NativeDriver {
     pub(super) cancellation: CancellationToken,
     pub(super) cleanup: Evidence,
     pub(super) workers: TaskTracker,
-    prepared: Mutex<BTreeMap<String, PreparedTool>>,
+    prepared: Mutex<BTreeMap<String, PreparedDispatch>>,
     step_tools: std::sync::Mutex<Option<(StepId, maka_tools::ToolCatalog)>>,
     original_effects: effects::OriginalEffects,
     cleanup_signals_armed: std::sync::OnceLock<()>,
@@ -127,6 +123,23 @@ impl LocalCompletion {
                 matches!(Self::statement_cause(error), maka_event_log::StoreError::StatementRejected { diagnostic, .. }
                 if diagnostic == maka_agent_state::artifacts::COPY_REJECTED)
             }
+        }
+    }
+}
+
+pub(super) enum DispatchSource {
+    Ordinary,
+    CellWait(super::driver_cells::OwnedCellWait),
+}
+struct PreparedDispatch {
+    tool: PreparedTool,
+    source: DispatchSource,
+}
+impl PreparedDispatch {
+    fn ordinary(tool: PreparedTool) -> Self {
+        Self {
+            tool,
+            source: DispatchSource::Ordinary,
         }
     }
 }
@@ -554,7 +567,7 @@ impl NativeDriver {
         view: &RunView,
         tool: &Tool,
         catalog: maka_tools::ToolCatalog,
-    ) -> Result<PreparedTool, ToolRejection> {
+    ) -> Result<PreparedDispatch, ToolRejection> {
         let configuration = self.access.live_configuration().await.map_err(|error| {
             ToolRejection::PolicyDenied {
                 message: error.to_string(),
@@ -592,7 +605,12 @@ impl NativeDriver {
             return self
                 .availability(catalog)
                 .prepare_search(input)
-                .map(|effect| PreparedTool::regular(effect, ToolSemantics::Parallel));
+                .map(|effect| {
+                    PreparedDispatch::ordinary(PreparedTool::regular(
+                        effect,
+                        ToolSemantics::Parallel,
+                    ))
+                });
         }
         if matches!(tool.call.name.as_str(), "exec" | "wait") {
             return match &self.backend {
@@ -612,7 +630,10 @@ impl NativeDriver {
                 }
                 _ => Err(ToolRejection::Unavailable),
             }
-            .map(|effect| PreparedTool::regular(effect, ToolSemantics::Parallel));
+            .map(|(effect, source)| PreparedDispatch {
+                tool: PreparedTool::regular(effect, ToolSemantics::Parallel),
+                source,
+            });
         }
         if matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. })
             && !catalog.direct_only().names().contains(&tool.call.name)
@@ -631,12 +652,7 @@ impl NativeDriver {
             semantics,
         )
         .await
-    }
-    fn request(
-        &self,
-        operation_id: Option<String>,
-    ) -> Result<maka_host_runtime::application::NativeRequest, RunError> {
-        effects::request(&self.owner.services, &self.access, operation_id)
+        .map(PreparedDispatch::ordinary)
     }
     pub(super) async fn finish(&self) -> Result<(), RunError> {
         if !self.original_cleanup_confirmed().await? {
@@ -647,10 +663,7 @@ impl NativeDriver {
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub(super) async fn frozen_tool_returns(&self) -> Vec<(ToolKey, FactId, ContentRef)> {
-        self.original_effects.frozen_returns().await
-    }
+
     pub(super) async fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
         let mut signals = self.original_effects.original_cleanup_signals().await;
         signals.extend(self.access.binding_cleanup_signals().await);
@@ -782,17 +795,6 @@ impl DriverPorts for NativeDriver {
     ) -> BoxFuture<'a, Result<PreparedStep, RunError>> {
         Box::pin(async move {
             self.access.live_configuration().await?;
-            #[cfg(test)]
-            if view.tools.values().any(|tool| tool.accepted.is_some()) {
-                let original = self.owner.continuation_preparation.lock().unwrap().take();
-                if let Some(original) = original {
-                    self.workers
-                        .spawn(original)
-                        .await
-                        .map_err(|error| RunError::Internal(error.to_string()))??;
-                    self.access.live_configuration().await?;
-                }
-            }
             self.model()?.prepare_step(view, mode, self).await
         })
     }
@@ -883,17 +885,6 @@ impl DriverPorts for NativeDriver {
                     contents: vec![],
                 });
             }
-            #[cfg(test)]
-            {
-                let original = self.owner.tool_preparation.lock().unwrap().take();
-                if let Some(original) = original {
-                    self.workers
-                        .spawn(original)
-                        .await
-                        .map_err(|error| RunError::Internal(error.to_string()))??;
-                    self.access.live_configuration().await?;
-                }
-            }
             let input = match tool.call.input.as_json() {
                 Some(input) => ContentBlob::json(input)?,
                 None => {
@@ -929,13 +920,13 @@ impl DriverPorts for NativeDriver {
                     });
                 }
             };
-            let approval = prepared.approval_id();
-            let display = prepared.display(match view.spec.language {
+            let approval = prepared.tool.approval_id();
+            let display = prepared.tool.display(match view.spec.language {
                 maka_agent_facts::language::Language::En => "en",
                 maka_agent_facts::language::Language::ZhCn => "zh-CN",
                 maka_agent_facts::language::Language::ZhTw => "zh-TW",
             });
-            let semantics = prepared.semantics;
+            let semantics = prepared.tool.semantics;
             self.prepared
                 .lock()
                 .await
@@ -1027,14 +1018,14 @@ impl DriverPorts for NativeDriver {
                     Ok(prepared) => prepared,
                     Err(rejection) => return Ok(ToolValidation::Denied { rejection }),
                 };
-                if prepared.semantics != *semantics {
+                if prepared.tool.semantics != *semantics {
                     return Ok(ToolValidation::Denied {
                         rejection: ToolRejection::PolicyDenied {
                             message: "tool semantics changed during original preparation".into(),
                         },
                     });
                 }
-                if prepared.approval_id() != *approval {
+                if prepared.tool.approval_id() != *approval {
                     return Ok(ToolValidation::Denied {
                         rejection: ToolRejection::PolicyDenied {
                             message: "tool approval changed during original preparation".into(),
@@ -1058,30 +1049,19 @@ impl DriverPorts for NativeDriver {
             if run != self.access.execution().run_id {
                 return Err(RunError::InvalidInput("foreign original lookup".into()));
             }
-            let operation_id = format!("{}:{}", key.attempt, key.call);
-            let operation = crate::tools::operation_uuid(self.access.execution(), &operation_id);
             let source = effects::ReadSource::Intent(key);
-            self.original_effects.finish_readers(Some(&source)).await?;
-            let request = self.request(Some(operation_id))?;
-            let unavailable = |diagnostic| {
-                RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
-                    stage: AuthorityStage::BackendScope,
-                    diagnostic,
-                })
+            let Some((reference, request)) = self
+                .original_effects
+                .recovery_request(&source, None, None)
+                .await?
+            else {
+                return Ok(OriginalLookup::Absent);
             };
-            let original = match request.lookup_intent(operation) {
-                Ok(original) => original.await.map_err(unavailable),
-                Err(error) => Err(unavailable(error)),
-            };
-            let cleanup = request.finish().await;
-            if let Err(error) = cleanup {
+            if let Err(error) = request.finish().await {
                 self.original_effects.retain_reader(source, request);
                 return Err(RunError::Tool(ToolError::CleanupUnconfirmed(error)));
             }
-            Ok(match original? {
-                Some(intent) => OriginalLookup::Found(intent.reference),
-                None => OriginalLookup::Absent,
-            })
+            Ok(OriginalLookup::Found(reference))
         })
     }
     fn dispatch_tool(
@@ -1121,6 +1101,10 @@ impl DriverPorts for NativeDriver {
                 RunError::InvalidInput("tool admission receipt is unavailable".into())
             })?;
             // Cache loss is not a license to repeat an admitted call.
+            let selected = self
+                .original_effects
+                .selected_for_tool(&tool.call.name)
+                .await?;
             let effect = self
                 .prepared
                 .lock()
@@ -1131,7 +1115,10 @@ impl DriverPorts for NativeDriver {
                         tool: tool.key.clone(),
                     })
                 })?;
-            let PreparedTool { effect, local, .. } = effect;
+            let PreparedDispatch {
+                tool: PreparedTool { effect, local, .. },
+                source,
+            } = effect;
             let running = match effect.begin(sequence, self.cancellation.clone()) {
                 Ok(running) => running,
                 Err(error) => {
@@ -1144,7 +1131,7 @@ impl DriverPorts for NativeDriver {
             };
             let effects = self.original_effects.clone();
             let (custody, future) = running.execute();
-            let original = effects.own(custody, tool.key);
+            let original = effects.own(custody, tool.key, selected, source);
             let cleanup = self.cleanup.clone();
             let (reply, observation) = oneshot::channel();
             self.workers.spawn(async move {
@@ -1170,8 +1157,16 @@ impl DriverPorts for NativeDriver {
     ) -> BoxFuture<'_, Result<OperationReply, RunError>> {
         Box::pin(async move {
             let source = effects::ReadSource::Operation(reference.clone());
-            self.original_effects.finish_readers(Some(&source)).await?;
-            let request = self.request(None)?;
+            let (_, request) = self
+                .original_effects
+                .recovery_request(&source, None, None)
+                .await?
+                .ok_or_else(|| {
+                    RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
+                        stage: AuthorityStage::BackendScope,
+                        diagnostic: "original caller intent is unavailable".into(),
+                    })
+                })?;
             let original = match request.recover(reference.clone()) {
                 Ok(original) => original.await,
                 Err(error) => Err(error),

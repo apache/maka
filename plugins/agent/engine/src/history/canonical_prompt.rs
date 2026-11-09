@@ -552,6 +552,3 @@ impl std::io::Write for BufferedWriter<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

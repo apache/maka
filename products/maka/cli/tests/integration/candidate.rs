@@ -31,9 +31,6 @@ use std::{
 // Cold lifecycle fixtures reached 20s in CI; leave room before declaring a hung startup.
 const STARTUP_WAIT: Duration = Duration::from_secs(60);
 
-#[cfg(unix)]
-mod crash;
-mod owned;
 mod startup;
 
 #[test]

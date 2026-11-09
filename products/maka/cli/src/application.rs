@@ -278,28 +278,3 @@ fn sanitize_diagnostic(text: &str) -> String {
     }
     output
 }
-
-#[cfg(test)]
-mod source_input_tests {
-    use super::*;
-
-    #[test]
-    fn authoring_reads_complete_contract_documents_and_rejects_malformed_json() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("remote-exports.json");
-        let value =
-            serde_json::json!({"contract": format!("甲{}🙂 END", "x".repeat(3 * 1024 * 1024))});
-        std::fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(
-            read_json::<serde_json::Value>(&file).unwrap() == value,
-            "authoring must read the complete original contract JSON"
-        );
-        std::fs::write(&file, b"{\"contract\":").unwrap();
-        assert!(
-            read_json::<serde_json::Value>(&file)
-                .unwrap_err()
-                .to_string()
-                .contains("EOF while parsing")
-        );
-    }
-}

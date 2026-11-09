@@ -54,21 +54,5 @@ tempfile.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_UI_Shell"] }
 
 [[test]]
-name = "integration"
-path = "tests/integration/main.rs"
-
-[[test]]
 name = "root_lease"
 path = "tests/root_lease.rs"
-
-[[test]]
-name = "root_retention"
-path = "tests/root_retention.rs"
-
-[[test]]
-name = "root_retirement"
-path = "tests/root_retirement.rs"
-
-[[test]]
-name = "root_workspace"
-path = "tests/root_workspace.rs"

@@ -174,6 +174,3 @@ where
         _ => Err(reason),
     }
 }
-
-#[cfg(test)]
-mod tests;

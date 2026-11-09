@@ -17,8 +17,6 @@
  * under the License.
  */
 
-mod rail;
-
 use gpui::{
     AppContext, Application, Bounds, Focusable, PlatformInput, WindowBounds, WindowOptions, point,
     px, size,

@@ -228,7 +228,10 @@ impl<S: Statement> DeferredStatement for FixedStatement<S> {
         })
     }
 }
-impl<S: Statement<Value = serde_json::Value>> DeferredStatement for ResultStatement<S> {
+impl<S: Statement> DeferredStatement for ResultStatement<S>
+where
+    S::Value: serde::Serialize,
+{
     fn commit<'a>(
         self: Box<Self>,
         log: EventLog,
@@ -259,10 +262,13 @@ impl DataWriter {
     /// Bind a pure SQL result to this exact accepted writer. The builder runs
     /// once before SQL; its writer keeps the original custody through settlement.
     /// It constructs the statement only, without executing domain work.
-    pub fn prepare_result<S: Statement<Value = serde_json::Value>>(
+    pub fn prepare_result<S: Statement>(
         &self,
         build: impl FnOnce(DataWriter) -> Result<S, StoreError>,
-    ) -> Result<DataChange, StoreError> {
+    ) -> Result<DataChange, StoreError>
+    where
+        S::Value: serde::Serialize,
+    {
         let custody = Arc::new(self.scoped()?);
         let selected = DataWriter {
             owner: self.owner.clone(),
@@ -352,15 +358,14 @@ impl<T> CompletionResult<T> for FixedResult {
     }
 }
 struct ComputedResult(OutputValidator);
-impl CompletionResult<serde_json::Value> for ComputedResult {
+impl<T: serde::Serialize> CompletionResult<T> for ComputedResult {
     fn expected(&self) -> Option<&OperationResult> {
         None
     }
-    fn result(self, value: &serde_json::Value) -> Result<OperationResult, StoreError> {
-        (self.0)(value)?;
-        Ok(OperationResult::Success {
-            value: value.clone(),
-        })
+    fn result(self, value: &T) -> Result<OperationResult, StoreError> {
+        let value = serde_json::to_value(value)?;
+        (self.0)(&value)?;
+        Ok(OperationResult::Success { value })
     }
 }
 struct WithOutcome<S, R> {

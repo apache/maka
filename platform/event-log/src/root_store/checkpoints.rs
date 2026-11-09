@@ -474,18 +474,4 @@ where
     receive.await.map_err(|_| StoreError::OperationUnknown)?
 }
 
-#[cfg(not(test))]
 fn boundary(_: &str) {}
-#[cfg(test)]
-fn boundary(phase: &str) {
-    if std::env::var("MAKA_CHECKPOINT_TEST_PHASE").ok().as_deref() == Some(phase) {
-        let path = std::env::var_os("MAKA_CHECKPOINT_TEST_READY").expect("test ready path");
-        std::fs::write(path, phase).unwrap();
-        loop {
-            std::thread::park();
-        }
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests;

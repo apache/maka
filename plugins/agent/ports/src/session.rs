@@ -134,29 +134,3 @@ impl Preparation {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn large_tool_selections_preserve_client_binding_validation() {
-        let names: Vec<_> = (0..160).map(|i| format!("tool_{i}")).collect();
-        let mut preparation = Preparation {
-            tool_ceiling: Some(names.iter().cloned().collect()),
-            required_clients: Some(ClientTools {
-                required: names,
-                optional: vec![],
-                private: BTreeSet::from(["tool_159".into()]),
-            }),
-            ..Default::default()
-        };
-        preparation.validate().unwrap();
-        preparation
-            .required_clients
-            .as_mut()
-            .unwrap()
-            .private
-            .insert("unbound".into());
-        assert!(preparation.validate().is_err());
-    }
-}

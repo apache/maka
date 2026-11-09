@@ -200,7 +200,6 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::GoalView>(&mut g),
         root::<maka_agent_api::contract::GoalChange>(&mut g),
         root::<maka_agent_api::contract::GoalResult>(&mut g),
-        root::<maka_agent_api::contract::GoalReceiptRead>(&mut g),
         root::<maka_agent_api::contract::ChecklistRead>(&mut g),
         root::<maka_agent_api::contract::Checklist>(&mut g),
         root::<maka_agent_api::contract::RecapRead>(&mut g),

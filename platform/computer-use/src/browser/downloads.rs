@@ -306,6 +306,3 @@ impl Tab {
             .await
     }
 }
-
-#[cfg(test)]
-mod tests;

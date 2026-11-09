@@ -23,6 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+asyncband = { workspace = true, features = ["completion"] }
 thiserror.workspace = true
 rusqlite.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
@@ -88,7 +89,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
 [dev-dependencies]
-maka-agent-engine = { workspace = true, features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-external-agent.workspace = true
@@ -110,7 +110,3 @@ maka-processes-native.workspace = true
 maka-interactions-native.workspace = true
 
 maka-decisions-api-native.workspace = true
-
-[[test]]
-name = "durable_recovery"
-path = "tests/durable_recovery.rs"

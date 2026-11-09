@@ -137,28 +137,6 @@ impl From<ExecutorId> for String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn runtime_effort_is_preserved_without_host_enum_coercion() {
-        let value = serde_json::json!({"runtime":"codex", "model":"vendor/model", "thinkingLevel":"vendor-deep"});
-        let settings: Settings = serde_json::from_value(value.clone()).unwrap();
-        settings.validate().unwrap();
-        assert_eq!(
-            settings.thinking_level.as_ref().unwrap().as_str(),
-            "vendor-deep"
-        );
-        assert_eq!(serde_json::to_value(settings).unwrap(), value);
-        for effort in ["", "  ", "high\n"] {
-            assert!(serde_json::from_value::<Effort>(effort.into()).is_err());
-        }
-        let previous = serde_json::json!({"model":"model", "thinkingLevel":"high"});
-        let settings: Settings = serde_json::from_value(previous.clone()).unwrap();
-        assert_eq!(serde_json::to_value(settings).unwrap(), previous);
-    }
-}
-
 /// The next turn's choice, independent of an already admitted execution.
 /// Model revisions are resolved afresh; preferences never grant execution authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

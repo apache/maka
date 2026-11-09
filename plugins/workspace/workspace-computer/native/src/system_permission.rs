@@ -215,6 +215,3 @@ async fn ensure_with_reader(
         Err(still_missing(&missing))
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -72,10 +72,28 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
-/// How long an open waits for a live creator in this process before asking the
-/// caller to retry. A wait never authorizes taking over a live creator's claim.
-const CLAIM_WAITS: u32 = 300;
-const CLAIM_WAIT: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+pub(super) struct Registration {
+    revision: Option<u64>,
+    session: Option<String>,
+}
+impl Registration {
+    pub(super) fn from_record(
+        record: maka_plugin_core::storage::Record,
+    ) -> Result<Self, maka_event_log::StoreError> {
+        let current: Option<Record> = record
+            .data
+            .value()
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        Ok(Self {
+            revision: Some(record.revision),
+            session: current.map(|record| record.session_id),
+        })
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -129,25 +147,9 @@ mod wake;
 pub(super) struct Bot {
     storage: Arc<maka_host_runtime::storage::Storage>,
     owner: OnceLock<Weak<Owner>>,
-    current: RwLock<Option<String>>,
-    /// Claims whose Session creation is in progress in this process. The Root lock
-    /// admits one Host per Root, so a claim absent here has no live creator.
-    creating: std::sync::Mutex<std::collections::HashSet<String>>,
+    current: RwLock<Registration>,
+    creation: Arc<Mutex<()>>,
     changed: tokio::sync::watch::Sender<()>,
-}
-/// Registers a live creation for as long as it is held.
-pub(super) struct Creating<'a> {
-    bot: &'a Bot,
-    session: String,
-}
-impl Drop for Creating<'_> {
-    fn drop(&mut self) {
-        self.bot
-            .creating
-            .lock()
-            .expect("bot creations")
-            .remove(&self.session);
-    }
 }
 impl Bot {
     pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
@@ -159,15 +161,18 @@ impl Bot {
                     .expect("bot namespace"),
             )),
             owner: OnceLock::new(),
-            current: RwLock::new(None),
-            creating: Default::default(),
+            current: RwLock::new(Registration::default()),
+            creation: Arc::new(Mutex::new(())),
             changed: tokio::sync::watch::channel(()).0,
         }
     }
     /// Read the registered Bot before any queued work is scheduled.
     pub async fn load(&self) -> Result<(), StoreError> {
-        let record = self.read::<Record>(RECORD_KEY).await?.1;
-        self.set_current(record.map(|record| record.session_id));
+        let (revision, record) = self.read::<Record>(RECORD_KEY).await?;
+        self.observe(Registration {
+            revision,
+            session: record.map(|record| record.session_id),
+        });
         Ok(())
     }
     pub fn bind(&self, owner: &Arc<Owner>) {
@@ -180,70 +185,51 @@ impl Bot {
     }
     /// The single decision of whether a Session is the Bot.
     pub(super) fn is(&self, session: &str) -> bool {
-        self.current.read().expect("bot identity").as_deref() == Some(session)
+        self.current
+            .read()
+            .expect("bot identity")
+            .session
+            .as_deref()
+            == Some(session)
     }
-    fn creating(&self, session: &str) -> Creating<'_> {
-        self.creating
-            .lock()
-            .expect("bot creations")
-            .insert(session.into());
-        Creating {
-            bot: self,
-            session: session.into(),
-        }
-    }
-    fn is_creating(&self, session: &str) -> bool {
-        self.creating
-            .lock()
-            .expect("bot creations")
-            .contains(session)
-    }
-    /// Test support: leave a claim as an interrupted or a live creator would.
-    #[cfg(test)]
-    pub(super) async fn claim_for_test(&self, session: &str, live: bool) {
-        let (revision, _) = self.read::<Record>(RECORD_KEY).await.unwrap();
+    pub(super) fn prepare_creation_storage(
+        &self,
+        mutations: Vec<Mutation>,
+        writer: &maka_event_log::root_store::DataWriter,
+    ) -> Result<
+        (
+            Option<usize>,
+            impl maka_event_log::writeback::Statement<
+                Value = Vec<maka_plugin_core::storage::Record>,
+                Output = Vec<maka_plugin_core::storage::Record>,
+            > + Clone
+            + use<>,
+        ),
+        maka_event_log::StoreError,
+    > {
+        // Storage prefixes keys; DataBatch preserves input order through execute.
+        let registration = mutations
+            .iter()
+            .position(|mutation| mutation.key == RECORD_KEY);
         self.storage
-            .batch(vec![
-                Self::mutation(
-                    RECORD_KEY.into(),
-                    revision,
-                    &Record {
-                        session_id: session.into(),
-                    },
-                )
-                .unwrap(),
-            ])
-            .await
-            .unwrap();
-        self.set_current(Some(session.into()));
-        if live {
-            self.creating.lock().unwrap().insert(session.into());
-        }
+            .prepare_statement(mutations, writer)
+            .map(|statement| (registration, statement))
     }
-    #[cfg(test)]
-    pub(super) async fn release_for_test(&self, session: &str) {
-        let (revision, _) = self.read::<Record>(RECORD_KEY).await.unwrap();
-        self.storage
-            .batch(vec![Mutation {
-                key: RECORD_KEY.into(),
-                expected_revision: revision,
-                data: Data::Deleted,
-            }])
-            .await
-            .unwrap();
-        {
-            let mut current = self.current.write().unwrap();
-            if current.as_deref() == Some(session) {
-                *current = None;
-            }
+
+    pub(super) fn observe(&self, registration: Registration) {
+        let mut current = self.current.write().expect("bot identity");
+        if registration.revision <= current.revision {
+            return;
         }
-        self.creating.lock().unwrap().remove(session);
-    }
-    fn set_current(&self, session: Option<String>) {
-        *self.current.write().expect("bot identity") = session;
+        let changed = current.session != registration.session;
+        *current = registration;
+        drop(current);
+        if changed {
+            self.changed.send_replace(());
+        }
     }
     pub(super) fn session(&self) -> Option<String> {
-        self.current.read().expect("bot identity").clone()
+        self.current.read().expect("bot identity").session.clone()
     }
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         vec![
@@ -609,6 +595,9 @@ impl Owner {
     }
     async fn check_bot_invocation(&self, context: &ToolCallContext) -> Result<(), String> {
         let execution = &context.execution;
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
         if !self.settings.bot
             || !self.bot.is(&execution.session_id)
             || self.session(&execution.session_id).await?.archived
@@ -629,134 +618,99 @@ impl Owner {
         }
         Ok(())
     }
-    /// Return the installation's Bot Session, creating it on first use or after the
-    /// previous one was archived. The record is claimed before the Session is
-    /// created, so concurrent and retried opens converge on one Session.
+    /// The registered Bot and its ordinary Session publish with the original receipt.
     pub async fn open_bot(
         self: &Arc<Self>,
         input: BotOpen,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<BotOpened, String> {
+    ) -> Result<NativeMutation<BotOpened>, String> {
         if !self.settings.bot {
-            return Ok(BotOpened::Rejected {
+            return Ok(NativeMutation::Returned(BotOpened::Rejected {
                 reason: BotRejection::Disabled,
-            });
+            }));
         }
-        let mine = self.operation_id(operation);
-        let mut waits = 0;
-        let creating;
-        loop {
-            let (revision, record) = self
-                .bot
-                .read::<Record>(RECORD_KEY)
-                .await
-                .map_err(|error| error.to_string())?;
-            if let Some(record) = &record {
-                if record.session_id == mine {
-                    // Our claim: a retry of this operation resumes its creation.
-                    creating = self.bot.creating(&mine);
-                    self.bot.set_current(Some(mine.clone()));
-                    break;
+        let guard = Arc::new(self.bot.creation.clone().lock_owned().await);
+        let (revision, record) = self
+            .bot
+            .read::<Record>(RECORD_KEY)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.bot.observe(Registration {
+            revision,
+            session: record.as_ref().map(|record| record.session_id.clone()),
+        });
+        if let Some(record) = record {
+            match self.session(&record.session_id).await {
+                Ok(session) if !session.archived => {
+                    return Ok(NativeMutation::Returned(BotOpened::Opened {
+                        session_id: record.session_id,
+                        created: false,
+                    }));
                 }
-                match self.session(&record.session_id).await {
-                    Ok(session) if !session.archived => {
-                        self.bot.set_current(Some(record.session_id.clone()));
-                        return Ok(BotOpened::Opened {
-                            session_id: record.session_id.clone(),
-                            created: false,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(error) if error == "agent_session_unavailable" => {
-                        // A live creator keeps its claim however long it takes; only a
-                        // claim with no creator left (interrupted or from an earlier run)
-                        // may be taken over.
-                        if self.bot.is_creating(&record.session_id) {
-                            if waits < CLAIM_WAITS {
-                                waits += 1;
-                                tokio::time::sleep(CLAIM_WAIT).await;
-                                continue;
-                            }
-                            return Err("bot_open_in_progress".into());
-                        }
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            // Register before the claim is visible, so no reader sees it creator-less.
-            let guard = self.bot.creating(&mine);
-            match self.storage_claim(revision, &mine).await {
-                Ok(()) => {
-                    creating = guard;
-                    break;
-                }
-                Err(StoreError::Conflict { .. }) => continue,
-                Err(error) => return Err(error.to_string()),
+                Ok(_) => {}
+                Err(error) if error == "agent_session_unavailable" => {}
+                Err(error) => return Err(error),
             }
         }
-        let tools: Vec<String> = COORDINATION_TOOLS
-            .iter()
-            .filter(|name| self.tools.contains(name))
-            .map(|name| (*name).to_owned())
-            .collect();
         let workspace = match input.workspace {
             Some(workspace) => workspace,
             None => match self.default_bot_workspace().await? {
                 Some(workspace) => workspace,
                 None => {
-                    self.release_claim(&mine).await?;
-                    return Ok(BotOpened::Rejected {
+                    return Ok(NativeMutation::Returned(BotOpened::Rejected {
                         reason: BotRejection::NoWorkspace,
-                    });
+                    }));
                 }
             },
         };
+        let mine = self.operation_id(operation);
+        let marker_key = former_key(&mine);
+        let marker = self
+            .bot
+            .storage
+            .read(marker_key.clone())
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|record| record.revision);
+        let mutations = vec![
+            Bot::mutation(RECORD_KEY.into(), revision, &Record { session_id: mine })
+                .map_err(|error| error.to_string())?,
+            Mutation {
+                key: marker_key,
+                expected_revision: marker,
+                data: Data::Present(serde_json::json!({})),
+            },
+        ];
         let create = Create {
             backend: None,
             automatic_title: false,
-            tools: Some(tools),
+            tools: Some(
+                COORDINATION_TOOLS
+                    .iter()
+                    .filter(|name| self.tools.contains(name))
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            ),
             title: input.title.unwrap_or_else(|| "Bot".into()),
             labels: vec![],
             workspace,
         };
         let operation = operation.clone();
-        let created = self
-            .resource_work(scope, move |owner, scope| {
-                Box::pin(async move { owner.create_inner(create, &operation, &scope).await })
-            })
-            .await?;
-        let _creating = creating;
-        match created {
-            Created::Created { session } => {
-                // The claim is ours while we create, but confirm before reporting.
-                if let Some(registered) = self
-                    .bot
-                    .read::<Record>(RECORD_KEY)
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                owner
+                    .create_inner(
+                        create,
+                        &operation,
+                        &scope,
+                        creation::Purpose::Bot { guard, mutations },
+                    )
                     .await
-                    .map_err(|error| error.to_string())?
-                    .1
-                    .filter(|record| record.session_id != session.id)
-                {
-                    self.bot.set_current(Some(registered.session_id.clone()));
-                    return Ok(BotOpened::Opened {
-                        session_id: registered.session_id,
-                        created: false,
-                    });
-                }
-                self.bot.changed.send_replace(());
-                Ok(BotOpened::Opened {
-                    session_id: session.id,
-                    created: true,
-                })
-            }
-            Created::Rejected { .. } => {
-                self.release_claim(&mine).await?;
-                Ok(BotOpened::Rejected {
-                    reason: BotRejection::CreationRejected,
-                })
-            }
-        }
+                    .map(creation::PreparedCreation::into_bot)
+            })
+        })
+        .await
     }
     /// The Host's first configured workspace root, as a directory selection.
     async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
@@ -773,57 +727,6 @@ impl Owner {
                 .map(|root| WorkspaceSelection::Directory { path: root.path }),
             _ => None,
         })
-    }
-    async fn storage_claim(&self, revision: Option<u64>, mine: &str) -> Result<(), StoreError> {
-        // A retried claim of the same Session finds its marker already written.
-        let marker = self
-            .bot
-            .storage
-            .read(former_key(mine))
-            .await?
-            .map(|record| record.revision);
-        self.bot
-            .storage
-            .batch(vec![
-                Bot::mutation(
-                    RECORD_KEY.into(),
-                    revision,
-                    &Record {
-                        session_id: mine.into(),
-                    },
-                )?,
-                Mutation {
-                    key: former_key(mine),
-                    expected_revision: marker,
-                    data: Data::Present(serde_json::json!({})),
-                },
-            ])
-            .await?;
-        self.bot.set_current(Some(mine.into()));
-        Ok(())
-    }
-    async fn release_claim(&self, mine: &str) -> Result<(), String> {
-        let (revision, record) = self
-            .bot
-            .read::<Record>(RECORD_KEY)
-            .await
-            .map_err(|error| error.to_string())?;
-        if record.is_some_and(|record| record.session_id == mine) {
-            match self
-                .bot
-                .storage
-                .batch(vec![Mutation {
-                    key: RECORD_KEY.into(),
-                    expected_revision: revision,
-                    data: Data::Deleted,
-                }])
-                .await
-            {
-                Ok(_) | Err(StoreError::Conflict { .. }) => {}
-                Err(error) => return Err(error.to_string()),
-            }
-        }
-        self.bot.load().await.map_err(|error| error.to_string())
     }
     /// The tools a Session may use when new work is admitted. The Bot's are derived
     /// from the coordination policy and the current composition, so a newer build's
@@ -903,6 +806,9 @@ impl Owner {
         scope: &maka_capabilities::call::Scope,
         session: &str,
     ) -> Result<bool, String> {
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
         match scope.identity.agent() {
             Some(source) if self.bot.is(&source.session_id) => {
                 self.bot_worker(source, session).await
@@ -911,6 +817,7 @@ impl Owner {
         }
     }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
+        self.bot.load().await.map_err(|error| error.to_string())?;
         let session_id = self.bot.session();
         let target = input.session_id.clone().or_else(|| session_id.clone());
         let is_bot = match &target {

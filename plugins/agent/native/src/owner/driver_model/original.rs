@@ -93,14 +93,8 @@ pub(in crate::owner) struct OriginalModelCleanup {
     continuations: Arc<Mutex<Vec<(ModelAttemptId, SourceClosure)>>>,
     work: Arc<Mutex<BTreeMap<ModelAttemptId, Arc<ModelWork>>>>,
     failures: Arc<Mutex<Vec<maka_model::StreamCleanupError>>>,
-    #[cfg(test)]
-    lose_partial_ack: Arc<AtomicBool>,
 }
 impl OriginalModelCleanup {
-    #[cfg(test)]
-    pub(in crate::owner) fn lose_next_partial_ack(&self) {
-        self.lose_partial_ack.store(true, Ordering::Release);
-    }
     pub(in crate::owner) fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changes.0.subscribe()
     }
@@ -357,14 +351,6 @@ impl OriginalModelCleanup {
         };
         if let Some(partial) = partial {
             self.reconcile_observation(attempt, &partial).await?;
-            #[cfg(test)]
-            if self.lose_partial_ack.swap(false, Ordering::AcqRel) {
-                let error = Arc::new(RunError::Internal(
-                    "lost original private-partial acknowledgement after canonical commit".into(),
-                ));
-                self.remember_failure(attempt, error.clone());
-                return Err(error);
-            }
             if let Some(owned) = self
                 .owned
                 .lock()

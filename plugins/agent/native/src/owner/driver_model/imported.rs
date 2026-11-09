@@ -48,7 +48,7 @@ impl DriverModel {
                             Ok(serde_json::from_reader(BufReader::new(reader)))
                         })
                         .await?
-                        .map_err(RunError::Checkpoint)?;
+                        .map_err(RunError::Json)?;
                     if metadata.version != 1 {
                         return Err(RunError::InvalidInput(
                             "unsupported imported provider metadata version".into(),
@@ -91,7 +91,7 @@ impl DriverModel {
                             Ok(serde_json::from_reader(BufReader::new(reader)))
                         })
                         .await?
-                        .map_err(RunError::Checkpoint)?;
+                        .map_err(RunError::Json)?;
                     match part {
                         ImportedPart::Input { content } => {
                             if !matches!(

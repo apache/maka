@@ -152,10 +152,7 @@ impl Computer {
             authority,
             operation: original,
         };
-        #[cfg(test)]
-        if let Some((value, change)) = browser_access::tests::capture(self, &call).await {
-            return context.complete_change(value, change).map_err(failed);
-        }
+
         if name == "state" {
             access::current(self, &call, "cua_repl").await?;
             return serde_json::to_value(self.sessions.state(&invocation.session_id).await)

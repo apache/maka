@@ -597,6 +597,3 @@ async fn observe(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

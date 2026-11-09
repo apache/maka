@@ -28,7 +28,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod catalog;
-use catalog::{catalog_filter, catalog_page, catalog_revision, catalog_scope};
+use catalog::{catalog_page, catalog_revision};
 pub(crate) use catalog::{summary, summary_for};
 
 mod delivery;
@@ -109,11 +109,41 @@ impl Handler for Agent {
                 | "metadata"
                 | "selectBackend"
                 | "setCompactionPrompt"
+                | "respond"
+                | "create"
+                | "openBot"
+                | "changeGoal"
+                | "schedule"
+                | "project"
         ) {
             return Box::pin(async move {
                 let result: Result<HandlerValue, String> = async {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     match method.as_str() {
+                        "project" => owner
+                            .project(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "changeGoal" => owner
+                            .goal_change(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "schedule" => owner
+                            .schedule_change(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "create" => owner
+                            .create(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "openBot" => owner
+                            .open_bot(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "respond" => owner
+                            .respond(decode(input)?, operation, &context)
+                            .await?
+                            .complete(&context),
                         "metadata" => owner
                             .metadata(decode(input)?, context.scope(), operation)
                             .await?
@@ -298,19 +328,7 @@ impl Handler for Agent {
                 ),
                 "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
                 "tools" => encode(owner.tool_names(context.scope()).await?),
-                "goalReceipt" => encode(owner.goal_receipt(decode(input)?).await?),
                 "goal" => encode(owner.goal(decode(input)?).await?),
-                "changeGoal" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .goal_change(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "watchGoal" => {
                     let input: GoalRead = decode(input)?;
                     let mut changes = owner.goal_changes();
@@ -395,14 +413,6 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "openBot" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .open_bot(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
                 "watchBotOutbox" => {
                     let input: BotOutboxRead = decode(input)?;
@@ -431,9 +441,6 @@ impl Handler for Agent {
                     } else {
                         None
                     };
-                    if matches!(query, Some(ScheduleRead::Receipt { .. })) {
-                        return Err("scheduler_subscription_invalid".into());
-                    }
                     loop {
                         changes.borrow_and_update();
                         let value = if let Some(query) = &query {
@@ -449,17 +456,6 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "schedule" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .schedule_change(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "recall" => encode(owner.recall.query(decode(input)?, context.scope()).await?),
                 "imports" => encode(owner.imports(decode(input)?, context.scope()).await?),
                 "importDirectories" => encode(
@@ -468,10 +464,6 @@ impl Handler for Agent {
                         .await?,
                 ),
                 "projects" => encode(owner.projects(decode(input)?).await?),
-                "project" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.project(decode(input)?).await?)
-                }
                 "mcpConfigurations" | "manageMcpServer" => {
                     if context.scope().identity.agent().is_some() {
                         return Err("agent_mcp_user_action_required".into());
@@ -510,15 +502,6 @@ impl Handler for Agent {
                     )
                     .await?,
                 ),
-                "create" => {
-                    let input: Create = decode(input)?;
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    let created = owner.create(input, operation, context.scope()).await?;
-                    if let Created::Created { session } = &created {
-                        owner.bot_watch(context.scope(), &session.id).await;
-                    }
-                    encode(created)
-                }
                 "previewHistoryCheckpoint" => encode(
                     owner
                         .preview_history_checkpoint(decode(input)?, context.scope())
@@ -699,10 +682,6 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
-                "respond" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.respond(decode(input)?, operation, &context).await?)
-                }
                 "watch" => delivery::watch(&owner, decode(input)?, &context).await,
                 _ => Err("agent_method_unavailable".into()),
             }
@@ -724,7 +703,11 @@ fn handler_error(diagnostic: String) -> HandlerError {
         | "agent_work_unknown"
         | "agent_worktree_unknown"
         | "agent_worktree_materialization_unknown"
-        | "agent_worktree_initialization_unknown" => HandlerError::Unknown { diagnostic },
+        | "agent_worktree_initialization_unknown"
+        | "agent_project_commit_unknown"
+        | "agent_project_registration_unknown"
+        | "agent_project_selection_unknown"
+        | "agent_workspace_initialization_failed" => HandlerError::Unknown { diagnostic },
         _ => HandlerError::Returned { diagnostic },
     }
 }

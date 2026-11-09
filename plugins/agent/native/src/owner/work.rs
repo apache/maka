@@ -48,22 +48,29 @@ impl Owner {
         scope: &Scope,
         session: &str,
     ) -> Result<maka_event_log::root_store::SessionWorkLease, auxiliary::Error> {
-        match scope.work_custody() {
-            Some(custody) => self
+        if scope
+            .identity
+            .agent()
+            .is_some_and(|execution| execution.session_id == session)
+        {
+            let custody = scope.work_custody().ok_or_else(|| {
+                auxiliary::admission_error(maka_event_log::StoreError::InvalidTransition(
+                    "agent work custody is required".into(),
+                ))
+            })?;
+            return self
                 .store
                 .fork_work(custody.as_ref(), session)
-                .map_err(auxiliary::admission_error),
-            None => {
-                let current = self.session(session).await.map_err(|error| {
-                    auxiliary::Error::Admission(maka_agent_facts::tools::ToolError::Failed(error))
-                })?;
-                let scope = self
-                    .current_work_scope(session, &current.configuration)
-                    .await
-                    .map_err(auxiliary::admission_error)?;
-                Ok(scope.accept(CancellationToken::new()).0)
-            }
+                .map_err(auxiliary::admission_error);
         }
+        let current = self.session(session).await.map_err(|error| {
+            auxiliary::Error::Admission(maka_agent_facts::tools::ToolError::Failed(error))
+        })?;
+        let scope = self
+            .current_work_scope(session, &current.configuration)
+            .await
+            .map_err(auxiliary::admission_error)?;
+        Ok(scope.accept(CancellationToken::new()).0)
     }
 
     // An observer can leave, but the original Call and native owner retain the

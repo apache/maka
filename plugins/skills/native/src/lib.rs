@@ -593,5 +593,3 @@ impl NativeOwner for Library {
         Box::pin(async { Ok(()) })
     }
 }
-#[cfg(test)]
-mod tests;

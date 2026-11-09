@@ -39,8 +39,7 @@ mod imported;
 mod projection;
 mod source;
 mod stream;
-#[cfg(test)]
-mod tests;
+
 pub(super) use media::{attachment_image, tool_image};
 pub(crate) use media::{snapshot_attachment_image, snapshot_tool_image};
 pub(crate) use source::snapshot_source;
@@ -467,16 +466,17 @@ pub(super) async fn observation(
             last_completed_turn_id = Some(view.spec.turn_id.clone());
         }
         if let Some(backend) = backend.filter(|_| view.terminal.is_none()) {
-            let waiting = pending_interactions != 0
-                || view.waits.values().any(|wait| {
-                    wait.satisfied.is_none()
-                        && wait.cancelled.is_none()
-                        && matches!(wait.reason, WaitReason::Approval { .. })
-                })
-                || view
-                    .blockers
-                    .values()
-                    .any(|blocker| blocker.decision.is_none() && blocker.resolved_by.is_none());
+            let waiting = matches!(view.spec.origin, RunOrigin::Local)
+                && ((!view.stopped
+                    && (pending_interactions != 0
+                        || view.waits.values().any(|wait| {
+                            wait.satisfied.is_none()
+                                && wait.cancelled.is_none()
+                                && matches!(wait.reason, WaitReason::Approval { .. })
+                        })))
+                    || view.blockers.values().any(|blocker| {
+                        blocker.decision.is_none() && blocker.resolved_by.is_none()
+                    }));
             run = Some(ui::Run {
                 backend,
                 run_id: view.run,

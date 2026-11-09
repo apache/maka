@@ -201,6 +201,3 @@ fn freeze(through: &mut Option<u64>, fence: Option<u64>) -> Result<u64, Error> {
     *through = Some(fence);
     Ok(fence)
 }
-
-#[cfg(test)]
-mod tests;

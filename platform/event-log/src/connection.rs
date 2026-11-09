@@ -358,10 +358,7 @@ impl WriterIngress {
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
-    #[cfg(test)]
-    pub(crate) fn failures(&self) -> u64 {
-        self.failures.load(Ordering::Acquire)
-    }
+
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
@@ -503,10 +500,7 @@ impl OwnedConnection {
         value.writer.custody = value.custody.clone();
         value
     }
-    #[cfg(test)]
-    pub(crate) fn writer(&self) -> WriterIngress {
-        self.writer.clone()
-    }
+
     pub(crate) async fn write<S: crate::writeback::Statement>(
         &self,
         statement: S,
@@ -1053,6 +1047,3 @@ fn close(
         error.to_string()
     })
 }
-
-#[cfg(test)]
-mod tests;

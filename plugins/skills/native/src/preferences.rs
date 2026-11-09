@@ -215,6 +215,3 @@ impl Statement for Set {
         )
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

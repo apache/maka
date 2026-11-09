@@ -181,7 +181,6 @@ export type RuntimeProtocol =
   | AgentGoalView
   | AgentGoalChange
   | AgentGoalResult
-  | AgentGoalReceiptRead
   | AgentChecklistRead
   | AgentChecklist
   | AgentRecapRead
@@ -2443,10 +2442,6 @@ export type AgentScheduleRead =
   | {
       kind: 'get';
       taskId: string;
-    }
-  | {
-      kind: 'receipt';
-      reference: RecoveryRef;
     };
 export type AgentSchedules =
   | {
@@ -2462,10 +2457,6 @@ export type AgentSchedules =
   | {
       kind: 'changed';
       revision: number;
-    }
-  | {
-      kind: 'receipt';
-      result?: AgentScheduleResult | null;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
 export type Intent = {
@@ -2522,20 +2513,6 @@ export type Creator =
     };
 export type Outcome = 'ok' | 'failed' | 'blocked';
 export type Misfire = 'skip' | 'latest';
-export type AgentScheduleResult =
-  | {
-      kind: 'committed';
-      taskId: string;
-      revision: number;
-    }
-  | {
-      kind: 'conflict';
-      actual?: number | null;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
-    };
 export type AgentScheduleChange =
   | {
       kind: 'create';
@@ -2588,6 +2565,20 @@ export type AgentScheduleChange =
       kind: 'delete';
       taskId: string;
       revision: number;
+    };
+export type AgentScheduleResult =
+  | {
+      kind: 'committed';
+      taskId: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual?: number | null;
+    }
+  | {
+      kind: 'rejected';
+      reason: string;
     };
 /**
  * A complete logical Turn boundary within the source session.
@@ -7078,9 +7069,6 @@ export interface BindingStamp {
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
-}
-export interface AgentGoalReceiptRead {
-  reference: RecoveryRef;
 }
 export interface AgentChecklistRead {
   sessionId: string;

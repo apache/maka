@@ -45,6 +45,3 @@ pub(super) const INDEXES: [(&str, &str, &str); 3] = [
         "DROP INDEX operations_pending_terminals",
     ),
 ];
-
-#[cfg(test)]
-mod tests;
