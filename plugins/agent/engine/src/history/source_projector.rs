@@ -103,7 +103,6 @@ impl ProjectContext<'_> {
 pub(super) enum ProjectedRow {
     User(Arc<dyn RecipeSource<ContentRecipe>>),
     Assistant(AssistantRecipe),
-    AssistantMetadata { options: JsonSource },
     Tool(ToolResultRecipe),
     Skip,
 }
@@ -494,42 +493,6 @@ async fn project_text(
     thinking: bool,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
-    if thinking
-        && matches!(context.provider, ProviderKind::OpenaiCompatible { .. })
-        && let Some(options) = provider_options.as_ref()
-        && let Some(field) = json::field(
-            options,
-            &["maka", "openAiChatReasoningField"],
-            context.budget.clone(),
-        )
-        .await?
-        && field.kind == JsonKind::String
-        && (json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await?
-            || json::text_eq(&field.text()?, "reasoning_content", context.budget.clone()).await?)
-    {
-        if text.encoding() != TextEncoding::JsonString {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "compatible reasoning requires captured quoted text source",
-            ));
-        }
-        let prefix = if json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await? {
-            "{\"openaiCompatible\":{\"reasoning\":"
-        } else {
-            "{\"openaiCompatible\":{\"reasoning_content\":"
-        };
-        let bytes = super::joined_source::join(
-            vec![
-                literal(prefix).into_bytes(),
-                text.into_bytes(),
-                literal("}}").into_bytes(),
-            ],
-            context.directory_owner.clone(),
-        )?;
-        return Ok(ProjectedRow::AssistantMetadata {
-            options: JsonSource::new(bytes),
-        });
-    }
     if thinking && let ProviderKind::OpenResponses(contract) = context.provider {
         match contract.reasoning_replay {
             maka_agent_facts::model::PlaintextReasoningReplay::PlaintextContent => {
@@ -1181,22 +1144,6 @@ async fn text_footprint(
     context: &ProjectContext<'_>,
 ) -> io::Result<usize> {
     let mut bytes = raw_footprint(text.bytes())?;
-    if thinking
-        && matches!(context.provider, ProviderKind::OpenaiCompatible { .. })
-        && let Some(options) = options
-        && let Some(field) = json::field(
-            options,
-            &["maka", "openAiChatReasoningField"],
-            context.budget.clone(),
-        )
-        .await?
-        && field.kind == JsonKind::String
-        && (json::text_eq(&field.text()?, "reasoning", context.budget.clone()).await?
-            || json::text_eq(&field.text()?, "reasoning_content", context.budget.clone()).await?)
-    {
-        footprint_add(&mut bytes, super::joined_source::metadata_bytes(3)?)?;
-        return Ok(bytes);
-    }
     if thinking
         && let ProviderKind::OpenResponses(contract) = context.provider
         && contract.reasoning_replay

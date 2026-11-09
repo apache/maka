@@ -29,7 +29,6 @@ use maka_agent_facts::model::prompt_source::source::generated;
 struct Group {
     key: u64,
     start: usize,
-    options: Option<JsonSource>,
 }
 struct Output {
     list: List,
@@ -52,13 +51,13 @@ async fn flush_group(
     cancel: &CancellationToken,
 ) -> io::Result<()> {
     if let Some(group) = group.take()
-        && (group.start != part_count || group.options.is_some())
+        && group.start != part_count
     {
         let message = store
             .message_list(
                 MessageRole::Assistant,
                 parts.range(group.start..part_count)?,
-                group.options,
+                None,
                 budget,
                 cancel,
             )
@@ -223,36 +222,9 @@ pub(super) async fn capture(
                             group.get_or_insert(Group {
                                 key: row.order.source_sequence,
                                 start: part_count,
-                                options: None,
                             });
                             store.put(parts, part_count, part).await.map_err(error)?;
                             part_count += 1;
-                        }
-                    }
-                    ArenaProjectedRow::AssistantMetadata(options) => {
-                        if group
-                            .as_ref()
-                            .is_some_and(|g| g.key != row.order.source_sequence)
-                        {
-                            flush_group(
-                                &mut group,
-                                parts,
-                                part_count,
-                                &mut out,
-                                &store,
-                                budget.clone(),
-                                cancellation,
-                            )
-                            .await
-                            .map_err(error)?;
-                        }
-                        let g = group.get_or_insert(Group {
-                            key: row.order.source_sequence,
-                            start: part_count,
-                            options: None,
-                        });
-                        if g.options.is_none() {
-                            g.options = Some(options);
                         }
                     }
                     ArenaProjectedRow::Skip => {}

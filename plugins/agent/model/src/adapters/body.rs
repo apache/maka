@@ -280,6 +280,7 @@ mod tests {
             provider_namespace: "openai".into(),
             metadata_namespace: "openai".into(),
             multipart_tool_content: false,
+            reasoning_field: Default::default(),
         }
     }
 

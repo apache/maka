@@ -26,6 +26,7 @@ pub struct PromptOptions {
     pub provider_namespace: String,
     pub metadata_namespace: String,
     pub multipart_tool_content: bool,
+    pub reasoning_field: Option<crate::output::ReasoningField>,
 }
 fn metadata<'a>(extensions: &'a Extensions, namespace: &str) -> Option<&'a Value> {
     extensions.as_ref()?.get(namespace)
@@ -209,8 +210,6 @@ enum WireMessage {
         content: Option<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning_content: Option<String>,
     },
     Tool {
         tool_call_id: String,
@@ -292,11 +291,22 @@ pub fn messages(messages: &[Message], options: &PromptOptions) -> Result<Vec<Val
             Message::Assistant { parts, extensions } => {
                 let mut text = String::new();
                 let mut reasoning = String::new();
+                let mut observed_reasoning = None;
                 let mut calls = vec![];
                 for part in parts {
                     match part {
                         AssistantPart::Text { text: delta, .. } => text.push_str(delta),
-                        AssistantPart::Reasoning { text: delta, .. } => reasoning.push_str(delta),
+                        AssistantPart::Reasoning {
+                            text: delta,
+                            extensions,
+                        } => {
+                            reasoning.push_str(delta);
+                            if observed_reasoning.is_none() {
+                                observed_reasoning = metadata(extensions, "maka")
+                                    .and_then(|value| value.get("openAiChatReasoningField"))
+                                    .and_then(|value| serde_json::from_value(value.clone()).ok());
+                            }
+                        }
                         AssistantPart::ToolCall(call) => {
                             let mut wire = overlay(
                                 serde_json::to_value(Call {
@@ -327,18 +337,27 @@ pub fn messages(messages: &[Message], options: &PromptOptions) -> Result<Vec<Val
                         _ => {}
                     }
                 }
-                (
-                    WireMessage::Assistant {
-                        content: if !calls.is_empty() && text.is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        },
-                        tool_calls: calls,
-                        reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+                let reasoning_field =
+                    (!reasoning.is_empty() || observed_reasoning.is_some()).then(|| {
+                        options
+                            .reasoning_field
+                            .or(observed_reasoning)
+                            .unwrap_or(crate::output::ReasoningField::Content)
+                    });
+                let mut wire = serde_json::to_value(WireMessage::Assistant {
+                    content: if !calls.is_empty() && text.is_empty() {
+                        None
+                    } else {
+                        Some(text)
                     },
-                    extensions,
-                )
+                    tool_calls: calls,
+                })
+                .expect("message");
+                if let Some(field) = reasoning_field {
+                    wire[field.as_str()] = json!(reasoning);
+                }
+                result.push(overlay(wire, extensions));
+                continue;
             }
             Message::Tool { results, .. } => {
                 for tool in results {

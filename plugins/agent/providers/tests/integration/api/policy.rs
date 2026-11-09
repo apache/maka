@@ -180,3 +180,31 @@ async fn resolved_openai_routes_preserve_explicit_effort_and_parallel_policy() {
         assert_eq!(model.main_output_limit, Some(4000));
     }
 }
+
+#[tokio::test]
+async fn ollama_cloud_catalog_models_are_executable() {
+    let snapshot = snapshot();
+    let binding = binding("ollama-cloud");
+    let models: Vec<_> = snapshot
+        .models(None)
+        .filter(|(provider, _)| *provider == "ollama-cloud")
+        .map(|(_, model)| model.clone())
+        .collect();
+    assert!(!models.is_empty());
+    for model in models {
+        let mut input = request(&binding, &model.id, ModelOverride::default());
+        input.model = model;
+        input.connection.configuration = binding
+            .configure(json!({"baseUrl":"https://ollama.com/v1"}))
+            .unwrap();
+        let prepared = binding.prepare(input).await.unwrap();
+        assert!(
+            matches!(prepared.protocol, ProviderKind::OpenaiCompatible { ref name } if name == "ollama-cloud")
+        );
+        assert_eq!(prepared.base_url, "https://ollama.com/v1");
+        assert_eq!(
+            prepared.provider_options["maka"],
+            json!({"includeUsage":true,"openAiChatReasoningField":"reasoning"})
+        );
+    }
+}

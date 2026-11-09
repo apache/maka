@@ -65,7 +65,23 @@ pub(super) fn resolve(
             ))
         }
         ProviderKind::OpenaiCompatible { name } => {
-            Ok(compatible::chat_completions(name, thinking_level, parallel))
+            let mut options = compatible::chat_completions(name, thinking_level, parallel);
+            if let crate::facts::adapter::AdapterKind::OpenaiCompatible {
+                include_usage,
+                replay_assistant_reasoning_as,
+                ..
+            } = &route.adapter.kind
+            {
+                if let Some(include) = include_usage {
+                    options["maka"]["includeUsage"] = json!(include);
+                }
+                if let Some(crate::facts::adapter::ReasoningField::Reasoning) =
+                    replay_assistant_reasoning_as
+                {
+                    options["maka"]["openAiChatReasoningField"] = json!("reasoning");
+                }
+            }
+            Ok(options)
         }
         ProviderKind::OpenResponses(contract) => {
             if parallel == Some(false) {
