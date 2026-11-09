@@ -196,9 +196,15 @@ test('indented code in a quote and raw HTML blocks are never rewritten', () => {
   for (const text of [
     '>     first line\n>     **原文：**继续',
     '> >     **原文：**继续',
+    '- >     **原文：**继续',
+    '1. > >     **原文：**继续',
     '<pre>\n\n**原文：**继续\n</pre>',
     '<script>\n\n**原文：**继续\n</script>',
+    '<div>\n**原文：**继续\n</div>',
     '<!--\n\n**原文：**继续\n-->',
+    '<?xml version="1.0"?>\n\n**原文：**继续\n?>',
+    '<!DOCTYPE html>\n\n**原文：**继续',
+    '<![CDATA[\n\n**原文：**继续\n]]>',
     '**甲：**乙\n\n<pre>\ncode\n</pre>',
   ])
     assert.equal(closeCjkEmphasis(text), text, text);

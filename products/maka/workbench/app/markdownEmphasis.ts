@@ -274,11 +274,16 @@ function lineIndent(line: string): { cols: number; offset: number } {
 
 /**
  * Constructs whose literal body this line-by-line scan does not track: indented code inside
- * a quote, and raw HTML blocks (`<pre>`, `<script>`, `<style>`, `<textarea>`, comments) whose
- * body can run across blank lines. A reply that has one is left exactly as written, so the
- * worst case is a stray asterisk and never a changed code body.
+ * a container, and raw HTML blocks whose body can run across blank lines. A reply that has
+ * one is left exactly as written, so the worst case is a stray asterisk and never a changed
+ * code body.
  */
-const UNMODELLED = /^[ \t]*(?:>[ \t]*)+(?: {4,}|\t)|<(?:pre|script|style|textarea)\b|<!--/imu;
+const RAW_HTML_BLOCK_TAGS =
+  'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|ol|p|pre|script|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|textarea|ul|style';
+const UNMODELLED = new RegExp(
+  String.raw`^[ \t]*(?:(?:>[ \t]*)|(?:[-*+]|\d{1,9}[.)])[ \t]+)+(?: {4,}|\t)|<(?:(?:${RAW_HTML_BLOCK_TAGS})\b)|<!--|<\?|<![A-Z]|<!\[CDATA\[`,
+  'imu',
+);
 
 /**
  * `text` with bold pairs that CommonMark would leave open made to close. Fenced and
