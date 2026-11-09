@@ -433,6 +433,8 @@ pub(crate) struct AppWindow {
     /// The title bar area last reported to the app.
     title_bar_area: Cell<Option<Edges<Points>>>,
     showing: Cell<Showing>,
+    /// `focus()` came while it waited for its first frame.
+    focus_on_show: Cell<bool>,
     /// The mode it opens in, applied once it shows.
     open_mode: Cell<Option<WindowMode>>,
 }
@@ -1046,7 +1048,10 @@ fn show(surface: &Surface, id: NodeId, window: &NSWindow, focus: bool) {
     if let Some(w) = surface.windows.borrow().get(&id)
         && let Showing::Waiting(_) = w.showing.get()
     {
-        // It shows with its first frame.
+        // It shows with its first frame, and takes the keyboard then.
+        if focus {
+            w.focus_on_show.set(true);
+        }
         return;
     }
     let (activate, focusable) = with_held(surface, id, |h| h.activate.get())
@@ -1233,6 +1238,7 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             state: Cell::new(None),
             title_bar_area: Cell::new(None),
             showing: Cell::new(Showing::Waiting(0)),
+            focus_on_show: Cell::new(false),
             open_mode: Cell::new(open_mode),
         },
     );
@@ -1352,22 +1358,29 @@ pub(crate) fn batch_applied(surface: &Surface) {
 /// Window `id` has its first frame (or waited long enough): it shows, in
 /// the mode it opens in.
 fn first_frame(surface: &Surface, id: NodeId) {
-    let Some((window, activate, mode)) = surface.windows.try_borrow().ok().and_then(|windows| {
-        let w = windows.get(&id)?;
-        if w.showing.get() == Showing::Done {
-            return None;
-        }
-        w.showing.set(Showing::Done);
-        Some((w.window.clone(), w.held.activate.get(), w.open_mode.take()))
-    }) else {
+    let Some((window, activate, focus, mode)) =
+        surface.windows.try_borrow().ok().and_then(|windows| {
+            let w = windows.get(&id)?;
+            if w.showing.get() == Showing::Done {
+                return None;
+            }
+            w.showing.set(Showing::Done);
+            Some((
+                w.window.clone(),
+                w.held.activate.get(),
+                w.focus_on_show.take(),
+                w.open_mode.take(),
+            ))
+        })
+    else {
         return;
     };
     // A window that does not activate (a panel) shows without taking the
-    // keyboard.
-    let key = window.canBecomeKeyWindow() && activate;
+    // keyboard, unless the app focused it meanwhile.
+    let key = focus || (window.canBecomeKeyWindow() && activate);
     // The root has held the keyboard since the window was made (a field
     // the app focused meanwhile keeps it).
-    order_front(surface, &window, activate, key, false);
+    order_front(surface, &window, activate, key, focus);
     if let Some(mode) = mode {
         with_watch(surface, id, |watch| {
             crate::window_state::set_mode(watch, &window, mode)

@@ -1298,7 +1298,12 @@ impl Nav {
     /// Where the keyboard focus may go: the newest modal of the window the
     /// input is in, else that whole window.
     fn focus_scope(&self, surface: &Surface) -> NshView {
-        let window = Self::input_window(surface);
+        self.focus_scope_in(surface, Self::input_window(surface))
+    }
+
+    /// The focus scope of `window` (a window of the app's own, by its root;
+    /// `None` for the main window).
+    fn focus_scope_in(&self, surface: &Surface, window: Option<NshView>) -> NshView {
         self.newest(window.as_ref().map(NshView::id))
             .and_then(|id| self.modals.get(&id))
             .and_then(|m| m.view.clone())
@@ -1616,12 +1621,15 @@ pub(crate) fn focus_scope(surface: &Surface) -> NshView {
     surface.nav.borrow().focus_scope(surface)
 }
 
-/// Whether `view` is within the active modal scope (or no modal is active).
+/// Whether `view` is within the active modal scope of the window it is in
+/// (or no modal is active). Focus also comes from outside an event in that
+/// window (`focus()`, `autoFocus`), where the input root is the main window.
 pub(crate) fn in_focus_scope(surface: &Surface, view: &NshView) -> bool {
-    surface
-        .nav
-        .try_borrow()
-        .map_or(true, |nav| is_ancestor(&nav.focus_scope(surface), view))
+    let window = crate::app_window::window_of(surface, view);
+    let window = crate::app_window::root_view(surface, window);
+    surface.nav.try_borrow().map_or(true, |nav| {
+        is_ancestor(&nav.focus_scope_in(surface, window), view)
+    })
 }
 
 /// Modal `view` is shown in a window of its own (`Window.open`) instead:

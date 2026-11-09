@@ -1389,11 +1389,32 @@ impl Nav {
 pub(crate) fn focus_scope(surface: &Surface) -> Retained<NSView> {
     // In a window of the app's own, the window's root: the main window's
     // modals are over the main window only.
-    let root = crate::input::event_root(surface);
+    focus_scope_in(surface, &crate::input::event_root(surface))
+}
+
+fn focus_scope_in(surface: &Surface, root: &NshView) -> Retained<NSView> {
     match surface.nav.try_borrow() {
-        Ok(nav) => nav.scope(&root),
+        Ok(nav) => nav.scope(root),
         Err(_) => Retained::from(root.ns()),
     }
+}
+
+/// [`focus_scope`] of `window`, for focus that does not come from an event
+/// in it (`focus()`, `autoFocus`): outside one, the surface's event root is
+/// the main window.
+pub(crate) fn focus_scope_of(
+    surface: &Surface,
+    window: &objc2_app_kit::NSWindow,
+) -> Retained<NSView> {
+    let root = crate::window::root_in(surface, window)
+        .unwrap_or_else(|| crate::input::event_root(surface));
+    focus_scope_in(surface, &root)
+}
+
+/// Whether `view` is in the focus scope of the window it is in.
+pub(crate) fn in_focus_scope(surface: &Surface, view: &NSView) -> bool {
+    view.window()
+        .is_some_and(|window| view.isDescendantOf(&focus_scope_of(surface, &window)))
 }
 
 /// Goes back (the newest modal, the innermost stack or the app's

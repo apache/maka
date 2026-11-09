@@ -103,6 +103,8 @@ pub(crate) struct AppWindow {
     /// Not shown yet: `Some(true)` once the commit that opened it is
     /// mounted (the next one shows it).
     pending: Option<bool>,
+    /// `focus()` came while it waited for its first frame.
+    focus_on_show: bool,
     header: Header,
     /// The window buttons at the start and the end, while the title bar is
     /// hidden.
@@ -319,6 +321,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             attributes: WindowAttributes::default(),
             reported: None,
             pending: Some(false),
+            focus_on_show: false,
             header: Header::System,
             controls: None,
             tracker: Tracker::default(),
@@ -574,7 +577,7 @@ fn show(surface: &Surface, id: NodeId) {
     let Some((window, activate)) = surface.windows.borrow_mut().get_mut(&id).map(|w| {
         w.pending = None;
         w.active_once = false;
-        let activate = w.attributes.activate != Some(false);
+        let activate = std::mem::take(&mut w.focus_on_show) || w.attributes.activate != Some(false);
         if activate {
             SHOWN.set(SHOWN.get() + 1);
             w.shown = SHOWN.get();
@@ -994,6 +997,11 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
         WindowRequest::Hide => hide(surface, id),
         WindowRequest::Focus | WindowRequest::Restore => {
             if let Some(w) = surface.windows.borrow_mut().get_mut(&id) {
+                // It shows with its first frame, and takes the keyboard then.
+                if w.pending.is_some() {
+                    w.focus_on_show = true;
+                    return;
+                }
                 w.pending = None;
                 SHOWN.set(SHOWN.get() + 1);
                 w.shown = SHOWN.get();
