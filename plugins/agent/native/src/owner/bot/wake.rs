@@ -172,33 +172,43 @@ impl Owner {
 
     /// Native workers inherit the Bot's admitted model; an explicitly selected
     /// executor remains a different backend and goes through ordinary admission.
+    /// Source-specific thinking levels stay only when they already name that model.
     pub(crate) async fn use_bot_model(
         &self,
         scope: &maka_capabilities::call::Scope,
-        backend: &mut Option<crate::contract::BackendPreference>,
-    ) {
-        let thinking_level = match backend {
-            Some(crate::contract::BackendPreference::Executor { .. }) => return,
-            Some(crate::contract::BackendPreference::Model { thinking_level, .. }) => {
-                *thinking_level
-            }
-            None => None,
-        };
+        backend: Option<crate::contract::BackendPreference>,
+    ) -> Option<crate::contract::BackendPreference> {
+        if matches!(
+            backend,
+            Some(crate::contract::BackendPreference::Executor { .. })
+        ) {
+            return backend;
+        }
         let Some(source) = scope.identity.agent() else {
-            return;
+            return backend;
         };
         if !self.bot.is(&source.session_id) {
-            return;
+            return backend;
         }
         let Ok(route) = self.return_route(source).await else {
-            return;
+            return backend;
         };
         let binding = route.binding_model();
-        *backend = Some(crate::contract::BackendPreference::Model {
+        let thinking_level = match &backend {
+            Some(crate::contract::BackendPreference::Model {
+                connection_id,
+                model_id,
+                thinking_level,
+            }) if *connection_id == binding.connection_id && *model_id == binding.model => {
+                *thinking_level
+            }
+            _ => None,
+        };
+        Some(crate::contract::BackendPreference::Model {
             connection_id: binding.connection_id.clone(),
             model_id: binding.model.clone(),
             thinking_level,
-        });
+        })
     }
 
     pub(in crate::owner) fn start_bot_wake(self: &Arc<Self>) {

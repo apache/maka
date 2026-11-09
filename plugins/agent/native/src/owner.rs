@@ -815,7 +815,8 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
         }
-        if let Some(backend) = &input.backend
+        let backend = self.use_bot_model(scope, input.backend).await;
+        if let Some(backend) = &backend
             && !self.backend_available(backend).await?
         {
             return Ok(Created::Rejected {
@@ -962,7 +963,7 @@ impl Owner {
                         .identity
                         .agent()
                         .map(|source| source.session_id.clone()),
-                    backend: input.backend,
+                    backend,
                     compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,
@@ -1368,7 +1369,7 @@ impl Owner {
                 return Ok(result);
             }
         }
-        let mut selection = selection
+        let selection = selection
             .or_else(|| {
                 interruption
                     .as_ref()
@@ -1383,8 +1384,7 @@ impl Owner {
                     })
             })
             .or_else(|| session.configuration.backend.clone());
-        self.use_bot_model(parent, &mut selection).await;
-        let Some(selection) = selection else {
+        let Some(selection) = self.use_bot_model(parent, selection).await else {
             return Ok(SendResult::Rejected {
                 session_id: id,
                 reason: SendRejection::ModelUnavailable,
