@@ -218,6 +218,14 @@ impl Owner {
         self: &Arc<Self>,
         admission: &PendingMessageAdmission,
     ) -> Result<bool, String> {
+        self.admit_notification_with_source(admission, None).await
+    }
+
+    pub(super) async fn admit_notification_with_source(
+        self: &Arc<Self>,
+        admission: &PendingMessageAdmission,
+        source: Option<&MessageBasis>,
+    ) -> Result<bool, String> {
         let session = &admission.invocation.session_id;
         let message = &admission.source.message.message_id;
         if admission.execution.owner != self.prefix || !self.owns(session) {
@@ -287,6 +295,11 @@ impl Owner {
         let accepted = async {
             if original.is_some() {
                 return Ok(true);
+            }
+            // Recheck after acquiring admission and reserving the recipient.
+            // Its metadata can no longer change during this new admission.
+            if let Some(source) = source {
+                self.validate_background(source).await?;
             }
             let current = match self.session(session).await {
                 Ok(session) => session,

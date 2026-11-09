@@ -39,6 +39,20 @@ type Plan = TaskPlan<ScheduledEffect, Approval>;
 pub(super) enum Approval {
     Reminder,
     Execution { basis: Box<MessageBasis> },
+    CancelledExecution { basis: Box<MessageBasis> },
+}
+fn pause_plan(plan: &Plan, at: i64) -> Plan {
+    let mut paused = plan.pause(at);
+    if let Some(fire) = &mut paused.pending
+        && matches!(fire.effect, ScheduledEffect::Discovery { .. })
+    {
+        // The original fire stays cancelled even if the plan is immediately resumed.
+        fire.authorization = fire.authorization.take().map(|approval| match approval {
+            Approval::Execution { basis } => Approval::CancelledExecution { basis },
+            other => other,
+        });
+    }
+    paused
 }
 pub(crate) struct Scheduler {
     pub(super) storage: Arc<maka_host_runtime::storage::Storage>,
@@ -312,7 +326,7 @@ impl Owner {
                 }
                 next
             }
-            ScheduleChange::Pause { .. } => plan()?.pause(at),
+            ScheduleChange::Pause { .. } => pause_plan(plan()?, at),
             ScheduleChange::Resume { .. } => {
                 let mut next = plan()?.resume(at).map_err(reason)?;
                 next.authorization = Some(self.approve_schedule(&next).await?);

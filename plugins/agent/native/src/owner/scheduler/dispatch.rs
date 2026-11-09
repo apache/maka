@@ -51,11 +51,22 @@ impl Owner {
         &self,
         basis: &MessageBasis,
     ) -> Result<(), String> {
+        self.validate_background_source(basis).await?;
+        if basis.background_kind == BackgroundKind::Discovery {
+            self.validate_discovery_background().await?;
+        }
+        Ok(())
+    }
+    pub(in crate::owner) async fn validate_background_source(
+        &self,
+        basis: &MessageBasis,
+    ) -> Result<(), String> {
         let Some(boundary) = &basis.background else {
             return Ok(());
         };
         if !match &basis.background_kind {
-            BackgroundKind::Schedule | BackgroundKind::Discovery => self.settings.scheduled_tasks,
+            BackgroundKind::Schedule => self.settings.scheduled_tasks,
+            BackgroundKind::Discovery => self.settings.scheduled_tasks && self.settings.bot,
             BackgroundKind::Goal(_) => self.settings.goals,
         } {
             return Err(match &basis.background_kind {
@@ -68,8 +79,9 @@ impl Owner {
             self.check_goal_background(&boundary.session_id, *id)
                 .await?
         }
-        if basis.background_kind == BackgroundKind::Discovery {
-            self.validate_discovery_background().await?;
+        if basis.background_kind == BackgroundKind::Discovery && !self.bot.is(&boundary.session_id)
+        {
+            return Err("discovery_cancelled".into());
         }
         let source = self.session(&boundary.session_id).await?;
         if source.archived
@@ -102,7 +114,7 @@ impl Owner {
             } => (target, model, thinking_level),
         };
         if matches!(plan.task.effect, ScheduledEffect::Discovery { .. })
-            && !self.bot.is(&target.session_id)
+            && (!self.settings.bot || !self.bot.is(&target.session_id))
         {
             return Err("discovery_requires_bot".into());
         }
@@ -338,7 +350,9 @@ impl Owner {
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
         active: bool,
     ) -> Result<Option<Run>, String> {
-        let Some(Approval::Execution { basis }) = &fire.authorization else {
+        let Some(Approval::Execution { basis } | Approval::CancelledExecution { basis }) =
+            &fire.authorization
+        else {
             return Ok(Some(settlement(
                 fire,
                 Outcome::Blocked,
@@ -348,6 +362,11 @@ impl Owner {
             )));
         };
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+            let active = active
+                && !matches!(
+                    fire.authorization,
+                    Some(Approval::CancelledExecution { .. })
+                );
             return self.dispatch_discovery(fire, basis, active).await;
         }
         let (source_session, new_session) = match &fire.effect {

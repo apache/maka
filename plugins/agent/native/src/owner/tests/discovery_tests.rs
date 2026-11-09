@@ -44,7 +44,7 @@ async fn fixture(listener: &TcpListener, files: bool) -> (Fixture, String) {
         .to_owned();
     (f, bot)
 }
-async fn create(f: &Fixture, bot: &str, title: &str) -> String {
+pub(super) async fn create(f: &Fixture, bot: &str, title: &str) -> String {
     let boundary = f.owner.session(bot).await.unwrap().configuration;
     let created = f.mutation(2, "schedule", json!({"kind":"create","input":{
         "task":{"title":title, "intentBody":format!("Read authorized material for {title}."),
@@ -532,4 +532,369 @@ async fn discovery_handoff_keeps_the_original_turn_and_pause_stops_its_successor
             close(&f).await;
         }
     }).await.unwrap();
+}
+
+async fn dispatch_once(f: &Fixture, id: &str) -> Option<maka_scheduler::task::Run> {
+    let _gate = f.owner.scheduler.gate.lock().await;
+    let catalog = f.owner.scheduler.load().await.unwrap();
+    let plan = &catalog.plans[id].plan;
+    let fire = plan.pending.as_ref().unwrap();
+    let Some(
+        crate::owner::scheduler::Approval::Execution { basis }
+        | crate::owner::scheduler::Approval::CancelledExecution { basis },
+    ) = fire.authorization.as_ref()
+    else {
+        panic!("missing approval")
+    };
+    f.owner
+        .dispatch_discovery(
+            fire,
+            basis,
+            plan.task.status == maka_scheduler::task::Status::Active,
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn discovery_settlement_does_not_wait_for_a_later_worker_turn() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        f.send(&bot).await.unwrap();
+        let (mut bot_socket, _) = listener.accept().await.unwrap();
+        request(&mut bot_socket).await;
+        let first = create(&f, &bot, "First investigation").await;
+        let second = create(&f, &bot, "Second investigation").await;
+        change(&f, "trigger_now", &first, json!({})).await;
+        let (mut worker, _) = listener.accept().await.unwrap();
+        request(&mut worker).await;
+        let original = f
+            .owner
+            .scheduler
+            .investigation
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(
+            f.send(&original.session_id).await.unwrap()["kind"],
+            "queued"
+        );
+        finish(
+            &mut worker,
+            json!({"kind":"report","text":"A recorded finding."}),
+        )
+        .await;
+        let (mut followup, _) = listener.accept().await.unwrap();
+        request(&mut followup).await;
+        assert_ne!(
+            f.owner.runs.lock().await.controls[&original.session_id]
+                .invocation
+                .turn_id,
+            original.turn_id
+        );
+        let producer = f.owner.producer_gate.lock().await;
+        change(&f, "pause", &first, json!({})).await;
+        change(&f, "trigger_now", &second, json!({})).await;
+        let settled = dispatch_once(&f, &first)
+            .await
+            .expect("only the original Turn owns the investigation slot");
+        assert_eq!(settled.outcome, maka_scheduler::task::Outcome::Blocked);
+        drop(producer);
+        let (mut next, _) = listener.accept().await.unwrap();
+        assert!(
+            request(&mut next).await["messages"]
+                .to_string()
+                .contains("Second investigation")
+        );
+        finish(
+            &mut next,
+            json!({"kind":"no_report","note":"Second investigation finished."}),
+        )
+        .await;
+        // The independent follow-up is still running and was not cancelled.
+        assert!(
+            f.owner
+                .runs
+                .lock()
+                .await
+                .controls
+                .contains_key(&original.session_id)
+        );
+        response(&mut followup).await;
+        service_tools::named_tool_response(&mut bot_socket, "sleep", json!({})).await;
+        super::scheduler_tests::settled(&f, &second).await;
+        close(&f).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn discovery_disabled_bot_blocks_an_existing_approved_schedule() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut f, bot) = fixture(&listener, false).await;
+        let id = create(&f, &bot, "Approved before disablement").await;
+        let deployment = f.app.source().unwrap().deployment;
+        f.app.shutdown().await.unwrap();
+        let (source, packages, _, _) = f
+            .store
+            .load_application(deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_parts();
+        let mut input = source.input;
+        input
+            .instances
+            .get_mut("provider")
+            .unwrap()
+            .configuration
+            .values
+            .insert("bot".into(), json!(false));
+        f.store
+            .commit_application(
+                deployment,
+                source.reference.revision,
+                input,
+                source.remote_exports,
+                packages,
+            )
+            .await
+            .unwrap();
+        reopen(&mut f).await;
+        assert_eq!(
+            f.mutation(2, "openBot", json!({}), Uuid::new_v4())
+                .await
+                .unwrap()["reason"],
+            "disabled"
+        );
+        change(&f, "trigger_now", &id, json!({})).await;
+        let result = tokio::time::timeout(Duration::from_secs(10), settled(&f, &id))
+            .await
+            .expect("disabled discovery must settle without calling a model");
+        assert_eq!(result["task"]["runs"][0]["outcome"], "blocked");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err()
+        );
+        close(&f).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn discovery_model_can_resume_an_approved_plan_without_a_pending_fire() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        recall_tests::tool(&mut socket, "ScheduledTask", json!({"request":{"mode":"create","title":"Approved proposal",
+            "intentBody":"Read documents.","effect":"discovery",
+            "schedule":{"kind":"interval","everySeconds":3600,"startAt":now()+3_600_000},"timezone":"UTC"}})).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        let page = f.query("schedules", json!({"kind":"list"})).await.unwrap();
+        let id = page["tasks"][0]["id"].as_str().unwrap();
+        change(&f, "approve", id, json!({})).await;
+        change(&f, "pause", id, json!({})).await;
+        let task = detail(&f, id).await;
+        assert_eq!(task["approved"], true);
+        assert_eq!(task["pendingFire"], Value::Null);
+        recall_tests::tool(&mut socket, "ScheduledTask", json!({"request":{"mode":"resume","taskId":id,"revision":task["revision"]}})).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        assert_eq!(detail(&f, id).await["task"]["status"], "active");
+        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
+        close(&f).await;
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_reenable_does_not_deliver_an_unsent_result_from_before_disablement() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut f, bot) = fixture(&listener, false).await;
+        f.send(&bot).await.unwrap();
+        let (mut bot_socket, _) = listener.accept().await.unwrap();
+        request(&mut bot_socket).await;
+        let id = create(&f, &bot, "Do not revive an old report").await;
+        change(&f, "trigger_now", &id, json!({})).await;
+        let (mut worker, _) = listener.accept().await.unwrap();
+        request(&mut worker).await;
+        let original = f
+            .owner
+            .scheduler
+            .investigation
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap();
+        finish(
+            &mut worker,
+            json!({"kind":"report","text":"Old unsent report."}),
+        )
+        .await;
+        loop {
+            if f.session(&original.session_id)
+                .await
+                .turn_boundary(&original.session_id, &original.turn_id)
+                .await
+                .unwrap()
+                .is_some_and(|b| {
+                    matches!(
+                        b.state,
+                        maka_event_log::turns::InvocationState::Ended { .. }
+                    )
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        for enabled in [false, true] {
+            let deployment = f.app.source().unwrap().deployment;
+            f.app.shutdown().await.unwrap();
+            let (source, packages, _, _) = f
+                .store
+                .load_application(deployment)
+                .await
+                .unwrap()
+                .unwrap()
+                .into_parts();
+            let mut input = source.input;
+            input
+                .instances
+                .get_mut("provider")
+                .unwrap()
+                .configuration
+                .values
+                .insert("scheduledTasks".into(), json!(enabled));
+            f.store
+                .commit_application(
+                    deployment,
+                    source.reference.revision,
+                    input,
+                    source.remote_exports,
+                    packages,
+                )
+                .await
+                .unwrap();
+            reopen(&mut f).await;
+        }
+        assert_eq!(
+            settled(&f, &id).await["task"]["runs"][0]["outcome"],
+            "blocked"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            f.query("botOutbox", json!({})).await.unwrap()["messages"],
+            json!([])
+        );
+        close(&f).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn discovery_report_rechecks_permissions_after_waiting_for_bot_admission() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        let id = create(&f, &bot, "Revocable investigation").await;
+        change(&f, "trigger_now", &id, json!({})).await;
+        let (mut worker, _) = listener.accept().await.unwrap();
+        request(&mut worker).await;
+        let ordered = f.owner.runs.ordered(&bot).await;
+        finish(&mut worker, json!({"kind":"report","text":"Finding under an old grant."})).await;
+        loop {
+            let active = f.owner.scheduler.storage.read("discovery/active".into()).await.unwrap().unwrap();
+            if active.data.value().unwrap()["phase"]["kind"] == "delivering" { break; }
+            tokio::task::yield_now().await;
+        }
+        let previous = f.owner.session(&bot).await.unwrap();
+        let updated = f.mutation(2, "metadata", json!({
+            "sessionId":bot, "expectedRevision":previous.revision, "title":previous.configuration.title,"labels":[],
+            "permissions":{"settings":{"access":"read_only","requestPermissions":false},"revokeGrants":true}
+        }), Uuid::new_v4()).await.unwrap();
+        assert_eq!(updated["kind"], "committed");
+        drop(ordered);
+        let result = tokio::time::timeout(Duration::from_secs(10), settled(&f, &id)).await.expect("revoked report must settle without waking the Bot");
+        assert_eq!(result["task"]["runs"][0]["outcome"], "blocked");
+        assert!(tokio::time::timeout(Duration::from_millis(150), listener.accept()).await.is_err());
+        close(&f).await;
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_pause_then_resume_still_cancels_the_original_fire() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        let id = create(&f, &bot, "Pause original fire").await;
+        change(&f, "trigger_now", &id, json!({})).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        let original = f
+            .owner
+            .scheduler
+            .investigation
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap();
+        let producer = f.owner.producer_gate.lock().await;
+        change(&f, "pause", &id, json!({})).await;
+        change(&f, "resume", &id, json!({})).await;
+        drop(producer);
+        let result = tokio::time::timeout(Duration::from_secs(10), settled(&f, &id))
+            .await
+            .expect("resume must not undo cancellation of the original fire");
+        assert_eq!(result["task"]["runs"][0]["outcome"], "blocked");
+        assert_eq!(result["task"]["status"], "active");
+        change(&f, "trigger_now", &id, json!({})).await;
+        let (mut next, _) = listener.accept().await.unwrap();
+        request(&mut next).await;
+        assert_ne!(
+            f.owner
+                .scheduler
+                .investigation
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .session_id,
+            original.session_id
+        );
+        finish(
+            &mut next,
+            json!({"kind":"no_report","note":"New fire completed."}),
+        )
+        .await;
+        loop {
+            if detail(&f, &id).await["task"]["runs"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        close(&f).await;
+    })
+    .await
+    .unwrap();
 }

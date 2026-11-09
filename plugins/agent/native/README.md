@@ -146,6 +146,11 @@ reports; it cannot retract an already admitted Bot message. Restart reconciles t
 original fire, Turn and receipt instead of creating replacement work. A sealed Host
 handoff uses its reserved successor; an interrupted terminal run is recorded as failed.
 
+Disabling Bot or scheduling withdraws outstanding investigation work and unsent reports.
+Resuming a plan schedules future work without reviving its cancelled fire. Settlement
+tracks the investigation's original Turn, so later user work in its Session cannot hold
+the investigation slot. Result-write uncertainty remains an unknown tool outcome.
+
 Plans, the active job and completed receipts use the existing scheduler KV namespace;
 no separate database or lease is introduced. This slice does not import TS discovery
 data, add shared notebook memory or observe external events. The [discovery tests](src/owner/tests/discovery_tests.rs)

@@ -82,6 +82,14 @@ fn completed_key(fire: &str) -> String {
 fn reason(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
+fn result_write_error(error: maka_capabilities::storage::StoreError) -> ToolError {
+    match error {
+        maka_capabilities::storage::StoreError::OutcomeUnknown(message) => {
+            ToolError::OutcomeUnknown(message)
+        }
+        error => ToolError::Failed(error.to_string()),
+    }
+}
 fn mutation<T: Serialize>(
     key: String,
     revision: Option<u64>,
@@ -114,12 +122,17 @@ impl scheduler::Scheduler {
             job.as_ref().map(|job| job.admission.invocation.clone());
         Ok((revision, job))
     }
-    async fn save_investigation(&self, revision: Option<u64>, job: &Job) -> Result<u64, String> {
+    async fn save_investigation(
+        &self,
+        revision: Option<u64>,
+        job: &Job,
+    ) -> Result<u64, maka_capabilities::storage::StoreError> {
         let written = self
             .storage
-            .batch(vec![mutation(ACTIVE.into(), revision, job)?])
-            .await
-            .map_err(reason)?;
+            .batch(vec![mutation(ACTIVE.into(), revision, job).map_err(
+                maka_capabilities::storage::StoreError::Unavailable,
+            )?])
+            .await?;
         *self.investigation.write().unwrap() = Some(job.admission.invocation.clone());
         Ok(written[0].revision)
     }
@@ -172,8 +185,7 @@ impl scheduler::Scheduler {
                         .workers
                         .spawn(async move { captured.complete_discovery(context, report).await });
                     job.await
-                        .map_err(|e| ToolError::OutcomeUnknown(e.to_string()))?
-                        .map_err(ToolError::Failed)?;
+                        .map_err(|e| ToolError::OutcomeUnknown(e.to_string()))??;
                     Ok(serde_json::json!({"recorded":true}).into())
                 })
             }))
@@ -183,7 +195,17 @@ impl scheduler::Scheduler {
 
 impl Owner {
     pub(super) async fn restore_discovery(&self) -> Result<(), String> {
-        self.scheduler.investigation().await?;
+        let (revision, job) = self.scheduler.investigation().await?;
+        if (!self.settings.bot || !self.settings.scheduled_tasks)
+            && let Some(mut job) = job
+            && !matches!(job.phase, Phase::Stopping)
+        {
+            job.phase = Phase::Stopping;
+            self.scheduler
+                .save_investigation(revision, &job)
+                .await
+                .map_err(reason)?;
+        }
         Ok(())
     }
 
@@ -192,11 +214,14 @@ impl Owner {
         let mut tools = self.discovery_reads.clone();
         // Recall preserves its existing source authorization. No MCP, shell,
         // delegation, approval, or filesystem mutation tool is granted.
-        for name in ["Recall", "RecallMore", COMPLETE] {
-            if self.tools.contains(name) {
-                tools.push(name.into());
+        if self.settings.recall {
+            for name in ["Recall", "RecallMore"] {
+                if self.tools.contains(name) {
+                    tools.push(name.into());
+                }
             }
         }
+        tools.push(COMPLETE.into());
         tools.sort();
         tools.dedup();
         basis.allowed_tools = Some(tools);
@@ -212,11 +237,13 @@ impl Owner {
             || matches!(job.phase, Phase::Stopping)
             || !catalog.plans.get(&job.task_id).is_some_and(|saved| {
                 saved.plan.task.status == maka_scheduler::task::Status::Active
-                    && saved
-                        .plan
-                        .pending
-                        .as_ref()
-                        .is_some_and(|fire| fire.id == job.fire_id)
+                    && saved.plan.pending.as_ref().is_some_and(|fire| {
+                        fire.id == job.fire_id
+                            && matches!(
+                                fire.authorization,
+                                Some(scheduler::Approval::Execution { .. })
+                            )
+                    })
             })
         {
             return Err("discovery_cancelled".into());
@@ -228,55 +255,53 @@ impl Owner {
         &self,
         context: ToolCallContext,
         report: Report,
-    ) -> Result<(), String> {
+    ) -> Result<(), ToolError> {
         let _gate = self.scheduler.gate.lock().await;
-        let (revision, job) = self.scheduler.investigation().await?;
-        let mut job = job.ok_or("discovery_not_active")?;
-        let original = &job.admission.invocation;
-        if context.invocation.session_id != original.session_id
-            || context.invocation.turn_id != original.turn_id
-        {
-            return Err("discovery_wrong_invocation".into());
-        }
-        let store = self.tool_store(&context)?;
-        let boundary = store
-            .turn_boundary(&original.session_id, &original.turn_id)
-            .await
-            .map_err(reason)?
-            .ok_or("discovery_execution_unavailable")?;
-        if boundary.root_invocation() != original
-            || boundary.invocation != context.invocation
-            || matches!(boundary.state, InvocationState::Ended { .. })
-        {
-            return Err("discovery_execution_changed".into());
-        }
-        let plan = self.scheduler.load().await?;
-        if !self.bot.is(&job.bot)
-            || !plan.plans.get(&job.task_id).is_some_and(|saved| {
-                saved.plan.task.status == maka_scheduler::task::Status::Active
-                    && saved
-                        .plan
-                        .pending
-                        .as_ref()
-                        .is_some_and(|fire| fire.id == job.fire_id)
-            })
-        {
-            return Err("discovery_cancelled".into());
-        }
-        let basis: MessageBasis =
-            serde_json::from_value(job.admission.execution.basis.clone()).map_err(reason)?;
-        self.validate_background(&basis).await?;
-        let Phase::Investigating { result } = &mut job.phase else {
-            return Err("discovery_cancelled".into());
-        };
-        if let Some(previous) = result {
-            if *previous != report {
-                return Err("discovery_result_conflict".into());
+        let update = async {
+            let (revision, job) = self.scheduler.investigation().await?;
+            let mut job = job.ok_or("discovery_not_active")?;
+            let original = &job.admission.invocation;
+            if context.invocation.session_id != original.session_id
+                || context.invocation.turn_id != original.turn_id
+            {
+                return Err("discovery_wrong_invocation".into());
             }
-            return Ok(());
+            let store = self.tool_store(&context)?;
+            let boundary = store
+                .turn_boundary(&original.session_id, &original.turn_id)
+                .await
+                .map_err(reason)?
+                .ok_or("discovery_execution_unavailable")?;
+            if boundary.root_invocation() != original
+                || boundary.invocation != context.invocation
+                || matches!(boundary.state, InvocationState::Ended { .. })
+            {
+                return Err("discovery_execution_changed".into());
+            }
+            let basis: MessageBasis =
+                serde_json::from_value(job.admission.execution.basis.clone()).map_err(reason)?;
+            self.validate_background(&basis).await?;
+            let Phase::Investigating { result } = &mut job.phase else {
+                return Err("discovery_cancelled".into());
+            };
+            if let Some(previous) = result {
+                if *previous != report {
+                    return Err("discovery_result_conflict".into());
+                }
+                return Ok(None);
+            }
+            *result = Some(report);
+            Ok(Some((revision, job)))
         }
-        *result = Some(report);
-        self.scheduler.save_investigation(revision, &job).await?;
+        .await
+        .map_err(ToolError::Failed)?;
+        let Some((revision, job)) = update else {
+            return Ok(());
+        };
+        self.scheduler
+            .save_investigation(revision, &job)
+            .await
+            .map_err(result_write_error)?;
         self.scheduler.wake.notify_one();
         Ok(())
     }
@@ -350,7 +375,12 @@ impl Owner {
                     admitted_at: fire.scheduled_at as u64,
                 },
             };
-            revision = Some(self.scheduler.save_investigation(revision, &job).await?);
+            revision = Some(
+                self.scheduler
+                    .save_investigation(revision, &job)
+                    .await
+                    .map_err(reason)?,
+            );
             job
         };
         let basis: MessageBasis =
@@ -363,14 +393,19 @@ impl Owner {
                 .await
                 .map(Some);
         }
-        let allowed = enabled && self.bot.is(&job.bot);
+        let allowed = enabled && self.settings.bot && self.bot.is(&job.bot);
         let authorization = self.validate_background(&basis).await;
         let revoked = matches!(&authorization, Err(error) if matches!(error.as_str(),
             "scheduler_authorization_changed" | "scheduler_disabled" | "agent_session_unavailable" | "discovery_cancelled"));
         if !allowed || revoked {
             if !matches!(job.phase, Phase::Stopping) {
                 job.phase = Phase::Stopping;
-                revision = Some(self.scheduler.save_investigation(revision, &job).await?);
+                revision = Some(
+                    self.scheduler
+                        .save_investigation(revision, &job)
+                        .await
+                        .map_err(reason)?,
+                );
             }
         } else {
             authorization?;
@@ -407,7 +442,12 @@ impl Owner {
             && !matches!(job.phase, Phase::Stopping)
         {
             job.phase = Phase::Stopping;
-            revision = Some(self.scheduler.save_investigation(revision, &job).await?);
+            revision = Some(
+                self.scheduler
+                    .save_investigation(revision, &job)
+                    .await
+                    .map_err(reason)?,
+            );
         }
         if existing.is_none() {
             if matches!(job.phase, Phase::Stopping) {
@@ -485,9 +525,26 @@ impl Owner {
             .await?;
         }
         let runs = self.runs.lock().await;
-        let unsettled = runs.busy(worker) || runs.retained_cleanup.contains(worker);
+        let running = runs
+            .controls
+            .get(worker)
+            .is_some_and(|control| control.invocation.turn_id == invocation.turn_id);
+        let retained = runs.retained_cleanup.contains(worker);
         drop(runs);
-        if unsettled || self.has_parked_invocation(worker).await? {
+        // A later Turn could already own this ordinary Session. It neither
+        // extends this investigation nor authorizes cancelling that new work.
+        let retained = retained
+            && store
+                .latest_turn_boundary(worker)
+                .await
+                .map_err(reason)?
+                .is_none_or(|latest| latest.invocation.turn_id == invocation.turn_id);
+        let parked = store
+            .activation_checkpoint(worker)
+            .await
+            .map_err(reason)?
+            .is_some_and(|parked| parked.checkpoint.invocation.turn_id == invocation.turn_id);
+        if running || retained || parked {
             return Ok(None);
         }
         let Some(boundary) = boundary else {
@@ -585,11 +642,19 @@ impl Owner {
                             text: text.clone(),
                             notification: Box::new(notification),
                         };
-                        revision = Some(self.scheduler.save_investigation(revision, &job).await?);
+                        revision = Some(
+                            self.scheduler
+                                .save_investigation(revision, &job)
+                                .await
+                                .map_err(reason)?,
+                        );
                         let Phase::Delivering { notification, .. } = &job.phase else {
                             unreachable!()
                         };
-                        if !self.admit_notification(notification).await? {
+                        if !self
+                            .admit_notification_with_source(notification, Some(&basis))
+                            .await?
+                        {
                             return Ok(None);
                         }
                         self.settle_discovery(
@@ -603,7 +668,10 @@ impl Owner {
                         .map(Some)
                     }
                     Phase::Delivering { notification, .. } => {
-                        if !self.admit_notification(notification).await? {
+                        if !self
+                            .admit_notification_with_source(notification, Some(&basis))
+                            .await?
+                        {
                             return Ok(None);
                         }
                         self.settle_discovery(
@@ -718,5 +786,26 @@ impl Owner {
         *self.scheduler.investigation.write().unwrap() = None;
         self.scheduler.wake.notify_one();
         Ok(run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_write_preserves_commit_uncertainty() {
+        use maka_capabilities::storage::StoreError as StorageError;
+        assert!(matches!(
+            result_write_error(StorageError::OutcomeUnknown("acknowledgement lost".into())),
+            ToolError::OutcomeUnknown(_)
+        ));
+        assert!(matches!(
+            result_write_error(StorageError::Conflict {
+                expected: "1".into(),
+                actual: "2".into()
+            }),
+            ToolError::Failed(_)
+        ));
     }
 }

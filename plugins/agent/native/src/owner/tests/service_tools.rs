@@ -166,6 +166,59 @@ pub(super) async fn facts(fixture: &Fixture, session: &str) -> Vec<Fact> {
         .collect()
 }
 
+#[tokio::test]
+async fn discovery_excludes_service_aliases_when_builtin_recall_is_disabled() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let counter = Counter::new(Behavior::Returned);
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(Setup::native(counter.clone(), true).named("Recall")),
+            |settings| {
+                settings.bot = true;
+                settings.scheduled_tasks = true;
+                settings.recall = false;
+            },
+        )
+        .await;
+        let bot = f
+            .mutation(2, "openBot", json!({}), Uuid::new_v4())
+            .await
+            .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = super::discovery_tests::create(&f, &bot, "Only built-in read tools").await;
+        super::scheduler_tests::change(&f, "trigger_now", &id, json!({})).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(
+            !sent["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "Recall")
+        );
+        named_tool_response(
+            &mut socket,
+            "DiscoveryComplete",
+            json!({"kind":"no_report","note":"No reading source enabled."}),
+        )
+        .await;
+        assert_eq!(
+            super::scheduler_tests::settled(&f, &id).await["task"]["runs"][0]["outcome"],
+            "ok"
+        );
+        assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 pub(super) async fn stored_facts(
     fixture: &Fixture,
     session: &str,

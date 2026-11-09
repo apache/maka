@@ -232,7 +232,7 @@ impl Owner {
                     };
                     let thinking_level = accepted.thinking_level;
                     if matches!(effect, Target::Discovery) {
-                        if !self.bot.is(&context.invocation.session_id) {
+                        if !self.settings.bot || !self.bot.is(&context.invocation.session_id) {
                             return Err("discovery_requires_bot".into());
                         }
                         ScheduledEffect::Discovery {
@@ -297,13 +297,13 @@ impl Owner {
                     return Err("scheduler_task_outside_conversation".into());
                 }
                 let plan = match input {
-                    Input::Pause { .. } => Some(saved.plan.pause(now() as i64)),
+                    Input::Pause { .. } => Some(pause_plan(&saved.plan, now() as i64)),
                     Input::Resume { .. } => {
                         let Some(approval) = &saved.plan.authorization else {
                             return Err("scheduler_user_approval_required".into());
                         };
                         if let Approval::Execution { basis } = approval {
-                            self.validate_background(basis).await?;
+                            self.validate_background_source(basis).await?;
                         }
                         Some(saved.plan.resume(now() as i64).map_err(reason)?)
                     }
