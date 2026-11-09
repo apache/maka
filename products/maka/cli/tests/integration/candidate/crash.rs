@@ -41,27 +41,26 @@ async fn activity(client: &AppClient, session: &str) -> Value {
         .clone()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
+async fn configured_root(
+    code_mode: bool,
+) -> (RootStartupFixture, Value, mpsc::Receiver<ModelRequest>) {
     let mut fixture = RootStartupFixture::new();
     let root = fixture.root.clone();
-    let executable = crate::maka_executable();
-    let journal = fixture.directory().join("client.db");
+
     let owner = Arc::new(
         RootOwner::create(&root, &RootNamespaces::for_current_account().unwrap()).unwrap(),
     );
     fixture.adopt();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let selection = configure(
-        owner.clone(),
+        owner,
         &format!("http://{}/v1", listener.local_addr().unwrap()),
         false,
-        false,
+        code_mode,
         maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
     )
     .await;
-    drop(owner);
-    let (send, mut requests) = mpsc::channel(8);
+    let (send, requests) = mpsc::channel(8);
     tokio::spawn(async move {
         let count = Arc::new(AtomicUsize::new(0));
         loop {
@@ -69,30 +68,49 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
             tokio::spawn(ModelRequest::serve(socket, send.clone(), count.clone()));
         }
     });
-    tokio::time::timeout(Duration::from_secs(90), async {
-        let mut first_host = tokio::process::Command::new(&executable)
-            .args(["host", "serve", "--root"])
-            .arg(&root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut ready = String::new();
-        BufReader::new(first_host.stdout.take().unwrap())
-            .read_line(&mut ready).await.unwrap();
-        let ready: Value = serde_json::from_str(&ready).unwrap();
-        let first_epoch = uuid::Uuid::parse_str(ready["hostEpoch"].as_str().unwrap()).unwrap();
-        let host = Client::connect(
-            Path::new(ready["socketPath"].as_str().unwrap()), Some(first_epoch),
-        ).await.unwrap();
-        let client = AppClient::new(
-            host,
-            Journal::open(&journal).await.unwrap(),
-            "receipts".into(),
-        )
+    (fixture, selection, requests)
+}
+
+async fn start_host(root: &Path, journal: &Path) -> (tokio::process::Child, AppClient, uuid::Uuid) {
+    let mut first_host = tokio::process::Command::new(crate::maka_executable())
+        .args(["host", "serve", "--root"])
+        .arg(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
         .unwrap();
+    let mut ready = String::new();
+    BufReader::new(first_host.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .await
+        .unwrap();
+    let ready: Value = serde_json::from_str(&ready).unwrap();
+    let first_epoch = uuid::Uuid::parse_str(ready["hostEpoch"].as_str().unwrap()).unwrap();
+    let host = Client::connect(
+        Path::new(ready["socketPath"].as_str().unwrap()),
+        Some(first_epoch),
+    )
+    .await
+    .unwrap();
+    let client = AppClient::new(
+        host,
+        Journal::open(journal).await.unwrap(),
+        "receipts".into(),
+    )
+    .unwrap();
+    (first_host, client, first_epoch)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
+    let (mut fixture, selection, mut requests) = configured_root(false).await;
+    let root = fixture.root.clone();
+    let journal = fixture.directory().join("client.db");
+    let executable = crate::maka_executable();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let (mut first_host, client, first_epoch) = start_host(&root, &journal).await;
         let roots = client
             .query("agent", "directories", json!({"kind":"roots"}))
             .await
@@ -149,3 +167,5 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
     .await
     .expect("recovery after a killed Host timed out");
 }
+
+mod checkpoint;

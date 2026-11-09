@@ -341,10 +341,33 @@ async fn commit_restore(
 }
 #[tokio::test]
 async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_changes() {
+    const CHILD_ROOT: &str = "MAKA_TEST_PREPARED_RESTORE_ROOT";
+    const ABRUPT_EXIT: i32 = 86;
+    if let Some(path) = std::env::var_os(CHILD_ROOT) {
+        let root = Path::new(&path);
+        let (_open_store, _handle, _, operation, prepared, configuration) =
+            restore_fixture(root).await;
+        std::fs::write(
+            root.join("retry.json"),
+            serde_json::to_vec(&(operation, prepared, configuration)).unwrap(),
+        )
+        .unwrap();
+        // Exit with the Root still owned, after materialization and before the
+        // transaction which publishes the Session binding and restore receipt.
+        std::process::exit(ABRUPT_EXIT);
+    }
     let directory = tempfile::tempdir().unwrap();
-    let (store, _handle, _, operation, prepared, configuration) =
-        restore_fixture(directory.path()).await;
-    store.close().await.unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "root_store::checkpoints::tests::workspace::restore_receipt_is_atomic_with_binding_and_survives_later_source_changes"])
+        .env(CHILD_ROOT, directory.path())
+        .status().unwrap();
+    assert_eq!(status.code(), Some(ABRUPT_EXIT));
+    let (operation, prepared, configuration): (
+        crate::checkpoints::RestoreOperation,
+        crate::checkpoints::PreparedRestore,
+        serde_json::Value,
+    ) = serde_json::from_slice(&std::fs::read(directory.path().join("retry.json")).unwrap())
+        .unwrap();
     let store = RootStore::open(owner(directory.path())).await.unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert_eq!(
@@ -354,11 +377,28 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
             .unwrap(),
         prepared
     );
+    assert_eq!(std::fs::read_dir(&operation.parent).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read(prepared.path.join("file")).unwrap(),
+        b"frozen"
+    );
+    assert!(
+        handle
+            .workspace_restore_receipt(
+                operation.operation,
+                operation.fingerprint.clone(),
+                operation.revision
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
     let before = store
         .get_session::<serde_json::Value>("source")
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(before.configuration["title"], "original");
     let log = handle.session.scoped().await.unwrap();
     log.connection.run(|db|{db.execute_batch("CREATE TRIGGER reject_restore BEFORE UPDATE ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'reject receipt'); END;")?;Ok(())}).await.unwrap();
     drop(log);
