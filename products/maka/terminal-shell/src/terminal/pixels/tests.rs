@@ -57,10 +57,8 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
         const second = signal('B');
-        const pastes = signal([]);
         keymap.bind('mod+k', () => value.set(keymap.label('mod+k')), { when: 'always' });
         keymap.bind('mod+j', () => Clipboard.writeText(value()), { when: 'always' });
-        keymap.bind('mod+h', () => Clipboard.writeText('paste-events:' + pastes().join('|')), { when: 'always' });
         mount(() => {
             const root = element('view');
             prop(root, 'style', {flex: 1, padding: 16, backgroundColor: '#111111'});
@@ -68,9 +66,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             prop(input, 'style', {width: 240, height: 48, backgroundColor: '#204060', color: '#ffffff'});
             bindProp(input, 'value', value);
             prop(input, 'onFileDrop', () => {});
-            prop(input, 'onPaste', event => {
-                pastes.set([...pastes(), event.uris.length ? event.uris.join(';') : event.text]);
-            });
+            prop(input, 'onPaste', () => {});
             prop(input, 'onChange', ({ value: text }) => {
                 value.set(text);
                 if (text.endsWith('|ABA')) {

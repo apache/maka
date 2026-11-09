@@ -2153,6 +2153,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         )
         .await;
     let first = desktop.request(&mut fixture).await;
+    desktop.control("Toggle conversation todo").await;
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press("Toggle conversation todo").await;
