@@ -25,11 +25,11 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
+#[cfg(test)]
+use nsh_platform_windows::run_app_with_config;
 use nsh_platform_windows::{
     AppOptions, TrayOptions, quit_app, run_resident_app, with_running_view,
 };
-#[cfg(test)]
-use nsh_platform_windows::{AppSource, run_app};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::watch,

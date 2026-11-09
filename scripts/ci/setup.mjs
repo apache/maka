@@ -40,6 +40,7 @@ const tools =
           'termina',
           'nsh',
           'linux-nsh',
+          'native-ubuntu',
           'native-windows',
           'native-macos',
         ].includes(role)

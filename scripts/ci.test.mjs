@@ -1260,3 +1260,24 @@ test('Linux desktop and its embedded icon select a display-backed native consume
     assert.equal(worker.javascript, true);
   }
 });
+
+test('the Linux native worker installs the nextest runner for desktop execution', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-linux-tools-'));
+  const output = join(directory, 'outputs');
+  try {
+    execFileSync(
+      process.execPath,
+      [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+      {
+        env: { ...process.env, MAKA_CI_ROLE: 'native-ubuntu', GITHUB_OUTPUT: output },
+      },
+    );
+    assert.equal(
+      readFileSync(output, 'utf8').trim(),
+      'tools=cargo-nextest' +
+        (process.env.MAKA_CI_NEXTEST ? '@' + process.env.MAKA_CI_NEXTEST : ''),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
