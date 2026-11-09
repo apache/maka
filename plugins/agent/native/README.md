@@ -129,7 +129,7 @@ target. Existing `once`, `interval` and `cron` timing, `trigger_now`, `pause` an
 
 Each fire creates a fresh ordinary worker Session. It inherits the approved workspace
 and model but uses read-only permissions without permission requests. Its tools are
-the composition's Files read/image/glob/grep operations, Recall when enabled, and
+the composition's Files read/image/glob/grep operations, Recall when enabled, `DiscoveryMemory`, and
 `DiscoveryComplete`; the coordinator's tools, MCP and shell access are not inherited.
 The worker must call `DiscoveryComplete` with either
 `{"kind":"no_report","note":"What was checked"}` or
@@ -152,8 +152,34 @@ tracks the investigation's original Turn, so later user work in its Session cann
 the investigation slot. Result-write uncertainty remains an unknown tool outcome.
 
 Plans, the active job and completed receipts use the existing scheduler KV namespace;
-no separate database or lease is introduced. This slice does not import TS discovery
-data, add shared notebook memory or observe external events. The [discovery tests](src/owner/tests/discovery_tests.rs)
+no separate database or lease is introduced. `DiscoveryMemory` shares investigation
+results, progress, corrections, notification decisions and user feedback across fresh
+workers with the same Bot source boundary. A changed Bot, workspace, permission revision
+or Recall grant has a different record scope; references never grant source access.
+
+Each worker receives at most three 350-character previews, with record IDs and explicit
+truncation. `get` returns a complete record. `list` returns at most four full records,
+examines at most 32 positions per call, and supplies `next_before` even for an empty
+filtered page. Queries can filter by text or the original investigation ID. Correction
+records append to that original record instead of overwriting it. The outcome, completed
+receipt, ordered record index and released investigation slot commit atomically.
+`checkpoint` stages one bounded progress note; it survives Host recovery and publishes
+on successful or failed settlement, while cancelled work discards it. Records describe
+observations and execution outcomes, not verified task completion.
+
+The Bot can include `discovery: {record, reason}` in `SendUser` or `sleep`, recording
+notification or withholding in the same model step. A recorded outbox message is required
+for a notification decision. If message publication succeeds but decision acknowledgement
+fails, the tool preserves an unknown outcome; retrying the same message ID does not send
+again. `DiscoveryMemory` also supports explicit decisions and corrections. `feedback`
+links a Bot interpretation to an actual human input in the current Turn; it cannot use
+worker notifications as user feedback. Exact text and quotes stay in the original
+message and are readable through paginated `feedback_source`. `send` accepts optional
+immutable `quotes`, including a quote-only message, through ordinary and steering
+admission. The native Bot uses this path; external executors retain their existing
+rich-input restrictions. No quote grants access to the referenced Session.
+
+This slice does not import TS discovery data or observe external events. The [discovery tests](src/owner/tests/discovery_tests.rs)
 exercise the real Host with local model fixtures.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

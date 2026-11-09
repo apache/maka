@@ -168,6 +168,7 @@ const explicitSend: AgentSend = {
   attachments: uploadedAttachmentIds,
   sessionId: 'conversation',
   message: 'Hello',
+  quotes: [{ text: 'Do not remind me about this finding.', sourceTurnId: 'previous-turn' }],
   backend: { kind: 'model', ...selectedModel, thinkingLevel: null },
 };
 const resumeOriginal: AgentResume = {

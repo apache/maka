@@ -126,7 +126,7 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 
 每次触发新建一个普通 worker Session，沿用已批准的工作区和模型，权限收窄为只读，
 禁止申请额外权限。工具仅包括当前组合中的 Files 读取、图片读取、glob、grep，已启用的
-Recall 和 `DiscoveryComplete`；不继承协调工具、MCP 或 shell 能力。worker 必须调用
+Recall、`DiscoveryMemory` 和 `DiscoveryComplete`；不继承协调工具、MCP 或 shell 能力。worker 必须调用
 `DiscoveryComplete`，提交 `{"kind":"no_report","note":"检查了什么"}` 或
 `{"kind":"report","text":"发现及来源"}`。调用持久记录结果并结束本轮；只输出普通文本
 属于未完整提交调查结果。
@@ -143,7 +143,25 @@ Bot 消息不能撤回。重启按原触发、Turn 和回执恢复，不新建�
 不会继续占据调查位。结果写入不确定时保留工具结果未知状态。
 
 计划、当前调查及已完成回执复用调度器 KV 命名空间，不增加独立数据库或租约。
-本阶段不导入 TS 主动发现数据、不增加共享记事本或外部事件监听。
+`DiscoveryMemory` 在同一 Bot 来源边界内，为新 worker 共享调查结果、进度、修正、通知决策
+和用户反馈。Bot、工作区、权限版本或 Recall 授权变化后使用不同记录范围；引用不授予读取权限。
+
+每轮最多携带三条各 350 字符的预览，附记录 ID 和明确的截断标记。`get` 返回完整记录。
+`list` 每页最多返回四条完整记录，每次最多检查 32 个位置；即使筛选后为空，也通过
+`next_before` 明确提供后续入口。支持按文本或原调查记录筛选。修正以关联记录追加，不覆盖
+原内容。调查结果、完成回执、顺序索引与调查位释放在同一事务提交。`checkpoint` 暂存一条
+有界进度，Host 恢复后继续保留；成功或失败结算时发布，取消时舍弃。记录描述观察与执行结果，
+不代表任务已核验完成。
+
+Bot 可在 `SendUser` 或 `sleep` 中附带 `discovery: {record, reason}`，同一个模型步骤完成
+通知或不通知的决策记录。通知记录必须关联实际已保存的 outbox 消息。如果消息已经保存，但
+决策确认失败，工具保留结果未知；用同一消息 ID 重试不会重复发送。`DiscoveryMemory` 也支持
+单独记录决策和修正。`feedback` 将 Bot 的理解关联到本轮真实用户输入，不能把 worker 通知当作
+用户反馈。原文和引用保留在原消息，通过分页 `feedback_source` 按需读取。`send` 支持可选的
+不可变 `quotes`，包括只有引用没有正文的消息，并沿普通发送及 steering 链路保留。原生 Bot
+使用这条链路；外部执行器仍遵守原有富输入限制。引用不会授予原会话访问权。
+
+本阶段不导入 TS 主动发现数据，也不接入外部事件监听。
 [调查测试](src/owner/tests/discovery_tests.rs) 使用真实 Host 和本地模型夹具验证。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)

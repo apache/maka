@@ -22,7 +22,7 @@ use super::*;
 impl Owner {
     pub(super) async fn steer_message(
         self: &Arc<Self>,
-        text: String,
+        mut unprepared: MessageInput,
         attachments: Vec<String>,
         invocation: &Invocation,
         basis: &MessageBasis,
@@ -32,7 +32,6 @@ impl Owner {
         let session = invocation.session_id.as_str();
         let mut basis = basis.clone();
         basis.fingerprint = operation.fingerprint.clone();
-        let mut unprepared: MessageInput = text.into();
         unprepared.attachments = self.attachment_refs(session, attachments).await?;
         let (message, required_tools) = match self
             .prepare_skills(

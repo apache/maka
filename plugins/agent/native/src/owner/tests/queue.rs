@@ -63,6 +63,7 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let completed = gate.controls[&session].cancellation.clone();
         let parent = scope(&fixture.issuer, true);
         let mut tail = Box::pin(fixture.owner.send(Send {
+                    quotes: vec![],
  delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None, session_id: session.clone(), message: "tail followup".into(), backend: Some(model_backend(&selection)), attachments: vec![] }, &reference, &parent));
         assert!(futures_util::poll!(tail.as_mut()).is_pending());
         response(&mut second_socket).await;
@@ -143,6 +144,7 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         let parent = scope(&fixture.issuer, true);
         let mut tail = Box::pin(fixture.owner.send(
             Send {
+                    quotes: vec![],
  delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None,
                 session_id: session.clone(),
                 message: "after stop".into(),

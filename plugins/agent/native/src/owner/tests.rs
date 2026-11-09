@@ -1210,6 +1210,7 @@ async fn cleanup_case(panic: bool) {
             .owner
             .send(
                 Send {
+                    quotes: vec![],
                     delivery: maka_agent_api::contract::SendDelivery::Queue,
                     expected_invocation_id: None,
                     session_id: session.clone(),

@@ -83,6 +83,15 @@ impl Owner {
         {
             return Err("discovery_cancelled".into());
         }
+        if basis.background_kind == BackgroundKind::Discovery
+            && !self.settings.recall
+            && basis
+                .allowed_tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(|name| name == "Recall"))
+        {
+            return Err("scheduler_authorization_changed".into());
+        }
         let source = self.session(&boundary.session_id).await?;
         if source.archived
             || source.configuration.workspace != boundary.workspace

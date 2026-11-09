@@ -662,6 +662,10 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Immutable user-selected excerpts; source metadata grants no read authority.
+    #[serde(default)]
+    #[schemars(length(max = 16))]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
     /// Defaults to steer. Omit or use steer for updates to ongoing work;
     /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]

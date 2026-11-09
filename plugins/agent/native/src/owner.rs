@@ -509,7 +509,7 @@ impl Owner {
             if settings.scheduled_tasks {
                 catalog.tools = catalog
                     .tools
-                    .with_always_visible(&[discovery::COMPLETE])
+                    .with_always_visible(&[discovery::COMPLETE, discovery::MEMORY])
                     .map_err(|error| error.to_string())?;
             }
             if settings.recall {
@@ -1220,24 +1220,27 @@ impl Owner {
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> maka_tools::ToolCatalog {
-        // SendUser and sleep are granted by Bot identity, independent of the tool list.
+        // Bot capabilities follow current identity; discovery workers have a
+        // separate, frozen allowlist and cannot acquire notification authority.
         let bot = session.is_some_and(|session| self.bot.is(session));
+        let investigation = session.is_some_and(|id| {
+            self.scheduler
+                .investigation
+                .read()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|active| active.session_id == id)
+        });
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
-                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
-                (*name == discovery::COMPLETE
-                    && !session.is_some_and(|id| {
-                        self.scheduler
-                            .investigation
-                            .read()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|active| active.session_id == id)
-                    }))
-                    || (speaks && !bot)
-                    || (!(speaks && bot)
+                let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
+                let memory = *name == discovery::MEMORY;
+                (*name == discovery::COMPLETE && !investigation)
+                    || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
+                    || (bot_only && !bot)
+                    || (!(bot && (bot_only || memory))
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
                         }))
@@ -1279,14 +1282,20 @@ impl Owner {
         let Send {
             session_id: id,
             message: text,
+            quotes,
             backend: selection,
             attachments,
             delivery,
             expected_invocation_id,
         } = input;
-        if text.trim().is_empty() && attachments.is_empty() {
+        if quotes.len() > 16
+            || quotes.iter().any(|quote| quote.text.trim().is_empty())
+            || (text.trim().is_empty() && attachments.is_empty() && quotes.is_empty())
+        {
             return Err("agent_message_invalid".into());
         }
+        let mut message: MessageInput = text.into();
+        message.quotes = (!quotes.is_empty()).then_some(quotes);
         let admission = self.runs.session(&id).await;
         if let Some(expected) = expected_invocation_id
             && self
@@ -1346,7 +1355,7 @@ impl Owner {
                     crate::executor::ActiveDelivery::Steer => {
                         return self
                             .steer_message(
-                                text,
+                                message,
                                 attachments,
                                 &control.invocation,
                                 &control.basis,
@@ -1373,7 +1382,7 @@ impl Owner {
                 basis.mcp_catalog = Some(self.mcp_projects.catalog(basis.mcp_revision.as_deref())?);
                 let result = self
                     .steer_message(
-                        text,
+                        message,
                         attachments,
                         &parked.checkpoint.invocation,
                         &basis,
@@ -1588,7 +1597,6 @@ impl Owner {
             run_id: format!("r_{identity}"),
             invocation_id: format!("i_{identity}"),
         });
-        let mut message: MessageInput = text.into();
         message.attachments = self.attachment_refs(&id, attachments).await?;
         let unprepared = message;
         let (message, required_tools) = match self

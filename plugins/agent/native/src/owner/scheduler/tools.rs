@@ -75,6 +75,7 @@ impl Scheduler {
             handler: ToolHandler::Prepared(self.clone()),
         }];
         tools.push(self.discovery_tool());
+        tools.push(self.discovery_memory_tool());
         tools
     }
 }
@@ -83,6 +84,7 @@ impl ToolPreparer for Scheduler {
         vec![
             "ScheduledTask".into(),
             super::super::discovery::COMPLETE.into(),
+            super::super::discovery::MEMORY.into(),
         ]
     }
     fn prepare(
@@ -95,6 +97,9 @@ impl ToolPreparer for Scheduler {
         let owner = self.link.get().and_then(Weak::upgrade);
         if name == super::super::discovery::COMPLETE {
             return self.prepare_discovery(input, context, cancellation);
+        }
+        if name == super::super::discovery::MEMORY {
+            return self.prepare_discovery_memory(input, context, cancellation);
         }
         Box::pin(async move {
             if name != "ScheduledTask" || owner.is_none() {

@@ -3101,6 +3101,10 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+/**
+ * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
+ */
+export type CaptureTime = number;
 export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
@@ -7055,6 +7059,127 @@ export interface AgentChangeSession {
 }
 export interface AgentSend {
   /**
+   * Immutable user-selected excerpts; source metadata grants no read authority.
+   *
+   * @maxItems 16
+   */
+  quotes?:
+    | []
+    | [QuoteRef]
+    | [QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ];
+  /**
    * Defaults to steer. Omit or use steer for updates to ongoing work;
    * use queue only when this message should wait until the current turn ends.
    */
@@ -7073,6 +7198,21 @@ export interface AgentSend {
   backend?: AgentBackendPreference | null;
   sessionId: string;
   message: string;
+}
+export interface QuoteRef {
+  text: string;
+  label?: string | null;
+  sourceTurnId?: string | null;
+  source?: SessionQuoteSource | null;
+}
+/**
+ * Display provenance of an immutable excerpt, never authority to read its source.
+ */
+export interface SessionQuoteSource {
+  sessionId: string;
+  sessionName: string;
+  capturedAt: CaptureTime;
+  truncated: boolean;
 }
 export interface AgentStop {
   sessionId: string;

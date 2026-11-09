@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod records;
+
 use super::scheduler_tests::{change, detail, reopen, settled};
 use super::*;
 use maka_agent_facts::event::Fact;
@@ -245,8 +247,8 @@ async fn discovery_serializes_investigations_and_starts_a_fresh_session_for_each
         let (mut third, _) = listener.accept().await.unwrap();
         let sent = request(&mut third).await;
         assert!(
-            !sent["messages"].to_string().contains("A checked"),
-            "new cycle must not copy the previous worker history"
+            sent["messages"].to_string().contains("A checked"),
+            "fresh cycle receives a bounded record, not the previous transcript"
         );
         finish(
             &mut third,

@@ -25,7 +25,7 @@ pub struct DirectoryReference {
     pub host_id: String,
     pub path: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuoteRef {
     pub text: String,
@@ -38,7 +38,7 @@ pub struct QuoteRef {
 }
 
 /// Display provenance of an immutable excerpt, never authority to read its source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionQuoteSource {
     pub session_id: String,
@@ -48,8 +48,9 @@ pub struct SessionQuoteSource {
 }
 
 /// JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "serde_json::Number", into = "serde_json::Number")]
+#[schemars(with = "f64")]
 pub struct CaptureTime(serde_json::Number);
 
 impl TryFrom<serde_json::Number> for CaptureTime {
