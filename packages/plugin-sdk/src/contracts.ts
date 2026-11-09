@@ -22136,6 +22136,35 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
                   },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
                 ],
               },
               AgentScheduledTarget: {
@@ -22939,6 +22968,35 @@ export const contracts = {
                       kind: {
                         type: 'string',
                         const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -29547,6 +29605,35 @@ export const contracts = {
                       kind: {
                         type: 'string',
                         const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',

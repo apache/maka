@@ -118,6 +118,39 @@ The default composition enables `recaps`. The Session recap command reads cached
 
 The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Original operation identities and receipts survive restart, and sealed Host handoffs use their reserved successors rather than replaying effects. Archived Sessions and changed execution prerequisites require user action before further execution.
 
+## Read-only discovery
+
+With `bot` and `scheduledTasks` enabled, the current Bot can propose a `ScheduledTask`
+with `effect: "discovery"`. As with other model-created schedules, this is a paused
+proposal until a human approves its exact workspace, permissions and model through
+`schedule`. Human-created schedules use the `discovery` effect with that Bot as the
+target. Existing `once`, `interval` and `cron` timing, `trigger_now`, `pause` and
+`resume` controls apply; no discovery work is enabled by default.
+
+Each fire creates a fresh ordinary worker Session. It inherits the approved workspace
+and model but uses read-only permissions without permission requests. Its tools are
+the composition's Files read/image/glob/grep operations, Recall when enabled, and
+`DiscoveryComplete`; the coordinator's tools, MCP and shell access are not inherited.
+The worker must call `DiscoveryComplete` with either
+`{"kind":"no_report","note":"What was checked"}` or
+`{"kind":"report","text":"Findings and source references"}`. This records the
+result and ends the Turn. Ordinary text without that call is an incomplete investigation.
+
+One investigation, including an outstanding report handoff, occupies the shared slot.
+The scheduler waits for actual execution cleanup: admission is not completion.
+`no_report` settles silently; a report is admitted to the Bot once, using its existing
+notification path, where the Bot decides whether to call `SendUser`. The recorded run
+links to the worker and distinguishes report admission from user delivery. Pausing
+cancels the current execution, including a handoff successor, and discards unsent
+reports; it cannot retract an already admitted Bot message. Restart reconciles the
+original fire, Turn and receipt instead of creating replacement work. A sealed Host
+handoff uses its reserved successor; an interrupted terminal run is recorded as failed.
+
+Plans, the active job and completed receipts use the existing scheduler KV namespace;
+no separate database or lease is introduced. This slice does not import TS discovery
+data, add shared notebook memory or observe external events. The [discovery tests](src/owner/tests/discovery_tests.rs)
+exercise the real Host with local model fixtures.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 [Performance baseline](checkpoint-baseline.md)

@@ -91,6 +91,7 @@ mod settings;
 
 mod images;
 
+mod discovery_tests;
 mod imports;
 mod projects;
 mod recall_tests;

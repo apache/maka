@@ -28,13 +28,13 @@ async fn fixture(base: &str) -> Fixture {
 fn task(effect: Value) -> Value {
     json!({"task":{"title":"Scheduled 中😀", "intentBody":"Remember the original request", "schedule":{"kind":"interval","everySeconds":3600,"startAt":now()+3_600_000},"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"Asia/Singapore","misfire":"latest"})
 }
-async fn detail(f: &Fixture, id: &str) -> Value {
+pub(super) async fn detail(f: &Fixture, id: &str) -> Value {
     f.query("schedules", json!({"kind":"get","taskId":id}))
         .await
         .unwrap()["detail"]
         .clone()
 }
-async fn change(f: &Fixture, kind: &str, id: &str, extra: Value) -> Value {
+pub(super) async fn change(f: &Fixture, kind: &str, id: &str, extra: Value) -> Value {
     let current = detail(f, id).await;
     let mut input = json!({"kind":kind,"taskId":id,"revision":current["revision"]});
     input
@@ -45,7 +45,7 @@ async fn change(f: &Fixture, kind: &str, id: &str, extra: Value) -> Value {
         .await
         .unwrap()
 }
-async fn settled(f: &Fixture, id: &str) -> Value {
+pub(super) async fn settled(f: &Fixture, id: &str) -> Value {
     loop {
         let value = detail(f, id).await;
         if !value["task"]["runs"].as_array().unwrap().is_empty() {
@@ -54,7 +54,7 @@ async fn settled(f: &Fixture, id: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
-async fn reopen(f: &mut Fixture) {
+pub(super) async fn reopen(f: &mut Fixture) {
     let deployment = f.app.source().unwrap().deployment;
     f.app.shutdown().await.unwrap();
     let mut native = NativeRegistry::default();

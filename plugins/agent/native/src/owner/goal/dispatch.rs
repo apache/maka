@@ -176,7 +176,7 @@ impl Owner {
                             }
                             Status::Active => {
                                 match self
-                                    .resume_goal_handoff(
+                                    .resume_background_handoff(
                                         &boundary.invocation,
                                         Arc::new(saved.goal.arm.grant.clone()),
                                     )

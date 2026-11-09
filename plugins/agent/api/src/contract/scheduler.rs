@@ -40,12 +40,20 @@ pub enum ScheduledEffect {
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
+    /// Read-only investigation in a fresh worker. The target is the current Bot.
+    Discovery {
+        target: ScheduledTarget,
+        model: ModelSelection,
+        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+    },
 }
 impl maka_scheduler::task::TaskEffect for ScheduledEffect {
     fn validate(&self) -> Result<(), maka_scheduler::Error> {
         match self {
             Self::Reminder => Ok(()),
-            Self::Session { target, .. } | Self::AgentRun { target, .. } => {
+            Self::Session { target, .. }
+            | Self::AgentRun { target, .. }
+            | Self::Discovery { target, .. } => {
                 if target.session_id.is_empty()
                     || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
                     || target.binding.validate().is_err()

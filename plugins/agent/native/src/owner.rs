@@ -31,6 +31,7 @@ mod checkpoints;
 mod compaction;
 mod computer_apps;
 mod context;
+mod discovery;
 mod execution;
 mod external_setup;
 mod files;
@@ -140,12 +141,13 @@ impl maka_agent_engine::NativeActivationBasis for MessageBasis {
 fn is_agent_collaboration(mode: &CollaborationMode) -> bool {
     *mode == CollaborationMode::Agent
 }
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BackgroundKind {
     #[default]
     Schedule,
     Goal(Uuid),
+    Discovery,
 }
 impl BackgroundKind {
     fn is_schedule(&self) -> bool {
@@ -238,6 +240,7 @@ pub(crate) struct Owner {
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
     host_tools: Vec<String>,
     resource_reads: Vec<String>,
+    discovery_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -503,6 +506,12 @@ impl Owner {
                     .with_always_visible(&[bot::SEND_USER, bot::SLEEP])
                     .map_err(|error| error.to_string())?;
             }
+            if settings.scheduled_tasks {
+                catalog.tools = catalog
+                    .tools
+                    .with_always_visible(&[discovery::COMPLETE])
+                    .map_err(|error| error.to_string())?;
+            }
             if settings.recall {
                 catalog.tools = catalog
                     .tools
@@ -522,6 +531,7 @@ impl Owner {
             editing: editing_tools,
             host_tools,
             resource_reads,
+            discovery_reads,
             executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -612,6 +622,7 @@ impl Owner {
             tool_basis: Arc::new(tool_basis),
             host_tools: host_tools.into_iter().chain(internal_host_tools).collect(),
             resource_reads,
+            discovery_reads,
             editing_tools,
             skills,
             executors,
@@ -628,7 +639,15 @@ impl Owner {
             file_native_hints: std::sync::atomic::AtomicBool::new(true),
             stop,
         });
-        if let Err(error) = owner.revoke_lost_client_mcp().await {
+        if let Err(error) = async {
+            owner
+                .revoke_lost_client_mcp()
+                .await
+                .map_err(|error| error.to_string())?;
+            owner.restore_discovery().await
+        }
+        .await
+        {
             let cleanup = owner.close().await;
             return Err(match cleanup {
                 Ok(()) => error.to_string(),
@@ -1208,7 +1227,16 @@ impl Owner {
             .map(|definition| definition.name.as_str())
             .filter(|name| {
                 let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
-                (speaks && !bot)
+                (*name == discovery::COMPLETE
+                    && !session.is_some_and(|id| {
+                        self.scheduler
+                            .investigation
+                            .read()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|active| active.session_id == id)
+                    }))
+                    || (speaks && !bot)
                     || (!(speaks && bot)
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)

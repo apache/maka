@@ -116,6 +116,32 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 
 默认组合启用 `goals`。`/goal` 或输入框加号菜单打开目标面板；`/goal 目标内容` 直接开始。目标复用现有会话队列自动续跑，不设迭代上限。`CreateGoal`、`GetGoal` 和 `GoalStatus` 可从 Direct 和 Code Mode 调用；每次模型请求都携带当前目标、进度和预算，压缩后仍可读取。模型创建的目标将当前轮作为第一轮。暂停停止当前工作，继续使用所选模型与设置，取消只作用于此目标。临时执行失败允许恢复。Token 预算为可选的跨轮调度阈值；缺失计量如实显示为用量不完整，不会因此停工，用户可以调整预算。读取提供实时用量、剩余预算和累计执行时间；完成并清理后，用量不再随普通聊天增长。重启保留原始操作身份与回执，Host 交接沿封存的后继执行恢复，避免重放操作。归档会话或执行前提变更时，需要用户处理后继续。
 
+## 只读主动发现
+
+启用 `bot` 和 `scheduledTasks` 后，当前 Bot 可通过 `ScheduledTask` 提议
+`effect: "discovery"`。与其他模型创建的定时任务一样，提议保持暂停，直到用户通过
+`schedule` 批准其精确工作区、权限和模型。用户直接创建时使用 `discovery` 效果，
+以当前 Bot 为目标。沿用 `once`、`interval`、`cron` 定时及 `trigger_now`、`pause`、
+`resume` 控制；默认不会启用任何调查。
+
+每次触发新建一个普通 worker Session，沿用已批准的工作区和模型，权限收窄为只读，
+禁止申请额外权限。工具仅包括当前组合中的 Files 读取、图片读取、glob、grep，已启用的
+Recall 和 `DiscoveryComplete`；不继承协调工具、MCP 或 shell 能力。worker 必须调用
+`DiscoveryComplete`，提交 `{"kind":"no_report","note":"检查了什么"}` 或
+`{"kind":"report","text":"发现及来源"}`。调用持久记录结果并结束本轮；只输出普通文本
+属于未完整提交调查结果。
+
+所有调查共用一个执行位，等待报告交接时也占位。调度器等待真实执行清理结束，不把接纳
+当作完成。`no_report` 静默结算；报告通过已有通知路径只向 Bot 接纳一次，由 Bot 判断
+是否调用 `SendUser`。运行记录链接到 worker，并区分“报告已接纳”和“用户已收到”。
+暂停会取消当前执行，包括交接后的继任 invocation，并舍弃尚未投递的报告；已接纳的
+Bot 消息不能撤回。重启按原触发、Turn 和回执恢复，不新建替代调查。已封存的 Host
+交接沿用预留的继任者；被中断并终结的执行记录为失败。
+
+计划、当前调查及已完成回执复用调度器 KV 命名空间，不增加独立数据库或租约。
+本阶段不导入 TS 主动发现数据、不增加共享记事本或外部事件监听。
+[调查测试](src/owner/tests/discovery_tests.rs) 使用真实 Host 和本地模型夹具验证。
+
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 
 [性能基线](checkpoint-baseline.md)

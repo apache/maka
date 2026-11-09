@@ -24,11 +24,11 @@ use maka_plugin_core::operation::RecoveryRef;
 struct Index {
     ids: Vec<String>,
 }
-pub(super) struct Saved {
+pub(in crate::owner) struct Saved {
     pub revision: u64,
     pub plan: Plan,
 }
-pub(super) struct Catalog {
+pub(in crate::owner) struct Catalog {
     pub revision: Option<u64>,
     pub plans: BTreeMap<String, Saved>,
 }
@@ -55,7 +55,7 @@ fn value<T: Serialize>(value: &T) -> Result<Data, String> {
         .map_err(reason)
 }
 impl Scheduler {
-    pub(super) async fn load(&self) -> Result<Catalog, String> {
+    pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
         let record = self.storage.read("index".into()).await.map_err(reason)?;
         let revision = record.as_ref().map(|record| record.revision);
         let index: Index = record

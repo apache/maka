@@ -379,7 +379,7 @@ impl Owner {
             execution: project(boundary),
         })
     }
-    pub(super) async fn resume_goal_handoff(
+    pub(super) async fn resume_background_handoff(
         self: &Arc<Self>,
         source: &Invocation,
         basis: Arc<MessageBasis>,

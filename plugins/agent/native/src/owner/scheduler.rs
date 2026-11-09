@@ -36,16 +36,17 @@ use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Approval {
+pub(super) enum Approval {
     Reminder,
     Execution { basis: Box<MessageBasis> },
 }
 pub(crate) struct Scheduler {
-    storage: Arc<maka_host_runtime::storage::Storage>,
-    gate: Mutex<()>,
-    wake: Notify,
+    pub(super) storage: Arc<maka_host_runtime::storage::Storage>,
+    pub(super) gate: Mutex<()>,
+    pub(super) wake: Notify,
     changed: tokio::sync::watch::Sender<u64>,
-    link: OnceLock<Weak<Owner>>,
+    pub(super) link: OnceLock<Weak<Owner>>,
+    pub(super) investigation: std::sync::RwLock<Option<Invocation>>,
 }
 impl Scheduler {
     pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
@@ -63,6 +64,7 @@ impl Scheduler {
             wake: Notify::new(),
             changed: tokio::sync::watch::channel(0).0,
             link: OnceLock::new(),
+            investigation: std::sync::RwLock::new(None),
         }
     }
     pub fn bind(&self, owner: &Arc<Owner>) {

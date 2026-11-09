@@ -304,8 +304,13 @@ impl Owner {
                 return Ok(false);
             }
             // Deferred work captures runtime tools when accepted; retries keep that original basis.
-            let catalog = self.mcp_projects.capture(&basis.workspace).await?;
-            let catalog = self.mcp_projects.with_client(session, catalog)?;
+            let catalog = if basis.background_kind == BackgroundKind::Discovery {
+                // The read-only investigation profile never admits MCP tools.
+                self.mcp_projects.base.clone()
+            } else {
+                let catalog = self.mcp_projects.capture(&basis.workspace).await?;
+                self.mcp_projects.with_client(session, catalog)?
+            };
             basis.mcp_revision = catalog.revision.clone();
             basis.client_mcp = catalog.client_mcp;
             basis.mcp_catalog = Some(catalog.clone());

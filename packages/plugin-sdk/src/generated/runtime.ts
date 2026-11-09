@@ -2293,6 +2293,12 @@ export type AgentScheduledEffect =
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
     };
 export type Creator =
   | {

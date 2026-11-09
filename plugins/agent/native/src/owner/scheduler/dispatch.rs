@@ -27,7 +27,12 @@ impl MessageBasis {
         if let Some(boundary) = &self.background
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
-                || session.configuration.permissions != boundary.permissions
+                || session.configuration.permissions
+                    != if self.background_kind == BackgroundKind::Discovery {
+                        super::super::discovery::permissions()
+                    } else {
+                        boundary.permissions.clone()
+                    }
                 || session.configuration.binding != boundary.binding
                 || session.configuration.boundary_revision
                     != if session.id == boundary.session_id {
@@ -50,11 +55,11 @@ impl Owner {
             return Ok(());
         };
         if !match &basis.background_kind {
-            BackgroundKind::Schedule => self.settings.scheduled_tasks,
+            BackgroundKind::Schedule | BackgroundKind::Discovery => self.settings.scheduled_tasks,
             BackgroundKind::Goal(_) => self.settings.goals,
         } {
             return Err(match &basis.background_kind {
-                BackgroundKind::Schedule => "scheduler_disabled",
+                BackgroundKind::Schedule | BackgroundKind::Discovery => "scheduler_disabled",
                 BackgroundKind::Goal(_) => "goal_disabled",
             }
             .into());
@@ -62,6 +67,9 @@ impl Owner {
         if let BackgroundKind::Goal(id) = &basis.background_kind {
             self.check_goal_background(&boundary.session_id, *id)
                 .await?
+        }
+        if basis.background_kind == BackgroundKind::Discovery {
+            self.validate_discovery_background().await?;
         }
         let source = self.session(&boundary.session_id).await?;
         if source.archived
@@ -86,12 +94,31 @@ impl Owner {
                 target,
                 model,
                 thinking_level,
+            }
+            | ScheduledEffect::Discovery {
+                target,
+                model,
+                thinking_level,
             } => (target, model, thinking_level),
         };
+        if matches!(plan.task.effect, ScheduledEffect::Discovery { .. })
+            && !self.bot.is(&target.session_id)
+        {
+            return Err("discovery_requires_bot".into());
+        }
         Ok(Approval::Execution {
             basis: Box::new(
-                self.approve_background(target, model.clone(), *thinking, BackgroundKind::Schedule)
-                    .await?,
+                self.approve_background(
+                    target,
+                    model.clone(),
+                    *thinking,
+                    if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                        BackgroundKind::Discovery
+                    } else {
+                        BackgroundKind::Schedule
+                    },
+                )
+                .await?,
             ),
         })
     }
@@ -142,10 +169,15 @@ impl Owner {
             .map_err(|_| "agent_preferences_unavailable")?;
         let language = self.resolve_language(&snapshot);
         drop(runs);
-        let selected_catalog = self
-            .mcp_projects
-            .capture(&session.configuration.workspace)
-            .await?;
+        let selected_catalog = if kind == BackgroundKind::Discovery {
+            self.mcp_projects.base.clone()
+        } else {
+            let catalog = self
+                .mcp_projects
+                .capture(&session.configuration.workspace)
+                .await?;
+            self.mcp_projects.with_client(id, catalog)?
+        };
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
@@ -155,8 +187,7 @@ impl Owner {
             return Err("scheduler_authorization_changed".into());
         }
 
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
-        Ok(MessageBasis {
+        let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -173,21 +204,35 @@ impl Owner {
             background: Some(target.clone()),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self.bot_behavior(
-                &target.session_id,
+            behavior: if kind == BackgroundKind::Discovery {
                 self.capture_behavior(Some(&session.configuration.workspace), &snapshot, language)
+                    .await?
+            } else {
+                self.bot_behavior(
+                    &target.session_id,
+                    self.capture_behavior(
+                        Some(&session.configuration.workspace),
+                        &snapshot,
+                        language,
+                    )
                     .await?,
-                &snapshot,
-                language,
-                self.admitted_tools(&target.session_id, &session.configuration.tools)
-                    .as_deref(),
-            ),
+                    &snapshot,
+                    language,
+                    self.admitted_tools(&target.session_id, &session.configuration.tools)
+                        .as_deref(),
+                )
+            },
             model: Some(source.accepted),
             executor: None,
             workspace: session.configuration.workspace,
             binding: session.configuration.binding,
             fingerprint: String::new(),
             tools: self.tool_basis.clone(),
+        };
+        Ok(if kind == BackgroundKind::Discovery {
+            self.investigation_basis(&basis)
+        } else {
+            basis
         })
     }
     pub(in crate::owner) fn start_schedules(self: &Arc<Self>) {
@@ -259,7 +304,10 @@ impl Owner {
                 // A reminder remains durable until the user acknowledges it.
                 // No paint attempt or socket write is described as delivery.
                 if !matches!(fire.effect, ScheduledEffect::Reminder) {
-                    match self.dispatch_scheduled(&fire).await {
+                    match self
+                        .dispatch_scheduled(&fire, plan.task.status == Status::Active)
+                        .await
+                    {
                         Ok(Some(run)) => {
                             plan.settle(run).map_err(reason)?;
                             self.scheduler
@@ -288,6 +336,7 @@ impl Owner {
     async fn dispatch_scheduled(
         self: &Arc<Self>,
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
+        active: bool,
     ) -> Result<Option<Run>, String> {
         let Some(Approval::Execution { basis }) = &fire.authorization else {
             return Ok(Some(settlement(
@@ -298,10 +347,13 @@ impl Owner {
                 None,
             )));
         };
+        if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+            return self.dispatch_discovery(fire, basis, active).await;
+        }
         let (source_session, new_session) = match &fire.effect {
             ScheduledEffect::Session { target, .. } => (&target.session_id, false),
             ScheduledEffect::AgentRun { target, .. } => (&target.session_id, true),
-            ScheduledEffect::Reminder => unreachable!(),
+            ScheduledEffect::Reminder | ScheduledEffect::Discovery { .. } => unreachable!(),
         };
         let identity = hex::encode(Sha256::digest(fire.id.as_bytes()));
         let session_id = if new_session {

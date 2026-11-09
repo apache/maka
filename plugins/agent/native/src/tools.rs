@@ -127,6 +127,8 @@ pub(crate) struct Catalog {
     pub editing: Vec<(String, EditingTools)>,
     pub host_tools: Vec<String>,
     pub resource_reads: Vec<String>,
+    /// Known read operations, identified by their bound contract rather than aliases.
+    pub discovery_reads: Vec<String>,
     pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
@@ -141,6 +143,7 @@ pub(crate) fn catalog(
     let mut basis = Vec::new();
     let mut host_tools = Vec::new();
     let mut resource_reads = Vec::new();
+    let mut discovery_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -187,6 +190,11 @@ pub(crate) fn catalog(
             };
             let contract = binding.contract();
             let resource_read = contract == &file_contract && selection.method == "readText";
+            if contract == &file_contract
+                && matches!(selection.method.as_str(), "readText" | "readImage" | "glob" | "grep")
+            {
+                discovery_reads.push(selection.name.clone());
+            }
             let supported = if contract == &maka_agent_api::contract::contract() {
                 matches!(selection.method.as_str(),
                     "models" | "list" | "observe" | "history" | "create" | "fork" |
@@ -417,6 +425,7 @@ pub(crate) fn catalog(
         editing,
         host_tools,
         resource_reads,
+        discovery_reads,
         executor: Arc::new(ApprovalExecutor {
             services: native_services,
         }),
