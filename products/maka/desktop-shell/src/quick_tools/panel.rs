@@ -52,9 +52,6 @@ pub enum Request {
     Load(Box<EngineConfig>),
     Shortcut(JsonValue),
     Error(JsonValue),
-    Show {
-        settings: bool,
-    },
     Settings(HostCall, bool),
     Hide {
         restore_focus: bool,
@@ -172,15 +169,6 @@ impl Control {
         params.insert("nativeQuickTools".into(), json!(true));
         config.host.set_params(params);
         *self.main.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.host.clone());
-        let send = self.send.clone();
-        config.host.handle("quickTools.show", move |call| {
-            match send.try_send(Request::Show {
-                settings: call.data()["settings"] == true,
-            }) {
-                Ok(()) => call.resolve(JsonValue::Null),
-                Err(_) => call.reject("Quick Tools is busy"),
-            }
-        });
         let _ = self.send.try_send(Request::Load(Box::new(config.clone())));
     }
     pub fn run(self, mut requests: mpsc::Receiver<Request>) {
@@ -266,16 +254,6 @@ impl Control {
                         if id != "toggle" {
                             let _ = events.send("quickTools.execute", json!({"id":id}));
                         }
-                    }
-                    Request::Show { settings } => {
-                        state.visible.store(true, Ordering::Release);
-                        let _ = events.send(
-                            "quickTools.visibility",
-                            json!({"visible":true,"home":true,"settings":settings}),
-                        );
-                        on_main(|| {
-                            with_panel(Panel::present);
-                        });
                     }
                     Request::Hide { restore_focus } => {
                         state.visible.store(false, Ordering::Release);

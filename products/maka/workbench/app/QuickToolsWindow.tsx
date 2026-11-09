@@ -58,7 +58,7 @@ export function QuickToolsWindow(props: UiRootProps<JSX.Element>) {
   let visibilityRevision = 0;
   host.on('quickTools.visibility', async (value) => {
     const revision = ++visibilityRevision;
-    const event = value as { visible: boolean; home?: boolean; settings?: boolean };
+    const event = value as { visible: boolean; home?: boolean };
     if (event.visible && event.home) {
       try {
         // Leave through the session owner so the assistant draft is saved first.
@@ -67,10 +67,7 @@ export function QuickToolsWindow(props: UiRootProps<JSX.Element>) {
         error.set(String(cause));
       }
     }
-    if (revision === visibilityRevision) {
-      shown.set(event.visible);
-      if (event.settings && !assistant()) openToolSettings?.();
-    }
+    if (revision === visibilityRevision) shown.set(event.visible);
   });
   host.on('quickTools.session.release', async (value) => {
     const request = value as { sessionId: string; token: string };

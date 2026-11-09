@@ -88,16 +88,12 @@ function App(
   });
   const nativeQuickTools = surfaceHost.params.nativeQuickTools === true;
   const quickToolsOpened = signal(false);
-  if (platform.idiom !== 'terminal')
+  // The native panel's global hotkey also fires in this window and follows the user's setting.
+  if (platform.idiom !== 'terminal' && !nativeQuickTools)
     cleanup(
-      keymap.bind(
-        'alt+space',
-        () => {
-          if (nativeQuickTools) void surfaceHost.call('quickTools.show', {});
-          else quickToolsOpened.set(!quickToolsOpened());
-        },
-        { when: 'always' },
-      ),
+      keymap.bind('alt+space', () => quickToolsOpened.set(!quickToolsOpened()), {
+        when: 'always',
+      }),
     );
   const configuration = context.configuration as unknown as Configuration;
   const saved = context.restored as SavedRoot | null;
