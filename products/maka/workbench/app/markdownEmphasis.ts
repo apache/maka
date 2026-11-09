@@ -273,11 +273,19 @@ function lineIndent(line: string): { cols: number; offset: number } {
 }
 
 /**
+ * Constructs whose literal body this line-by-line scan does not track: indented code inside
+ * a quote, and raw HTML blocks (`<pre>`, `<script>`, `<style>`, `<textarea>`, comments) whose
+ * body can run across blank lines. A reply that has one is left exactly as written, so the
+ * worst case is a stray asterisk and never a changed code body.
+ */
+const UNMODELLED = /^[ \t]*(?:>[ \t]*)+(?: {4,}|\t)|<(?:pre|script|style|textarea)\b|<!--/imu;
+
+/**
  * `text` with bold pairs that CommonMark would leave open made to close. Fenced and
  * indented code blocks are skipped; the rest is rewritten paragraph by paragraph.
  */
 export function closeCjkEmphasis(text: string): string {
-  if (!text.includes('**')) return text;
+  if (!text.includes('**') || UNMODELLED.test(text)) return text;
   const lines = text.split('\n');
   const out: string[] = [];
   let fence: string | null = null;

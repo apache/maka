@@ -191,3 +191,17 @@ test('every pair on every line is handled, and the result is stable', () => {
   assert.equal(once, '**甲**：乙\n- **丙**，丁\n他说“**戊**”己');
   assert.equal(closeCjkEmphasis(once), once);
 });
+
+test('indented code in a quote and raw HTML blocks are never rewritten', () => {
+  for (const text of [
+    '>     first line\n>     **原文：**继续',
+    '> >     **原文：**继续',
+    '<pre>\n\n**原文：**继续\n</pre>',
+    '<script>\n\n**原文：**继续\n</script>',
+    '<!--\n\n**原文：**继续\n-->',
+    '**甲：**乙\n\n<pre>\ncode\n</pre>',
+  ])
+    assert.equal(closeCjkEmphasis(text), text, text);
+  // An ordinary quote is still fixed.
+  assert.equal(closeCjkEmphasis('> **结论：**短线观望为主'), '> **结论**：短线观望为主');
+});
