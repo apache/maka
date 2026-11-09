@@ -1266,3 +1266,82 @@ mount(App);
     clipboard(&surface, "MAIN_DRAFT|SIDE_DRAFT");
     surface.shutdown();
 }
+
+pub(super) fn rich_editor_composition_commit_matches_preedit() {
+    const IME_EDITOR_APP: &str = r#"
+import { mount, View } from "nsh";
+import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
+
+function App() {
+  const session = createRichEditor({ extensions: [StarterKit] });
+  return <View style={{ flex: 1 }}>
+    <RichEditor
+      editor={session}
+      autoFocus
+      style={{ flex: 1, height: 120 }}
+    />
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("ImeEditor.tsx", IME_EDITOR_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let chord = |name: &str| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let copy_focused = || {
+        let _ = surface.take_clipboard_write();
+        chord("a");
+        chord("c");
+        let mut copied = None;
+        pump_until(&surface, || {
+            if copied.is_none() {
+                copied = surface.take_clipboard_write();
+            }
+            copied.is_some()
+        });
+        copied.unwrap()
+    };
+
+    pump_until(&surface, || surface.text_input_target().is_some());
+    let target = surface.text_input_target().unwrap();
+    assert!(
+        surface
+            .apply_composition(&target, "", "方向", Some(2..2), true)
+            .unwrap()
+    );
+    key(&surface, "enter");
+    key(&surface, "escape");
+    assert!(
+        surface
+            .apply_composition(&target, "方向", "", None, false)
+            .unwrap()
+    );
+    assert_eq!(copy_focused(), "方向");
+
+    let next = "Check keyboard focus too.";
+    chord("a");
+    assert!(surface.paste(nsh_core::PasteEvent::new(next)));
+    assert_eq!(copy_focused(), next);
+    surface.shutdown();
+}

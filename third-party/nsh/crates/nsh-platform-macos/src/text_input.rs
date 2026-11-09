@@ -3280,9 +3280,10 @@ pub(crate) fn terminal_compose(
         };
         input
     };
+    let events_before = surface.events_sent();
     let replacement = NSRange::new(isize::MAX as usize, 0);
     if !commit.is_empty() {
-        input.terminal_original.borrow_mut().take();
+        terminal_cancel_input(&input);
         // SAFETY: NSString is a valid NSTextInputClient insertion; NSNotFound replaces the mark/selection.
         let _: () = unsafe {
             msg_send![&*editor, insertText: &*NSString::from_str(commit), replacementRange: replacement]
@@ -3306,6 +3307,9 @@ pub(crate) fn terminal_compose(
         }
         editor.unmarkText();
         input.cx.composition_changed();
+        if surface.events_sent() > events_before {
+            arm(surface);
+        }
     }
     true
 }

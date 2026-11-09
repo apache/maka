@@ -61,6 +61,10 @@ fn main() -> std::process::ExitCode {
             "unfocused_readonly_input_mount_preserves_focused_target_until_focused",
             cases::unfocused_readonly_input_preserves_focused_target,
         ),
+        (
+            "rich_editor_composition_commit_matches_preedit_and_keeps_shortcuts",
+            cases::rich_editor_composition_commit_matches_preedit,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];
