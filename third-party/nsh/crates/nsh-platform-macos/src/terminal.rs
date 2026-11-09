@@ -225,7 +225,7 @@ impl TerminalSurface {
         let surface = self.view.surface();
         if kind == NSEventType::LeftMouseDown
             && !mods.control
-            && let Some(native) = crate::input::native_at(surface, position.x.0, position.y.0)
+            && let Some(native) = crate::input::native_at(&surface.root, position.x.0, position.y.0)
         {
             let view = surface
                 .mounter

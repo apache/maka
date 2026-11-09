@@ -455,23 +455,33 @@ fn window_key(surface: &Rc<Surface>, id: NodeId, key: gdk::Key, state: gdk::Modi
     if crate::navigation::key_pressed_in(surface, id, key, state) {
         return true;
     }
+    let escape = closes_on_escape(surface, id, key, state);
+    if escape {
+        policy_close(surface, id, WindowCloseCause::Escape);
+    }
+    escape
+}
+
+/// Whether this key is reserved for closing an app-owned window on Escape.
+pub(crate) fn closes_on_escape(
+    surface: &Surface,
+    id: NodeId,
+    key: gdk::Key,
+    state: gdk::ModifierType,
+) -> bool {
     let plain = !state.intersects(
         gdk::ModifierType::CONTROL_MASK
             | gdk::ModifierType::ALT_MASK
             | gdk::ModifierType::SHIFT_MASK
             | gdk::ModifierType::SUPER_MASK,
     );
-    let escape = key == gdk::Key::Escape
+    key == gdk::Key::Escape
         && plain
         && surface
             .windows
             .borrow()
             .get(&id)
-            .is_some_and(|w| w.attributes.close_on_escape == Some(true));
-    if escape {
-        policy_close(surface, id, WindowCloseCause::Escape);
-    }
-    escape
+            .is_some_and(|w| w.attributes.close_on_escape == Some(true))
 }
 
 /// Ctrl+W closes `window` as a press of the close key (a bubble-phase
