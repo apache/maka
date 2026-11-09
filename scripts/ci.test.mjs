@@ -528,10 +528,7 @@ test('native behavior verification compiles and executes nextest on macOS and Wi
           env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
         },
       );
-      assert.equal(
-        readFileSync(output, 'utf8'),
-        role !== 'native-ubuntu' ? 'tools=cargo-nextest\n' : 'tools=\n',
-      );
+      assert.equal(readFileSync(output, 'utf8'), 'tools=cargo-nextest\n');
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -1258,26 +1255,5 @@ test('Linux desktop and its embedded icon select a display-backed native consume
     assert.ok(worker.suites.includes('linux-desktop'), path);
     assert.equal(worker.dependencies, 'headless');
     assert.equal(worker.javascript, true);
-  }
-});
-
-test('the Linux native worker installs the nextest runner for desktop execution', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-linux-tools-'));
-  const output = join(directory, 'outputs');
-  try {
-    execFileSync(
-      process.execPath,
-      [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
-      {
-        env: { ...process.env, MAKA_CI_ROLE: 'native-ubuntu', GITHUB_OUTPUT: output },
-      },
-    );
-    assert.equal(
-      readFileSync(output, 'utf8').trim(),
-      'tools=cargo-nextest' +
-        (process.env.MAKA_CI_NEXTEST ? '@' + process.env.MAKA_CI_NEXTEST : ''),
-    );
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
 });
