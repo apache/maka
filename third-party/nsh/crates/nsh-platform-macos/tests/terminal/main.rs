@@ -57,6 +57,10 @@ fn main() -> std::process::ExitCode {
             "rich_editor_to_box_none_input_focus_transition_copies_and_submits",
             cases::rich_editor_to_box_none_input_focus_transition,
         ),
+        (
+            "unfocused_readonly_input_mount_preserves_focused_target_until_focused",
+            cases::unfocused_readonly_input_preserves_focused_target,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];

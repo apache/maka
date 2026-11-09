@@ -1161,3 +1161,106 @@ mount(App);
     assert_eq!(copy_focused(), draft);
     surface.shutdown();
 }
+
+pub(super) fn unfocused_readonly_input_preserves_focused_target() {
+    const SIDE_DRAFT_APP: &str = r#"
+import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const main = signal("MAIN_DRAFT");
+  const side = signal("");
+  const sideMounted = signal(false);
+  const sideReady = signal(false);
+  let sideRef = null;
+  keymap.bind("f6", () => {
+    sideMounted.set(true);
+    Clipboard.writeText("side-mounted");
+  }, { when: "always" });
+  keymap.bind("f7", () => {
+    sideReady.set(true);
+    Clipboard.writeText("side-ready");
+  }, { when: "always" });
+  keymap.bind("f8", () => {
+    sideRef?.focus();
+    Clipboard.writeText("side-focused");
+  }, { when: "always" });
+  keymap.bind("f9", () => {
+    Clipboard.writeText(`${main()}|${side()}`);
+  }, { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <Input
+      accessibilityLabel="Main composer"
+      autoFocus
+      value={main()}
+      onChange={({ value }) => main.set(value)}
+      style={{ width: 260, height: 32 }}
+    />
+    {() => sideMounted() ? (
+      <Input
+        accessibilityLabel="Side composer"
+        ref={(node) => { sideRef = node; }}
+        readonly={!sideReady()}
+        value={side()}
+        onChange={({ value }) => side.set(value)}
+        style={{ width: 260, height: 32 }}
+      />
+    ) : null}
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("SideDraft.tsx", SIDE_DRAFT_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("MAIN_DRAFT")
+    });
+    let main_target = surface.text_input_target().unwrap();
+    assert!(
+        surface
+            .apply_composition(&main_target, "", "ni", Some(2..2), true)
+            .unwrap()
+    );
+
+    // Mounting a read-only background input and flipping it editable while unfocused
+    // must not advance or revoke the focused main editor's target or preedit.
+    key(&surface, "f6");
+    clipboard(&surface, "side-mounted");
+    assert_eq!(surface.text_input_target(), Some(main_target));
+
+    key(&surface, "f7");
+    clipboard(&surface, "side-ready");
+    assert_eq!(surface.text_input_target(), Some(main_target));
+    assert!(
+        surface
+            .apply_composition(&main_target, "", "", Some(0..0), false)
+            .unwrap()
+    );
+    assert_eq!(surface.editor_text().as_deref(), Some("MAIN_DRAFT"));
+
+    // Focusing the side input advances `text_input_target()` only once focus actually moves.
+    key(&surface, "f8");
+    clipboard(&surface, "side-focused");
+    pump_until(&surface, || {
+        let current = surface.text_input_target();
+        current.is_some() && current != Some(main_target)
+    });
+    assert!(surface.paste(nsh_core::PasteEvent::new("SIDE_DRAFT")));
+    pump_until(&surface, || {
+        surface.editor_text().as_deref() == Some("SIDE_DRAFT")
+    });
+
+    key(&surface, "f9");
+    clipboard(&surface, "MAIN_DRAFT|SIDE_DRAFT");
+    surface.shutdown();
+}

@@ -81,6 +81,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             });
             append(root, input);
             const body = element('view');
+            prop(body, 'selectable', true);
             prop(body, 'onPress', () => {});
             prop(body, 'style', {width: 240, height: 64, backgroundColor: '#406020'});
             append(root, body);
@@ -237,9 +238,14 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     // Control-based command must already reach the app through that focus.
     stroke("k", None, true);
     click(32.0);
+    let expected_shortcut = if cfg!(target_os = "macos") {
+        "⌃K"
+    } else {
+        "Ctrl+K"
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if copied() == "Ctrl+K" {
+        if copied() == expected_shortcut {
             break;
         }
         assert!(
@@ -275,8 +281,8 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert_eq!(wakes.load(Ordering::SeqCst), before_queries);
     assert_eq!(count.get(), initial_count.get());
 
-    // The same registered handler must consult live focus: clicking another
-    // native press target stops paste without a paint to unregister it.
+    // The same registered handler must consult live focus: clicking a selectable
+    // target outside the editor stops paste without a paint to unregister it.
     click(96.0);
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());

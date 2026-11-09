@@ -2010,25 +2010,23 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         }
     }
     *input.config.borrow_mut() = config.clone();
-    if became_readonly {
+    if became_readonly && input.focused.get() {
         surface
             .focus_generation
             .set(surface.focus_generation.get().wrapping_add(1));
-        if input.focused.get() {
-            #[cfg(feature = "terminal")]
-            terminal_cancel_input(&input);
-            if let Some(text) = editor
-                .editing()
-                .and_then(|text| text.downcast::<NSTextView>().ok())
-                && text.hasMarkedText()
-            {
-                text.unmarkText();
-            }
-            input.editing.set(false);
-            input.cx.compose(&input, None);
+        #[cfg(feature = "terminal")]
+        terminal_cancel_input(&input);
+        if let Some(text) = editor
+            .editing()
+            .and_then(|text| text.downcast::<NSTextView>().ok())
+            && text.hasMarkedText()
+        {
+            text.unmarkText();
         }
+        input.editing.set(false);
+        input.cx.compose(&input, None);
     }
-    if became_editable {
+    if became_editable && input.focused.get() {
         surface
             .focus_generation
             .set(surface.focus_generation.get().wrapping_add(1));
