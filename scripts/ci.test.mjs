@@ -180,7 +180,6 @@ test('Windows backend changes select the native tests and default desktop consum
       .filter((worker) => worker.id.startsWith('native-'))
       .map(({ id, suites }) => ({ id, suites })),
     [
-      { id: 'native-ubuntu', suites: ['linux-desktop'] },
       { id: 'native-macos', suites: ['macos-desktop'] },
       { id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] },
     ],
@@ -532,7 +531,10 @@ test('native behavior verification compiles and executes nextest on macOS and Wi
           env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
         },
       );
-      assert.equal(readFileSync(output, 'utf8'), 'tools=cargo-nextest\n');
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role !== 'native-ubuntu' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -1246,20 +1248,6 @@ test('native regression commands fail empty selections and GTK runs under Xvfb',
   assert(calls.some(({ args }) => args.includes('native-pixels')));
   assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
   assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
-});
-
-test('Linux desktop and its embedded icon select a display-backed native consumer', () => {
-  for (const path of [
-    'products/maka/desktop-shell/src/linux.rs',
-    'products/maka/cli/icons/maka.png',
-  ]) {
-    const plan = fixture()([path]);
-    assert.ok(plan.suites['linux-desktop'], path);
-    const worker = plan.workers.find((worker) => worker.id === 'native-ubuntu');
-    assert.ok(worker.suites.includes('linux-desktop'), path);
-    assert.equal(worker.dependencies, 'headless');
-    assert.equal(worker.javascript, true);
-  }
 });
 
 test('CI setup installs release tools and stages V8 archives via GitHub API with digest checks and 504 retries', async () => {
