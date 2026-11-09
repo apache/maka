@@ -124,6 +124,7 @@ export function invalidatePredictionPreferences(revision: number): void {
 export function createMessagePrediction(options: Options) {
   let alive = true;
   let eligible = false;
+  let canStart = false;
   let source: Source | null = null;
   let shown: Suggestion | null = null;
   let request: Request | null = null;
@@ -267,6 +268,7 @@ export function createMessagePrediction(options: Options) {
       if (request.source !== source || request.revision !== config.revision) cancel();
       return;
     }
+    if (!canStart) return;
     const ticket: Request = {
       source,
       revision: config.revision,
@@ -305,9 +307,10 @@ export function createMessagePrediction(options: Options) {
           : { turnId, trigger, contextKey, settingsReady: false, state: { kind: 'unsettled' } };
       refresh();
     },
-    eligible(value: boolean) {
-      if (!alive || eligible === value) return;
+    eligible(value: boolean, mayStart: boolean) {
+      if (!alive || (eligible === value && canStart === mayStart)) return;
       eligible = value;
+      canStart = mayStart;
       if (!value && source) source.settingsReady = false;
       refresh();
     },

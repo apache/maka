@@ -28,7 +28,7 @@ test('a late prediction cannot replace the next turn’s suggestion', async (t) 
     predictions: { enabled: true },
   }));
   controller.source('turn-one', 'live');
-  controller.eligible(true);
+  controller.eligible(true, true);
   await setImmediate();
   assert.deepEqual(requests[0].input, {
     sessionId: 'conversation',
@@ -115,13 +115,67 @@ function prediction(t, conversation, preferences) {
   return { controller, requests, errors };
 }
 
+test('a draft entered while preferences load defers the latest prediction until cleared', async (t) => {
+  const { conversation } = await bundles(t);
+  const read = deferred();
+  const { controller, requests, errors } = prediction(t, conversation, () => read.promise);
+  controller.source('turn-one', 'live');
+  controller.eligible(true, true);
+  controller.eligible(true, false);
+  read.resolve({ revision: 1, predictions: { enabled: true } });
+  await setImmediate();
+  assert.equal(requests.length, 0);
+
+  controller.source('turn-two', 'catch_up');
+  await setImmediate();
+  assert.equal(requests.length, 0);
+  controller.eligible(true, true);
+  await setImmediate();
+  assert.deepEqual(requests[0].input, {
+    sessionId: 'conversation',
+    expectedTurnId: 'turn-two',
+    trigger: 'catch_up',
+  });
+  requests[0].finish(1, 'Review the latest result.');
+  await setImmediate();
+  assert.deepEqual(controller.presentation.current(), {
+    sourceTurnId: 'turn-two',
+    text: 'Review the latest result.',
+  });
+  assert.deepEqual(errors, []);
+});
+
+test('a draft does not cancel an admitted prediction or discard its result', async (t) => {
+  const { conversation } = await bundles(t);
+  const { controller, requests, errors } = prediction(t, conversation, async () => ({
+    revision: 1,
+    predictions: { enabled: true },
+  }));
+  controller.source('turn-one', 'live');
+  controller.eligible(true, true);
+  await setImmediate();
+  const original = requests[0];
+  controller.eligible(true, false);
+  assert.equal(original.cancelled, false);
+  original.finish(1, 'Continue with the patch.');
+  await setImmediate();
+  controller.eligible(true, true);
+  await setImmediate();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(controller.presentation.current(), {
+    sourceTurnId: 'turn-one',
+    text: 'Continue with the patch.',
+  });
+  assert.deepEqual(errors, []);
+});
+
 test('settings in one bundle retire another bundle’s suggestion and its late original result', async (t) => {
   const { settings, conversation } = await bundles(t);
   let preferences = { revision: 1, predictions: { enabled: true } };
   settings.observePredictionPreferences(preferences);
   const { controller, requests, errors } = prediction(t, conversation, async () => preferences);
   controller.source('turn-one', 'live');
-  controller.eligible(true);
+  controller.eligible(true, true);
   await setImmediate();
   requests[0].finish(1, 'Review the first patch.');
   await setImmediate();
@@ -165,7 +219,7 @@ test('a cross-bundle invalidation fences an older settings read until current pr
     return read.promise;
   });
   controller.source('turn-current', 'live');
-  controller.eligible(true);
+  controller.eligible(true, true);
   settings.invalidatePredictionPreferences(3);
   reads[0].resolve({ revision: 2, predictions: { enabled: true } });
   await setImmediate();
@@ -217,7 +271,7 @@ test('cancelling before begin returns still drains the original receipt after di
   });
   t.after(() => controller.dispose());
   controller.source('turn-original', 'live');
-  controller.eligible(true);
+  controller.eligible(true, true);
   await setImmediate();
   assert.deepEqual(input, {
     sessionId: 'conversation',
@@ -268,7 +322,7 @@ test('same-turn context changes replace the source while dismissal and empty res
   settings.observePredictionPreferences(preferences);
   const { controller, requests, errors } = prediction(t, conversation, async () => preferences);
   controller.source('same-turn', 'live', 'first-context');
-  controller.eligible(true);
+  controller.eligible(true, true);
   await setImmediate();
   const original = requests[0];
   controller.source('same-turn', 'catch_up', 'second-context');
@@ -291,8 +345,8 @@ test('same-turn context changes replace the source while dismissal and empty res
   });
 
   controller.presentation.dismiss('same-turn');
-  controller.eligible(false);
-  controller.eligible(true);
+  controller.eligible(false, true);
+  controller.eligible(true, true);
   controller.source('same-turn', 'catch_up', 'second-context');
   await setImmediate();
   assert.equal(controller.presentation.current(), null);
@@ -308,8 +362,8 @@ test('same-turn context changes replace the source while dismissal and empty res
   });
   empty.finish(1, null);
   await setImmediate();
-  controller.eligible(false);
-  controller.eligible(true);
+  controller.eligible(false, true);
+  controller.eligible(true, true);
   await setImmediate();
   assert.equal(controller.presentation.current(), null);
   assert.equal(requests.length, 3, 'an empty settled result is not an unattempted source');
@@ -326,7 +380,7 @@ test('a late preferences read from a retired source cannot fence the replacement
     return read.promise;
   });
   controller.source('turn-old', 'live');
-  controller.eligible(true);
+  controller.eligible(true, true);
   controller.source('turn-new', 'catch_up');
   reads[0].resolve({ revision: 4, predictions: { enabled: false } });
   await setImmediate();

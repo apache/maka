@@ -2411,7 +2411,13 @@ export function Conversation(props: ConversationProps) {
       !sending() &&
       !recovering() &&
       !confirmingContinuation();
-    untracked(() => messagePrediction.eligible(eligible));
+    const mayStart =
+      draftReady() &&
+      draft() === '' &&
+      !attachments.restoring() &&
+      attachments.files().length === 0 &&
+      attachments.rows().length === 0;
+    untracked(() => messagePrediction.eligible(eligible, mayStart));
   });
   const queueSession: ComposerQueue = {
     sessionId,
