@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::{event::Fact, message::MessageOrigin};
+use maka_agent_facts::{durable::Fact, message::MessageOrigin};
 
 async fn bot_fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| {
@@ -62,11 +62,13 @@ async fn idle(f: &Fixture, session: &str) {
     for _ in 0..400 {
         let active = f.owner.runs.lock().await.controls.contains_key(session);
         if !active
-            && f.session(session)
-                .await
-                .pending_messages(session)
+            && f.owner
+                .durable
+                .queue()
+                .read(session.to_owned())
                 .await
                 .unwrap()
+                .entries
                 .is_empty()
         {
             return;
@@ -147,8 +149,11 @@ async fn bot_identity_alone_grants_send_user() {
         request(&mut socket).await;
         response(&mut socket).await;
         idle(&f, &bot).await;
-        let turn = f.session(&bot).await.invocation_boundary(&bot, first["invocationId"].as_str().unwrap())
-            .await.unwrap().unwrap().0.invocation.turn_id;
+        let run = f.delivered_run(&first).await;
+        let source = f.owner.durable.frontier(run).await.unwrap();
+        assert_eq!(source.spec.owner, f.owner.run_owner());
+        assert_eq!(source.spec.session_id, bot);
+        let turn = source.spec.turn_id;
         let revision = f.owner.session(&bot).await.unwrap().revision;
         let forked = f
             .mutation(2, "fork", json!({"sessionId":bot,"expectedRevision":revision,"position":{"kind":"through_turn","turnId":turn},"title":"Fork","labels":[]}), Uuid::new_v4())
@@ -458,7 +463,7 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
-        f.send(&bot).await.unwrap();
+        let queued = f.send(&bot).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         let first = json!({"messageId":"m1","messages":[{"text":"CI is green."},{"text":"PR #123 needs review."}]});
@@ -490,8 +495,12 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
         let texts: Vec<_> = page["messages"].as_array().unwrap().iter().map(|m| (m["sequence"].as_u64().unwrap(), m["text"].as_str().unwrap().to_owned())).collect();
         assert_eq!(texts, vec![(1, "CI is green.".to_owned()), (2, "PR #123 needs review.".to_owned())]);
         assert!(!page.to_string().contains("Internal reasoning"));
-        let turn = f.owner.runs.lock().await.controls.get(&bot).map(|c| c.invocation.turn_id.clone());
-        assert!(turn.is_none(), "the turn has ended");
+        let execution = f.owner.runs.state().await.controls.get(&bot).map(|control| control.execution.clone());
+        assert!(execution.is_none(), "the driver control has retired");
+        let run = f.delivered_run(&queued).await;
+        let source = f.owner.durable.frontier(run).await.unwrap();
+        assert_eq!(source.spec.owner, f.owner.run_owner());
+        assert_eq!(source.spec.session_id, bot);
         let turns: std::collections::BTreeSet<_> = page["messages"]
             .as_array()
             .unwrap()
@@ -499,6 +508,7 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
             .map(|m| m["turnId"].as_str().unwrap().to_owned())
             .collect();
         assert_eq!(turns.len(), 1, "both messages belong to the turn that sent them");
+        assert!(turns.contains(&source.spec.turn_id), "outbox grouping uses the original admitted Run's turn");
         assert_eq!(f.query("botOutbox", json!({"after":1})).await.unwrap()["messages"].as_array().unwrap().len(), 1);
 
         // The outbox and the Bot record survive a restart.
@@ -512,91 +522,347 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
     .unwrap();
 }
 
-/// A tool dispatched but never settled leaves an unknown outcome. A delegated
-/// (WorkHub-origin) result must still wake the Bot; an ordinary Session keeps the
-/// stricter protection.
+/// Notifications wait for the original inline return to be acknowledged;
+/// retained known material must not become a fabricated Unknown or a replay.
 async fn origin_wake_after_unknown_outcome(bot_mode: bool) -> bool {
+    struct BotFaultSql(String);
+    impl maka_event_log::writeback::Statement for BotFaultSql {
+        type Value = ();
+        type Output = ();
+        fn execute(
+            self,
+            connection: &rusqlite::Connection,
+        ) -> Result<maka_event_log::writeback::Prepared<()>, maka_event_log::StoreError> {
+            connection.execute_batch(&self.0)?;
+            Ok(maka_event_log::writeback::Prepared {
+                value: (),
+                changed: true,
+                notification: maka_event_log::writeback::Notification::METADATA,
+            })
+        }
+        fn committed((): ()) {}
+        fn isolated_rejection(_: &maka_event_log::StoreError) -> bool {
+            false
+        }
+    }
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+    let mut f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
     let session = if bot_mode {
         open(&f).await["sessionId"].as_str().unwrap().to_owned()
     } else {
         f.create("Ordinary").await
     };
-    let raw: Vec<_> = f
-        .runtime_databases()
-        .into_iter()
-        .map(|path| rusqlite::Connection::open(path).unwrap())
-        .collect();
-    for db in &raw {
-        db.execute_batch("CREATE TRIGGER hold_settle BEFORE INSERT ON event_log WHEN NEW.kind='tool_settled' BEGIN SELECT RAISE(ABORT, 'crash before settle'); END;").unwrap();
-    }
-    f.send(&session).await.unwrap();
+    let queued = f.send(&session).await.unwrap();
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
-    let invocation = f
+    let run = f.delivered_run(&queued).await;
+    let execution = f
         .owner
         .runs
-        .lock()
+        .state()
         .await
         .controls
         .get(&session)
         .unwrap()
-        .invocation
+        .execution
         .clone();
-    let route = f.owner.return_route(&invocation).await.unwrap();
+    assert_eq!(execution.run_id, run);
+    let route = f.owner.return_route(&execution).await.unwrap();
+    let before = f
+        .query("checklist", json!({"sessionId":session,"offset":0}))
+        .await
+        .unwrap();
+    assert_eq!(before["total"], 0);
+    f.store.data_writer().unwrap().write(BotFaultSql(format!(
+        "CREATE TRIGGER bot_hold_settle BEFORE INSERT ON agent_facts WHEN NEW.run='{run}' AND json_extract((SELECT payload FROM contents WHERE id=NEW.body_content_id),'$.fact.kind')='local_tool_returned' BEGIN SELECT RAISE(ABORT,'fixture original local T2 unavailable'); END;"
+    ))).await.unwrap();
+    let mut physical = f.owner.physical_changes();
     service_tools::named_tool_response(
         &mut socket,
         "todo_write",
         json!({"todos":[{"content":"x","status":"pending"}]}),
     )
     .await;
-    for _ in 0..400 {
-        if !f.owner.runs.lock().await.controls.contains_key(&session) {
-            break;
+    let (key, original_id, original_result) = loop {
+        physical.borrow_and_update();
+        let original = f.owner.retained_tool_returns(&session).await;
+        if !original.is_empty() {
+            assert_eq!(original.len(), 1);
+            break original.into_iter().next().unwrap();
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let facts = service_tools::facts(&f, &session).await;
+        physical.changed().await.unwrap();
+    };
+    let view = f.owner.durable.frontier(run).await.unwrap();
+    assert_eq!(view.spec.owner, f.owner.run_owner());
+    assert_eq!(view.spec.session_id, session);
+    let tools: Vec<_> = view
+        .tools
+        .values()
+        .filter(|tool| tool.call.name == "todo_write")
+        .collect();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].key, key);
+    assert!(tools[0].admitted, "the original tool really crossed T1");
+    assert!(tools[0].accepted.is_none());
     assert!(
-        facts
-            .iter()
-            .any(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "todo_write"))
+        view.terminal.is_none(),
+        "unacknowledged material is not a terminal Run"
     );
     assert!(
-        !facts
-            .iter()
-            .any(|fact| matches!(fact, Fact::ToolSettled { .. }))
+        f.owner
+            .durable
+            .publication(run, vec![original_id], None)
+            .await
+            .unwrap()
+            .facts
+            .is_empty()
     );
-    for db in &raw {
-        db.execute_batch("DROP TRIGGER hold_settle").unwrap();
-    }
-    drop(raw);
+    assert!(
+        !f.recorded_facts(&session)
+            .await
+            .iter()
+            .any(|recorded| recorded.run == run
+                && matches!(&recorded.fact, Fact::ToolResultAccepted { .. }))
+    );
+    assert_eq!(
+        f.query("checklist", json!({"sessionId":session,"offset":0}))
+            .await
+            .unwrap(),
+        before,
+        "precommit T2 failure publishes neither the checklist nor its canonical return"
+    );
     let admission = f
         .owner
         .prepare_notification(
-            &invocation,
+            &execution,
             &route,
             "unknown-outcome-wake",
             |_| "Delegated task finished".into(),
-            MessageOrigin::WorkhubTask {
-                task_id: "task-1".into(),
+            MessageOrigin::BotWorker {
+                session_id: execution.session_id.clone(),
             },
         )
         .await
         .unwrap()
-        .expect("idle session accepts a notification");
+        .expect("the original route accepts a queued notification");
     assert!(f.owner.admit_notification(&admission).await.unwrap());
+    assert!(matches!(
+        f.owner
+            .durable
+            .queue()
+            .resolve_message(session.clone(), admission.message_id.clone())
+            .await
+            .unwrap(),
+        maka_agent_state::queue::MessageResolution::Pending
+    ));
+    let mut commits = f.owner.durable.subscribe().unwrap();
+    f.store
+        .data_writer()
+        .unwrap()
+        .write(BotFaultSql("DROP TRIGGER bot_hold_settle".into()))
+        .await
+        .unwrap();
+    let acknowledged = loop {
+        commits.borrow_and_update();
+        if let Some(recorded) = f.owner.durable.fact(run, original_id).await.unwrap() {
+            break recorded;
+        }
+        commits.changed().await.unwrap();
+    };
+    assert_eq!(acknowledged.id, original_id);
+    let returned: maka_agent_facts::artifact::ToolReturn<
+        maka_agent_facts::tool_output::ReturnedToolResult,
+    > = serde_json::from_slice(
+        &f.owner
+            .durable
+            .content(run, original_result.clone())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    returned.validate().unwrap();
+    assert!(
+        matches!(&acknowledged.fact,
+        Fact::LocalToolReturned { tool, result, is_error: false, settlement: maka_agent_facts::tool_call::ToolSettlement::Returned }
+            if *tool == key && *result == original_result),
+        "original T2 mismatch: fact={:?}, id={:?}, expected_tool={:?}, expected_result={:?}, output={:?}",
+        acknowledged.fact,
+        acknowledged.id,
+        key,
+        original_result,
+        returned.body.output
+    );
+    let published = f
+        .query("checklist", json!({"sessionId":session,"offset":0}))
+        .await
+        .unwrap();
+    assert_eq!(published["total"], 1);
+    assert_eq!(
+        published["revision"], 1,
+        "the checklist and original T2 commit once in the same Root statement"
+    );
+    assert_eq!(
+        published["items"],
+        json!([{"content":"x","status":"pending"}])
+    );
+    let maka_agent_facts::tool_output::DurableToolProjection::Text {
+        text: original_projection,
+    } = &returned.body.projection
+    else {
+        panic!("expected the original checklist text projection");
+    };
+    assert_eq!(
+        returned.body.output.into_json()["items"],
+        published["items"]
+    );
+    loop {
+        physical.borrow_and_update();
+        if !f
+            .owner
+            .runs
+            .state()
+            .await
+            .retained_cleanup
+            .contains_key(&session)
+        {
+            break;
+        }
+        physical.changed().await.unwrap();
+    }
     let reached = match tokio::time::timeout(Duration::from_secs(6), listener.accept()).await {
         Ok(accepted) => {
             let (mut socket, _) = accepted.unwrap();
             let sent = request(&mut socket).await;
+            let mut results = sent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| {
+                    message["role"] == "tool"
+                        && message["tool_call_id"].as_str() == Some(key.call.as_str())
+                });
+            let result = results
+                .next()
+                .expect("the original tool call has a model result");
             assert!(
-                sent.to_string().contains("outcome_unknown"),
-                "the model is told about the unknown outcome"
+                results.next().is_none(),
+                "the original tool call has one model result"
+            );
+            assert_eq!(
+                result["content"]
+                    .as_str()
+                    .expect("the original model projection is text"),
+                original_projection.as_str(),
+                "the model receives the original known return, not an invented Unknown: result={result}"
+            );
+            response(&mut socket).await;
+            let notification_run = f
+                .delivered_run(&json!({"sessionId":session,"messageId":admission.message_id}))
+                .await;
+            assert_ne!(notification_run, run, "the followup owns a new Run");
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let notification = request(&mut socket).await;
+            assert_eq!(
+                f.owner
+                    .runs
+                    .state()
+                    .await
+                    .controls
+                    .get(&session)
+                    .map(|control| control.execution.run_id),
+                Some(notification_run),
+                "the model request belongs to the original notification delivery"
+            );
+            let expected_notification = format!(
+                "{}Delegated task finished",
+                MessageOrigin::BotWorker {
+                    session_id: execution.session_id.clone(),
+                }
+                .prompt_header(admission.spec.language)
+            );
+            assert_eq!(
+                notification["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|message| {
+                        message["role"] == "user"
+                            && message["content"].as_str() == Some(expected_notification.as_str())
+                    })
+                    .count(),
+                1,
+                "the original followup appears once with its full producer attribution"
             );
             response(&mut socket).await;
             idle(&f, &session).await;
+            let duplicate = f
+                .owner
+                .prepare_notification(
+                    &execution,
+                    &route,
+                    "unknown-outcome-wake",
+                    |_| "Delegated task finished".into(),
+                    MessageOrigin::BotWorker {
+                        session_id: execution.session_id.clone(),
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                duplicate, admission,
+                "lookup retains the original notification request"
+            );
+            assert!(f.owner.admit_notification(&duplicate).await.unwrap());
+            assert_eq!(
+                f.delivered_run(&json!({"sessionId":session,"messageId":duplicate.message_id}))
+                    .await,
+                notification_run
+            );
+            assert_eq!(
+                f.query("checklist", json!({"sessionId":session,"offset":0}))
+                    .await
+                    .unwrap(),
+                published
+            );
+            let facts = f.recorded_facts(&session).await;
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|recorded| recorded.run == run
+                        && matches!(&recorded.fact,
+                Fact::ToolAdmitted { tool } if *tool == key))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|recorded| recorded.id == original_id)
+                    .count(),
+                1
+            );
+            assert_eq!(facts.iter().filter(|recorded| recorded.run == run && matches!(&recorded.fact,
+                Fact::LocalToolReturned { tool, result, .. } if *tool == key && *result == original_result)).count(), 1);
+            assert_eq!(facts.iter().filter(|recorded| recorded.run == run && matches!(&recorded.fact,
+                Fact::ToolResultAccepted { tool, outcome: maka_agent_facts::durable::AcceptedResult::Succeeded, .. }
+                    if *tool == key)).count(), 1);
+            super::todo_tests::reopen(&mut f).await;
+            assert_eq!(
+                f.query("checklist", json!({"sessionId":session,"offset":0}))
+                    .await
+                    .unwrap(),
+                published
+            );
+            assert_eq!(
+                f.owner.durable.fact(run, original_id).await.unwrap(),
+                Some(acknowledged)
+            );
+            assert_eq!(
+                f.delivered_run(&json!({"sessionId":session,"messageId":admission.message_id}))
+                    .await,
+                notification_run
+            );
             true
         }
         Err(_) => false,
@@ -733,9 +999,8 @@ async fn only_the_bot_session_carries_bot_instructions() {
             prompts[0].contains("cannot read or edit files"),
             "the Bot is told what it cannot do"
         );
-        // This fixture has no WorkHub, so the Bot must not be told to delegate.
         assert!(
-            !prompts[0].contains("workhub_tasks") && prompts[0].contains("ScheduledTask"),
+            prompts[0].contains("ScheduledTask"),
             "the Bot is told only about tools it holds"
         );
         assert!(!instructed(&prompts[1]), "{}", prompts[1]);
@@ -903,11 +1168,10 @@ async fn bot_sleep_allows_prediction_without_waking_or_speaking() {
         assert_eq!(result["suggestion"], "Check the deployment.");
         assert_eq!(outbox(&f).await, messages, "prediction must not call SendUser");
         let after = f.query("observe", json!({"sessionId":bot})).await.unwrap();
-        let appended = f.session(&bot).await.session_events(
-            &bot, before["through"].as_u64().unwrap(), after["through"].as_u64().unwrap(),
-            1, usize::MAX,
-        ).await.unwrap();
-        assert!(appended.events.is_empty(), "prediction must not append conversation events");
+        let history = f.history(&bot);
+        let cut = history.capture_at(after["through"].as_u64().unwrap()).await.unwrap();
+        let appended = history.page(&cut, before["through"].as_u64().unwrap(), 1).await.unwrap();
+        assert!(appended.items.is_empty(), "prediction must not append conversation events");
         assert_eq!(after["lastCompletedTurnId"], before["lastCompletedTurnId"]);
         assert!(after["run"].is_null());
 
@@ -1002,7 +1266,6 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
         // Identity grants SendUser and sleep; nothing else is promised.
         let bare = bot_prompt(language, &[]);
         for absent in [
-            "workhub_tasks",
             "ScheduledTask",
             "GoalStatus",
             "Recall",
@@ -1015,12 +1278,11 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             );
         }
         assert!(bare.contains("SendUser") && bare.contains("sleep"));
-        // A held tool is named, and delegation is offered only with WorkHub.
+        // A held tool is named without promising unavailable abilities.
         let some = bot_prompt(language, &held(&["ScheduledTask", "todo_read", "Skill"]));
         assert!(
             some.contains("ScheduledTask") && some.contains("todo_read") && some.contains("Skill")
         );
-        assert!(!some.contains("workhub_tasks"), "{language:?}: {some}");
         // A partial family is credited only with the members it holds.
         let skill_only = bot_prompt(language, &held(&["Skill"]));
         assert!(
@@ -1046,9 +1308,7 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             &held(&["SessionCreate", "SessionSend", "SessionRead"]),
         );
         assert!(
-            sessions.contains("SessionCreate / SessionSend")
-                && !sessions.contains("SessionStop")
-                && !sessions.contains("workhub_tasks"),
+            sessions.contains("SessionCreate / SessionSend") && !sessions.contains("SessionStop"),
             "{language:?}: {sessions}"
         );
         // With delegation held, the Bot is not told it cannot delegate.
@@ -1058,8 +1318,6 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
                 && !sessions.contains("既做不到也无法委派"),
             "{language:?}: {sessions}"
         );
-        let hub = bot_prompt(language, &held(&["workhub_tasks"]));
-        assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
     }
 }
 

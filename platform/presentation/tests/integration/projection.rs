@@ -17,13 +17,13 @@
  * under the License.
  */
 
+use maka_agent_facts::durable::{AgentStepLink, ExecutionIdentity};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationInput;
-use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::MessageInput;
 use maka_agent_facts::event::ModelInterruption;
+use maka_agent_facts::event::RunInput;
+use maka_agent_facts::event::RunOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::history::RowPosition;
@@ -34,17 +34,29 @@ use maka_agent_facts::model::recorded::{
     CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
     RecordedPartRef,
 };
-use maka_presentation::{Content, InvocationView, ProjectionError};
+use maka_presentation::{Content, ProjectionError, RunView};
 use serde_json::json;
 use std::time::{Duration, UNIX_EPOCH};
 
-fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
-    let invocation = Invocation {
+fn link() -> AgentStepLink {
+    serde_json::from_value(json!({
+        "run":"00000000-0000-4000-8000-000000000001",
+        "step":"00000000-0000-4000-8000-000000000002",
+        "attempt":"00000000-0000-4000-8000-000000000003"
+    }))
+    .unwrap()
+}
+
+fn execution() -> ExecutionIdentity {
+    ExecutionIdentity {
         session_id: "session".into(),
         turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
+        run_id: link().run,
+    }
+}
+
+fn events(outcome: RunOutcome) -> Vec<StoredEvent> {
+    let execution = execution();
     let options = Some(json!({"vendor":{"signature":"signed"}}));
     let usage = ModelUsage {
         input_tokens: Some(2),
@@ -52,9 +64,9 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
         ..Default::default()
     };
     let mut facts = vec![
-        Fact::InvocationOpened {
+        Fact::RunOpened {
             configuration: None,
-            input: InvocationInput::Message {
+            input: RunInput::Message {
                 source_messages: Vec::new(),
                 content: MessageInput {
                     display_text: Some("visible input".into()),
@@ -74,7 +86,8 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
             purpose: maka_agent_facts::context::ModelPurpose::Main,
             context: None,
             checkpoint_event_id: None,
-            step_id: "step".into(),
+            step_id: link().step,
+            attempt_id: link().attempt,
             model_id: "historical-model".into(),
             source_scope: LogScope::Session {
                 id: "session".into(),
@@ -94,12 +107,10 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
             provider_options: options.map(Into::into),
         },
     );
-    if matches!(
-        outcome,
-        InvocationOutcome::Completed | InvocationOutcome::HandoffPaused { .. }
-    ) {
+    if matches!(outcome, RunOutcome::Completed) {
         facts.push(Fact::ModelCompleted {
-            step_id: "step".into(),
+            step_id: link().step,
+            attempt_id: link().attempt,
             output: ModelCompletion {
                 compaction: None,
                 parts: vec![CompletionPart::Own(record)],
@@ -115,7 +126,8 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
         facts.push(Fact::ModelInterrupted {
             model_failure: None,
             diagnostic: None,
-            step_id: "step".into(),
+            step_id: link().step,
+            attempt_id: link().attempt,
             partial: Some(ModelPartial {
                 parts: vec![CompletionPart::Own(record)],
                 tool_inputs: vec![],
@@ -123,19 +135,19 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
                 model: None,
                 timestamp: None,
             }),
-            status: if matches!(outcome, InvocationOutcome::Cancelled { .. }) {
+            status: if matches!(outcome, RunOutcome::Cancelled { .. }) {
                 ModelInterruption::Cancelled
             } else {
                 ModelInterruption::Failed
             },
         });
     }
-    facts.push(Fact::InvocationEnded { outcome });
+    facts.push(Fact::RunEnded { outcome });
     facts
         .into_iter()
         .enumerate()
         .map(|(index, fact)| {
-            let mut event = RuntimeEvent::new(invocation.clone(), fact);
+            let mut event = RuntimeEvent::new(execution.clone(), fact);
             event.recorded_at = UNIX_EPOCH + Duration::from_millis(1_000 + index as u64);
             StoredEvent {
                 sequence: 10 + index as u64 * 2,
@@ -159,48 +171,19 @@ fn record(ordinal: u64, id: &str, part: ModelPart) -> ModelPartRecord {
 fn completed_and_interrupted_rows_keep_record_identity_time() {
     let mut messages = Vec::new();
     for outcome in [
-        InvocationOutcome::Completed,
-        InvocationOutcome::Cancelled {
+        RunOutcome::Completed,
+        RunOutcome::Cancelled {
             source: "user".into(),
         },
-        InvocationOutcome::Failed {
+        RunOutcome::Failed {
             model_failure: None,
             class: "provider".into(),
             message: Some("factual failure".into()),
         },
-        InvocationOutcome::HandoffPaused {
-            pause: maka_agent_facts::handoff::HandoffPause {
-                intent: maka_agent_facts::handoff::HandoffIntent {
-                    handoff_id: "handoff".into(),
-                    host_epoch: "host".into(),
-                    root_run_id: "run".into(),
-                    successor_run_id: "successor-run".into(),
-                    successor_invocation_id: "successor-invocation".into(),
-                    claim_id: "claim".into(),
-                },
-                execution: Box::new(maka_agent_facts::handoff::HandoffExecution {
-                    replay: maka_agent_facts::continuation::ReplayEvidence {
-                        version: maka_agent_facts::continuation::REPLAY_VERSION,
-                        digest: format!("sha256:{}", "a".repeat(64)),
-                        route_identity: format!("sha256:{}", "b".repeat(64)),
-                    },
-                    context: None,
-                    provider_options: serde_json::json!({}),
-                    main_output_limit: None,
-                    supports_vision: false,
-                    tools: maka_agent_facts::handoff::HandoffTools {
-                        catalog_digest: format!("sha256:{}", "c".repeat(64)),
-                        loaded: Default::default(),
-                    },
-                    compaction: maka_agent_facts::handoff::CompactionBudget::Available,
-                    replay_base: None,
-                }),
-            },
-        },
     ] {
         let events = events(outcome.clone());
-        let mut view = InvocationView::new();
-        let mut replay = InvocationView::new();
+        let mut view = RunView::new();
+        let mut replay = RunView::new();
         let mut rows = Vec::new();
         for stored in &events {
             let next = view.push(stored).unwrap();
@@ -220,7 +203,7 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
         assert_eq!(assistant.message.ts, 1002);
         assert!(
             matches!(&assistant.message.content, Content::Assistant { text, interrupted, .. }
-            if text == "😀 hello" && *interrupted == matches!(outcome, InvocationOutcome::Failed { .. }))
+            if text == "😀 hello" && *interrupted == matches!(outcome, RunOutcome::Failed { .. }))
         );
         assert_eq!(rows[0].message.ts, 1000);
         assert!(
@@ -234,10 +217,7 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
             rows.iter()
                 .filter(|row| matches!(row.message.content, Content::TokenUsage { .. }))
                 .count(),
-            usize::from(matches!(
-                outcome,
-                InvocationOutcome::Completed | InvocationOutcome::HandoffPaused { .. }
-            )),
+            usize::from(matches!(outcome, RunOutcome::Completed)),
             "no fabricated usage after interruption"
         );
         assert!(
@@ -247,24 +227,12 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
         assert!(rows.last().unwrap().position.source_sequence <= events.last().unwrap().sequence);
         let terminal = serde_json::to_value(&rows.last().unwrap().message).unwrap();
         let expected = match outcome {
-            InvocationOutcome::Completed | InvocationOutcome::ContextCompactFinished { .. } => {
-                Some("completed")
-            }
-            InvocationOutcome::Cancelled { .. } => Some("aborted"),
-            InvocationOutcome::Failed { .. } => Some("failed"),
-            InvocationOutcome::HandoffPaused { .. } => None,
+            RunOutcome::Completed | RunOutcome::ContextCompactFinished { .. } => "completed",
+            RunOutcome::Cancelled { .. } => "aborted",
+            RunOutcome::Failed { .. } => "failed",
         };
-        if let Some(expected) = expected {
-            assert_eq!(terminal["id"], events.last().unwrap().event.id);
-            assert_eq!(terminal["status"], expected);
-        } else {
-            assert!(
-                !rows
-                    .iter()
-                    .any(|row| matches!(row.message.content, Content::TurnState { ref state } if !matches!(state, maka_presentation::TurnState::Running))),
-                "physical pause must not publish a logical Turn terminal"
-            );
-        }
+        assert_eq!(terminal["id"], events.last().unwrap().event.id);
+        assert_eq!(terminal["status"], expected);
         messages.extend(rows.into_iter().map(|row| row.message));
     }
     // A closed part is not a successful request. Only provider-finalized
@@ -287,7 +255,7 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
         ),
     ] {
         for kind in [TextKind::Text, TextKind::Thinking] {
-            let mut facts = events(InvocationOutcome::Failed {
+            let mut facts = events(RunOutcome::Failed {
                 model_failure: None,
                 class: "provider".into(),
                 message: None,
@@ -307,7 +275,7 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
                 text: "😀 hello".into(),
                 provider_options: Some(options.clone().into()),
             });
-            let mut view = InvocationView::new();
+            let mut view = RunView::new();
             for fact in facts {
                 for row in view.push(&fact).unwrap() {
                     if let Content::Assistant {
@@ -326,7 +294,7 @@ fn completed_and_interrupted_rows_keep_record_identity_time() {
 
 #[test]
 fn complete_text_is_retained_and_malformed_evidence_poisons_the_view() {
-    let mut events = events(InvocationOutcome::Completed);
+    let mut events = events(RunOutcome::Completed);
     let Fact::ModelCompleted { output, .. } = &mut events[2].event.fact else {
         unreachable!()
     };
@@ -338,14 +306,14 @@ fn complete_text_is_retained_and_malformed_evidence_poisons_the_view() {
         text: "x".repeat(1025).into(),
         provider_options: None,
     });
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     let rows: Vec<_> = events
         .iter()
         .flat_map(|event| view.push(event).unwrap())
         .collect();
-    assert!(rows.iter().any(|row| matches!(&row.message.content, Content::Assistant {text,..} if text == &"x".repeat(1025))));
+    assert!(rows.iter().any(|row| matches!(&row.message.content, Content::Assistant {text,..} if text.as_str() == "x".repeat(1025).as_str())));
 
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     view.push(&events[0]).unwrap();
     assert!(
         view.push(&events[0]).is_err(),
@@ -354,24 +322,25 @@ fn complete_text_is_retained_and_malformed_evidence_poisons_the_view() {
     let mut oversized = events.remove(0);
     oversized.sequence = 9_007_199_254_740_992;
     assert!(matches!(
-        InvocationView::new().push(&oversized),
+        RunView::new().push(&oversized),
         Err(ProjectionError::OutOfRange)
     ));
 }
 
 #[test]
 fn interrupted_request_without_output_has_a_durable_diagnostic_not_an_assistant_message() {
-    let source = events(InvocationOutcome::Completed);
-    let mut view = InvocationView::new();
+    let source = events(RunOutcome::Completed);
+    let mut view = RunView::new();
     view.push(&source[0]).unwrap();
     view.push(&source[1]).unwrap();
     let failed = StoredEvent {
         sequence: source[1].sequence + 1,
         event: RuntimeEvent::new(
-            source[0].event.invocation.clone(),
+            source[0].event.execution.clone(),
             Fact::ModelInterrupted {
                 model_failure: None,
-                step_id: "step".into(),
+                step_id: link().step,
+                attempt_id: link().attempt,
                 status: ModelInterruption::RetryableFailure,
                 diagnostic: Some("Responses WebSocket closed: fixture diagnostic".into()),
                 partial: None,
@@ -430,25 +399,25 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             source(
                 "notice",
                 "notice",
-                annotated.then(|| MessageOrigin::WorkhubTask {
-                    task_id: "wt_actual".into(),
+                annotated.then(|| MessageOrigin::Session {
+                    execution: execution(),
                 }),
             ),
         ];
         let content = maka_agent_facts::message::aggregate(
             sources.iter().map(|source| &source.message.content),
         );
-        let mut opening = events(InvocationOutcome::Completed).remove(0);
+        let mut opening = events(RunOutcome::Completed).remove(0);
         opening.event.id = "opening".into();
-        opening.event.fact = Fact::InvocationOpened {
+        opening.event.fact = Fact::RunOpened {
             configuration: None,
-            input: InvocationInput::Message {
+            input: RunInput::Message {
                 content: content.clone(),
                 source_messages: sources.clone(),
                 request_fingerprint: None,
             },
         };
-        let mut view = InvocationView::new();
+        let mut view = RunView::new();
         let rows = view.push(&opening).unwrap();
         assert_eq!(rows.len(), if annotated { 3 } else { 2 });
         if annotated {
@@ -473,9 +442,9 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             }
             assert!(rows[0].position < rows[1].position && rows[1].position < rows[2].position);
             let mut delivered = sources[1].message.clone();
-            delivered.message_id = "graph-steering".into();
-            delivered.origin = Some(MessageOrigin::WorkhubGraph {
-                graph_id: "agent_graph_actual".into(),
+            delivered.message_id = "session-steering".into();
+            delivered.origin = Some(MessageOrigin::Session {
+                execution: execution(),
             });
             let mut steered = opening;
             steered.sequence += 1;
@@ -499,7 +468,7 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             assert_eq!(rows.len(), 1);
             assert_eq!(
                 serde_json::to_value(&rows[0].message).unwrap()["origin"],
-                json!({"kind":"workhub_graph","graphId":"agent_graph_actual"})
+                json!({"kind":"session","execution":execution()})
             );
         } else {
             assert_eq!(rows[0].message.id, "opening");
@@ -507,7 +476,7 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             assert_eq!(
                 json,
                 json!({
-                    "id":"opening","turnId":"turn","ts":1000,"type":"user",
+                    "id":"opening","runId":link().run,"turnId":"turn","ts":1000,"type":"user",
                     "text":"human\n\nnotice","displayText":"visible human\n\nvisible notice",
                     "attachments":[
                         {"kind":"other","name":"human","mimeType":"text/plain","bytes":1,
@@ -528,7 +497,7 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
 fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
     use maka_agent_facts::model::{ModelFinishReason, ModelToolCall, ToolInput};
     use maka_agent_facts::tool_call::ToolCallIdentity;
-    let mut original = events(InvocationOutcome::Completed);
+    let mut original = events(RunOutcome::Completed);
     let mut request = original.remove(1);
     let opening = original.remove(0);
     let Fact::ModelRequested {
@@ -539,8 +508,8 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         unreachable!()
     };
     *enabled = item_acceptance;
-    let invocation = opening.event.invocation.clone();
-    let mut view = InvocationView::new();
+    let execution = opening.event.execution.clone();
+    let mut view = RunView::new();
     view.push(&opening).unwrap();
     view.push(&request).unwrap();
     let mut sequence = request.sequence;
@@ -560,7 +529,10 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         .map(|(ordinal, call)| {
             record(
                 ordinal as u64,
-                &maka_presentation::tool_message_id("invocation", &format!("step:{}", call.id)),
+                &maka_presentation::tool_message_id(
+                    link().run,
+                    &format!("{}:{}", link().attempt, call.id),
+                ),
                 ModelPart::ToolCall { call: call.clone() },
             )
         })
@@ -570,9 +542,10 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         if item_acceptance {
             sequence += 1;
             let event = RuntimeEvent::new(
-                invocation.clone(),
+                execution.clone(),
                 Fact::ModelObserved {
-                    step_id: "step".into(),
+                    step_id: link().step,
+                    attempt_id: link().attempt,
                     event: ModelObservation::Part(record.clone()),
                 },
             );
@@ -590,7 +563,7 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         rows.extend(
             view.push(&StoredEvent {
                 sequence,
-                event: RuntimeEvent::new(invocation.clone(), fact),
+                event: RuntimeEvent::new(execution.clone(), fact),
             })
             .unwrap(),
         );
@@ -601,7 +574,8 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         ..Default::default()
     };
     push(Fact::ModelObserved {
-        step_id: "step".into(),
+        step_id: link().step,
+        attempt_id: link().attempt,
         event: ModelObservation::Finished {
             reason: ModelFinishReason::ToolCalls,
             usage: usage.clone(),
@@ -609,7 +583,8 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         },
     });
     push(Fact::ModelCompleted {
-        step_id: "step".into(),
+        step_id: link().step,
+        attempt_id: link().attempt,
         output: ModelCompletion {
             compaction: None,
             parts: completion_parts,
@@ -622,12 +597,12 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
         },
     });
     for call in calls {
-        let operation_id = format!("step:{}", call.id);
+        let operation_id = format!("{}:{}", link().attempt, call.id);
         push(Fact::ToolDispatched {
             presentation: None,
             title: None,
             operation_id: operation_id.clone(),
-            call: ToolCallIdentity::provider("step".into(), call.id.clone()),
+            call: ToolCallIdentity::provider(link(), call.id.clone()),
             name: call.name,
             input: call.input.as_json().unwrap().clone(),
         });
@@ -728,7 +703,7 @@ fn reasoning_summary_items_are_paragraphs_in_history_without_changing_model_text
             text: "**检查🙂****Build**".into(),
             provider_options: Some(options.into()),
         });
-        let mut facts = events(InvocationOutcome::Completed);
+        let mut facts = events(RunOutcome::Completed);
         let Fact::ModelCompleted { output, .. } = &mut facts[2].event.fact else {
             unreachable!()
         };
@@ -736,7 +711,7 @@ fn reasoning_summary_items_are_paragraphs_in_history_without_changing_model_text
             unreachable!()
         };
         record.part = original.clone();
-        let mut view = InvocationView::new();
+        let mut view = RunView::new();
         let mut displayed = Vec::new();
         for fact in facts {
             for row in view.push(&fact).unwrap() {
@@ -760,24 +735,19 @@ fn reasoning_summary_items_are_paragraphs_in_history_without_changing_model_text
 #[test]
 fn executor_omits_empty_messages_and_preserves_start_chronology_over_id_lexicography() {
     use maka_agent_facts::executor::{Binding, Output};
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
+    let execution = execution();
     let mut seq = 0_u64;
     let mut next = |fact| {
         seq += 1;
         StoredEvent {
             sequence: seq,
-            event: RuntimeEvent::new(invocation.clone(), fact),
+            event: RuntimeEvent::new(execution.clone(), fact),
         }
     };
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     let mut seen = Vec::new();
     let mut rows = Vec::new();
-    let mut record = |view: &mut InvocationView, seen: &mut Vec<(u64, RuntimeEvent)>, fact| {
+    let mut record = |view: &mut RunView, seen: &mut Vec<(u64, RuntimeEvent)>, fact| {
         let stored = next(fact);
         seen.push((stored.sequence, stored.event.clone()));
         view.push(&stored).unwrap()
@@ -785,8 +755,8 @@ fn executor_omits_empty_messages_and_preserves_start_chronology_over_id_lexicogr
     rows.extend(record(
         &mut view,
         &mut seen,
-        Fact::InvocationOpened {
-            input: InvocationInput::Message {
+        Fact::RunOpened {
+            input: RunInput::Message {
                 content: "task".into(),
                 source_messages: vec![],
                 request_fingerprint: None,
@@ -845,7 +815,7 @@ fn executor_omits_empty_messages_and_preserves_start_chronology_over_id_lexicogr
             .any(|row| matches!(row.message.content, Content::Assistant { .. })),
         "tool-only API messages without text or thinking must not emit blank assistant rows"
     );
-    let mut duplicate = InvocationView::new();
+    let mut duplicate = RunView::new();
     for (sequence, event) in &seen {
         duplicate
             .push(&StoredEvent {
@@ -893,8 +863,8 @@ fn executor_omits_empty_messages_and_preserves_start_chronology_over_id_lexicogr
         .collect();
     assert_eq!(overlay, ["first", "second"]);
     let ended = view
-        .push(&next(Fact::InvocationEnded {
-            outcome: InvocationOutcome::Cancelled {
+        .push(&next(Fact::RunEnded {
+            outcome: RunOutcome::Cancelled {
                 source: "user".into(),
             },
         }))

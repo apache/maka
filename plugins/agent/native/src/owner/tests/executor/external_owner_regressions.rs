@@ -86,7 +86,7 @@ async fn external_skills_candidates_steering_and_queue_edits_use_the_same_bridge
             complete(&mut control).await;
             f.drained().await;
             let delivered = f.query("work", json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
-            assert_eq!(delivered["execution"]["invocationId"], first["invocationId"], "promotion must keep the original invocation");
+            assert_eq!(delivered["execution"]["runId"], first["runId"], "promotion must keep the original invocation");
             assert_eq!(delivered["execution"]["state"], "completed", "{delivered}");
             assert!(listener.accept().now_or_never().is_none());
         }
@@ -144,16 +144,14 @@ async fn external_agy_interrupt_preserves_explicit_next_backend_and_model() {
             let mut successor = BufReader::new(listener.accept().await.unwrap().0);
             let opened = packet(&mut successor, "opened").await;
             assert_eq!(opened["request"]["model"], "explicit-next-model", "explicit model cannot be overwritten by the interrupted turn");
-            if runtime == "codex" {
-                assert!(opened["request"].get("resume").is_none(), "changing runtimes must not reuse the agy native ID");
-            }
+            assert!(opened["request"].get("resume").is_none(), "successor must not resume an old private job even for the same runtime");
             assert_eq!(work(&f, &session, &first).await["execution"]["state"], "cancelled");
             assert_eq!(f.mutation(2, "send", input, operation).await.unwrap(), accepted);
             complete(&mut successor).await;
             f.drained().await;
             let delivered = f.query("work", json!({"sessionId":session,"target":{"kind":"message","messageId":accepted["messageId"]}})).await.unwrap();
             assert_eq!(delivered["execution"]["state"], "completed", "{delivered}");
-            assert_ne!(delivered["execution"]["invocationId"], first["invocationId"]);
+            assert_ne!(delivered["execution"]["runId"], first["runId"]);
         }
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -185,12 +183,8 @@ async fn external_single_model_validation_does_not_probe_unrelated_native_runtim
                     mark(commands.antigravity.as_mut().unwrap(), &agy_marker);
                 } else {
                     let command = commands.antigravity.as_mut().unwrap();
-                    let original = std::mem::take(&mut command.args);
-                    command.args = vec!["-e".into(), format!(
-                        "require('node:fs').appendFileSync({}, 'probe');import(require('node:url').pathToFileURL(process.argv[1]).href)",
-                        serde_json::to_string(selected_marker.to_str().unwrap()).unwrap(),
-                    )];
-                    command.args.extend(original);
+                    let script=command.args.iter().position(|arg|arg=="-e").unwrap()+1;
+                    command.args[script].insert_str(0,&format!("import {{appendFileSync as recordProbe}} from 'node:fs';recordProbe({},'probe');\n",serde_json::to_string(selected_marker.to_str().unwrap()).unwrap()));
                 }
             })
             .await;

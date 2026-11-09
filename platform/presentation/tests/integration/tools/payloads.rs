@@ -21,24 +21,24 @@ use super::*;
 use maka_agent_facts::tool_output::ToolOutput;
 use maka_presentation::ProjectionError;
 
-fn boundary(output: &ToolOutput) -> (InvocationView, StoredEvent) {
+fn boundary(output: &ToolOutput) -> (RunView, StoredEvent) {
     let mut facts = vec![opening()];
     step(&mut facts, "first", false, false);
     facts.push(Fact::ToolDispatched {
         presentation: None,
         title: None,
-        operation_id: "first:raw".into(),
-        call: ToolCallIdentity::provider("first".into(), "raw".into()),
+        operation_id: operation("first", "raw"),
+        call: ToolCallIdentity::provider(link("first"), "raw".into()),
         name: "exec".into(),
         input: json!({"code":"Read()"}),
     });
     facts.push(Fact::ToolSettled {
-        operation_id: "first:raw".into(),
+        operation_id: operation("first", "raw"),
         outcome: success(output),
     });
     let mut events = stored(facts);
     let result = events.pop().unwrap();
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     for event in events {
         view.push(&event).unwrap();
     }
@@ -57,7 +57,7 @@ fn successful_boundary_requires_raw_and_other_facts_reject_it() {
         view.push_with_tool_output(&event, Some(&raw)).is_err(),
         "invalid input poisons the projection"
     );
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     let opening = stored(vec![opening()]).remove(0);
     assert!(matches!(
         view.push_with_tool_output(&opening, Some(&raw)),
@@ -75,7 +75,7 @@ fn raw_results_preserve_complete_content_and_row_metadata() {
         .unwrap()
         .remove(0);
     assert!(
-        matches!(&row.message.content,maka_presentation::Content::ToolResult {content:maka_presentation::ToolContent::Text {text:actual},..} if actual == &text),
+        matches!(&row.message.content,maka_presentation::Content::ToolResult {content:maka_presentation::ToolContent::Text {text:actual},..} if actual.as_str() == text.as_str()),
         "complete raw result changed"
     );
 }

@@ -23,12 +23,42 @@ use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellResult, CellStore, ToolMetadata};
 use maka_js_runtime::CodeExecutor;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+
+// Pure interpreter test data: only this owner can accept a private write set.
+// It is not Agent canonical state or an execution capability.
+#[derive(Default)]
+pub(super) struct SessionData(Mutex<BTreeMap<String, Vec<u8>>>);
+impl SessionData {
+    pub(super) fn cell_store(self: &Arc<Self>) -> CellStore {
+        CellStore::new(maka_session_state::Session::new(self.clone()))
+    }
+    pub(super) fn accept(&self, result: &CellResult, draft: maka_code_runtime::SessionDraft) {
+        assert!(
+            matches!(result, CellResult::Success { .. }),
+            "failed Cells cannot publish their private draft"
+        );
+        assert!(
+            draft.loaded_tools.is_none(),
+            "plain interpreter fixture has no discovery publication"
+        );
+        self.0.lock().unwrap().extend(draft.values);
+    }
+}
+impl maka_session_state::SessionDataReader for SessionData {
+    fn load(&self, key: &str) -> maka_session_state::Result<Option<Vec<u8>>> {
+        Ok(self.0.lock().unwrap().get(key).cloned())
+    }
+    fn loaded(&self) -> maka_session_state::Result<BTreeSet<String>> {
+        Ok(BTreeSet::new())
+    }
+}
 
 struct Echo;
 
@@ -37,8 +67,8 @@ async fn model_modules_match_globals_timers_explicit_output_and_import_boundarie
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
     let tools = Arc::new(Echo);
     let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
-    let result = engine
-        .execute_module(
+    let prepared = engine
+        .prepare_module(
             r#"
         export const moduleValue = 42;
         text([typeof console, typeof Deno, typeof __bootstrap, typeof Atomics,
@@ -58,6 +88,9 @@ async fn model_modules_match_globals_timers_explicit_output_and_import_boundarie
         )
         .await
         .unwrap();
+    let binding = prepared.binding().clone();
+    let result = prepared.execute_bound().await.unwrap();
+    engine.release_binding(&binding);
     assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
     let output = serde_json::to_value(context.take_output()).unwrap();
     assert_eq!(
@@ -73,8 +106,8 @@ async fn model_modules_match_globals_timers_explicit_output_and_import_boundarie
         "await import('node:fs');",
     ] {
         let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = engine
-            .execute_module(
+        let prepared = engine
+            .prepare_module(
                 source.into(),
                 tools.clone(),
                 CancellationToken::new(),
@@ -82,6 +115,9 @@ async fn model_modules_match_globals_timers_explicit_output_and_import_boundarie
             )
             .await
             .unwrap();
+        let binding = prepared.binding().clone();
+        let result = prepared.execute_bound().await.unwrap();
+        engine.release_binding(&binding);
         assert!(
             matches!(result, CellResult::Failure { .. }),
             "{source}: {result:?}"
@@ -100,7 +136,20 @@ impl ToolExecutor for Echo {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn output_survives_errors_and_json_store_does_not_retain_heap() {
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
-    let store = CellStore::temporary().unwrap();
+    let owner = Arc::new(SessionData::default());
+    let store = owner.cell_store();
+    let tools = Arc::new(Echo);
+    let seed = CellContext::new(store.clone(), vec![]).unwrap();
+    let seeded = engine
+        .execute_with_context(
+            "store('data', {n:42});".into(),
+            tools.clone(),
+            CancellationToken::new(),
+            seed.clone(),
+        )
+        .await
+        .unwrap();
+    owner.accept(&seeded, seed.take_draft().unwrap());
     let context = CellContext::new(
         store.clone(),
         vec![ToolMetadata {
@@ -109,13 +158,17 @@ async fn output_survives_errors_and_json_store_does_not_retain_heap() {
         }],
     )
     .unwrap();
-    let tools = Arc::new(Echo);
     let result = engine.execute_with_context(
-        "globalThis.secret = 9; store('data', {n:42}); text(ALL_TOOLS[0].name); await Promise.resolve(); throw new Error('after output');".into(),
+        "globalThis.secret = 9; store('data', {n:99}); text(ALL_TOOLS[0].name); await Promise.resolve(); throw new Error('after output');".into(),
         tools.clone(), CancellationToken::new(), context.clone()).await.unwrap();
     assert!(matches!(result, CellResult::Failure { .. }));
     assert!(matches!(&context.take_output()[0], CellOutput::Text { text } if text == "echo"));
-    context.commit().unwrap();
+    let abandoned = context.take_draft().unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&abandoned.values["data"]).unwrap(),
+        json!({"n":99})
+    );
+    drop(abandoned);
     let next = CellContext::new(store.clone(), vec![]).unwrap();
     let result = engine
         .execute_with_context(
@@ -128,7 +181,8 @@ async fn output_survives_errors_and_json_store_does_not_retain_heap() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(result).unwrap()["value"],
-        json!([{"n":42},"undefined",true])
+        json!([{"n":42},"undefined",true]),
+        "the failed Cell's private n=99 must not overwrite accepted n=42"
     );
 }
 

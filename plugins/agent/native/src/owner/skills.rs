@@ -106,13 +106,13 @@ impl Owner {
     pub(super) fn skill_tool_names(
         &self,
         session: &str,
-        basis: &MessageBasis,
+        basis: &CapturedRun,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> Result<Vec<String>, String> {
         match &basis.executor {
-            Some(executor) if executor.selection.executor == "external" => {
-                Ok(self.external_tools(session, basis)?.catalog.names())
-            }
+            Some(executor) if executor.selection.executor == "external" => Ok(self
+                .external_catalog(self.selected_tools(session, basis, false, None)?)
+                .names()),
             Some(_) => Ok(Vec::new()),
             None => Ok(self.selected_tools(session, basis, false, editing)?.names()),
         }
@@ -161,35 +161,28 @@ impl Owner {
             &self.managed_worktrees,
         )
         .await?;
-        // Only inspect graph selection: opening a new epoch belongs to send admission.
-        let graph = match &self.graphs {
-            Some(graphs) => graphs
-                .current(&input.session_id)
-                .await?
-                .filter(|control| control.selected)
-                .map(|control| control.epoch),
-            None => None,
-        };
         // This read-only basis selects tool names; it never renders or admits model work.
+        let mcp_floor = self
+            .capture_sandbox(&session.configuration, parent.sandbox_floor())
+            .await?;
         let selected_catalog = if executor.is_some() {
             self.mcp_projects.base.clone()
         } else {
             self.mcp_projects
-                .available(&session.configuration.workspace)
+                .available(&session.configuration.workspace, &mcp_floor)
                 .await?
         };
         let selected_catalog = self
             .mcp_projects
             .with_client(&input.session_id, selected_catalog)?;
-        let basis = MessageBasis {
+        let basis = CapturedRun {
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog),
             language: Language::En,
             compaction_prompt: None,
-            graph,
             collaboration_mode: session.configuration.collaboration_mode,
-            background_kind: BackgroundKind::Schedule,
+            background_kind: BackgroundKind::Interactive,
             tool_discovery: false,
             allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
             background: None,
@@ -213,20 +206,22 @@ impl Owner {
         })
         .map_err(|_| "agent_skill_query_invalid")?;
         let import = library.selected.import.clone();
+        let services = library
+            .services
+            .select_import_method(&import, 0, "search")?;
         let mut ticket = parent
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = match parent.execution() {
-            Some(execution) => library.services.request_with_execution(
+        let request = match parent.work_custody() {
+            Some(custody) => services.request_with_work(
                 parent.identity.clone(),
                 parent.cancellation.child_token(),
-                execution.clone(),
+                custody.clone(),
             ),
-            None => library
-                .services
-                .request(parent.identity.clone(), parent.cancellation.child_token()),
-        }?;
+            None => services.request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?
+        .with_sandbox_floor(parent.sandbox_floor())?;
         let result = self
             .workers
             .spawn(async move {
@@ -305,20 +300,22 @@ impl Owner {
         })
         .map_err(|_| "agent_skill_preparation_invalid")?;
         let import = library.selected.import.clone();
+        let services = library
+            .services
+            .select_import_method(&import, 0, "prepare")?;
         let mut ticket = parent
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = match parent.execution() {
-            Some(execution) => library.services.request_with_execution(
+        let request = match parent.work_custody() {
+            Some(custody) => services.request_with_work(
                 parent.identity.clone(),
                 parent.cancellation.child_token(),
-                execution.clone(),
+                custody.clone(),
             ),
-            None => library
-                .services
-                .request(parent.identity.clone(), parent.cancellation.child_token()),
-        }?;
+            None => services.request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?
+        .with_sandbox_floor(parent.sandbox_floor())?;
         let result = self
             .workers
             .spawn(async move {

@@ -19,7 +19,9 @@
 
 use crate::Error;
 use crate::name;
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::{
+    BlockerId, BlockerKind, ExecutionIdentity, RunId, Terminal, WaitReason,
+};
 use maka_agent_facts::input::MessageInput;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,7 +35,7 @@ pub use message::{
 };
 mod removal;
 mod root;
-pub use interaction::{OfferInteraction, Prompt};
+pub use interaction::{Interactions, OfferInteraction, Prompt};
 pub use removal::{RemovalReceipt, RemoveSession, RemovedSession};
 pub use root::{CreateRoot, RootApproval, RootTemplate, Settings as RootSettings};
 
@@ -86,24 +88,47 @@ impl Submit {
     }
 }
 
-/// Resume one sealed physical Run. The operation identity is package/scope-local;
-/// an exact retry returns the same continuation, never the Session's new tip.
+/// A terminal source is immutable. Exact operation retries return the same newly
+/// admitted Run; they never reactivate the source or substitute the Session tip.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Resume {
+pub struct ContinueRun {
     pub operation_id: String,
-    pub source: Invocation,
+    pub session_id: String,
+    pub source_run_id: RunId,
+    pub source_high_water: u64,
+    pub target: Target,
 }
-impl Resume {
+impl ContinueRun {
     pub fn validate(&self) -> Result<(), Error> {
-        for value in [
-            &self.operation_id,
-            &self.source.session_id,
-            &self.source.turn_id,
-            &self.source.run_id,
-            &self.source.invocation_id,
-        ] {
-            name(value)?;
+        name(&self.operation_id)?;
+        name(&self.session_id)?;
+        if !(1..=9_007_199_254_740_991).contains(&self.source_high_water) {
+            return Err(Error::Invalid("invalid continuation source fence".into()));
+        }
+        self.target.validate()
+    }
+}
+
+/// This decision settles the Agent blocker only, never the provider's original outcome.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdjudicateRisk {
+    pub operation_id: String,
+    pub session_id: String,
+    pub run_id: RunId,
+    /// Compare against the Run-local observation used for this decision.
+    pub expected_high_water: u64,
+    pub blocker_id: BlockerId,
+    pub decision: maka_agent_facts::durable::RiskDecision,
+}
+
+impl AdjudicateRisk {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.operation_id)?;
+        name(&self.session_id)?;
+        if !(1..=9_007_199_254_740_991).contains(&self.expected_high_water) {
+            return Err(Error::Invalid("invalid risk observation fence".into()));
         }
         Ok(())
     }
@@ -113,7 +138,7 @@ impl Resume {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub message_id: String,
     pub content_digest: String,
 }
@@ -215,29 +240,34 @@ pub struct WorkspacePatch {
     pub base_commit: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Progress {
     Pending,
     Running,
-    WaitingForUser,
-    Paused,
-    Ended {
-        outcome: maka_agent_facts::event::InvocationOutcome,
-    },
+    Waiting { waits: Vec<WaitReason> },
+    Blocked { blockers: Vec<RunBlocker> },
+    Ended { outcome: Terminal },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunBlocker {
+    pub id: BlockerId,
+    pub reason: BlockerKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Observation {
     pub receipt: Receipt,
     pub progress: Progress,
-    /// Exact log fence from the same snapshot as progress; use it for event pages.
-    pub through_sequence: u64,
+    /// Run-local revision from the same snapshot as progress; use it for fact pages.
+    pub through_revision: u64,
     /// Canonical terminal record from this same observation, absent while unfinished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_event_id: Option<String>,
-    /// Stable identity of the current blocking interaction set or handoff pause.
+    pub terminal_fact_id: Option<maka_agent_facts::durable::FactId>,
+    /// Stable identity of the current blocking interaction set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_id: Option<String>,
 }
@@ -245,8 +275,8 @@ pub struct Observation {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventPage {
-    pub events: Vec<maka_agent_facts::event::StoredEvent>,
-    pub through_sequence: u64,
+    pub facts: Vec<maka_agent_facts::durable::RecordedFact>,
+    pub through_revision: u64,
     pub next_after: Option<u64>,
 }
 
@@ -259,8 +289,8 @@ pub struct SessionCapabilities {
     pub executors: Vec<maka_agent_facts::executor::ExecutorId>,
 }
 
-/// The latest logical execution is an observation, not a durable business identity. Capture
-/// the invocation when recording a control intent; never retarget a retry.
+/// The latest Run is an observation. Capture its stable identity when recording
+/// a control intent; never retarget a retry to the Session tip.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Activity {
@@ -272,7 +302,7 @@ pub struct Activity {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CurrentExecution {
     /// May already be terminal; it remains a safe identity for exact control.
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     /// Frozen behavior, not the current Session default.
     pub behavior: Option<maka_agent_facts::execution::BehaviorId>,
     pub progress: Progress,
@@ -393,18 +423,14 @@ pub trait Commands: Send + Sync + std::any::Any {
         Result<maka_agent_facts::attachment::AttachmentRef, CommandError>,
     >;
 
-    /// Immutable user input that opened this logical execution. Handoff successors
-    /// resolve the same root; unrelated Runs are never substituted. Non-message
-    /// inputs return None. This is a read, not authority to forward attachments.
-    fn input(
+    fn continue_run(
         &self,
-        invocation: Invocation,
-    ) -> futures_util::future::BoxFuture<'_, Result<Option<MessageInput>, CommandError>>;
-
-    fn resume(
+        request: ContinueRun,
+    ) -> futures_util::future::BoxFuture<'_, Result<ExecutionIdentity, CommandError>>;
+    fn adjudicate_risk(
         &self,
-        request: Resume,
-    ) -> futures_util::future::BoxFuture<'_, Result<Invocation, CommandError>>;
+        request: AdjudicateRisk,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
     /// Replace an idle Session's model/Executor selection without changing its
     /// workspace, behavior or permission ceiling. Revision mismatch is explicit.
     /// Every committed choice advances the revision, including identical values.
@@ -477,12 +503,12 @@ pub trait Commands: Send + Sync + std::any::Any {
         &self,
         session_id: String,
     ) -> futures_util::future::BoxFuture<'_, Result<Activity, CommandError>>;
-    /// Stop the captured logical execution, including its handoff successors.
+    /// Persist Stop for the captured stable Run.
     /// Completion confirms the stop request, not that all cleanup has finished.
     /// Repeating it never stops a later Turn in the same Session.
     fn stop(
         &self,
-        invocation: Invocation,
+        execution: ExecutionIdentity,
     ) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
     /// Check current instance and Session boundaries without submitting work.
     fn validate_authority(&self) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
@@ -515,17 +541,26 @@ pub trait Commands: Send + Sync + std::any::Any {
         &self,
         request: ReadArtifact,
     ) -> futures_util::future::BoxFuture<'_, Result<Option<ArtifactChunk>, CommandError>>;
+    /// Exact durable fact at a Run-local revision fence, never a Root event row.
     fn event(
         &self,
         operation: SessionOperation,
-        event_id: String,
+        fact_id: maka_agent_facts::durable::FactId,
         through: u64,
     ) -> futures_util::future::BoxFuture<
         '_,
-        Result<Option<maka_agent_facts::event::StoredEvent>, CommandError>,
+        Result<Option<maka_agent_facts::durable::RecordedFact>, CommandError>,
     >;
+    /// Immutable content of an authorized Run. Native checks current caller access
+    /// and Run ownership of the reference; a digest alone never grants a read.
+    fn content(
+        &self,
+        run: RunId,
+        reference: maka_agent_facts::durable::ContentRef,
+    ) -> futures_util::future::BoxFuture<'_, Result<Vec<u8>, String>>;
     /// Invalidation only. The canonical query remains authoritative.
-    fn changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, CommandError>;
+    fn changes(&self) -> Result<tokio::sync::watch::Receiver<()>, CommandError>;
+    /// Page original facts by Run-local revision; no reconstructed transcript map.
     fn events(
         &self,
         operation: SessionOperation,
@@ -556,4 +591,5 @@ pub trait Commands: Send + Sync + std::any::Any {
     ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>>;
 }
 
-use maka_capabilities::authorization::{CommandError, SessionBoundary};
+use maka_capabilities::authorization::CommandError;
+use maka_plugin_core::authorization::SessionBoundary;

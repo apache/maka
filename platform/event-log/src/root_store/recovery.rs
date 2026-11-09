@@ -23,7 +23,6 @@ use super::*;
 enum Recovery {
     Shell(u64),
     Effects,
-    Auxiliary,
 }
 impl RootStore {
     async fn recover_data(&self, kind: Recovery) -> Result<u64, StoreError> {
@@ -39,10 +38,6 @@ impl RootStore {
                     Recovery::Shell(at) => log.recover_shell_runs(at).await?,
                     Recovery::Effects => {
                         log.recover_host_effects().await?;
-                        0
-                    }
-                    Recovery::Auxiliary => {
-                        log.recover_auxiliary_models().await?;
                         0
                     }
                 };
@@ -69,9 +64,6 @@ impl RootStore {
     }
     pub async fn recover_host_effects(&self) -> Result<(), StoreError> {
         self.recover_data(Recovery::Effects).await.map(|_| ())
-    }
-    pub async fn recover_auxiliary_models(&self) -> Result<(), StoreError> {
-        self.recover_data(Recovery::Auxiliary).await.map(|_| ())
     }
     pub async fn drain(&self) {
         let mut reported = std::collections::BTreeSet::new();

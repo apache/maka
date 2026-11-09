@@ -19,18 +19,14 @@
 
 use super::*;
 use maka_agent_facts::language::Language;
-use maka_agent_facts::workspace::PermissionBasis;
 use maka_agent_facts::{
     artifact::{Artifact, ArtifactKind, ArtifactSource},
-    capability::{CallResult, ContentBlock},
-    event::Invocation,
-    tool_call::ToolCallIdentity,
-    tool_output::ToolOutput,
-    tools::{PreparedEffect, ToolExecutor, ToolFuture, ToolJournal},
+    durable::ExecutionIdentity,
+    tools::{ToolExecutor, ToolFuture},
 };
-use maka_capabilities::call::Scope;
 use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellResult};
 use maka_js_runtime::repl::Repl;
+use maka_sandbox::workspace::PermissionBasis;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -66,13 +62,16 @@ type OperationFixture = Arc<dyn Fn(Value) -> Result<Value, OperationFailure> + S
 
 /// Carries the original Host call and resource budget.
 pub(super) struct EvaluationScope {
-    call: Scope,
+    call: Call,
     input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
-impl From<maka_host_runtime::application::ResourceCapturer> for EvaluationScope {
-    fn from(resources: maka_host_runtime::application::ResourceCapturer) -> Self {
+impl EvaluationScope {
+    pub(super) fn new(
+        call: Call,
+        resources: maka_host_runtime::application::ResourceCapturer,
+    ) -> Self {
         Self {
-            call: resources.scope().clone(),
+            call,
             input_resources: Some(resources),
         }
     }
@@ -87,12 +86,12 @@ impl Computer {
         basis: PermissionBasis,
         interaction: Arc<sessions::Interaction>,
         cancellation: CancellationToken,
-    ) -> Result<ResultValue, ToolError> {
+    ) -> Result<(ResultValue, maka_event_log::root_store::DataChange), ToolError> {
         let EvaluationScope {
             call,
             input_resources,
         } = evaluation;
-        let invocation = call.identity.agent().expect("checked invocation").clone();
+        let invocation = call.authority.call().execution.clone();
         let mut kernels = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
@@ -127,6 +126,7 @@ impl Computer {
                 )
                 .await;
         }
+        access::resource_boundary(call.scope.sandbox_floor())?;
         if kernels
             .as_ref()
             .is_some_and(|kernel| kernel.repl.as_ref().is_some_and(Repl::is_closed))
@@ -139,8 +139,8 @@ impl Computer {
         let kernel = kernels.as_mut().expect("current Computer kernel");
         let epoch = kernel.epoch.clone();
         access::granted(self, &call, basis).await?;
-        sessions::drain_ended_turns(self, &interaction, &invocation.session_id, language).await?;
-        sessions::watch_turn(self, &interaction, &invocation, language).await?;
+        sessions::drain_ended_turns(self, &interaction, language).await?;
+        sessions::watch_turn(self, &interaction, &call, language).await?;
         let platform = {
             let mut native = epoch.native.lock().await;
             native.configure(
@@ -185,12 +185,7 @@ impl Computer {
             operation_fixture: None,
             input_resources,
         });
-        let store = maka_agent_authority::permissions::execution(
-            &self.store,
-            &invocation,
-            call.execution().map(|token| token.as_ref()),
-        )?;
-        let mut changes = store.subscribe_commits().map_err(failed)?;
+        let mut changes = call.authority.changes().map_err(failed)?;
         let monitor = async {
             loop {
                 changes.borrow_and_update();
@@ -283,11 +278,11 @@ impl Computer {
     }
     async fn output(
         &self,
-        invocation: &Invocation,
-        call: &Scope,
+        invocation: &ExecutionIdentity,
+        call: &Call,
         output: Vec<CellOutput>,
         state: ReplState,
-    ) -> Result<ResultValue, ToolError> {
+    ) -> Result<(ResultValue, maka_event_log::root_store::DataChange), ToolError> {
         let bytes = serde_json::to_vec(&output).map_err(failed)?;
         let id = format!("computer-{}", Uuid::new_v4());
         let artifact = Artifact {
@@ -302,18 +297,21 @@ impl Computer {
             source: ArtifactSource::SessionEffect,
             summary: None,
         };
-        maka_agent_authority::permissions::execution(
-            &self.store,
-            invocation,
-            call.execution().map(|token| token.as_ref()),
-        )?
-        .commit_artifact(artifact, bytes)
-        .await
-        .map_err(|e| ToolError::Persistence(message(e)))?;
-        Ok(ResultValue::Completed {
-            artifact: id,
-            state,
-        })
+        let original = call
+            .operation
+            .as_ref()
+            .ok_or_else(|| failed("Computer original operation is missing"))?;
+        let change = call
+            .authority
+            .prepare_artifact(original, artifact, bytes)
+            .await?;
+        Ok((
+            ResultValue::Completed {
+                artifact: id,
+                state,
+            },
+            change,
+        ))
     }
     async fn operation(
         self: &Arc<Self>,
@@ -323,6 +321,7 @@ impl Computer {
         receipt: admission::Receipt,
     ) -> Result<Value, OperationFailure> {
         let call = bridge.call.clone();
+        access::resource_boundary(call.scope.sandbox_floor())?;
         let basis = bridge.basis;
         let language = bridge.language;
         let cell = bridge.cell.clone();
@@ -330,7 +329,7 @@ impl Computer {
         let mut command: maka_computer_use::protocol::Command =
             serde_json::from_value(input.clone()).map_err(failed)?;
         let native = epoch.native.clone();
-        let invocation = call.identity.agent().expect("checked invocation").clone();
+        let invocation = call.authority.call().execution.clone();
         let operation_id = Uuid::new_v4().to_string();
         access::granted(self, &call, basis).await?;
         let audio_operation = matches!(
@@ -410,6 +409,7 @@ impl Computer {
                 basis,
                 subject,
                 &operation_id,
+                serde_json::json!({"command": command, "subject": subject}),
                 &cancellation,
                 &cell,
             )
@@ -451,19 +451,20 @@ impl Computer {
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before admission").into());
         }
-        // Keep mutation ordering through the canonical outcome. On a journal
-        // failure, close Host admission before another input waiter proceeds.
+        // Keep mutation ordering until the actual action result. A custody
+        // failure closes Host admission before another input waiter proceeds.
         let _device = device;
         let lane = if native.platform() == "windows" && native_helper_command(&command) {
             access::ComputerLane::Native
         } else {
             access::ComputerLane::Other
         };
-        let title = native.activity(&command);
         let pause_native =
             matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
         let turn = invocation.turn_id.clone();
+        let execution = maka_computer_use::ExecutionCorrelation::new(invocation.run_id.to_string())
+            .map_err(failed)?;
         let monitor_enabled = native.platform() == "mac";
         let monitor_owner = self.clone();
         let monitor_gate = bridge.admission.clone();
@@ -486,23 +487,38 @@ impl Computer {
         let native_interruption = sessions::native_interruption_observer(
             self,
             &bridge.interaction,
-            &invocation,
+            &call,
             &bridge.epoch,
             &operation_id,
         )?;
+        if pause_native {
+            native_interruption.check_native_admission().await?;
+        }
         let lease = self
             .store
-            .fork_invocation_effect(
-                call.execution()
-                    .ok_or_else(|| failed("Computer execution custody is missing"))?
+            .fork_effect(
+                call.scope
+                    .work_custody()
+                    .ok_or_else(|| failed("Computer work custody is missing"))?
                     .as_ref(),
-                &invocation,
+                &invocation.session_id,
             )
             .map_err(|error| ToolError::Persistence(message(error)))?;
-        let (lease, effect_call) = lease.into_scope(&call)?;
+        let lease = lease
+            .for_parent(call.scope.work_custody().map(|token| token.as_ref()))
+            .map_err(|error| ToolError::Persistence(message(error)))?;
+        let effect_call = Call {
+            scope: call.scope.for_work(
+                lease
+                    .store()
+                    .work_custody()
+                    .map_err(|error| ToolError::Persistence(message(error)))?,
+                lease.cancellation(),
+            )?,
+            authority: call.authority.clone(),
+            operation: call.operation.clone(),
+        };
         let effect_owner = self.clone();
-        let effect_store = lease.store();
-        let journal_store = effect_store.clone();
         let settlement =
             admission::Operation::new(self, lease, &bridge.epoch.native, &bridge.admission)?;
         let operation_settlement = settlement.handoff();
@@ -513,7 +529,7 @@ impl Computer {
             browser_access.popup_attachment(),
         );
         let effect_targets = targets.clone();
-        let effect_invocation = invocation.clone();
+        let monitor_call = effect_call.clone();
         let browser_operation_id = operation_id.clone();
         let preparation_policy = maka_computer_use::BrowserPreparationPolicy {
             popup_enabled: self.configuration.browser_preparation.popup,
@@ -531,127 +547,100 @@ impl Computer {
         let browser_files = epoch.files.clone();
         let effect_app = app.clone();
         let native_receipt = native_interruption.clone();
-        let admitted = receipt.clone();
-        let effect = PreparedEffect::new(move |_producer_cancellation| {
-            Box::pin(async move {
-                // This owner is inside the actual admitted future. Keeping an
-                // authorization Arc after Ready/drop does not keep it active.
-                let _preparation_lifetime = preparation_active.drop_guard();
-                let mut output = access::settle(
-                    &effect_owner,
-                    &effect_call,
-                    basis,
-                    &effect_targets,
-                    move |operation_cancel| async move {
-                        let monitor_invocation = effect_invocation.clone();
-                        app_access::settle(
-                            &effect_store,
-                            &effect_invocation,
-                            effect_app.as_ref(),
-                            operation_cancel,
-                            move |operation_cancel| async move {
-                                let mut context =
-                                    maka_computer_use::InvocationContext::new(&session, &turn)
-                                        .with_operation_id(browser_operation_id)
-                                        .with_browser_authorization(browser_access)
-                                        .with_native_interruption_observer(native_interruption)
-                                        .with_browser_asset_files(browser_files)
-                                        .with_browser_preparation_policy(preparation_policy)
-                                        .with_operation_settlement(operation_settlement)
-                                        .with_browser_host_effects(host_effects);
-                                if let Some(subject) = subject {
-                                    if monitor_enabled {
-                                        context = context.with_native_monitor_authority(
-                                            epoch.native_monitor_authority(
-                                                &monitor_owner,
-                                                monitor_gate,
-                                                monitor_invocation,
-                                                monitor_operation,
-                                                basis,
-                                                subject.clone(),
-                                            )?,
-                                        );
-                                    }
-                                    context = context.with_app_target(subject);
-                                }
-                                let _timeout = pause_native.then(|| cell.suspend_timeout());
-                                let completion = native
-                                    .prepare_invoke(command, &context, &operation_cancel, language)
-                                    .await?;
-                                if completion.is_pending() {
-                                    drop(native);
-                                    return completion.wait().await;
-                                }
-                                // Immediate operations, including audio receipt
-                                // publication, keep the original Session lock.
-                                let result = completion.wait().await?;
-                                if starts_audio {
-                                    epoch.record_audio(basis, audio_consent);
-                                } else if stops_audio {
-                                    epoch.clear_audio();
-                                }
-                                Ok(result)
-                            },
-                        )
-                        .await
-                    },
-                )
-                .await?;
-                let content = output
-                    .as_object_mut()
-                    .and_then(|object| object.remove("image"))
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(failed)?
-                    .into_iter()
-                    .collect();
-                Ok(ToolOutput::Mcp(CallResult {
-                    content,
-                    structured_content: Some(output),
-                })
-                .into())
-            })
-        })
-        .titled(title)
-        .on_admission(move |boundary| {
-            if matches!(
-                boundary,
-                maka_agent_facts::tools::EffectAdmission::Durable { .. }
-            ) {
-                admitted.agent_dispatched();
-            }
-        });
-        let mut origin = self.origin.clone();
-        if let ToolOrigin::HostSdk { parent, .. } = &mut origin {
-            *parent = call.identity.operation_id().map(|operation_id| {
-                maka_agent_facts::tool_call::HostSdkParent::EvaluationObserver {
-                    operation_id: operation_id.into(),
-                    epoch: bridge.epoch.id.clone(),
-                }
-            });
+        if app.is_some() && !call.authority.authorize_app(&operation_id).await? {
+            settlement.complete(None);
+            return Err(failed("Computer action already admitted; inspect its original operation instead of redispatching").into());
         }
-        let result = ToolJournal::new(
-            Arc::new(access::Journal {
-                lane,
-                store: journal_store,
+        access::granted(self, &effect_call, basis).await?;
+        receipt.action_admitted();
+        let result = async move {
+            // This owner is inside the actual admitted future. Keeping an
+            // authorization Arc after Ready/drop does not keep it active.
+            let _preparation_lifetime = preparation_active.drop_guard();
+            access::settle(
+                &effect_owner,
+                &effect_call,
                 basis,
-                targets,
-                app,
-            }),
-            invocation.clone(),
-        )
-        .invoke_prepared_output(
-            operation_id.clone(),
-            ToolCallIdentity {
-                tool_call_id: Uuid::new_v4().to_string(),
-                origin,
-            },
-            "cua_operation".into(),
-            input,
-            None,
-            cancellation,
-            effect,
-        )
+                &effect_targets,
+                move |operation_cancel| async move {
+                    let monitor_action_call = monitor_call.clone();
+                    let monitor_action_operation = monitor_operation.clone();
+                    app_access::settle(
+                        &monitor_call,
+                        &monitor_operation,
+                        effect_app.is_some(),
+                        operation_cancel,
+                        move |operation_cancel| async move {
+                            let mut context = maka_computer_use::InvocationContext::new(
+                                &session, &turn, execution,
+                            )
+                            .with_operation_id(browser_operation_id)
+                            .with_browser_authorization(browser_access)
+                            .with_native_interruption_observer(native_interruption)
+                            .with_browser_asset_files(browser_files)
+                            .with_browser_preparation_policy(preparation_policy)
+                            .with_operation_settlement(operation_settlement)
+                            .with_browser_host_effects(host_effects);
+                            if let Some(subject) = subject {
+                                if monitor_enabled {
+                                    context = context.with_native_monitor_authority(
+                                        epoch.native_monitor_authority(
+                                            &monitor_owner,
+                                            monitor_gate,
+                                            monitor_action_call.clone(),
+                                            monitor_action_operation,
+                                            basis,
+                                            subject.clone(),
+                                        )?,
+                                    );
+                                }
+                                context = context.with_app_target(subject);
+                            }
+                            let _timeout = pause_native.then(|| cell.suspend_timeout());
+                            let completion = native
+                                .prepare_invoke(command, &context, &operation_cancel, language)
+                                .await?;
+                            if completion.is_pending() {
+                                drop(native);
+                                return completion.wait().await;
+                            }
+                            // Immediate operations, including audio receipt
+                            // publication, keep the original Session lock.
+                            let result = completion.wait().await?;
+                            if starts_audio {
+                                let finished = native.wait_audio_finished();
+                                let policy = match monitor_action_call
+                                    .authority
+                                    .session_audio_retention(&basis)
+                                    .await
+                                {
+                                    Ok(policy) => policy,
+                                    Err(error) => {
+                                        if let Err(cleanup) = native.discard_audio().await {
+                                            return Err(ToolError::CleanupUnconfirmed(format!(
+                                                "{error}; {cleanup}"
+                                            )));
+                                        }
+                                        return Err(error);
+                                    }
+                                };
+                                epoch.record_audio(
+                                    policy,
+                                    monitor_action_call.scope.sandbox_floor().clone(),
+                                    monitor_owner.stopping.clone(),
+                                    finished,
+                                );
+                            } else if stops_audio {
+                                epoch.clear_audio();
+                            }
+                            Ok(result)
+                        },
+                    )
+                    .await
+                },
+            )
+            .await
+        }
         .await;
         let native_drain = if matches!(lane, access::ComputerLane::Native)
             && matches!(
@@ -661,9 +650,8 @@ impl Computer {
             match native_receipt.native_drain().await {
                 Ok(proof) => proof,
                 Err(error) => {
-                    // The original action T2 is already Unknown. Failure of
-                    // its canonical fence remains a Host persistence/cleanup
-                    // failure; a physical drain must not wash that failure.
+                    // The action remains Unknown. A missing original physical
+                    // receipt must remain a cleanup failure.
                     receipt.fail(error.clone());
                     bridge.admission.close_admission();
                     settlement.complete(Some(error.clone()));
@@ -676,7 +664,7 @@ impl Computer {
         let result = result.map_err(|error| {
             OperationFailure::reported(error, browser_operation, native_drain.is_some())
         });
-        let journal_failure = if let Err(OperationFailure::Ordinary(
+        let failure = if let Err(OperationFailure::Ordinary(
             error @ (ToolError::Persistence(_)
             | ToolError::CleanupUnconfirmed(_)
             | ToolError::OutcomeUnknown(_)
@@ -690,21 +678,8 @@ impl Computer {
         } else {
             None
         };
-        settlement.complete(journal_failure);
-        match result? {
-            ToolOutput::Mcp(result) => {
-                let mut value = result.structured_content.unwrap_or(Value::Null);
-                if let Some(image) = result
-                    .content
-                    .into_iter()
-                    .find(|block| matches!(block, ContentBlock::Image { .. }))
-                {
-                    value["image"] = serde_json::to_value(image).map_err(failed)?;
-                }
-                Ok(value)
-            }
-            _ => Err(ToolError::CleanupUnconfirmed("Computer output format changed".into()).into()),
-        }
+        settlement.complete(failure);
+        result
     }
 }
 #[derive(Clone)]
@@ -712,7 +687,7 @@ struct Bridge {
     #[cfg(test)]
     operation_fixture: Option<OperationFixture>,
     owner: Arc<Computer>,
-    call: Scope,
+    call: Call,
     interaction: Arc<sessions::Interaction>,
     epoch: Arc<sessions::Epoch>,
     admission: Arc<admission::Gate>,
@@ -923,11 +898,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bridge_allows_reported_browser_unknown_and_drained_native_unknown_to_continue() {
-        use maka_agent_facts::tool_call::ToolOrigin;
-        use maka_capabilities::call::{Identity, Issuer};
         use maka_code_runtime::CellAbort;
         use maka_computer_use::protocol::Command;
-        use maka_event_log::root::{RootNamespaces, RootOwner};
 
         for (browser_operation, drained, error) in [
             (
@@ -956,54 +928,17 @@ mod tests {
                 ToolError::CleanupUnconfirmed("missing interruption writer".into()),
             ),
         ] {
-            let directory = tempfile::tempdir().unwrap();
-            let root = Arc::new(
-                maka_event_log::RootStore::open(Arc::new(
-                    RootOwner::create(
-                        &directory.path().join("root"),
-                        &RootNamespaces {
-                            ownership: directory.path().join("ownership"),
-                            control: directory.path().join("control"),
-                        },
-                    )
-                    .unwrap(),
-                ))
-                .await
-                .unwrap(),
-            );
-            let tasks = tokio_util::task::TaskTracker::new();
-            let owner = Arc::new(Computer {
-                store: root.clone(),
-                configuration: Default::default(),
-                sessions: sessions::Sessions::with_audio(false, tasks.clone()),
-                resources: Arc::default(),
-                stopping: CancellationToken::new(),
-                tasks,
-                origin: ToolOrigin::HostSdk {
-                    package_id: "fixture".into(),
-                    entry_id: "computer".into(),
-                    activation: "host".into(),
-                    parent: None,
+            let actual = crate::browser_access::tests::Fixture::with_permissions(
+                maka_agent_api::contract::WorkspacePermissions {
+                    access: maka_agent_api::contract::WorkspaceAccess::DangerFullAccess,
+                    request_permissions: false,
                 },
-                popup_provenance: None,
-            });
-            let interaction = owner.sessions.get("session").unwrap();
+            )
+            .await;
+            let owner = actual.owner.clone();
+            let interaction = actual.entry.clone();
             let kernel = interaction.fresh_kernel().unwrap();
             let admission = kernel.admission.clone();
-            let scope = Issuer::default()
-                .issue(
-                    Identity::Agent {
-                        invocation: Invocation {
-                            session_id: "session".into(),
-                            turn_id: "turn".into(),
-                            run_id: "run".into(),
-                            invocation_id: "invocation".into(),
-                        },
-                        operation_id: Some("outer".into()),
-                    },
-                    CancellationToken::new(),
-                )
-                .unwrap();
             let native_error = error.clone();
             let fixture: OperationFixture = Arc::new(move |input| {
                 let command: Command = serde_json::from_value(input).unwrap();
@@ -1024,17 +959,11 @@ mod tests {
                     .unwrap();
             let bridge = Arc::new(Bridge {
                 owner: owner.clone(),
-                call: scope,
+                call: actual.call.clone(),
                 interaction: interaction.clone(),
                 epoch: kernel.epoch.clone(),
                 admission: admission.clone(),
-                basis: PermissionBasis {
-                    boundary_revision: 0,
-                    binding: maka_agent_facts::workspace::BindingStamp {
-                        id: Uuid::new_v4(),
-                        permission_epoch: 0,
-                    },
-                },
+                basis: actual.basis(),
                 language: Language::En,
                 cell: context.clone(),
                 operation_fixture: Some(fixture),
@@ -1091,12 +1020,8 @@ mod tests {
             runtime.close().await.unwrap();
             drop(bridge);
             kernel.close(CancellationToken::new()).await.unwrap();
-            owner.sessions.close().await.unwrap();
-            owner.resources.settle().await.unwrap();
-            owner.tasks.close();
-            owner.tasks.wait().await;
             drop((interaction, owner));
-            Arc::try_unwrap(root).ok().unwrap().close().await.unwrap();
+            actual.close().await;
         }
     }
 }

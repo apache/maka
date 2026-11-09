@@ -329,13 +329,18 @@ impl Driver {
         epoch: NativeEpochId,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> BoxFuture<'static, Result<(), ToolError>> {
         let owner = self.native_owner.clone();
         let session = session.to_owned();
         let turn = turn.to_owned();
+        let execution = execution.clone();
         // Same explicit cleanup custody: losing an observer does not cancel a
         // native monitor/process retirement already accepted by the Host.
-        let task = tokio::spawn(async move { owner.finish_turn(epoch, &session, &turn).await });
+        let task =
+            tokio::spawn(
+                async move { owner.finish_turn(epoch, &session, &turn, &execution).await },
+            );
         Box::pin(async move {
             task.await.map_err(|error| {
                 ToolError::CleanupUnconfirmed(format!(
@@ -1829,7 +1834,11 @@ mod tests {
             &CancellationToken::new(),
             Language::En,
             #[cfg(target_os = "windows")]
-            &crate::InvocationContext::new("expiry-fixture", "fixture-turn"),
+            &crate::InvocationContext::new(
+                "expiry-fixture",
+                "fixture-turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
         )
         .await
         .unwrap_err()

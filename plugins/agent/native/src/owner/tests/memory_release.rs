@@ -111,8 +111,8 @@ async fn assert_drained(fixture: &Fixture) {
         !fixture.owner.workers.is_closed(),
         "same Owner stays usable"
     );
-    let runs = fixture.owner.runs.lock().await;
-    assert!(runs.controls.is_empty(), "no live invocation controls");
+    let runs = fixture.owner.runs.state().await;
+    assert!(runs.controls.is_empty(), "no live run controls");
     assert!(runs.preparing.is_empty(), "no preparation custody");
     assert!(
         runs.retained_cleanup.is_empty(),
@@ -172,7 +172,7 @@ async fn native_memory_release_after_joined_workers() {
                     )
                     .await
                     .unwrap();
-                let invocation = sent["invocationId"].as_str().unwrap().to_owned();
+                let run = fixture.delivered_run(&sent).await.to_string();
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let body = request(&mut socket).await;
                 assert_eq!(body["model"], "fixture-model");
@@ -186,27 +186,27 @@ async fn native_memory_release_after_joined_workers() {
                 );
                 drop(body);
                 // No response bytes are sent: the real HTTP execution stays held.
-                accepted.push((session, invocation));
+                accepted.push((session, run));
                 sockets.push(socket);
             }
             {
-                let runs = fixture.owner.runs.lock().await;
+                let runs = fixture.owner.runs.state().await;
                 assert_eq!(runs.controls.len(), ACTIVE);
                 assert!(runs.preparing.is_empty());
                 assert!(runs.retained_cleanup.is_empty());
                 assert!(!runs.closing);
                 assert!(!fixture.owner.stop.is_cancelled());
-                for (session, invocation) in &accepted {
-                    assert_eq!(runs.controls[session].invocation.invocation_id, *invocation);
+                for (session, run) in &accepted {
+                    assert_eq!(runs.controls[session].execution.run_id.to_string(), *run);
                 }
             }
             sample(&fixture, "held", wave * ACTIVE, ACTIVE, writer_id, None).await;
-            for (session, invocation) in &accepted {
+            for (session, run) in &accepted {
                 let stopped = fixture
                     .mutation(
                         2,
                         "stop",
-                        json!({"sessionId": session, "invocationId": invocation}),
+                        json!({"sessionId": session, "runId": run}),
                         Uuid::new_v4(),
                     )
                     .await
@@ -231,15 +231,12 @@ async fn native_memory_release_after_joined_workers() {
                 };
                 *peer_closures.entry(kind).or_insert(0) += 1;
             }
-            for (session, invocation) in &accepted {
+            for (session, run) in &accepted {
                 let execution = fixture
-                    .query(
-                        "execution",
-                        json!({"sessionId": session, "invocationId": invocation}),
-                    )
+                    .query("execution", json!({"sessionId": session, "runId": run}))
                     .await
                     .unwrap();
-                assert_eq!(execution["execution"]["state"], "cancelled");
+                assert_eq!(execution["execution"]["state"]["kind"], "cancelled");
             }
             drop(accepted);
             // Execution queries must not introduce unaccounted auxiliary workers.

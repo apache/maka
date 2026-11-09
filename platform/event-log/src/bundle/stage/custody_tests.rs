@@ -47,7 +47,10 @@ fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
         .build()
         .unwrap();
     let store = runtime
-        .block_on(crate::root_store::RootStore::open(root.clone()))
+        .block_on(crate::root_store::RootStore::open(
+            root.clone(),
+            crate::ROOT_MIGRATIONS,
+        ))
         .unwrap();
     let mut staged = runtime.block_on(async {
         let source = crate::EventLog::open(&directory.path().join("source.sqlite"))
@@ -153,7 +156,7 @@ fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
         .unwrap();
         let next = Arc::new(crate::root::RootOwner::open(&root_path, &namespaces).unwrap());
         // Only now may startup collect the unreserved durable stage.
-        crate::root_store::RootStore::open(next)
+        crate::root_store::RootStore::open(next, crate::ROOT_MIGRATIONS)
             .await
             .unwrap()
             .close()
@@ -173,7 +176,9 @@ async fn stage_close_failure_fails_root_close_and_retains_original_authority() {
     };
     let root = Arc::new(crate::root::RootOwner::create(&root_path, &namespaces).unwrap());
     let weak = Arc::downgrade(&root);
-    let store = crate::root_store::RootStore::open(root).await.unwrap();
+    let store = crate::root_store::RootStore::open(root, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let stage = store
         .stage_owner()
         .unwrap()

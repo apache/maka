@@ -123,7 +123,9 @@ export function createRootUiSettings(
     const receipt = reply.receipt;
     if (receipt.kind !== 'recorded' || receipt.outcome.kind !== 'returned')
       throw new UiError('This action could not be completed.');
-    const result = receipt.outcome.value as ManagementResultForDeploymentRef;
+    if (receipt.outcome.result.kind === 'failure')
+      throw new Error(receipt.outcome.result.diagnostic);
+    const result = receipt.outcome.result.value as ManagementResultForDeploymentRef;
     if (result.status === 'conflict')
       throw new UiError('These settings changed elsewhere. Reload before saving again.');
     if (result.status === 'rejected')

@@ -20,21 +20,23 @@
 //! Original operation facts. Receipts never authorize a callback or a replay.
 use super::invalid;
 use crate::{EventLog, StoreError, root::RootOwner};
-use maka_capabilities::call::Identity;
 use maka_plugin_core::{
     composition::InstanceId,
     contract::{Contract, Interface},
     deployment::DeploymentRef,
     operation::{
-        OperationCleanup, OperationObservation, OperationOutcome, RecoveryContract,
-        RecoveryProtocol, RecoveryRef,
+        NotExecutedProof, OperationCleanup, OperationObservation, OperationOutcome,
+        OperationResult, RecoveryContract, RecoveryProtocol, RecoveryRef,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Weak},
+};
 use uuid::Uuid;
 
 /// Trusted embedding supplies these facts after its private admission check.
@@ -53,7 +55,7 @@ pub struct OperationRequest<C = Contract> {
     /// Identity of the original private resource bundle; never a lookup grant.
     #[serde(deserialize_with = "required_capture")]
     pub capture: Option<Uuid>,
-    pub origin: Identity,
+    pub origin: serde_json::Value,
 }
 /// Immutable checked method facts retained by an executor's service instance.
 /// This template is not an execution grant; dispatch still requires Host admission.
@@ -240,7 +242,79 @@ pub(crate) trait DispatchLifetime: Send + Sync {
     fn finish(&self);
     fn abandon(self: Arc<Self>);
 }
+type OperationKey = (Uuid, InstanceId, Uuid);
+fn operation_key(reference: &RecoveryRef) -> OperationKey {
+    (
+        reference.source.deployment,
+        reference.namespace.clone(),
+        reference.operation,
+    )
+}
+
+/// One Root's live custody index, shared by every scoped SQL handle.
+#[derive(Default)]
+pub(crate) struct LiveOperations(Mutex<BTreeMap<OperationKey, LiveEntry>>);
+enum LiveEntry {
+    Active(Weak<DispatchState>),
+    Abandoned { started: bool },
+}
+impl LiveOperations {
+    fn register(&self, state: &Arc<DispatchState>) -> Result<(), StoreError> {
+        let mut entries = self.0.lock().unwrap();
+        if entries.contains_key(&state.key) {
+            return Err(invalid("original operation custody is already tracked"));
+        }
+        entries.insert(state.key.clone(), LiveEntry::Active(Arc::downgrade(state)));
+        Ok(())
+    }
+    fn returned(
+        &self,
+        reference: &RecoveryRef,
+        old: &OperationOutcome,
+    ) -> Result<Option<Arc<DispatchState>>, StoreError> {
+        let state = {
+            let entries = self.0.lock().unwrap();
+            match entries.get(&operation_key(reference)) {
+                None | Some(LiveEntry::Abandoned { started: true }) => return Ok(None),
+                Some(LiveEntry::Abandoned { started: false }) => {
+                    return Err(invalid("original operation handler never started"));
+                }
+                Some(LiveEntry::Active(state)) => state
+                    .upgrade()
+                    .ok_or_else(|| invalid("original operation custody is being abandoned"))?,
+            }
+        };
+        {
+            let mut status = state.status.lock().unwrap();
+            if status.handler != HandlerStart::Started {
+                return Err(invalid("original operation handler has not started"));
+            }
+            if matches!(old, OperationOutcome::Unresolved) {
+                // The original callback may still owe its atomic state+receipt
+                // commit. A provider fact cannot consume that live preview.
+                return Err(invalid(
+                    "live unresolved operation requires original completion",
+                ));
+            }
+            status.admission.close();
+        }
+        Ok(Some(state))
+    }
+    fn cleanup(&self, reference: &RecoveryRef, confirmed: bool) -> Result<(), StoreError> {
+        let entries = self.0.lock().unwrap();
+        match entries.get(&operation_key(reference)) {
+            None => Ok(()),
+            Some(LiveEntry::Abandoned { .. }) if !confirmed => Ok(()),
+            Some(_) => Err(invalid(
+                "original operation cleanup requires its original custody owner",
+            )),
+        }
+    }
+}
+
 struct DispatchState {
+    live: Arc<LiveOperations>,
+    key: OperationKey,
     identity: std::sync::Weak<std::sync::atomic::AtomicU64>,
     status: std::sync::Mutex<DispatchStatus>,
 }
@@ -248,23 +322,46 @@ struct DispatchRetention {
     _owner: Arc<RootOwner>,
     lifetime: Option<Arc<dyn DispatchLifetime>>,
 }
-// Physical cleanup knowledge is independent of receipt durability. Once a
-// trusted caller supplies validated cleanup, cancellation/SQL failure cannot
-// turn it into unknown provider custody. Accepted SQL keeps its own owner pin.
-struct SettlementCustody {
-    retained: Option<DispatchRetention>,
-    confirmed: bool,
-}
-impl Drop for SettlementCustody {
+// Cleanup confirmation is physical knowledge, independent of SQL success.
+// A queued confirmation owns its pin even if the observing future is dropped.
+struct CleanupCustody(Option<DispatchRetention>);
+impl Drop for CleanupCustody {
     fn drop(&mut self) {
         if let Some(DispatchRetention {
             lifetime: Some(lifetime),
             ..
-        }) = self.retained.take()
+        }) = self.0.take()
         {
-            if self.confirmed {
-                lifetime.finish();
-            } else {
+            lifetime.finish();
+        }
+    }
+}
+impl Drop for DispatchState {
+    fn drop(&mut self) {
+        let identity = self as *const Self;
+        let status = self.status.get_mut().unwrap();
+        {
+            let mut entries = self.live.0.lock().unwrap();
+            if matches!(entries.get(&self.key), Some(LiveEntry::Active(entry)) if std::ptr::eq(entry.as_ptr(), identity))
+            {
+                if status.handler == HandlerStart::AwaitingCommit || status.retained.is_none() {
+                    entries.remove(&self.key);
+                } else {
+                    entries.insert(
+                        self.key.clone(),
+                        LiveEntry::Abandoned {
+                            started: status.handler == HandlerStart::Started,
+                        },
+                    );
+                }
+            }
+        }
+        if status.handler != HandlerStart::AwaitingCommit {
+            if let Some(DispatchRetention {
+                lifetime: Some(lifetime),
+                ..
+            }) = status.retained.take()
+            {
                 lifetime.abandon();
             }
         }
@@ -272,6 +369,7 @@ impl Drop for SettlementCustody {
 }
 struct DispatchStatus {
     admission: DispatchAdmission,
+    handler: HandlerStart,
     active: usize,
     retained: Option<DispatchRetention>,
 }
@@ -287,6 +385,15 @@ impl DispatchAdmission {
             *self = Self::Closed;
         }
     }
+}
+
+// This fence belongs to the original claim, never to a serialized receipt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerStart {
+    AwaitingCommit,
+    Pending,
+    Started,
+    Prevented,
 }
 
 /// Private first-commit evidence. A receipt cannot construct this scope.
@@ -339,8 +446,8 @@ impl OperationDispatchScope {
             return Err(invalid("foreign original operation custody"));
         }
         let mut status = self.dispatch.status.lock().unwrap();
-        if status.admission != DispatchAdmission::Open {
-            return Err(invalid("original operation dispatch is closed"));
+        if status.admission != DispatchAdmission::Open || status.handler != HandlerStart::Started {
+            return Err(invalid("original operation dispatch is not running"));
         }
         status.active = status
             .active
@@ -354,19 +461,8 @@ impl OperationDispatchScope {
 }
 impl Drop for DispatchClaim {
     fn drop(&mut self) {
-        // Lost original execution custody never admits a new auxiliary worker.
-        let retained = {
-            let mut status = self.dispatch.status.lock().unwrap();
-            status.admission.close();
-            status.retained.take()
-        };
-        if let Some(DispatchRetention {
-            lifetime: Some(lifetime),
-            ..
-        }) = retained
-        {
-            lifetime.abandon();
-        }
+        // Keep custody in the shared state while original work/SQL still owns it.
+        self.dispatch.status.lock().unwrap().admission.close();
     }
 }
 impl DispatchClaim {
@@ -388,19 +484,6 @@ pub enum Dispatch {
 struct Record {
     request: OperationRequest<RecoveryContract>,
     observation: OperationObservation,
-}
-fn validate_settlement(
-    outcome: &OperationOutcome,
-    cleanup: &OperationCleanup,
-) -> Result<(), StoreError> {
-    if matches!(outcome, OperationOutcome::Unresolved)
-        || matches!(cleanup, OperationCleanup::Unconfirmed)
-    {
-        return Err(invalid(
-            "operation settlement must report result knowledge and real cleanup",
-        ));
-    }
-    Ok(())
 }
 fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Record>, StoreError> {
     let namespace = serde_json::to_string(&reference.namespace)?;
@@ -425,8 +508,11 @@ fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Recor
     let outcome = match serde_json::from_str::<StoredOutcome>(&outcome_json)? {
         StoredOutcome::Unresolved => OperationOutcome::Unresolved,
         StoredOutcome::Unknown { diagnostic } => OperationOutcome::Unknown { diagnostic },
-        StoredOutcome::Returned => OperationOutcome::Returned {
-            value: serde_json::from_slice(&outcome_value.ok_or(
+        StoredOutcome::NotExecuted { proof } => OperationOutcome::NotExecuted { proof },
+        StoredOutcome::Returned {
+            result_version: RESULT_CODEC_VERSION,
+        } => OperationOutcome::Returned {
+            result: serde_json::from_slice(&outcome_value.ok_or(
                 rusqlite::Error::InvalidColumnType(
                     5,
                     "outcome_value".into(),
@@ -434,6 +520,11 @@ fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Recor
                 ),
             )?)?,
         },
+        StoredOutcome::Returned { result_version } => {
+            return Err(invalid(format!(
+                "unsupported operation result codec version: {result_version}"
+            )));
+        }
     };
     let cleanup: OperationCleanup = serde_json::from_str(&cleanup_json)?;
     let expected = request.stored_reference()?;
@@ -442,10 +533,6 @@ fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Recor
         || source_revision != reference.source.revision as i64
     {
         return Err(StoreError::EventConflict);
-    }
-    match (&outcome, &cleanup) {
-        (OperationOutcome::Unresolved, OperationCleanup::Unconfirmed) => {}
-        _ => validate_settlement(&outcome, &cleanup)?,
     }
     Ok(Some(Record {
         request,
@@ -511,9 +598,12 @@ impl EventLog {
         let owner = self.root_owner.as_ref().expect("owned Root").clone();
         let request_json = serde_json::to_string(&request)?;
         let dispatch = Arc::new(DispatchState {
+            live: self.operation_live.clone(),
+            key: operation_key(&reference),
             identity: self.connection.owner_identity(),
             status: std::sync::Mutex::new(DispatchStatus {
                 admission: DispatchAdmission::Open,
+                handler: HandlerStart::AwaitingCommit,
                 active: 0,
                 retained: Some(DispatchRetention {
                     _owner: owner.clone(),
@@ -536,14 +626,7 @@ impl EventLog {
             .await
     }
 
-    /// Settles only the first committed dispatch. Repeated identical settlement
-    /// is harmless; a duplicate request cannot overwrite result or cleanup.
-    pub async fn finish_operation(
-        &self,
-        claim: &DispatchClaim,
-        outcome: OperationOutcome,
-        cleanup: OperationCleanup,
-    ) -> Result<OperationObservation, StoreError> {
+    fn check_operation_claim(&self, claim: &DispatchClaim) -> Result<(), StoreError> {
         self.operation_domain(&claim.reference)?;
         if !std::sync::Weak::ptr_eq(
             &Arc::downgrade(self.root_owner.as_ref().expect("owned Root")),
@@ -554,35 +637,191 @@ impl EventLog {
         if !std::sync::Weak::ptr_eq(&self.connection.owner_identity(), &claim.dispatch.identity) {
             return Err(invalid("foreign operation partition claim"));
         }
-        validate_settlement(&outcome, &cleanup)?;
-        let cleanup_confirmed = matches!(cleanup, OperationCleanup::Confirmed);
+        Ok(())
+    }
+
+    /// Linearize handler entry against prevention. The trusted Host must call
+    /// this immediately before invoking the handler, once per original claim.
+    pub fn start_operation(&self, claim: &DispatchClaim) -> Result<(), StoreError> {
+        self.check_operation_claim(claim)?;
+        let mut status = claim.dispatch.status.lock().unwrap();
+        if status.handler != HandlerStart::Pending || status.admission != DispatchAdmission::Open {
+            return Err(invalid("original operation cannot start"));
+        }
+        status.handler = HandlerStart::Started;
+        Ok(())
+    }
+
+    /// Establish the provider's no-start fence before recording non-execution.
+    /// The committed original row also prevents a later request obtaining a claim.
+    /// A failed/uncertain write leaves the in-memory fence closed and is retryable
+    /// only through this original claim, never by reconstructing a receipt.
+    pub async fn prevent_operation_before_start(
+        &self,
+        claim: &DispatchClaim,
+    ) -> Result<OperationObservation, StoreError> {
+        self.check_operation_claim(claim)?;
+        {
+            let mut status = claim.dispatch.status.lock().unwrap();
+            if status.handler == HandlerStart::Started || status.active != 0 {
+                return Err(invalid("original operation may already have executed"));
+            }
+            status.handler = HandlerStart::Prevented;
+            status.admission.close();
+        }
+        self.record_operation_outcome(
+            claim,
+            OperationOutcome::NotExecuted {
+                proof: NotExecutedProof::ProviderPreventedBeforeStart,
+            },
+        )
+        .await
+    }
+
+    /// Prepare outside the SQL transaction; execute composes with other pure
+    /// state statements in the same Root/partition transaction. No result write
+    /// releases the original physical custody, even when the result is known.
+    pub(crate) fn prepare_operation_outcome(
+        &self,
+        claim: &DispatchClaim,
+        outcome: OperationOutcome,
+    ) -> Result<WriteOutcome, StoreError> {
+        self.check_operation_claim(claim)?;
+        {
+            let mut status = claim.dispatch.status.lock().unwrap();
+            match &outcome {
+                OperationOutcome::Unresolved => {
+                    return Err(invalid("outcome update must add knowledge"));
+                }
+                OperationOutcome::Returned { .. } if status.handler != HandlerStart::Started => {
+                    return Err(invalid("original operation handler has not started"));
+                }
+                OperationOutcome::NotExecuted { .. }
+                    if status.handler != HandlerStart::Prevented =>
+                {
+                    return Err(invalid(
+                        "original operation lacks a provider no-start fence",
+                    ));
+                }
+                _ => {}
+            }
+            status.admission.close();
+        }
+        Ok(WriteOutcome {
+            reference: claim.reference.clone(),
+            outcome,
+            authority: OutcomeAuthority::Claim(claim.dispatch.clone()),
+        })
+    }
+
+    pub(crate) fn prepare_statement_completion(
+        &self,
+        claim: &DispatchClaim,
+    ) -> Result<StatementCompletion, StoreError> {
+        self.check_operation_claim(claim)?;
+        let mut status = claim.dispatch.status.lock().unwrap();
+        if status.handler != HandlerStart::Started {
+            return Err(invalid("original operation handler has not started"));
+        }
+        status.admission.close();
+        Ok(StatementCompletion {
+            reference: claim.reference.clone(),
+            dispatch: claim.dispatch.clone(),
+        })
+    }
+
+    /// Accepts late original evidence even after dispatch has been closed.
+    pub async fn record_operation_outcome(
+        &self,
+        claim: &DispatchClaim,
+        outcome: OperationOutcome,
+    ) -> Result<OperationObservation, StoreError> {
+        let statement = self.prepare_operation_outcome(claim, outcome)?;
+        self.connection
+            .write(statement, self.commits.notice())
+            .await
+    }
+
+    /// Only explicit physical confirmation releases custody. Failed cleanup
+    /// keeps the operation isolated; a later trusted confirmation may advance it.
+    pub async fn record_operation_cleanup(
+        &self,
+        claim: &DispatchClaim,
+        cleanup: OperationCleanup,
+    ) -> Result<OperationObservation, StoreError> {
+        self.check_operation_claim(claim)?;
+        if matches!(cleanup, OperationCleanup::Unconfirmed) {
+            return Err(invalid("cleanup update must add knowledge"));
+        }
         let custody = {
             let mut status = claim.dispatch.status.lock().unwrap();
-            if status.active != 0
-                || (status.admission == DispatchAdmission::Quarantined && cleanup_confirmed)
+            let confirmed = matches!(cleanup, OperationCleanup::Confirmed);
+            if confirmed
+                && (status.active != 0 || status.admission == DispatchAdmission::Quarantined)
             {
                 return Err(invalid("original operation work has not drained"));
             }
             status.admission.close();
-            SettlementCustody {
-                retained: status.retained.take(),
-                confirmed: cleanup_confirmed,
-            }
+            CleanupCustody(if confirmed {
+                status.retained.take()
+            } else {
+                None
+            })
         };
-        let reference = claim.reference.clone();
-        let result = self
-            .connection
+        self.connection
             .write(
-                WriteSettlement {
-                    reference,
-                    outcome,
+                WriteCleanup {
+                    reference: claim.reference.clone(),
                     cleanup,
+                    authority: CleanupAuthority::Claim {
+                        custody,
+                        dispatch: claim.dispatch.clone(),
+                    },
                 },
                 self.commits.notice(),
             )
-            .await;
-        drop(custody);
-        result
+            .await
+    }
+
+    /// Provider-only original facts. These entrypoints are crate-private; the
+    /// public capability is minted by RootStore for a checked provider source.
+    pub(crate) async fn record_provider_returned(
+        &self,
+        reference: &RecoveryRef,
+        result: OperationResult,
+    ) -> Result<OperationObservation, StoreError> {
+        self.operation_domain(reference)?;
+        self.connection
+            .write(
+                WriteOutcome {
+                    reference: reference.clone(),
+                    outcome: OperationOutcome::Returned { result },
+                    authority: OutcomeAuthority::Provider(self.operation_live.clone()),
+                },
+                self.commits.notice(),
+            )
+            .await
+    }
+
+    pub(crate) async fn record_provider_cleanup(
+        &self,
+        reference: &RecoveryRef,
+        cleanup: OperationCleanup,
+    ) -> Result<OperationObservation, StoreError> {
+        self.operation_domain(reference)?;
+        if matches!(cleanup, OperationCleanup::Unconfirmed) {
+            return Err(invalid("cleanup update must add knowledge"));
+        }
+        self.connection
+            .write(
+                WriteCleanup {
+                    reference: reference.clone(),
+                    cleanup,
+                    authority: CleanupAuthority::Provider(self.operation_live.clone()),
+                },
+                self.commits.notice(),
+            )
+            .await
     }
 
     /// Reads one fixed original namespace. This lookup performs no effect and
@@ -658,13 +897,16 @@ impl crate::writeback::Statement for WriteDispatch {
             return Ok(crate::writeback::Prepared {
                 value: DispatchValue(PreparedDispatch::Existing(record.observation)),
                 changed: false,
-                notification: crate::writeback::Notification::None,
+                notification: crate::writeback::Notification::NONE,
             });
         }
         require_source(connection, &reference.source)?;
         connection.execute("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING", params![&reference.contract.digest, contract_json.as_ref()])?;
         connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, request_json, serde_json::to_string(&OperationOutcome::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
 
+        // Reserve before COMMIT becomes visible to independent readers. Only
+        // committed() issues a claim; an unissued rollback removes this entry.
+        dispatch.live.register(&dispatch)?;
         Ok(crate::writeback::Prepared {
             value: DispatchValue(PreparedDispatch::New {
                 reference,
@@ -672,7 +914,7 @@ impl crate::writeback::Statement for WriteDispatch {
                 dispatch,
             }),
             changed: true,
-            notification: crate::writeback::Notification::Metadata,
+            notification: crate::writeback::Notification::METADATA,
         })
     }
     fn committed(value: Self::Value) -> Self::Output {
@@ -681,11 +923,14 @@ impl crate::writeback::Statement for WriteDispatch {
                 reference,
                 owner,
                 dispatch,
-            } => Dispatch::New(DispatchClaim {
-                reference,
-                owner: Arc::downgrade(&owner),
-                dispatch,
-            }),
+            } => {
+                dispatch.status.lock().unwrap().handler = HandlerStart::Pending;
+                Dispatch::New(DispatchClaim {
+                    reference,
+                    owner: Arc::downgrade(&owner),
+                    dispatch,
+                })
+            }
             PreparedDispatch::Existing(observation) => Dispatch::Existing(observation),
         }
     }
@@ -697,71 +942,237 @@ impl crate::writeback::Statement for WriteDispatch {
     }
 }
 
-pub(crate) struct WriteSettlement {
+/// The original claim's completion fence, before its SQL result is known.
+pub(crate) struct StatementCompletion {
+    reference: RecoveryRef,
+    dispatch: Arc<DispatchState>,
+}
+impl StatementCompletion {
+    pub(crate) fn existing(
+        &self,
+        connection: &Connection,
+        expected: Option<&OperationResult>,
+    ) -> Result<Option<crate::writeback::Prepared<OutcomeValue>>, StoreError> {
+        let observation = read(connection, &self.reference)?
+            .ok_or_else(|| invalid("original dispatch missing"))?
+            .observation;
+        match &observation.outcome {
+            OperationOutcome::Returned { result } => {
+                if expected.is_some_and(|expected| expected != result) {
+                    return Err(StoreError::EventConflict);
+                }
+                Ok(Some(crate::writeback::Prepared {
+                    value: OutcomeValue {
+                        observation,
+                        _dispatch: Some(self.dispatch.clone()),
+                    },
+                    changed: false,
+                    notification: crate::writeback::Notification::NONE,
+                }))
+            }
+            OperationOutcome::Unresolved => Ok(None),
+            OperationOutcome::Unknown { .. } if expected.is_some() => Ok(None),
+            OperationOutcome::Unknown { .. } | OperationOutcome::NotExecuted { .. } => {
+                Err(StoreError::EventConflict)
+            }
+        }
+    }
+    pub(crate) fn returned(self, result: OperationResult) -> WriteOutcome {
+        WriteOutcome {
+            reference: self.reference,
+            outcome: OperationOutcome::Returned { result },
+            authority: OutcomeAuthority::Claim(self.dispatch),
+        }
+    }
+}
+
+/// Original completion or independently authorized provider evidence. Only
+/// original completion may publish a live Unresolved preview with state changes.
+pub(crate) struct WriteOutcome {
     reference: RecoveryRef,
     outcome: OperationOutcome,
-    cleanup: OperationCleanup,
+    authority: OutcomeAuthority,
 }
-impl crate::writeback::Statement for WriteSettlement {
-    type Value = OperationObservation;
+enum OutcomeAuthority {
+    Claim(Arc<DispatchState>),
+    Provider(Arc<LiveOperations>),
+}
+pub(crate) struct OutcomeValue {
+    observation: OperationObservation,
+    _dispatch: Option<Arc<DispatchState>>,
+}
+impl crate::writeback::Statement for WriteOutcome {
+    type Value = OutcomeValue;
     type Output = OperationObservation;
     fn execute(
         self,
         connection: &Connection,
     ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
-        let Self {
-            reference,
-            outcome,
-            cleanup,
-        } = self;
-        let old = read(connection, &reference)?
+        let mut observation = read(connection, &self.reference)?
             .ok_or_else(|| invalid("original dispatch missing"))?
             .observation;
-        let observation = OperationObservation {
-            reference: reference.clone(),
-            outcome,
-            cleanup,
-        };
-        let changed = matches!(old.outcome, OperationOutcome::Unresolved);
-        if !changed {
-            if old != observation {
-                return Err(StoreError::EventConflict);
+        let changed = advance_outcome(&observation.outcome, &self.outcome)?;
+        let dispatch = match self.authority {
+            OutcomeAuthority::Claim(dispatch) => Some(dispatch),
+            OutcomeAuthority::Provider(live) => {
+                live.returned(&self.reference, &observation.outcome)?
             }
-        } else {
-            let (stored, value) = match &observation.outcome {
-                OperationOutcome::Unresolved => (StoredOutcome::Unresolved, None),
+        };
+        if changed {
+            let (stored, value) = match &self.outcome {
+                OperationOutcome::Unresolved => unreachable!("checked update"),
                 OperationOutcome::Unknown { diagnostic } => (
                     StoredOutcome::Unknown {
                         diagnostic: diagnostic.clone(),
                     },
                     None,
                 ),
-                OperationOutcome::Returned { value } => {
-                    let bytes = serde_json::to_vec(value)?;
-                    let digest = maka_agent_facts::artifact::content_digest(&bytes);
+                OperationOutcome::NotExecuted { proof } => (
+                    StoredOutcome::NotExecuted {
+                        proof: proof.clone(),
+                    },
+                    None,
+                ),
+                OperationOutcome::Returned { result } => {
+                    let bytes = serde_json::to_vec(result)?;
+                    let digest = {
+                        use sha2::Digest;
+                        format!("sha256:{}", hex::encode(sha2::Sha256::digest(&bytes)))
+                    };
                     (
-                        StoredOutcome::Returned,
+                        StoredOutcome::Returned {
+                            result_version: RESULT_CODEC_VERSION,
+                        },
                         Some(crate::content::put(connection, &digest, &bytes)?),
                     )
                 }
             };
-            connection.execute("UPDATE application_operations SET outcome_json=?, outcome_content_id=?, cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?", params![serde_json::to_string(&stored)?, value, serde_json::to_string(&observation.cleanup)?, reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string()])?;
+            connection.execute("UPDATE application_operations SET outcome_json=?, outcome_content_id=? WHERE deployment=? AND namespace=? AND operation=?", params![serde_json::to_string(&stored)?, value, self.reference.source.deployment.to_string(), serde_json::to_string(&self.reference.namespace)?, self.reference.operation.to_string()])?;
+            observation.outcome = self.outcome;
         }
-
         Ok(crate::writeback::Prepared {
-            value: observation,
+            value: OutcomeValue {
+                observation,
+                _dispatch: dispatch,
+            },
             changed,
-            notification: crate::writeback::Notification::Metadata,
+            notification: crate::writeback::Notification::METADATA,
         })
     }
     fn committed(value: Self::Value) -> Self::Output {
-        value
+        value.observation
     }
     fn isolated_rejection(error: &StoreError) -> bool {
         matches!(
             error,
             StoreError::EventConflict | StoreError::InvalidTransition(_)
         )
+    }
+}
+
+fn advance_outcome(old: &OperationOutcome, new: &OperationOutcome) -> Result<bool, StoreError> {
+    if old == new {
+        return Ok(false);
+    }
+    match (old, new) {
+        (
+            OperationOutcome::Unresolved,
+            OperationOutcome::Unknown { .. }
+            | OperationOutcome::Returned { .. }
+            | OperationOutcome::NotExecuted { .. },
+        )
+        | (
+            OperationOutcome::Unknown { .. },
+            OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. },
+        ) => Ok(true),
+        (
+            OperationOutcome::Unknown { .. }
+            | OperationOutcome::Returned { .. }
+            | OperationOutcome::NotExecuted { .. },
+            OperationOutcome::Unknown { .. },
+        ) => Ok(false),
+        _ => Err(StoreError::EventConflict),
+    }
+}
+
+pub(crate) struct WriteCleanup {
+    reference: RecoveryRef,
+    cleanup: OperationCleanup,
+    authority: CleanupAuthority,
+}
+enum CleanupAuthority {
+    Claim {
+        custody: CleanupCustody,
+        dispatch: Arc<DispatchState>,
+    },
+    Provider(Arc<LiveOperations>),
+}
+pub(crate) struct CleanupValue {
+    observation: OperationObservation,
+    _custody: CleanupCustody,
+    _dispatch: Option<Arc<DispatchState>>,
+}
+impl crate::writeback::Statement for WriteCleanup {
+    type Value = CleanupValue;
+    type Output = OperationObservation;
+    fn execute(
+        self,
+        connection: &Connection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        let mut observation = read(connection, &self.reference)?
+            .ok_or_else(|| invalid("original dispatch missing"))?
+            .observation;
+        let changed = advance_cleanup(&observation.cleanup, &self.cleanup)?;
+        let (custody, dispatch) = match self.authority {
+            CleanupAuthority::Claim { custody, dispatch } => (custody, Some(dispatch)),
+            CleanupAuthority::Provider(live) => {
+                live.cleanup(
+                    &self.reference,
+                    matches!(self.cleanup, OperationCleanup::Confirmed),
+                )?;
+                (CleanupCustody(None), None)
+            }
+        };
+        if changed {
+            connection.execute("UPDATE application_operations SET cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?", params![serde_json::to_string(&self.cleanup)?, self.reference.source.deployment.to_string(), serde_json::to_string(&self.reference.namespace)?, self.reference.operation.to_string()])?;
+            observation.cleanup = self.cleanup;
+        }
+        Ok(crate::writeback::Prepared {
+            value: CleanupValue {
+                observation,
+                _custody: custody,
+                _dispatch: dispatch,
+            },
+            changed,
+            notification: crate::writeback::Notification::METADATA,
+        })
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        value.observation
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::EventConflict | StoreError::InvalidTransition(_)
+        )
+    }
+}
+
+fn advance_cleanup(old: &OperationCleanup, new: &OperationCleanup) -> Result<bool, StoreError> {
+    if old == new {
+        return Ok(false);
+    }
+    match (old, new) {
+        (
+            OperationCleanup::Unconfirmed,
+            OperationCleanup::Failed { .. } | OperationCleanup::Confirmed,
+        )
+        | (OperationCleanup::Failed { .. }, OperationCleanup::Confirmed) => Ok(true),
+        (
+            OperationCleanup::Failed { .. } | OperationCleanup::Confirmed,
+            OperationCleanup::Failed { .. },
+        ) => Ok(false),
+        _ => Err(StoreError::EventConflict),
     }
 }
 
@@ -783,10 +1194,20 @@ pub(crate) fn require_source(
     }
 }
 
+const RESULT_CODEC_VERSION: u32 = 1;
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StoredOutcome {
     Unresolved,
-    Returned,
-    Unknown { diagnostic: String },
+    Returned {
+        #[serde(rename = "resultVersion")]
+        result_version: u32,
+    },
+    NotExecuted {
+        proof: NotExecutedProof,
+    },
+    Unknown {
+        diagnostic: String,
+    },
 }

@@ -20,9 +20,12 @@
 use super::external_support::{host_tool, input, packet, release, with_tools};
 use super::*;
 use maka_agent_facts::{
-    event::{Fact, ToolOutcome},
+    durable::Fact,
+    external_effects::{ExternalEffectEvent, ExternalReturn},
     tool_call::ToolOrigin,
 };
+use maka_host_runtime::application::{HandlerError, HandlerResult, HandlerValue};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use tokio::io::BufReader;
 
 async fn plan(control: &mut BufReader<TcpStream>, calls: Value) {
@@ -92,13 +95,15 @@ async fn native_external_host_query_mutation_preserve_origin_receipt_and_allowli
         assert_eq!(f.query("observe", json!({"sessionId":child})).await.unwrap()["session"]["parentSessionId"], session);
         assert_eq!(results[&3]["isError"], true);
         assert_eq!(results[&4]["isError"], true);
-        let events = f.prefix(session, 128, 1024*1024).await.events;
-        let calls: Vec<_> = events.iter().filter_map(|row| match &row.event.fact {
-            Fact::ToolDispatched { name, call, .. } => Some((name, call)), _ => None,
-        }).collect();
-        assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|(_, call)| matches!(&call.origin, ToolOrigin::HostSdk { entry_id, parent: None, .. } if entry_id == "external")));
-        assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })));
+        let effects=super::external_support::host_effects(&f,session).await;
+        assert_eq!(effects.len(),2);
+        for (descriptor,effect) in &effects {
+            assert!(matches!(&descriptor.origin,ToolOrigin::External {task,operation,entry_id,..} if *task==descriptor.key.task && *operation==descriptor.key.operation && entry_id=="external"));
+            assert!(effect.admitted);assert!(effect.rejected.is_none());assert_eq!(effect.cleanup,OperationCleanup::Confirmed);
+            let reference=effect.returned.as_ref().expect("actual canonical return");let bytes=f.owner.durable.content(descriptor.execution.run_id,reference.clone()).await.unwrap();
+            let returned:ExternalReturn=serde_json::from_slice(&bytes).unwrap();assert!(matches!(returned,ExternalReturn::Output {is_error:false,..}));
+            if descriptor.name=="SessionCreate" {assert!(matches!(effect.observation.as_ref().map(|r|&r.receipt),Some(Receipt::Recorded {outcome:OperationOutcome::Returned {result:OperationResult::Success {..}},cleanup:OperationCleanup::Confirmed})));}
+        }
         finish(&f, &mut control).await;
         // A narrower Session ceiling must also reject adversarial out-of-catalog calls.
         let mut create = f.create_input("Narrow bridge").await;
@@ -202,9 +207,10 @@ async fn native_external_host_questions_wait_inline_while_native_stream_remains_
         let approval = service_tools::pending_approval(&f, &session).await;
         let answer = f.mutation(2, "respond", json!({"sessionId":session,"requestId":approval.request_id,"answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(answer["kind"], "recorded");
-        let mut commits = f.session(&session).await.subscribe_commits().unwrap();
+        let interactions = f.owner.durable.interactions();
+        let mut commits = interactions.subscribe().unwrap();
         let question = loop {
-            let pending = f.session(&session).await.pending_interactions(&session).await.unwrap();
+            let pending = interactions.pending(&session).await.unwrap().records;
             if let Some(question) = pending.into_iter().find(|record| matches!(record.request, maka_agent_facts::interaction::InteractionRequest::Question { .. })) { break question; }
             commits.changed().await.unwrap();
         };
@@ -242,13 +248,12 @@ async fn native_external_host_excludes_third_party_aliases_and_local_shell_servi
             let results = replies(&mut control, 2).await;
             assert_eq!(results[&1]["isError"], true);
             assert_eq!(results[&2]["isError"], true);
-            assert!(
-                !f.prefix(&session, 128, 1024 * 1024)
-                    .await
-                    .events
-                    .iter()
-                    .any(|row| matches!(row.event.fact, Fact::ToolDispatched { .. }))
-            );
+            assert!(!f.recorded_facts(&session).await.iter().any(|row| matches!(
+                row.fact,
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Prepared { .. }
+                }
+            )));
             finish(&f, &mut control).await;
             f.app.shutdown().await.unwrap();
             f.config.shutdown().await.unwrap();
@@ -273,12 +278,14 @@ async fn native_external_host_large_results_archive_at_actual_t2_and_continue_th
         assert_eq!(result["kind"], "maka.archived_tool_result", "{result}");
         let page = result["page"].clone();
         assert!(page["next"].is_object(), "{page}");
-        let events = f.prefix(&session, 256, 1024*1024).await.events;
-        let address = maka_agent_facts::read::ResourceAddress::parse(result["resourceRef"].as_str().unwrap()).unwrap().unwrap();
-        let source = events.iter().find(|row| row.event.id.starts_with(address.id())).unwrap();
-        assert!(matches!(source.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. }));
-        let original = f.session(&session).await.resolve_tool_result(&session, &source.event.id).await.unwrap().into_code_value().unwrap();
-        let full = serde_json::to_string(&original).unwrap();
+        let events=f.recorded_facts(&session).await;
+        let address=maka_agent_facts::read::ResourceAddress::parse(result["resourceRef"].as_str().unwrap()).unwrap().unwrap();
+        let source=events.iter().find(|row|row.id.to_string().starts_with(address.id())).expect("archive references the actual immutable canonical return fact");
+        let Fact::ExternalEffect {event:ExternalEffectEvent::Returned {key,output}}=&source.fact else {panic!("archive source must be original Host T2 return")};
+        let bytes=f.owner.durable.content(source.run,output.clone()).await.unwrap();
+        let ExternalReturn::Output {projection,is_error:false,..}=serde_json::from_slice::<ExternalReturn>(&bytes).unwrap() else {panic!("original successful Host result")};
+        let originals=super::external_support::host_effects(&f,&session).await;assert!(originals.iter().any(|(descriptor,effect)|descriptor.key==*key && effect.admitted && effect.cleanup==OperationCleanup::Confirmed));
+        let full=String::from_utf8(maka_agent_facts::archive::encode_projection(&projection).unwrap()).unwrap();
         assert!(full.len() > 7500);
         finish(&f, &mut control).await;
         f.mutation(2, "send", input(&session, "continue archive"), Uuid::new_v4()).await.unwrap();
@@ -307,7 +314,7 @@ impl Handler for HeldHostQuestion {
         method: String,
         _: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         assert_eq!(method, "ask");
         assert!(matches!(context.scope().identity, Identity::Agent { .. }));
         assert!(context.operation().is_some());
@@ -321,7 +328,9 @@ impl Handler for HeldHostQuestion {
             context.scope().cancellation.cancelled().await;
             cancelled.add_permits(1);
             release.acquire().await.unwrap().forget();
-            Ok(json!({"kind":"closed","reason":"producer_cancelled"}))
+            Ok(HandlerValue::Json(
+                json!({"kind":"closed","reason":"producer_cancelled"}),
+            ))
         })
     }
 }
@@ -345,17 +354,17 @@ async fn native_external_host_stop_drains_admitted_tool_after_worker_terminal_an
         control.get_mut().write_all(&bytes).await.unwrap();
         packet(&mut control, "responsive").await;
         held.entered.acquire().await.unwrap().forget();
-        f.mutation(2, "stop", json!({"sessionId":session,"invocationId":accepted["invocationId"]}), Uuid::new_v4()).await.unwrap();
+        f.mutation(2, "stop", json!({"sessionId":session,"runId":accepted["runId"]}), Uuid::new_v4()).await.unwrap();
         packet(&mut control, "cancelled_tools").await;
         packet(&mut control, "terminal").await;
         held.cancelled.acquire().await.unwrap().forget();
         release(&mut control).await;
-        assert!(!f.owner.runs.lock().await.controls.is_empty(), "worker terminal must retain execution custody through Host tool settlement");
+        assert!(!f.owner.runs.state().await.controls.is_empty(), "worker terminal must retain execution custody through Host tool settlement");
         held.release.add_permits(1);
         f.drained().await;
-        let events = f.prefix(&session, 128, 1024*1024).await.events;
-        let settled = events.iter().position(|row| matches!(row.event.fact, Fact::ToolSettled { .. })).unwrap();
-        let ended = events.iter().position(|row| matches!(row.event.fact, Fact::InvocationEnded { .. })).unwrap();
+        let events = f.recorded_facts(&session).await;
+        let settled = events.iter().position(|row| matches!(row.fact,Fact::ExternalEffect {event:ExternalEffectEvent::Returned {..}})).unwrap();
+        let ended = events.iter().position(|row| matches!(row.fact,Fact::RunTerminated {..})).unwrap();
         assert!(settled < ended, "executor terminal must follow the admitted effect's T2");
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
@@ -393,21 +402,20 @@ struct UncertainHostQuestion {
     cleanup_failed: bool,
 }
 impl Handler for UncertainHostQuestion {
-    fn call(
-        &self,
-        _: String,
-        _: Value,
-        context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let cleanup_failed = self.cleanup_failed;
         Box::pin(async move {
             if cleanup_failed {
                 let mut ticket = context.scope().resources.reserve().unwrap();
                 ticket.start();
                 ticket.complete(Err("Host question cleanup failed".into()));
-                Ok(json!({"kind":"closed","reason":"producer_cancelled"}))
+                Ok(HandlerValue::Json(
+                    json!({"kind":"closed","reason":"producer_cancelled"}),
+                ))
             } else {
-                Err("original Host effect lost reply".into())
+                Err(HandlerError::Unknown {
+                    diagnostic: "original Host effect lost reply".into(),
+                })
             }
         })
     }
@@ -428,25 +436,26 @@ async fn native_external_host_uncertainty_keeps_operation_receipts_and_fatal_exe
             let accepted = f.mutation(2, "send", input(&session, "uncertain"), Uuid::new_v4()).await.unwrap();
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
             packet(&mut control, "opened").await;
-            let mut bytes = serde_json::to_vec(&json!({"expectCancel":true,"calls":[{"callId":1,"name":"AskUserQuestion","input":{"questions":[{"question":"Proceed","options":[{"label":"A"},{"label":"B"}]}]}}]})).unwrap(); bytes.push(b'\n');
+            let mut bytes = serde_json::to_vec(&json!({"calls":[{"callId":1,"name":"AskUserQuestion","input":{"questions":[{"question":"Proceed","options":[{"label":"A"},{"label":"B"}]}]}}]})).unwrap(); bytes.push(b'\n');
             control.get_mut().write_all(&bytes).await.unwrap();
             let results = replies(&mut control, 1).await;
             assert_eq!(results[&1]["isError"], true);
             let error = business(&results[&1]);
             assert!(error["operationId"].is_string(), "{error}");
             assert!(error["observation"]["receipt"].is_object(), "{error}");
-            // Fatal tool settlement cancels the native worker; let it return its receipt.
-            packet(&mut control, "cancelled_tools").await;
-            packet(&mut control, "terminal").await;
-            release(&mut control).await;
-            f.drained().await;
-            let events = f.prefix(&session, 128, 1024*1024).await.events;
-            assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { .. } })));
+            // A fatal Host receipt retires observation; it is not Human Stop.
+            packet(&mut control,"output").await;release(&mut control).await;packet(&mut control,"terminal").await;release(&mut control).await;f.drained().await;
+            let execution=f.execution(&accepted).await;let view=f.owner.durable.frontier(execution.run_id).await.unwrap();assert!(!view.stopped,"Host uncertainty may not manufacture canonical Human Stop");
+            assert!(!view.blockers.is_empty(),"uncertain original Host effect must retain a real durable blocker");assert!(view.terminal.is_none(),"uncertainty is not definite native business failure");
+            assert_eq!(work(&f,&session,&accepted).await["execution"]["state"],"blocked");
+            let effects=super::external_support::host_effects(&f,&session).await;assert_eq!(effects.len(),1);let effect=&effects[0].1;let reply=effect.observation.as_ref().expect("original Host receipt must be retained");
+            assert_eq!(serde_json::to_value(&reply.reference).unwrap(),error["observation"]["reference"]);
             if cleanup_failed {
-                assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })));
-                assert_eq!(super::external_support::record(&f, &session).await["running"], accepted["invocationId"]);
+                assert!(matches!(&reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {result:OperationResult::Success {..}},cleanup:OperationCleanup::Failed {..}}));
+                assert!(matches!(effect.cleanup,OperationCleanup::Failed {..}));
             } else {
-                assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Unknown { operation: Some(_), .. }, .. })));
+                assert!(matches!(&reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Unknown {..},..}));
+                assert!(effect.returned.is_none(),"unknown operation cannot synthesize a successful return");
             }
             let _ = f.app.shutdown().await;
             f.config.shutdown().await.unwrap();

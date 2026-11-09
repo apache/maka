@@ -43,7 +43,7 @@ pub trait Dispatcher: Send + Sync {
 pub enum Delivery {
     Accepted {
         session_id: String,
-        run_id: String,
+        run_id: maka_agent_facts::durable::RunId,
     },
     Notified,
     Blocked(String),

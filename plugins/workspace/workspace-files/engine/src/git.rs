@@ -21,7 +21,7 @@
 pub use crate::path::WorkspacePath;
 use crate::worktree::Binding;
 use gix::bstr::ByteSlice;
-use maka_agent_facts::execution::DirectoryIdentity;
+use maka_sandbox::workspace::DirectoryIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{

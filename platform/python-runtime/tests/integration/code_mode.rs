@@ -18,25 +18,36 @@
  */
 
 use maka_agent_facts::{
-    event::{EventWrite, Fact, Invocation, InvocationInput, LogScope, RuntimeEvent},
-    execution::{CodeLanguage, ToolMode},
-    language::Language,
-    model::{
-        ModelEvent, ModelFinishReason, ModelToolCall,
-        assembly::{AttemptBinding, AttemptWriter},
+    artifact::ToolReturn,
+    cells::{
+        CellEvent, CellId, CellObservation, CellOwner, CellReturnedResult, CellStatus, CellView,
     },
-    tool_call::ToolOrigin,
-    tools::{ToolExecutor, ToolFuture},
+    durable::{ContentRef, SCHEMA_VERSION, UnixMillis},
+    execution::CodeLanguage,
+    tool_call::ToolSettlement,
+    tool_output::ToolOutput,
+    tools::{ToolError, ToolExecutor, ToolFuture},
 };
-use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
+use maka_agent_state::{
+    ContentBlob,
+    cells::{CellsStore, StandaloneBatch, StandaloneEvent},
+};
+use maka_code_runtime::{CellLimits, CellStore};
+use maka_event_log::{
+    StoreError,
+    connection::Query,
+    root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
+};
+use maka_plugin_core::work::WorkCustody;
 use maka_tools::{
-    CodeExecutor, RunTools, ToolCatalog, ToolDefinition, ToolHandler, ToolNesting,
-    ToolRegistration, ToolSemantics,
+    CellAdmission, CellChange, CellContent, CellFuture, CellPersistence, CodeCells, CodeExecutor,
+    ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 struct Echo;
 impl ToolExecutor for Echo {
@@ -48,63 +59,351 @@ impl ToolExecutor for Echo {
     }
 }
 
+#[derive(Clone)]
+struct Standalone {
+    root: Arc<RootStore>,
+    cells: CellsStore,
+    session: String,
+    cell: CellId,
+    custody: Arc<dyn WorkCustody>,
+}
+fn persistence(error: impl std::fmt::Display) -> ToolError {
+    ToolError::Persistence(error.to_string())
+}
+impl CellPersistence for Standalone {
+    fn owner(&self) -> CellOwner {
+        CellOwner::Standalone {
+            session: self.session.clone(),
+        }
+    }
+    fn now(&self) -> UnixMillis {
+        UnixMillis(1)
+    }
+    fn append(&self, changes: Vec<CellChange>, contents: Vec<CellContent>) -> CellFuture<'_, ()> {
+        Box::pin(async move {
+            let events = changes
+                .into_iter()
+                .map(|change| StandaloneEvent {
+                    id: change.id,
+                    at: change.at,
+                    event: change.event,
+                })
+                .collect();
+            let contents = contents
+                .into_iter()
+                .map(|content| {
+                    let blob = ContentBlob::new(content.bytes);
+                    if blob.reference() != &content.reference {
+                        return Err(persistence("Cell content digest mismatch"));
+                    }
+                    Ok(blob)
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?;
+            let batch = StandaloneBatch::with_publications(self.session.clone(), events, contents)
+                .map_err(persistence)?;
+            self.cells
+                .append_standalone(&self.root, self.custody.clone(), batch)
+                .await
+                .map_err(persistence)
+        })
+    }
+    fn read(&self, cell: CellId) -> CellFuture<'_, Option<CellView>> {
+        Box::pin(async move {
+            self.cells
+                .read(&self.session, cell)
+                .await
+                .map_err(persistence)
+        })
+    }
+    fn content(&self, cell: CellId, reference: ContentRef) -> CellFuture<'_, Vec<u8>> {
+        Box::pin(async move {
+            self.cells
+                .content(&self.session, cell, reference)
+                .await
+                .map_err(persistence)
+        })
+    }
+    fn invoke(
+        &self,
+        cell: CellId,
+        operation: Uuid,
+        name: String,
+        input: Value,
+        catalog: ToolCatalog,
+        cancellation: CancellationToken,
+    ) -> ToolFuture<ToolOutput> {
+        let port = self.clone();
+        Box::pin(async move {
+            let work = port
+                .root
+                .fork_effect(port.custody.as_ref(), &port.session)
+                .map_err(persistence)?;
+            let (reply, result) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let outcome = async {
+                    if cell != port.cell {
+                        return Err(ToolError::Failed("foreign standalone Cell".into()));
+                    }
+                    let view = port
+                        .read(cell)
+                        .await?
+                        .ok_or_else(|| persistence("Cell not started"))?;
+                    if !matches!(view.status, CellStatus::Running) || view.blocks_effect_admission()
+                    {
+                        return Err(ToolError::OutcomeUnknown(
+                            "Cell no longer admits effects".into(),
+                        ));
+                    }
+                    catalog
+                        .validate(&name, &input)
+                        .map_err(|error| ToolError::Failed(error.to_string()))?;
+                    let semantics = catalog
+                        .semantics(&name)
+                        .map_err(|error| ToolError::Failed(error.to_string()))?;
+                    let frozen = CellContent::json(&input)?;
+                    port.append(
+                        vec![CellChange::new(
+                            CellEvent::ChildPrepared {
+                                cell,
+                                operation,
+                                name: name.clone(),
+                                semantics,
+                                input: frozen.reference.clone(),
+                                resources: vec![],
+                            },
+                            port.now(),
+                        )],
+                        vec![frozen],
+                    )
+                    .await?;
+                    port.append(
+                        vec![CellChange::new(
+                            CellEvent::ChildAdmitted { cell, operation },
+                            port.now(),
+                        )],
+                        vec![],
+                    )
+                    .await?;
+                    let output = ToolOutput::Json(Echo.invoke(name, input, cancellation).await?);
+                    let manifest = CellContent::json(&ToolReturn {
+                        schema_version: SCHEMA_VERSION,
+                        artifacts: vec![],
+                        body: CellReturnedResult {
+                            output: output.clone(),
+                            projection: None,
+                            is_error: false,
+                        },
+                    })?;
+                    port.append(
+                        vec![CellChange::new(
+                            CellEvent::LocalChildReturned {
+                                cell,
+                                operation,
+                                result: manifest.reference.clone(),
+                                is_error: false,
+                                settlement: ToolSettlement::Returned,
+                            },
+                            port.now(),
+                        )],
+                        vec![manifest],
+                    )
+                    .await?;
+                    Ok(output)
+                }
+                .await;
+                work.finish(Ok(()));
+                let _ = reply.send(outcome);
+            });
+            result.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!("local Echo worker disappeared: {error}"))
+            })?
+        })
+    }
+}
+
+struct ReadEvents(String);
+impl Query for ReadEvents {
+    type Output = Vec<StandaloneEvent>;
+    fn execute(self, connection: &rusqlite::Connection) -> Result<Self::Output, StoreError> {
+        let mut statement = connection.prepare(
+            "SELECT c.payload FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? ORDER BY e.sequence",
+        )?;
+        let bytes = statement
+            .query_map([self.0], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        bytes
+            .into_iter()
+            .map(|body| serde_json::from_slice(&body).map_err(Into::into))
+            .collect()
+    }
+}
+
 #[tokio::test]
-async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal() {
-    tokio::time::timeout(std::time::Duration::from_secs(15),async {
-        let directory=tempfile::tempdir().unwrap();
-        let log=Arc::new(EventLog::open(&directory.path().join("events.sqlite")).await.unwrap());
-        let invocation=Invocation {session_id:"python-session".into(),turn_id:"turn".into(),run_id:"run".into(),invocation_id:"invocation".into()};
-        log.create_session(&invocation.session_id,"create",&json!({}),1).await.unwrap();
-        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(),Fact::InvocationOpened {
-            configuration:None,input:InvocationInput::Message {source_messages:vec![],content:"test".into(),request_fingerprint:None}
-        })).unwrap()).await.unwrap();
-        let catalog=ToolCatalog::new([ToolRegistration {
-            definition:ToolDefinition {freeform:None,output_schema:None,provider:None,name:"echo-tool".into(),description:"Echo an integer".into(),input_schema:json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false})},
-            handler:ToolHandler::Immediate(Arc::new(Echo)),nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
-        }]).unwrap();
-        let executor=CodeExecutor::new(CellLimits::default()).unwrap().with_python_worker(super::python_worker()).unwrap();
-        let loaded=maka_tools::availability::LoadedTools::new(maka_session_state::Backend::temporary().unwrap().session("python-session"));
-        for (step,language,source,expected) in [
-            ("python",CodeLanguage::Python,"# @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}\nresult=await tools.echo_tool(n=7)\nstore('receipt',result)\ntext(result)",json!([{"kind":"text","text":"{\"n\":7}"}])),
-            ("javascript",CodeLanguage::JavaScript,"text(load('receipt'));",json!([{"kind":"text","text":"{\"n\":7}"}])),
+async fn selected_python_runs_through_exec_grammar_catalog_and_durable_cell_source() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: directory.path().join("owners"),
+            control: directory.path().join("control"),
+        };
+        let owner =
+            Arc::new(RootOwner::create(&directory.path().join("root"), &namespaces).unwrap());
+        let migrations = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(maka_agent_state::MIGRATIONS)
+            .copied()
+            .collect::<Vec<_>>();
+        let root = Arc::new(RootStore::open(owner, &migrations).await.unwrap());
+        let session = root
+            .create_session("python-session", "python-code-mode", &json!({}), 1)
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let (lease, effects) = session
+            .work_scope(None)
+            .await
+            .unwrap()
+            .accept(cancellation.clone());
+        let custody = lease.store().work_custody().unwrap();
+        let data = root
+            .data_writer_for_work(custody.as_ref(), session.id())
+            .unwrap();
+        let store = CellsStore::new(data.clone());
+        let catalog = ToolCatalog::new([ToolRegistration {
+            definition: ToolDefinition {
+                freeform: None,
+                output_schema: None,
+                provider: None,
+                name: "echo-tool".into(),
+                description: "Echo an integer".into(),
+                input_schema: json!({
+                    "type":"object", "properties":{"n":{"type":"integer"}},
+                    "required":["n"], "additionalProperties":false,
+                }),
+            },
+            handler: ToolHandler::Immediate(Arc::new(Echo)),
+            nesting: ToolNesting::Nestable,
+            semantics: ToolSemantics::Parallel,
+        }])
+        .unwrap();
+        let executor = CodeExecutor::new(CellLimits::default())
+            .unwrap()
+            .with_python_worker(super::python_worker())
+            .unwrap();
+        let python_source = concat!(
+            "# @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}\n",
+            "result=await tools.echo_tool(n=7)\n",
+            "store('receipt',result)\ntext(result)",
+        );
+        for (language, source, expected) in [
+            (
+                CodeLanguage::Python,
+                python_source,
+                json!([{"kind":"text","text":"{\"n\":7}"}]),
+            ),
+            (
+                CodeLanguage::JavaScript,
+                "text(load('receipt'));",
+                json!([{"kind":"text","text":"{\"n\":7}"}]),
+            ),
         ] {
-            let run=RunTools::new(Language::En,log.clone(),invocation.clone(),catalog.clone(),ToolMode::CodeMode,executor.clone().with_language(language),loaded.clone());
-            let request=run.capture(".",CancellationToken::new()).await.unwrap();
-            let definitions=request.definitions();let definition=definitions.iter().find(|tool|tool.name=="exec").unwrap();
-            if language==CodeLanguage::Python {
+            let definitions = CodeCells::definitions_for(&catalog, language);
+            let definition = definitions.iter().find(|tool| tool.name == "exec").unwrap();
+            if language == CodeLanguage::Python {
                 assert!(definition.description.contains("Input JSON Schema"));
-                assert!(definition.description.contains("await tools.echo_tool(input)"));
-                let grammar=serde_json::to_value(&definition.freeform).unwrap().to_string();
+                assert!(
+                    definition
+                        .description
+                        .contains("await tools.echo_tool(input)")
+                );
+                let grammar = serde_json::to_value(&definition.freeform)
+                    .unwrap()
+                    .to_string();
                 assert!(grammar.contains("# @exec:"));
                 assert!(!definition.description.contains("declare const tools"));
             }
-            let call=ModelToolCall {id:step.into(),name:"exec".into(),input:json!(source).into(),provider_options:None,provider_executed:false};
-            let mut writer=AttemptWriter::new(AttemptBinding {
-                invocation:invocation.clone(),step_id:step.into(),purpose:maka_agent_facts::context::ModelPurpose::Main,
-            },false).unwrap();
-            writer.push(ModelEvent::ToolCall(call.clone()),std::time::SystemTime::now()).unwrap();
-            writer.push(ModelEvent::Finished {
-                compaction: None,
-                reason:ModelFinishReason::ToolCalls,usage:Default::default(),provider_options:None,
-            },std::time::SystemTime::now()).unwrap();
-            let facts=[
-                Fact::ModelRequested {
-                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false },context_breakdown:None,item_acceptance:false,step_id:step.into(),model_id:"fixture".into(),source_scope:LogScope::Root,source_high_water:0,source_digest:String::new(),effective_source_digest:None,input_digest:String::new(),route_identity:String::new(),checkpoint_event_id:None,purpose:maka_agent_facts::context::ModelPurpose::Main,context:None},
-                Fact::ModelCompleted {step_id:step.into(),output:writer.completed().unwrap().completion()},
-            ];
-            log.append_batch(&facts.map(|fact|EventWrite::plain(RuntimeEvent::new(invocation.clone(),fact)).unwrap())).await.unwrap();
-            let result=request.into_step(step)
-                .prepare(call,CancellationToken::new()).await.unwrap()
-                .publish(&[]).await.unwrap()
-                .start().await.unwrap();
-            assert_eq!(result["state"],"completed","{result}");
-            assert_eq!(result["result"]["ok"],true,"{result}");
-            assert_eq!(result["content"],expected);
-            run.shutdown().await.unwrap();
+            let admission = CellAdmission::new(
+                source.into(),
+                CellOwner::Standalone {
+                    session: session.id().into(),
+                },
+                UnixMillis(1),
+            );
+            let port = Arc::new(Standalone {
+                root: root.clone(),
+                cells: store.clone(),
+                session: session.id().into(),
+                cell: admission.id(),
+                custody: custody.clone(),
+            });
+            let reader = store.reader(session.id().into(), tokio::runtime::Handle::current());
+            let cells = CodeCells::new(
+                executor.clone().with_language(language),
+                CellStore::new(reader),
+            );
+            let cell = cells
+                .start_cell(
+                    &admission,
+                    catalog.clone(),
+                    port.clone(),
+                    cancellation.clone(),
+                )
+                .await
+                .unwrap();
+            let observation = loop {
+                let observed = cells
+                    .observe_cell(
+                        cell,
+                        Duration::from_secs(10),
+                        false,
+                        port.clone(),
+                        cancellation.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                if !matches!(observed.observation, CellObservation::Running { .. }) {
+                    break observed.observation;
+                }
+            };
+            let CellObservation::Completed {
+                content, result, ..
+            } = observation
+            else {
+                panic!("Cell did not complete");
+            };
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(serde_json::to_value(content).unwrap(), expected);
+            let recorded = store.read(session.id(), cell).await.unwrap().unwrap();
+            assert!(matches!(
+                recorded.status,
+                CellStatus::Completed { accepted: true, .. }
+            ));
+            assert!(!recorded.blocks_effect_admission());
+            cells.shutdown().await.unwrap();
         }
-        let prefix=log.prefix(100,1024*1024).await.unwrap();
-        assert_eq!(prefix.events.iter().filter(|event|matches!(&event.event.fact,Fact::ToolDispatched {name,call,..} if name=="echo-tool" && matches!(call.origin,ToolOrigin::CodeMode {..}))).count(),1);
-        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-    }).await.unwrap();
+        let events = data.query(ReadEvents(session.id().into())).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, CellEvent::LocalChildReturned { .. },))
+                .count(),
+            1
+        );
+        assert!(events.iter().all(|event| !matches!(
+            &event.event,
+            CellEvent::Started {
+                owner: CellOwner::Agent { .. },
+                ..
+            },
+        )));
+        effects.settle().await.unwrap();
+        lease.finish();
+        drop(custody);
+        drop(store);
+        drop(data);
+        root.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

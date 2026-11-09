@@ -46,6 +46,8 @@ name = "integration"
 path = "tests/integration/main.rs"
 
 [dependencies]
+jiff.workspace = true
+maka-tools.workspace = true
 gpui = { package = "gpui-fast", version = "0.1.10", default-features = false, optional = true }
 gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"], optional = true }
 nsh-platform-gpui = { workspace = true, optional = true }
@@ -54,6 +56,7 @@ maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
+maka-agent-state.workspace = true
 maka-agent-ports.workspace = true
 maka-packages.workspace = true
 maka-product-native.workspace = true

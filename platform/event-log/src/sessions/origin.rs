@@ -19,8 +19,8 @@
 
 use super::validate_id;
 use crate::{EventLog, StoreError};
-use maka_capabilities::storage::Namespace;
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::Namespace;
 use rusqlite::{OptionalExtension, params};
 
 /// Host-bound creation identity, not a caller-provided authorization credential.
@@ -37,6 +37,78 @@ pub struct PluginSession {
 }
 
 impl PluginSession {
+    pub(crate) fn prepare_record(
+        &self,
+        connection: &rusqlite::Connection,
+        configuration: &serde_json::Value,
+        now: u64,
+    ) -> Result<super::SessionRecord, StoreError> {
+        if let Some(record) = super::probe(connection, &self.session_id, &self.fingerprint)? {
+            check(connection, &self.session_id, Some(self))?;
+            return Ok(record);
+        }
+        let workspace_binding =
+            if let Some(reference) = crate::workspace_bindings::attached(configuration)? {
+                let binding = crate::workspace_bindings::read(connection, reference.id)?.ok_or(
+                    StoreError::SessionCreationRejected(
+                        crate::root_store::CreationRejection::MissingWorkspaceBinding,
+                    ),
+                )?;
+                if binding.reference() != reference {
+                    return Err(StoreError::SessionCreationRejected(
+                        crate::root_store::CreationRejection::StaleWorkspaceBinding,
+                    ));
+                }
+                crate::workspace_bindings::effective_boundary(configuration, &binding)?;
+                Some(binding)
+            } else {
+                None
+            };
+        let revision = crate::workspace_bindings::effective_revision(
+            1,
+            configuration,
+            workspace_binding.as_ref(),
+        )?;
+        let encoded = serde_json::to_string(configuration)?;
+        use sha2::{Digest, Sha256};
+        Ok(super::SessionRecord {
+            id: self.session_id.clone(),
+            revision,
+            created_at: now,
+            updated_at: now,
+            archived: false,
+            configuration: configuration.clone(),
+            workspace_binding,
+            configuration_digest: format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(encoded.as_bytes()))
+            ),
+        })
+    }
+
+    pub(crate) fn insert_metadata(
+        &self,
+        connection: &rusqlite::Connection,
+        configuration: &serde_json::Value,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        if super::probe::<serde_json::Value>(connection, &self.session_id, &self.fingerprint)?
+            .is_some()
+        {
+            check(connection, &self.session_id, Some(self))?;
+            return Ok(false);
+        }
+        insert(connection, self)?;
+        super::insert(
+            connection,
+            &self.session_id,
+            &self.fingerprint,
+            &serde_json::to_string(configuration)?,
+            now,
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn validate(&self) -> Result<(), StoreError> {
         validate_id(&self.session_id)?;
         if let Some(source) = &self.authority_session_id {

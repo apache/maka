@@ -19,6 +19,7 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use maka_agent_facts::durable::StepId;
 use maka_agent_facts::model::ModelFinishReason;
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::TextKind;
@@ -109,7 +110,8 @@ async fn responses_http_preserves_complete_ordered_output_items() {
         .stream(input, CancellationToken::new())
         .await
         .unwrap();
-    let mut builder = StepBuilder::for_step("complete-items").unwrap();
+    let step_id = StepId::new();
+    let mut builder = StepBuilder::for_step(step_id).unwrap();
     let completed = async {
         while let Some(event) = stream.next().await {
             builder
@@ -214,7 +216,8 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
                 max_output_tokens: Some(128),
             };
             let mut stream = executor.stream(request, CancellationToken::new()).await.unwrap();
-            let mut builder = StepBuilder::for_step(&format!("step-{index}")).unwrap();
+            let step_id = StepId::new();
+            let mut builder = StepBuilder::for_step(step_id).unwrap();
             let mut input_events = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event.unwrap().event;
@@ -357,7 +360,8 @@ async fn responses_http_streams_custom_input_before_its_complete_freeform_call()
             freeform: Some(FreeformGrammar::Lark { definition: "start: /[\\s\\S]+/".into() }),
         })];
         let mut stream = executor.stream(request, CancellationToken::new()).await.unwrap();
-        let mut builder = StepBuilder::for_step("custom-step").unwrap();
+        let step_id = StepId::new();
+        let mut builder = StepBuilder::for_step(step_id).unwrap();
         let mut input_events = Vec::new();
         while let Some(event) = stream.next().await {
             let event = event.unwrap().event;
@@ -471,7 +475,8 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                     max_output_tokens: Some(256),
                 };
                 let mut stream = executor.stream(request, CancellationToken::new()).await.unwrap();
-                let mut builder = StepBuilder::for_step(&format!("plain-{index}")).unwrap();
+                let step_id = StepId::new();
+                let mut builder = StepBuilder::for_step(step_id).unwrap();
                 while let Some(event) = stream.next().await {
                     let event = event.unwrap().event;
                     if matches!(&event, ModelEvent::PartDelta { text, .. } if text == "想😀") { gate.notify_one(); }

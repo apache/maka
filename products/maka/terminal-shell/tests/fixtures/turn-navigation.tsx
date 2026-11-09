@@ -34,9 +34,18 @@ colors.forEach((_, index) => {
   );
 });
 const items = Array.from({ length: 6 }, (_, index) => ({
-  turnId: `turn-${index}`,
+  turnKey: `turn-${index}`,
+  order: { path: [index + 1], itemIndex: 0 },
   label: `Prompt ${index}`,
-  anchor: { kind: 'loaded' as const, position: { sourceSequence: index, itemIndex: 0 } },
+  anchor: {
+    kind: 'loaded' as const,
+    position: {
+      kind: 'live' as const,
+      sequence: index + 1,
+      fact: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      itemIndex: 0,
+    },
+  },
 }));
 mount(() => (
   <View
@@ -51,7 +60,7 @@ mount(() => (
       items={() => items}
       active={() => null}
       busy={() => null}
-      navigate={(item) => Clipboard.writeText(item.turnId)}
+      navigate={(item) => Clipboard.writeText(item.turnKey)}
       cancel={() => {}}
     />
   </View>

@@ -200,6 +200,7 @@ fn backing_bytes(db: &rusqlite::Connection) -> Option<i64> {
 #[tokio::test]
 async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replacement() {
     use maka_agent_facts::{
+        durable::{ExecutionIdentity, RunId},
         input::{DeliveredMessage, MessageInput},
         message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage, aggregate},
     };
@@ -214,12 +215,17 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     // an indexed continuation from a repeated cache-wide maintenance scan.
     let text: MessageInput = "α".repeat(17 * 1024).into();
     let digest = text.content_digest().unwrap();
+    let source_execution = ExecutionIdentity {
+        session_id: "source-session".into(),
+        turn_id: "source-turn".into(),
+        run_id: RunId::new(),
+    };
     const SIBLINGS: usize = 1024;
     let sources: Vec<_> = (0..SIBLINGS)
         .map(|index| RootSourceMessage {
             message: DeliveredMessage {
-                origin: Some(MessageOrigin::WorkhubTask {
-                    task_id: format!("task-{index}"),
+                origin: Some(MessageOrigin::Session {
+                    execution: source_execution.clone(),
                 }),
                 message_id: format!("large-{index}"),
                 content: text.clone(),

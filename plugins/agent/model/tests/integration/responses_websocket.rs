@@ -184,7 +184,8 @@ async fn generate_step(
         .stream_in_conversation(request, CancellationToken::new(), Some(lane.clone()))
         .await
         .unwrap();
-    let mut builder = StepBuilder::for_step("test-step").unwrap();
+    let step_id = maka_agent_facts::durable::StepId::new();
+    let mut builder = StepBuilder::for_step(step_id).unwrap();
     while let Some(event) = stream.next().await {
         builder.push(event.unwrap().event).unwrap();
     }

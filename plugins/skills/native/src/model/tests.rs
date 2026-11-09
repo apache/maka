@@ -161,18 +161,17 @@ async fn model_eligibility_and_preferences_apply_to_the_effective_named_skill() 
         ),
     ] {
         assert!(matches!(
-            library
-                .preferences
-                .set(
-                    SetPreference {
-                        reference: format!("source:a:{name}"),
-                        revision,
-                        preference
-                    },
-                    &call
-                )
-                .await
-                .unwrap(),
+            crate::preferences::tests::apply(
+                &library.preferences,
+                SetPreference {
+                    reference: format!("source:a:{name}"),
+                    revision,
+                    preference,
+                },
+                &call,
+            )
+            .await
+            .unwrap(),
             PreferenceResult::Applied { .. }
         ));
     }
@@ -316,21 +315,20 @@ async fn model_eligibility_and_preferences_apply_to_the_effective_named_skill() 
         "changed"
     );
     assert!(matches!(
-        library
-            .preferences
-            .set(
-                SetPreference {
-                    reference: "source:a:review".into(),
-                    revision: 2,
-                    preference: maka_skills::Preference {
-                        enabled: false,
-                        pinned: false
-                    },
+        crate::preferences::tests::apply(
+            &library.preferences,
+            SetPreference {
+                reference: "source:a:review".into(),
+                revision: 2,
+                preference: maka_skills::Preference {
+                    enabled: false,
+                    pinned: false,
                 },
-                &call
-            )
-            .await
-            .unwrap(),
+            },
+            &call,
+        )
+        .await
+        .unwrap(),
         PreferenceResult::Applied { .. }
     ));
     assert_eq!(

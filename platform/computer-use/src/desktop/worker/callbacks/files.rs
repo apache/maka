@@ -786,6 +786,7 @@ mod modified_tests {
                 epoch: "modified-epoch".into(),
                 session: "modified-session".into(),
                 turn: "modified-turn".into(),
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 operation_id: "modified-operation".into(),
             };
             let request = crate::BrowserUploadRequest {

@@ -119,9 +119,13 @@ impl ToolExecutor for ClipboardBridge {
                 .await
                 .invoke(
                     command,
-                    &InvocationContext::new("playwright-fixture", "fixture-turn")
-                        .with_browser_authorization(authority)
-                        .with_browser_host_effects(effects),
+                    &InvocationContext::new(
+                        "playwright-fixture",
+                        "fixture-turn",
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    )
+                    .with_browser_authorization(authority)
+                    .with_browser_host_effects(effects),
                     &cancellation,
                     Language::En,
                 )
@@ -480,7 +484,11 @@ async fn locator_mutations_preserve_denial_and_stop_after_observed_partial_input
     assert_eq!(browser.inspect(FIXTURE).await, true);
     let driver = Arc::new(Mutex::new(Driver::default()));
     let mut session = browser.session(driver.clone());
-    let base = InvocationContext::new("mutation-stop-fixture", "fixture-turn");
+    let base = InvocationContext::new(
+        "mutation-stop-fixture",
+        "fixture-turn",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    );
     let bound = session
         .invoke(
             Command::BrowserTab {

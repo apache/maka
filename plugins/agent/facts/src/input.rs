@@ -34,10 +34,9 @@ pub use sources::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InvocationInput {
-    Handoff {
-        claim: Box<crate::continuation::ContinuationClaim>,
-        pause: Box<crate::handoff::HandoffPause>,
+pub enum RunInput {
+    HistorySource {
+        source: crate::durable::ContentRef,
     },
     Continuation {
         claim: Box<crate::continuation::ContinuationClaim>,
@@ -57,7 +56,7 @@ pub enum InvocationInput {
     },
 }
 
-impl InvocationInput {
+impl RunInput {
     pub fn request_fingerprint(&self) -> Option<&str> {
         match self {
             Self::Message {
@@ -71,24 +70,24 @@ impl InvocationInput {
             | Self::ContextCompact {
                 request_fingerprint,
             } => Some(request_fingerprint),
-            Self::Handoff { .. } | Self::Code { .. } => None,
+            Self::Code { .. } | Self::HistorySource { .. } => None,
         }
     }
 
     pub fn inherited_claim(&self) -> Option<&crate::continuation::ContinuationClaim> {
         match self {
-            Self::Continuation { claim, .. } | Self::Handoff { claim, .. } => Some(claim),
+            Self::Continuation { claim, .. } => Some(claim),
             _ => None,
         }
     }
 
     pub fn validate_inheritance(
         &self,
-        target: &crate::event::Invocation,
+        target: &crate::durable::ExecutionIdentity,
     ) -> Result<(), &'static str> {
         match self {
             Self::Continuation { claim, .. } => claim.validate(target),
-            Self::Handoff { claim, pause } => pause.validate_claim(claim, target),
+            Self::HistorySource { source } => source.validate(),
             _ => Ok(()),
         }
     }

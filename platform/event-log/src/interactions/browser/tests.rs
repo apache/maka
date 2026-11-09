@@ -19,7 +19,7 @@
 
 use super::*;
 use maka_agent_facts::interaction::{ClosureReason, GrantCapability, InteractionRecord};
-use maka_agent_facts::workspace::BindingStamp;
+use maka_sandbox::workspace::BindingStamp;
 use rusqlite::{Connection, StatementStatus, params};
 use serde_json::{Value, json};
 

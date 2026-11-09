@@ -34,6 +34,21 @@ pub struct Adapter {
     transport: Arc<Shared>,
 }
 impl ProviderAdapter for Adapter {
+    fn recovery_contract(
+        &self,
+        kind: &maka_agent_ports::model::ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<maka_agent_ports::model::RecoveryContract> {
+        super::recovery_contract(kind, tools)
+    }
+    fn continuation_cursor(
+        &self,
+        contract: &maka_agent_ports::model::RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        super::continuation_cursor(contract, part)
+    }
+
     fn supports_item_acceptance(&self) -> bool {
         true
     }
@@ -58,6 +73,14 @@ struct ResponsesSession {
     lane: Option<Lane>,
 }
 impl Session for ResponsesSession {
+    fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        self.lane.as_ref().map_or(
+            maka_agent_facts::model::retry_transport::FallbackAvailability::Unavailable,
+            |lane| lane.transport.fallback_availability(),
+        )
+    }
     fn retry_transport_phase(&self) -> RetryTransportPhase {
         self.lane
             .as_ref()
@@ -140,6 +163,14 @@ mod tests {
         sends: AtomicUsize,
     }
     impl Transport for Network {
+        fn send_text(
+            &self,
+            socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            chunks: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async move { socket.send_text(chunks).await })
+        }
         fn identity(&self) -> u64 {
             1
         }
@@ -222,11 +253,41 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn automatic_fallback_survives_fresh_conversation_and_adapter() {
+    async fn explicit_fallback_survives_fresh_conversation_and_adapter() {
         let network = Arc::new(Network::default());
         let conversation = Conversation::default();
-        attempt(&conversation, &binding(), network.clone()).await;
+        let original = binding();
+        attempt(&conversation, &original, network.clone()).await;
         assert_eq!(network.connects.load(Ordering::SeqCst), 6);
+        assert_eq!(
+            network.sends.load(Ordering::SeqCst),
+            0,
+            "a failed handshake never dispatches HTTP"
+        );
+        assert_eq!(
+            conversation.retry_transport_phase(),
+            RetryTransportPhase::Primary
+        );
+        let independent = Conversation::default();
+        assert!(!independent.try_switch_fallback_transport());
+        attempt(&independent, &original, network.clone()).await;
+        assert_eq!(
+            network.connects.load(Ordering::SeqCst),
+            6,
+            "shared defer suppresses connect, not canonical phase selection"
+        );
+        assert_eq!(network.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            independent.retry_transport_phase(),
+            RetryTransportPhase::Primary
+        );
+        assert_eq!(
+            conversation.fallback_availability(),
+            maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary
+        );
+        assert!(conversation.try_switch_fallback_transport());
+        attempt(&conversation, &original, network.clone()).await;
+        assert_eq!(network.sends.load(Ordering::SeqCst), 1);
         let phase = conversation.retry_transport_phase();
         assert_eq!(phase, RetryTransportPhase::Fallback);
         drop(conversation);

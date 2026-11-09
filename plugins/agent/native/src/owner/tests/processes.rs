@@ -42,7 +42,7 @@ pub(super) async fn call(
     name: &str,
     input: Value,
 ) -> Value {
-    let started = f.send(session).await.unwrap();
+    let queued = f.send(session).await.unwrap();
     let (mut socket, _) = listener.accept().await.unwrap();
     let sent = request(&mut socket).await;
     assert!(
@@ -57,7 +57,7 @@ pub(super) async fn call(
         "data: {delta}\n\ndata: {{\"id\":\"process-model\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
     );
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    started
+    queued
 }
 pub(super) async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     let (mut socket, _) = listener.accept().await.unwrap();
@@ -97,13 +97,83 @@ fn permissions(f: &Fixture) -> Value {
         {"path":f.workspace.join("first.txt"),"scope":"exact","access":"write"},
         {"path":f.workspace.join("second.txt"),"scope":"exact","access":"write"}],"network":"denied"})
 }
+#[tokio::test]
+async fn native_process_missing_read_reaches_the_next_main_as_an_error() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (listener, f, session) = fixture().await;
+        let reference = format!("maka://runtime/background-tasks/{}", Uuid::new_v4());
+        assert!(maka_host_runtime::shell::request::parse_ref(&reference).is_some());
+        let queued = call(&listener, &f, &session, "ReadProcess", json!({"ref":reference})).await;
+        let run = f.delivered_run(&queued).await;
+        let expected = json!({"kind":"failed","message":"Process resource not found in this Session and provider"});
+        {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            let results: Vec<Value> = sent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .map(|message| serde_json::from_str(message["content"].as_str().unwrap()).unwrap())
+                .collect();
+            assert_eq!(results.as_slice(), std::slice::from_ref(&expected));
+            service_tools::named_tool_response(&mut socket, "ReadProcess", json!({"ref":reference})).await;
+        }
+        let result = finish(&listener, &f).await;
+        assert_eq!(result, expected);
+        let frontier = f.owner.durable.frontier(run).await.unwrap();
+        let through = frontier.revision;
+        let facts = f.owner.durable.history(run, 0, 256).await.unwrap();
+        let mut view = maka_agent_state::fold::RunView::admitted(run, frontier.spec).unwrap();
+        for fact in facts.iter().take_while(|fact| fact.revision <= through) {
+            view.apply(fact).unwrap();
+        }
+        assert_eq!(view.revision, through, "complete canonical run history");
+        assert_eq!(view.tools.len(), 2);
+        let tools: Vec<_> = view.tools.values().collect();
+        assert_ne!(tools[0].key.attempt, tools[1].key.attempt);
+        // ProcessResult::Failed is a returned service value, not a failed tool dispatch.
+        for tool in tools {
+            assert_eq!(tool.call.name, "ReadProcess");
+            assert!(tool.admitted);
+            assert!(matches!(
+                tool.accepted.as_ref().map(|accepted| &accepted.outcome),
+                Some(maka_agent_facts::durable::AcceptedResult::Succeeded)
+            ));
+        }
+        assert_eq!(
+            view.terminal,
+            Some(maka_agent_facts::durable::Terminal::Completed),
+            "revision={} stopped={} current={:?} blockers={:?} attempts={:?}",
+            view.revision,
+            view.stopped,
+            view.current_attempt,
+            view.blockers.iter().map(|(id, blocker)| (
+                id,
+                &blocker.reason,
+                blocker.decision.is_some(),
+                blocker.resolved_by,
+            )).collect::<Vec<_>>(),
+            view.attempts.iter().map(|(id, attempt)| (
+                id,
+                attempt.admission.is_some(),
+                attempt.closed.as_ref().map(|closed| &closed.outcome),
+                attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed,
+                attempt.interrupted.is_some(),
+                attempt.has_tools,
+            )).collect::<Vec<_>>(),
+        );
+        close(&f).await;
+    }).await.expect("missing Process read must return its error to the next Main");
+}
+
 async fn partial(f: &Fixture, record: &InteractionRecord) {
     let InteractionRequest::Permissions { request, .. } = &record.request else {
         unreachable!()
     };
     let mut granted = request.permissions.clone();
     granted.filesystem.truncate(1);
-    f.mutation(2, "respond", json!({"sessionId":record.session_id,"requestId":record.request_id,
+    f.mutation(2, "respond", json!({"sessionId":record.execution.session_id,"requestId":record.request_id,
         "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":granted}}}), Uuid::new_v4()).await.unwrap();
 }
 #[tokio::test]
@@ -120,8 +190,17 @@ async fn native_process_foreground_enforces_workspace_and_protected_boundaries()
         .await;
         assert_eq!(result["value"]["status"], "completed", "{result}");
         assert_eq!(result["value"]["output"]["stdout"], "native");
-        let facts = service_tools::facts(&f, &session).await;
-        assert!(facts.iter().any(|fact| matches!(fact, maka_agent_facts::event::Fact::ToolDispatched {presentation:Some(key), ..} if key == "maka.workspace.Processes@1/execute")));
+        let run=f.latest_run(&session).await.run;
+        let frontier = f.owner.durable.frontier(run).await.unwrap();
+        let through = frontier.revision;
+        let facts = f.owner.durable.history(run, 0, 256).await.unwrap();
+        let mut view = maka_agent_state::fold::RunView::admitted(run, frontier.spec).unwrap();
+        for fact in facts.iter().take_while(|fact| fact.revision <= through) {
+            view.apply(fact).unwrap();
+        }
+        assert_eq!(view.revision, through, "complete canonical run history");
+        assert!(view.tools.values().any(|tool|tool.call.name=="Execute" && tool.admitted
+            && tool.decision.as_ref().is_some_and(|decision|decision.display().presentation.as_deref()==Some("maka.workspace.Processes@1/execute"))));
         let through = f.through(&session).await;
 
         let mut position = json!({"kind":"start"});
@@ -157,7 +236,7 @@ async fn native_process_foreground_enforces_workspace_and_protected_boundaries()
         forbidden["justification"] = json!("Read private state.");
         let result = roundtrip(&listener,&f,&session,"Execute",forbidden).await;
         assert_eq!(result["kind"], "failed", "{result}");
-        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
         files::change(&f, &session, "read_only", false, false).await;
         let result = roundtrip(
             &listener,
@@ -235,7 +314,7 @@ async fn native_process_revocation_or_stop_withdraws_permission_without_launch()
                 f.mutation(
                     2,
                     "stop",
-                    json!({"sessionId":session,"invocationId":started["invocationId"]}),
+                    json!({"sessionId":session,"runId":f.delivered_run(&started).await}),
                     Uuid::new_v4(),
                 )
                 .await
@@ -247,9 +326,10 @@ async fn native_process_revocation_or_stop_withdraws_permission_without_launch()
                 assert_eq!(result["kind"], "failed", "{result}");
             }
             assert!(
-                f.session(&request.session_id)
-                    .await
-                    .interaction(&request.request_id)
+                f.owner
+                    .durable
+                    .interactions()
+                    .read(&request.execution.session_id, &request.request_id)
                     .await
                     .unwrap()
                     .unwrap()
@@ -257,11 +337,13 @@ async fn native_process_revocation_or_stop_withdraws_permission_without_launch()
                     .is_some()
             );
             assert!(
-                f.session(&session)
-                    .await
-                    .pending_interactions(&session)
+                f.owner
+                    .durable
+                    .interactions()
+                    .pending(&session)
                     .await
                     .unwrap()
+                    .records
                     .is_empty()
             );
             assert!(!f.workspace.join("first.txt").exists());

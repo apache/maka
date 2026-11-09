@@ -20,10 +20,29 @@
 //! Production Host admission, original receipts and streamed native payloads.
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use maka_event_log::bundle::StagedBundle;
-use maka_plugin_core::operation::RecoveryRef;
+use maka_plugin_core::operation::{OperationResult, RecoveryRef};
 use sha2::{Digest, Sha256};
 
+fn migration_catalog() -> Vec<maka_event_log::migration::Migration> {
+    maka_event_log::ROOT_MIGRATIONS
+        .iter()
+        .chain(maka_agent_state::MIGRATIONS)
+        .cloned()
+        .collect()
+}
+async fn model_scope(f: &Fixture, session: &str) -> Scope {
+    let source = f.latest_run(session).await;
+    f.issuer
+        .issue_with(
+            Identity::Agent {
+                execution: source.execution(),
+                operation_id: None,
+            },
+            true,
+            CancellationToken::new(),
+        )
+        .unwrap()
+}
 async fn binding(app: &Application) -> Binding {
     let client = app.client();
     client
@@ -64,7 +83,7 @@ async fn publish(f: &Fixture, input: Value, operation: Uuid) -> (RecoveryRef, Re
         .prepare_mutation(
             f.binding(2).await,
             "publishCheckpoint".into(),
-            input,
+            input.clone(),
             scope(&f.issuer, true),
             operation,
             Attachments::new().into(),
@@ -72,12 +91,20 @@ async fn publish(f: &Fixture, input: Value, operation: Uuid) -> (RecoveryRef, Re
         .await
         .unwrap();
     let reference = prepared.reference().clone();
-    let reply = client.mutate_owned(prepared).await.unwrap().result().await;
+    let reply = client
+        .mutate_owned(prepared, input)
+        .await
+        .unwrap()
+        .result()
+        .await;
     (reference, reply.receipt)
 }
 fn published(receipt: Receipt) -> Value {
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -88,6 +115,8 @@ fn published(receipt: Receipt) -> Value {
 }
 async fn read(
     app: &Application,
+    store: &RootStore,
+    state: &maka_agent_state::Store,
     issuer: &Issuer,
     session: &str,
     revision: Value,
@@ -124,7 +153,7 @@ async fn read(
                 ended = true;
                 assert_eq!(frame["bytes"], bytes.len() as u64);
                 assert_eq!(frame["digest"], hex::encode(Sha256::digest(&bytes)));
-                assert_eq!(frame["digest"], begin["bundle"]["digest"]);
+                assert_eq!(frame["digest"], begin["history"]["object"]["digest"]);
             }
             _ => panic!("{frame}"),
         }
@@ -134,9 +163,44 @@ async fn read(
     completion.cleanup?;
     assert_eq!(completion.result?, Value::Null);
     assert!(ended);
-    let mut stage = StagedBundle::read(bytes.as_slice()).await.unwrap();
-    stage.validate_history().await.unwrap();
-    assert_eq!(stage.summary().inventory.root_session_id, session);
+    let expected: maka_event_log::checkpoints::HistorySnapshot =
+        serde_json::from_value(begin["history"].clone()).unwrap();
+    let origin: maka_agent_facts::history_snapshot::Origin =
+        serde_json::from_slice(&expected.cut).unwrap();
+    let maka_agent_facts::history_snapshot::Origin::Canonical { cut } = origin else {
+        panic!("native checkpoint must retain its canonical Session origin")
+    };
+    assert_eq!(cut.session, session);
+    let copied = bytes.clone();
+    let file = store
+        .session(session)
+        .await
+        .unwrap()
+        .with_resource_io(move || {
+            use std::io::{Seek, Write};
+            let mut file = maka_event_log::root_store::create_request_file()?;
+            file.write_all(&copied)?;
+            file.rewind()?;
+            Ok(file)
+        })
+        .await
+        .unwrap();
+    let verification = scope(issuer, true);
+    let source = state
+        .session_history(cut.owner.clone(), session.into())
+        .import_snapshot(
+            Uuid::new_v4(),
+            expected,
+            file,
+            verification.cancellation.child_token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        source.manifest().await.unwrap().origin,
+        maka_agent_facts::history_snapshot::Origin::Canonical { cut }
+    );
+    verification.resources.finish().await.unwrap();
     Ok((begin, bytes))
 }
 async fn turn(f: &Fixture, listener: &TcpListener, session: &str, text: &str) {
@@ -187,9 +251,16 @@ async fn host_publication_preserves_original_bytes_after_live_history_and_head_m
                 .unwrap(),
             head
         );
-        let (begin, bytes) = read(&f.app, &f.issuer, &session, head["revision"].clone())
-            .await
-            .unwrap();
+        let (begin, bytes) = read(
+            &f.app,
+            &f.store,
+            &f.owner.durable,
+            &f.issuer,
+            &session,
+            head["revision"].clone(),
+        )
+        .await
+        .unwrap();
         assert!(bytes.windows(artifact.len()).any(|part| part == artifact));
         turn(&f, &listener, &session, "after checkpoint").await;
         let observation = f
@@ -205,14 +276,24 @@ async fn host_publication_preserves_original_bytes_after_live_history_and_head_m
             published(publish(&f, original.clone(), operation).await.1),
             result
         );
-        let (again, again_bytes) = read(&f.app, &f.issuer, &session, head["revision"].clone())
-            .await
-            .unwrap();
+        let (again, again_bytes) = read(
+            &f.app,
+            &f.store,
+            &f.owner.durable,
+            &f.issuer,
+            &session,
+            head["revision"].clone(),
+        )
+        .await
+        .unwrap();
         assert_eq!(again, begin);
         assert_eq!(again_bytes, bytes);
         let (_, conflict) = publish(&f, original.clone(), Uuid::new_v4()).await;
         let Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             ..
         } = conflict
         else {
@@ -226,9 +307,16 @@ async fn host_publication_preserves_original_bytes_after_live_history_and_head_m
         let next = published(publish(&f, next, Uuid::new_v4()).await.1);
         assert_ne!(next["state"]["head"]["revision"], head["revision"]);
         assert!(
-            read(&f.app, &f.issuer, &session, head["revision"].clone())
-                .await
-                .is_err()
+            read(
+                &f.app,
+                &f.store,
+                &f.owner.durable,
+                &f.issuer,
+                &session,
+                head["revision"].clone()
+            )
+            .await
+            .is_err()
         );
         let receipt = f
             .query(
@@ -255,10 +343,13 @@ async fn busy_source_is_not_queued_or_republished_by_receipt_lookup() {
         let (mut socket,_)=listener.accept().await.unwrap(); request(&mut socket).await;
         let operation=Uuid::new_v4();
         let (reference,receipt)=publish(&f,original.clone(),operation).await;
-        assert!(matches!(receipt,Receipt::Recorded {outcome:OperationOutcome::Unknown {ref diagnostic},..} if diagnostic=="agent_history_checkpoint_busy"));
+        assert!(matches!(receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result:OperationResult::Failure {ref diagnostic} },..} if diagnostic=="agent_checkpoint_busy" || diagnostic=="agent_history_checkpoint_busy"));
         response(&mut socket).await; f.drained().await;
         let receipt=f.query("checkpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
-        assert_eq!(receipt["publication"]["state"]["kind"],"interrupted");
+        assert!(receipt["publication"].is_null(),"busy preflight must not create a Root publication: {receipt}");
+        assert_eq!(receipt["operation"]["outcome"]["result"]["kind"],"failure");
+        let (_,again)=publish(&f,original.clone(),operation).await;
+        assert!(matches!(again,Receipt::Recorded { outcome:OperationOutcome::Returned { result:OperationResult::Failure {..} },.. }));
         assert!(f.query("historyCheckpointHead",json!({"sessionId":session})).await.unwrap().is_null());
         let current=input(&f,&session,Value::Null).await;
         published(publish(&f,current,Uuid::new_v4()).await.1);
@@ -364,7 +455,7 @@ async fn root_reopen_disambiguates_domain_success_without_fabricating_host_clean
         assert!(matches!(receipt,Receipt::Unavailable {..}),"{receipt:?}");
         let head=f.query("historyCheckpointHead",json!({"sessionId":session})).await.unwrap();
         assert!(!head.is_null());
-        let (_,before)=read(&f.app,&f.issuer,&session,head["revision"].clone()).await.unwrap();
+        let (_,before)=read(&f.app,&f.store, &f.owner.durable,&f.issuer,&session,head["revision"].clone()).await.unwrap();
         assert_eq!(attachments::upload(&f,&session,"after-checkpoint.txt",b"new live state after uncertain publication",Uuid::new_v4()).await.unwrap()["kind"],"uploaded");
         for path in f.runtime_databases() {rusqlite::Connection::open(path).unwrap().execute_batch("DROP TRIGGER checkpoint_host_failure").unwrap();}
         let deployment=f.app.source().unwrap().deployment;
@@ -372,20 +463,22 @@ async fn root_reopen_disambiguates_domain_success_without_fabricating_host_clean
         let Fixture{_dir,namespaces,root,store,config,app,issuer,owner,services,..}=f;
         drop(app); drop(owner); drop(services); drop(config);
         Arc::try_unwrap(store).ok().expect("all Host owners released Root").close().await.unwrap();
-        let store=Arc::new(RootStore::open(Arc::new(RootOwner::open_existing(&root,&namespaces).unwrap())).await.unwrap());
+        let store=Arc::new(RootStore::open(Arc::new(RootOwner::open_existing(&root,&namespaces).unwrap()),&migration_catalog()).await.unwrap());
+        let data=store.data_writer().unwrap();
+        let state=maka_agent_state::Store::new(data.clone(),maka_agent_state::DriverDomain::new(data).unwrap()).unwrap();
         let mut registry=NativeRegistry::default();
         maka_settings_native::provide(&mut registry,bundled_catalog()).unwrap();
-        provide_all(&mut registry).unwrap();
+        provide_all(&mut registry,state.clone()).unwrap();
         let app=Application::start_from_store(store.clone(),deployment,registry,issuer.clone(),Arc::new(Grant(issuer.clone(),None)),Some(maka_host_js::factory(Default::default()))).await.unwrap();
         app.ready().await.unwrap();
         let receipt=query(&app,&issuer,"checkpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
         assert_eq!(receipt["publication"]["state"],json!({"kind":"published","head":head}));
         assert_eq!(receipt["operation"]["outcome"]["kind"],"unresolved");
         assert_eq!(receipt["operation"]["cleanup"]["kind"],"unconfirmed");
-        let (_,after)=read(&app,&issuer,&session,head["revision"].clone()).await.unwrap();
+        let (_,after)=read(&app,&store,&state,&issuer,&session,head["revision"].clone()).await.unwrap();
         assert_eq!(before,after);
         app.shutdown().await.unwrap(); drop(app);
-        store.shutdown().await.unwrap(); drop(store); drop(_dir);
+        drop(state);store.shutdown().await.unwrap(); drop(store); drop(_dir);
     }).await.unwrap();
 }
 
@@ -439,9 +532,16 @@ async fn cancellation_drains_bounded_reader_and_corruption_never_emits_success()
             .join(head["manifest"]["digest"].as_str().unwrap());
         std::fs::write(path, b"damaged").unwrap();
         assert!(
-            read(&f.app, &f.issuer, &session, head["revision"].clone())
-                .await
-                .is_err()
+            read(
+                &f.app,
+                &f.store,
+                &f.owner.durable,
+                &f.issuer,
+                &session,
+                head["revision"].clone()
+            )
+            .await
+            .is_err()
         );
         assert_eq!(
             f.query("historyCheckpointHead", json!({"sessionId":session}))
@@ -457,25 +557,16 @@ async fn cancellation_drains_bounded_reader_and_corruption_never_emits_success()
 
 #[tokio::test]
 async fn model_scope_and_missing_recovery_grant_cannot_read_checkpoint_receipts() {
-    let mut f = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        None,
+    )
+    .await;
     let session = f.create("Explicit management only").await;
     let original = input(&f, &session, Value::Null).await;
-    let model = f
-        .issuer
-        .issue_with(
-            Identity::Agent {
-                invocation: maka_agent_facts::event::Invocation {
-                    session_id: session.clone(),
-                    turn_id: "t".into(),
-                    run_id: "r".into(),
-                    invocation_id: "i".into(),
-                },
-                operation_id: None,
-            },
-            true,
-            CancellationToken::new(),
-        )
-        .unwrap();
+    turn(&f, &listener, &session, "real checkpoint management caller").await;
+    let model = model_scope(&f, &session).await;
     let attempt = f
         .app
         .client()

@@ -19,9 +19,11 @@
 
 //! Audio evidence shared by Code Mode and MCP outputs.
 use super::{AudioOutput, ProjectionPart};
-use crate::event::{Invocation, ProjectionArtifactWrite};
+use crate::event::ProjectionArtifactWrite;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::time::SystemTime;
+
+use crate::durable::ExecutionIdentity;
 
 pub fn valid_mime(mime: &str) -> bool {
     mime.strip_prefix("audio/").is_some_and(|subtype| {
@@ -38,7 +40,7 @@ pub(super) fn project(
     id: &str,
     part: usize,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> Option<(ProjectionPart, Option<ProjectionArtifactWrite>)> {
     let mime = match mime.trim().to_ascii_lowercase().as_str() {
         "audio/x-wav" | "audio/wave" => "audio/wav".to_string(),
@@ -53,7 +55,7 @@ pub(super) fn project(
         return None;
     }
     let (reference, artifact) =
-        super::media::media_artifact(bytes, &mime, id, part, time, invocation).ok()?;
+        super::media::media_artifact(bytes, &mime, id, part, time, execution).ok()?;
     Some((
         ProjectionPart::Audio {
             audio: AudioOutput {
@@ -70,11 +72,10 @@ mod tests {
     use super::*;
     #[test]
     fn valid_short_and_long_audio_keep_owned_evidence() {
-        let invocation = Invocation {
+        let execution = ExecutionIdentity {
             session_id: "s".into(),
             turn_id: "t".into(),
-            run_id: "r".into(),
-            invocation_id: "i".into(),
+            run_id: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         };
         for samples in [199usize, 200, 201] {
             let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\xff\xff\xff\xff".to_vec();
@@ -85,7 +86,7 @@ mod tests {
                 "e",
                 0,
                 std::time::UNIX_EPOCH,
-                &invocation,
+                &execution,
             )
             .unwrap();
             let artifact = artifact.unwrap();
@@ -105,7 +106,7 @@ mod tests {
                 "e",
                 0,
                 std::time::UNIX_EPOCH,
-                &invocation
+                &execution
             )
             .is_none()
         );

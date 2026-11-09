@@ -19,7 +19,7 @@
 
 //! Presentation of one original Host PTY stream. No PTY, IO or control authority.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use maka_agent_facts::terminal::{
+use maka_plugin_core::terminal::{
     TerminalSize,
     display::{Assembly, Display, Part},
 };
@@ -324,7 +324,7 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::terminal::display::{Buffer, RowPart};
+    use maka_plugin_core::terminal::display::{Buffer, RowPart};
 
     fn data(sequence: u64, bytes: &[u8], size: JsonValue) -> JsonValue {
         json!({"kind":"data", "sequence":sequence, "initialSize":{"cols":8,"rows":2}, "size":size, "dataBase64":STANDARD.encode(bytes)})

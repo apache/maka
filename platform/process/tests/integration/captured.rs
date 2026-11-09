@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::{ShellExecutor, pipe, pty};
 use maka_sandbox::{
     Network, Sandbox,

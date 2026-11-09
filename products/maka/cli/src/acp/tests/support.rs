@@ -49,6 +49,18 @@ pub fn catalog_transport() -> std::sync::Arc<dyn maka_agent_ports::model::Transp
                 ))
             })
         }
+        fn send_text(
+            &self,
+            _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            _: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async {
+                Err(maka_agent_ports::model::Error::Adapter(
+                    "public catalog does not use WebSockets".into(),
+                ))
+            })
+        }
         fn connect(
             &self,
             _: maka_agent_ports::model::Connect,
@@ -242,12 +254,16 @@ pub async fn mutate(client: &Native, endpoint: &str, method: &str, input: Value)
         call.receive().await.unwrap(),
         Reply::Prepared { .. }
     ));
-    let Reply::Mutation { reply, cleanup } = call.confirm().await.unwrap() else {
+    let Reply::Mutation { reply, cleanup } = call.confirm(serde_json::Value::Null).await.unwrap()
+    else {
         panic!("mutation receipt")
     };
     cleanup.unwrap();
     let maka_plugin_core::operation::Receipt::Recorded {
-        outcome: maka_plugin_core::operation::OperationOutcome::Returned { value },
+        outcome:
+            maka_plugin_core::operation::OperationOutcome::Returned {
+                result: maka_plugin_core::operation::OperationResult::Success { value },
+            },
         cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
     } = reply.receipt
     else {

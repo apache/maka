@@ -105,8 +105,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     assert_eq!(restored["project"]["archived"], false);
     let before = fixture.owner.session(session).await.unwrap();
     let stored_before = fixture
-        .session(session)
-        .await
+        .store
         .get_session::<Value>(session)
         .await
         .unwrap()
@@ -162,8 +161,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     );
     assert_eq!(
         fixture
-            .session(session)
-            .await
+            .store
             .get_session::<Value>(session)
             .await
             .unwrap()
@@ -189,8 +187,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     );
     assert_eq!(
         fixture
-            .session("foreign")
-            .await
+            .store
             .get_session::<Value>("foreign")
             .await
             .unwrap()
@@ -227,15 +224,15 @@ async fn projects_relocation_rejects_running_and_queued_work_then_merges_without
         assert_eq!(fixture.send(&source_session).await.unwrap()["kind"], "queued");
         assert_eq!(change(&fixture, relocation.clone()).await["kind"], "busy");
         assert_eq!(fixture.owner.session(&source_session).await.unwrap().configuration.workspace, original.configuration.workspace);
-        assert_eq!(fixture.session(&source_session).await.pending_messages(&source_session).await.unwrap().len(), 1);
+        assert_eq!(fixture.owner.durable.queue().read(source_session.clone()).await.unwrap().entries.len(), 1);
         response(&mut socket).await;
         let (mut next, _) = listener.accept().await.unwrap();
         request(&mut next).await;
         assert_eq!(change(&fixture, relocation.clone()).await["kind"], "busy");
         response(&mut next).await;
         fixture.drained().await;
-        let source_stored = fixture.session(&source_session).await.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration;
-        let target_stored = fixture.session(target_id).await.get_session::<Value>(target_id).await.unwrap().unwrap().configuration;
+        let source_stored = fixture.store.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration;
+        let target_stored = fixture.store.get_session::<Value>(target_id).await.unwrap().unwrap().configuration;
         let merged = change(&fixture, relocation).await;
         assert_eq!(merged["kind"], "committed");
         assert_eq!(projects(&fixture).await["projects"].as_array().unwrap().len(), 1);
@@ -252,8 +249,8 @@ async fn projects_relocation_rejects_running_and_queued_work_then_merges_without
         assert_eq!(retained.revision, target_original.revision + 1);
         assert_ne!(moved.configuration.permission_basis(), original.configuration.permission_basis());
         assert_eq!(retained.configuration.permission_basis(), target_original.configuration.permission_basis());
-        assert_eq!(fixture.session(&source_session).await.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration, source_stored);
-        assert_eq!(fixture.session(target_id).await.get_session::<Value>(target_id).await.unwrap().unwrap().configuration, target_stored);
+        assert_eq!(fixture.store.get_session::<Value>(&source_session).await.unwrap().unwrap().configuration, source_stored);
+        assert_eq!(fixture.store.get_session::<Value>(target_id).await.unwrap().unwrap().configuration, target_stored);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

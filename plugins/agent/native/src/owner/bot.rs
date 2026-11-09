@@ -30,7 +30,7 @@ use maka_agent_facts::{
     tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
     tools::*,
 };
-use maka_capabilities::storage::{Data, Mutation, Namespace, Scan, Store, StoreError};
+use maka_plugin_core::storage::{Data, Mutation, Namespace, Scan, Store, StoreError};
 use sha2::{Digest, Sha256};
 use std::sync::{OnceLock, RwLock, Weak};
 
@@ -49,7 +49,6 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "RecallMore",
     "todo_read",
     "todo_write",
-    "workhub_tasks",
     "Skill",
     "SkillSearch",
     "ModelList",
@@ -559,8 +558,8 @@ impl ToolPreparer for Bot {
                         let appended = captured
                             .bot
                             .append(
-                                &context.invocation.session_id,
-                                &context.invocation.turn_id,
+                                &context.execution.session_id,
+                                &context.execution.turn_id,
                                 &message_id,
                                 &fingerprint,
                                 &texts,
@@ -595,47 +594,36 @@ impl ToolPreparer for Bot {
 }
 
 impl Owner {
-    /// Whether a queued message is already bound for this Invocation's next step.
-    /// Ordinary follow-ups are not counted: they start the next Turn on their own,
-    /// and the model could not read them now.
+    /// Only steering committed for this logical Run can affect its next step.
     async fn has_steering_for(&self, context: &ToolCallContext) -> Result<bool, String> {
-        let session_id = &context.invocation.session_id;
         let queue = self
-            .store
-            .session(session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .message_queue(session_id)
+            .durable
+            .queue()
+            .steering(
+                context.execution.session_id.clone(),
+                context.execution.run_id,
+            )
             .await
             .map_err(|error| error.to_string())?;
-        Ok(queue.entries.iter().any(|entry| {
-            entry.source.disposition == maka_agent_facts::message::MessageDisposition::Steering
-                && *entry.steering_target() == context.invocation
-        }))
+        Ok(!queue.entries.is_empty())
     }
     async fn check_bot_invocation(&self, context: &ToolCallContext) -> Result<(), String> {
-        let session_id = &context.invocation.session_id;
+        let execution = &context.execution;
         if !self.settings.bot
-            || !self.bot.is(session_id)
-            || self.session(session_id).await?.archived
+            || !self.bot.is(&execution.session_id)
+            || self.session(&execution.session_id).await?.archived
         {
             return Err("bot_unavailable".into());
         }
-        let boundary = self
-            .store
-            .session(session_id)
+        let view = self
+            .durable
+            .frontier(execution.run_id)
             .await
-            .map_err(|error| error.to_string())?
-            .invocation_boundary(session_id, &context.invocation.invocation_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("bot_invocation_unavailable")?
-            .0;
-        if boundary.invocation != context.invocation
-            || matches!(
-                boundary.state,
-                maka_event_log::turns::InvocationState::Ended { .. }
-            )
+            .map_err(|error| error.to_string())?;
+        if view.spec.session_id != execution.session_id
+            || view.spec.turn_id != execution.turn_id
+            || view.stopped
+            || view.terminal.is_some()
         {
             return Err("bot_invocation_closed".into());
         }
@@ -857,24 +845,6 @@ impl Owner {
         }
         configured.clone()
     }
-    /// Whether an accepted message still matches its Session's tool selection. The
-    /// Bot's list is policy-derived, so an accepted one stays valid as long as it is
-    /// still within the coordination policy.
-    pub(super) fn accepted_tools_match(
-        &self,
-        session: &str,
-        configured: &Option<Vec<String>>,
-        accepted: &Option<Vec<String>>,
-    ) -> bool {
-        if self.settings.bot && self.bot.is(session) {
-            return accepted.as_ref().is_some_and(|names| {
-                names
-                    .iter()
-                    .all(|name| COORDINATION_TOOLS.contains(&name.as_str()))
-            });
-        }
-        configured == accepted
-    }
     /// Append the Bot's standing instructions to the behavior frozen for a message
     /// admitted to the Bot Session. Other Sessions are unchanged.
     pub(super) fn bot_behavior(
@@ -911,7 +881,7 @@ impl Owner {
     }
     async fn bot_worker(
         &self,
-        source: &maka_agent_facts::event::Invocation,
+        source: &maka_agent_facts::durable::ExecutionIdentity,
         session: &str,
     ) -> Result<bool, String> {
         if !self.bot.is(&source.session_id) || !self.owns(session) {
@@ -1015,12 +985,6 @@ const ABILITIES: &[Ability] = &[
         "{} (checklist)",
     ),
     (
-        &[WORKHUB],
-        "workhub_tasks（把具体工作委派给后台任务）",
-        "workhub_tasks（把具體工作委派給背景任務）",
-        "workhub_tasks (delegate hands-on work to background tasks)",
-    ),
-    (
         &[
             "SessionList",
             "SessionRead",
@@ -1052,7 +1016,6 @@ const ABILITIES: &[Ability] = &[
         "{} (read skill instructions)",
     ),
 ];
-const WORKHUB: &str = "workhub_tasks";
 
 /// The Bot's standing instructions for the tools the Session actually holds.
 /// `held` is the Session's tool list; `SendUser` and `sleep` come from identity.
@@ -1078,11 +1041,8 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
             .collect()
     };
     let sessions = has(&["SessionCreate"]) && has(&["SessionSend"]);
-    let (delegates, schedules, skills) = (
-        has(&[WORKHUB]) || sessions,
-        has(&["ScheduledTask"]),
-        has(&["Skill", "SkillSearch"]),
-    );
+    let schedules = has(&["ScheduledTask"]);
+    let skills = has(&["Skill", "SkillSearch"]);
     match language {
         Language::ZhCn => {
             let mut tools = vec!["SendUser（对用户说话）".to_owned()];
@@ -1092,9 +1052,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是用户在 Maka 里的常驻 Bot。\n\n对话方式：用户只能看到你用 SendUser 工具发出的消息；你的普通回复和工具步骤都是内部过程，用户看不到。要回应用户，就调用 SendUser，普通文字尽量少写。不值得打扰用户的事，就什么都不发。\n\n你的真实能力只有这些工具：{}。你自己不能读写文件、运行命令、使用浏览器、访问网络或调用 MCP。",
                 tools.join("、")
             );
-            text.push_str(if has(&[WORKHUB]) {
-                "需要动手做的事，用 workhub_tasks 委派出去，等结果回来再告诉用户；做不到又无法委派的事，如实说明。"
-            } else if !delegates {
+            text.push_str(if !sessions {
                 "需要动手做的事你既做不到也无法委派，请如实告诉用户。"
             } else {
                 ""
@@ -1119,9 +1077,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是使用者在 Maka 裡的常駐 Bot。\n\n對話方式：使用者只能看到你用 SendUser 工具發出的訊息；你的一般回覆和工具步驟都是內部過程，使用者看不到。要回應使用者，就呼叫 SendUser，一般文字盡量少寫。不值得打擾使用者的事，就什麼都不發。\n\n你的真實能力只有這些工具：{}。你自己不能讀寫檔案、執行指令、使用瀏覽器、存取網路或呼叫 MCP。",
                 tools.join("、")
             );
-            text.push_str(if has(&[WORKHUB]) {
-                "需要動手做的事，用 workhub_tasks 委派出去，等結果回來再告訴使用者；做不到又無法委派的事，如實說明。"
-            } else if !delegates {
+            text.push_str(if !sessions {
                 "需要動手做的事你既做不到也無法委派，請如實告訴使用者。"
             } else {
                 ""
@@ -1146,9 +1102,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "You are the user's persistent Bot in Maka.\n\nHow you talk: the user sees only the messages you send with the SendUser tool; your ordinary replies and tool steps are internal and never shown. To respond to the user, call SendUser, and keep ordinary text minimal. When something does not need the user's attention, send nothing.\n\nYour real abilities are only these tools: {}. You yourself cannot read or edit files, run commands, use a browser, reach the network or call MCP tools. ",
                 tools.join(", ")
             );
-            text.push_str(if has(&[WORKHUB]) {
-                "Delegate hands-on work with workhub_tasks and tell the user when the result comes back; if something can neither be done nor delegated, say so plainly. "
-            } else if !delegates {
+            text.push_str(if !sessions {
                 "Hands-on work is something you can neither do nor delegate, so tell the user plainly. "
             } else {
                 ""

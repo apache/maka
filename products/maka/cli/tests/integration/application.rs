@@ -136,9 +136,12 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
         instances: BTreeMap::new(),
     };
     runtime.block_on(async {
-        let store = maka_event_log::root_store::RootStore::open(Arc::new(owner))
-            .await
-            .unwrap();
+        let store = maka_event_log::root_store::RootStore::open(
+            Arc::new(owner),
+            &maka_product_native::root_migrations(),
+        )
+        .await
+        .unwrap();
         store
             .commit_application(deployment, 0, input.clone(), vec![], vec![])
             .await
@@ -230,9 +233,12 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
     runtime.block_on(async {
         let owner =
             RootOwner::open(&root, &RootNamespaces::for_current_account().unwrap()).unwrap();
-        let store = maka_event_log::root_store::RootStore::open(Arc::new(owner))
-            .await
-            .unwrap();
+        let store = maka_event_log::root_store::RootStore::open(
+            Arc::new(owner),
+            &maka_product_native::root_migrations(),
+        )
+        .await
+        .unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
         let (loaded_source, loaded_packages, _, _) = loaded.into_parts();
         assert_eq!(
@@ -331,7 +337,9 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         .unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let store = RootStore::open(Arc::new(owner)).await.unwrap();
+        let store = RootStore::open(Arc::new(owner), &maka_product_native::root_migrations())
+            .await
+            .unwrap();
         let source = store
             .commit_application(
                 deployment,
@@ -357,45 +365,102 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
             )
             .await
             .unwrap();
-        let invocation = maka_agent_facts::event::Invocation {
-            session_id: "retained-session".into(),
-            turn_id: "retained-turn".into(),
-            run_id: "retained-run".into(),
-            invocation_id: "retained-invocation".into(),
+        use maka_agent_facts::{
+            durable::{
+                BackendSpec, Budget, Fact, RunOrigin, RunOwner, RunSpec, SCHEMA_VERSION, Terminal,
+                Trigger, UnixMillis,
+            },
+            execution::{CollaborationMode, ModelBinding},
+            input::RunInput,
+            language::Language,
         };
-        for fact in [
-            maka_agent_facts::event::Fact::InvocationOpened {
-                configuration: None,
-                input: maka_agent_facts::input::InvocationInput::Message {
-                    source_messages: vec![],
-                    content: "Preserve my conversation history".into(),
-                    request_fingerprint: None,
+        use maka_agent_state::{Admission, Change, ContentBlob, DriverDomain, Store};
+        let data = store.data_writer().unwrap();
+        let state = Store::new(data.clone(), DriverDomain::new(data).unwrap()).unwrap();
+        let input = ContentBlob::json(&RunInput::Message {
+            source_messages: vec![],
+            content: "Preserve my conversation history".into(),
+            request_fingerprint: None,
+        })
+        .unwrap();
+        let system = ContentBlob::json(&"").unwrap();
+        let tools = ContentBlob::json(&Vec::<String>::new()).unwrap();
+        let descriptor = ContentBlob::json(&json!({"model":"retained-history-fixture"})).unwrap();
+        let spec = RunSpec {
+            schema_version: SCHEMA_VERSION,
+            session_id: "retained-session".into(),
+            owner: RunOwner {
+                deployment,
+                namespace: maka_plugin_core::composition::InstanceId(vec![consumer_key]),
+            },
+            turn_id: "retained-turn".into(),
+            origin: RunOrigin::Local,
+            trigger: Trigger::Message {
+                message_id: "retained-message".into(),
+            },
+            workspace: directory.path().to_str().unwrap().into(),
+            permission_basis: maka_sandbox::workspace::PermissionBasis {
+                boundary_revision: 0,
+                binding: maka_sandbox::workspace::BindingStamp {
+                    id: consumer_key,
+                    permission_epoch: 0,
                 },
             },
-            maka_agent_facts::event::Fact::InvocationEnded {
-                outcome: maka_agent_facts::event::InvocationOutcome::Completed,
+            permission_ceiling: serde_json::from_value(
+                json!({"sandbox":{"kind":"disabled"},"approval":{"kind":"never"}}),
+            )
+            .unwrap(),
+            backend: BackendSpec::Model {
+                binding: ModelBinding {
+                    connection_id: "fixture".into(),
+                    connection_slug: "fixture".into(),
+                    model: "fixture".into(),
+                },
+                descriptor: descriptor.reference().clone(),
             },
-        ] {
-            store
-                .session("retained-session")
-                .await
-                .unwrap()
-                .append(
-                    &maka_agent_facts::event::EventWrite::plain(
-                        maka_agent_facts::event::RuntimeEvent::new(invocation.clone(), fact),
-                    )
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-        }
+            collaboration: CollaborationMode::Agent,
+            language: Language::En,
+            tool_discovery: false,
+            allowed_tools: None,
+            mcp_revision: None,
+            compaction_prompt: None,
+            system_prompt: system.reference().clone(),
+            tool_selection: tools.reference().clone(),
+            input: input.reference().clone(),
+            budget: Budget {
+                tokens: None,
+                retries: 1,
+                deadline: None,
+            },
+            budget_basis: None,
+        };
+        let admission = Admission::new(spec, UnixMillis(1), vec![input, system, tools, descriptor]);
+        let run = admission.run();
+        state.admit(admission).await.unwrap();
+        let claim = state.claim(run).await.unwrap();
+        let view = state.frontier(run).await.unwrap();
+        state
+            .append(
+                &claim,
+                (&view).into(),
+                vec![Change::new(
+                    Fact::RunTerminated {
+                        terminal: Terminal::Completed,
+                        diagnostic: None,
+                    },
+                    UnixMillis(2),
+                )],
+                vec![],
+            )
+            .await
+            .unwrap();
         store.shutdown().await.unwrap();
     });
     let snapshot = || {
         runtime.block_on(async {
         let owner = RootOwner::open(&root, &namespaces).unwrap();
         assert_eq!(owner.root_id(), root_id);
-        let store = RootStore::open(Arc::new(owner)).await.unwrap();
+        let store = RootStore::open(Arc::new(owner), &maka_product_native::root_migrations()).await.unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
         let launch = store.application_launch().await.unwrap().unwrap();
         let snapshot = json!({
@@ -405,7 +470,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
             "selection":{"deployment":launch.deployment,"configuration":launch.configuration,
                 "pending":launch.pending},
             "session":store.get_session::<Value>("retained-session").await.unwrap().unwrap(),
-            "history":store.session("retained-session").await.unwrap().scoped_prefix(maka_agent_facts::event::LogScope::Session { id: "retained-session".into() }, 100, 128 * 1024).await.unwrap(),
+            "history":maka_agent_state::session_history::inspection::read(&store.data_writer().unwrap(), "retained-session").await.unwrap(),
         });
         store.shutdown().await.unwrap();
         snapshot
@@ -422,6 +487,12 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         process.output().unwrap()
     };
     let initial = snapshot();
+    assert_eq!(
+        initial["history"]["facts"].as_array().unwrap().len(),
+        2,
+        "canonical history must remain nonempty"
+    );
+    assert_eq!(initial["history"]["truncated"], false);
     assert!(
         initial["packages"]
             .as_array()

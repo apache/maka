@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { sameHistoryRow } from './history';
 import { createPendingRecovery } from './pendingRecovery';
 import { textTooltip } from './ui';
 import {
@@ -39,12 +40,12 @@ import type {
   InteractionAnswer,
   AgentInteractionRespond,
   AgentInteractionResult,
-  HistoryRowPosition,
+  HistoryRowAddress,
   InteractionOutcome,
   InteractionQuestion,
   InteractionRecord,
   InteractionRequest,
-  Scope2 as InteractionScope,
+  PermissionScope,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import {
   bodyTextStyle,
@@ -155,8 +156,8 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
           scope: uiMessage(
             outcome.decision.scope === 'once'
               ? 'This call'
-              : outcome.decision.scope === 'turn'
-                ? 'This turn'
+              : outcome.decision.scope === 'run'
+                ? 'This run'
                 : 'This session',
           ),
         })
@@ -214,7 +215,7 @@ export function InteractionComposer({
   const uncertain = signal(false);
   const pending = signal(false),
     error = createText();
-  const scope = signal<InteractionScope>('once');
+  const scope = signal<PermissionScope>('once');
   const answers = signal<Array<{ other: boolean; value: string | null | undefined }>>([]);
   const formDrafts = signal<FormDraft[]>([]);
   let originalForm: string | null = null;
@@ -222,7 +223,7 @@ export function InteractionComposer({
     argumentTotal = signal<number | null>(null);
   const argumentBusy = signal(false),
     argumentError = createText();
-  let argumentPosition: HistoryRowPosition | null = null;
+  let argumentPosition: HistoryRowAddress | null = null;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -276,7 +277,7 @@ export function InteractionComposer({
     (answer.kind === 'computer_app_cancel' && !!computerAppRequest()) ||
     (answer.kind === 'system_permission_cancel' && !!systemPermissionRequest());
   const sameRecord = (value: InteractionRecord | null | undefined) =>
-    value?.sessionId === sessionId && value?.requestId === requestId;
+    value?.execution.sessionId === sessionId && value?.requestId === requestId;
   const ownsAction = (owner: InteractionOwner) =>
     alive && owner.sessionId === sessionId && owner.requestId === requestId;
   const questionIdentity = () => {
@@ -386,7 +387,7 @@ export function InteractionComposer({
       return;
     choose(choice.index, choice.value, choice.other);
   };
-  const chooseScope = (choice: InteractionOwner & { value: InteractionScope }) => {
+  const chooseScope = (choice: InteractionOwner & { value: PermissionScope }) => {
     if (
       !ownsAction(choice) ||
       blocked() ||
@@ -420,9 +421,9 @@ export function InteractionComposer({
       const source = page.source,
         call = source?.tool?.call;
       const equalPosition = (
-        a: HistoryRowPosition | null | undefined,
-        b: HistoryRowPosition | null | undefined,
-      ) => !!a && !!b && a.sourceSequence === b.sourceSequence && a.itemIndex === b.itemIndex;
+        a: HistoryRowAddress | null | undefined,
+        b: HistoryRowAddress | null | undefined,
+      ) => !!a && !!b && sameHistoryRow(a, b);
       const end = offset + interactionBytes(source?.text ?? '');
       if (
         page.kind !== 'ready' ||
@@ -487,7 +488,7 @@ export function InteractionComposer({
         if (!alive) return;
         if (
           !original ||
-          original.sessionId !== target.sessionId ||
+          original.execution.sessionId !== target.sessionId ||
           original.requestId !== target.requestId ||
           observed.session.id !== target.sessionId
         )
@@ -503,7 +504,7 @@ export function InteractionComposer({
         canonical.request.toolUseId === null &&
         scope() === 'once'
       )
-        scope.set('turn');
+        scope.set('run');
       if (canonical.request.kind === 'question' && answers().length === 0) {
         answers.set(canonical.request.questions.map(() => ({ other: false, value: undefined })));
       }
@@ -897,8 +898,8 @@ export function InteractionComposer({
                         <Each
                           of={
                             permissionsRequest()?.toolUseId === null
-                              ? ['turn', 'session']
-                              : ['once', 'turn', 'session']
+                              ? ['run', 'session']
+                              : ['once', 'run', 'session']
                           }
                         >
                           {(duration) => (
@@ -906,8 +907,8 @@ export function InteractionComposer({
                               label={
                                 duration() === 'once'
                                   ? tr('This call')
-                                  : duration() === 'turn'
-                                    ? tr('This turn')
+                                  : duration() === 'run'
+                                    ? tr('This run')
                                     : tr('This session')
                               }
                               kind="radio"
@@ -916,7 +917,7 @@ export function InteractionComposer({
                               onPress={inputAction(chooseScope, {
                                 sessionId,
                                 requestId,
-                                value: duration() as InteractionScope,
+                                value: duration() as PermissionScope,
                               })}
                             />
                           )}

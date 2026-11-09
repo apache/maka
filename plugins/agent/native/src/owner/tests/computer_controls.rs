@@ -17,12 +17,14 @@
  * under the License.
  */
 
+use super::service_tools::{Behavior, Counter, Setup};
 use super::*;
-use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+use maka_agent_facts::durable::{AuthorizationObligation, FactId, UnixMillis};
 use maka_agent_facts::interaction::{
     ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform, Decision, GrantScope,
     InteractionOutcome, InteractionRecord, InteractionRequest,
 };
+use maka_agent_state::{ContentBlob, Head, computer};
 
 async fn next_apps(watch: &mut maka_host_runtime::application::Subscription) -> Value {
     loop {
@@ -36,103 +38,16 @@ async fn next_apps(watch: &mut maka_host_runtime::application::Subscription) -> 
 #[tokio::test]
 async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input() {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let counter = Counter::new(Behavior::Held);
+        let fixture = Fixture::with_services(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(Setup::native(counter.clone(), true)),
+        )
+        .await;
         let session = fixture.create("User app Stop controls").await;
-        let store = fixture.session(&session).await;
-        let record = store
-            .get::<maka_agent_api::session::StoredSessionConfiguration>()
-            .await
-            .unwrap()
-            .unwrap();
-        let stamp = record.workspace_binding.as_ref().unwrap().stamp();
-        let basis = maka_agent_facts::workspace::PermissionBasis {
-            boundary_revision: record
-                .configuration
-                .workspace
-                .boundary_revision(record.configuration.boundary_revision, stamp)
-                .unwrap(),
-            binding: stamp,
-        };
-        let invocation = Invocation {
-            session_id: session.clone(),
-            turn_id: "control-turn".into(),
-            run_id: "control-run".into(),
-            invocation_id: "control-invocation".into(),
-        };
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            source_messages: Vec::new(),
-                            content: "Host consent fixture".into(),
-                            request_fingerprint: None,
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        let broad = maka_workspace_api::computer::target();
-        let mut app = broad.clone();
-        app.scope = GrantScope::ComputerApp {
-            platform: ComputerAppPlatform::Macos,
-            application_id: "org.example.StopFixture".into(),
-        };
-        let display = ComputerAppDisplay {
-            name: "Trusted Stop fixture".into(),
-            app_path: "/Stop Fixture.app".into(),
-            risk: None,
-            warning: None,
-        };
-        for (id, request, outcome) in [
-            (
-                "control-broad",
-                InteractionRequest::ClientCapability {
-                    tool_use_id: "control-public-tool".into(),
-                    target: broad.clone(),
-                    basis: Some(basis),
-                },
-                InteractionOutcome::ClientCapabilityDecision {
-                    decision: Decision::Allow,
-                    committed_at: 2,
-                },
-            ),
-            (
-                "control-app",
-                InteractionRequest::ComputerApp {
-                    tool_use_id: "control-public-tool".into(),
-                    native_operation_id: "controlled-native-effect".into(),
-                    target: app.clone(),
-                    basis,
-                    display: display.clone(),
-                    allow_always: false,
-                    authority_revision: 0,
-                },
-                InteractionOutcome::ComputerAppDecision {
-                    decision: ComputerAppDecision::Session,
-                    committed_at: 2,
-                },
-            ),
-        ] {
-            let request = InteractionRecord {
-                session_id: session.clone(),
-                turn_id: invocation.turn_id.clone(),
-                run_id: invocation.run_id.clone(),
-                request_id: id.into(),
-                created_at: 1,
-                request,
-                outcome: None,
-            };
-            store
-                .establish_run_interaction(&invocation, &request)
-                .await
-                .unwrap();
-            store.commit_interaction_outcome(id, outcome).await.unwrap();
-        }
         let mut watch = fixture
             .app
             .client()
@@ -146,55 +61,172 @@ async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input
             .await
             .unwrap();
         assert_eq!(next_apps(&mut watch).await, json!({"entries":[]}));
-        let event = EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ToolDispatched {
-                presentation: None,
-                title: None,
-                operation_id: "controlled-native-effect".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(
-                    "control-call".into(),
-                ),
-                name: "native-fixture".into(),
-                input: json!({}),
-            },
-        ))
-        .unwrap();
-        store
-            .append_computer_app_dispatch(
-                &[],
-                &event,
-                std::slice::from_ref(&broad),
-                &app,
-                &display,
-                &basis,
-            )
-            .await
-            .unwrap();
-        let (settled, _) = EventWrite::tool_success(
-            "control-settled".into(),
-            std::time::SystemTime::now(),
-            invocation.clone(),
-            "controlled-native-effect".into(),
-            maka_agent_facts::tool_output::ToolOutput::Text(
-                "Fixture completed without native input".into(),
-            )
-            .into(),
+        fixture.send(&session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        service_tools::named_tool_response(&mut socket, "Counter", json!({"amount":1})).await;
+        counter.entered.acquire().await.unwrap().forget();
+        let access = fixture.live_access(&session).await;
+        let execution = access.execution().clone();
+        let view = access.fresh().await.unwrap();
+        let tool = view
+            .tools
+            .values()
+            .find(|tool| tool.call.name == "Counter")
+            .unwrap()
+            .clone();
+        assert!(tool.admitted && tool.accepted.is_none());
+        let original = tool
+            .original
+            .clone()
+            .expect("actual Host bind precedes handler entry");
+        let native_operation = original.operation.to_string();
+        let tool_use_id = maka_agent_facts::tool_call::tool_use_id(
+            execution.run_id,
+            &maka_agent_state::fold::tool_key(&tool.key),
+        );
+        let basis = view.spec.permission_basis;
+        let data = access.data_writer().unwrap();
+        let apps = computer::ComputerStore::new(data.clone());
+        let interactions = maka_agent_state::interactions::InteractionsStore::new(data.clone());
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let broad = maka_workspace_api::computer::target();
+        let mut app = broad.clone();
+        app.scope = GrantScope::ComputerApp {
+            platform: ComputerAppPlatform::Macos,
+            application_id: "org.example.StopFixture".into(),
+        };
+        let display = ComputerAppDisplay {
+            name: "Trusted Stop fixture".into(),
+            app_path: "/Stop Fixture.app".into(),
+            risk: None,
+            warning: None,
+        };
+        let activity = maka_agent_facts::interaction::ComputerAppActivity {
+            execution: execution.clone(),
+            operation_id: native_operation.clone(),
+            target: app.clone(),
+            display: display.clone(),
+        };
+        // A metadata-only adapter fixture uses the real Host source; it dispatches no native input.
+        let capture = ContentBlob::json(
+            &json!({"adapter":"trusted-stop-fixture","nativeInput":false,"original":original}),
         )
         .unwrap();
-        store.append(&settled).await.unwrap();
-        let activity = maka_agent_facts::interaction::ComputerAppActivity {
-            invocation: invocation.clone(),
-            operation_id: "controlled-native-effect".into(),
-            target: app,
-            display,
-        };
+        apps.append(
+            access.claim(),
+            Head::from(&view),
+            computer::Change {
+                id: FactId::new(),
+                at: UnixMillis(at.try_into().unwrap()),
+                fact: computer::Fact::SubjectObserved {
+                    subject: computer::Subject {
+                        activity: activity.clone(),
+                        basis,
+                        allow_always: false,
+                        target: AuthorizationObligation::Tool {
+                            tool: tool.key.clone(),
+                        },
+                        operation: original,
+                        capture: capture.reference().clone(),
+                    },
+                },
+            },
+            vec![capture],
+        )
+        .await
+        .unwrap();
+        for (id, request, outcome) in [
+            (
+                "control-broad",
+                InteractionRequest::ClientCapability {
+                    tool_use_id: tool_use_id.clone(),
+                    target: broad.clone(),
+                    basis: Some(basis),
+                },
+                InteractionOutcome::ClientCapabilityDecision {
+                    decision: Decision::Allow,
+                    committed_at: at,
+                },
+            ),
+            (
+                "control-app",
+                InteractionRequest::ComputerApp {
+                    tool_use_id: tool_use_id.clone(),
+                    native_operation_id: native_operation.clone(),
+                    target: app.clone(),
+                    basis,
+                    display: display.clone(),
+                    allow_always: false,
+                    authority_revision: 0,
+                },
+                InteractionOutcome::ComputerAppDecision {
+                    decision: ComputerAppDecision::Session,
+                    committed_at: at,
+                },
+            ),
+        ] {
+            let request = InteractionRecord {
+                execution: execution.clone(),
+                request_id: id.into(),
+                created_at: at,
+                request,
+                outcome: None,
+            };
+            interactions
+                .establish(
+                    access.claim(),
+                    Head::from(&access.fresh().await.unwrap()),
+                    request,
+                    None,
+                    vec![],
+                )
+                .await
+                .unwrap();
+            interactions
+                .commit_outcome(&session, id, outcome)
+                .await
+                .unwrap();
+        }
+        apps.append(
+            access.claim(),
+            Head::from(&access.fresh().await.unwrap()),
+            computer::Change {
+                id: FactId::new(),
+                at: UnixMillis(at.try_into().unwrap()),
+                fact: computer::Fact::AppAuthorized {
+                    source_operation: native_operation.clone(),
+                    request: Some("control-app".into()),
+                    basis,
+                },
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+        counter.release.add_permits(1);
+        let (mut next_socket, _) = listener.accept().await.unwrap();
+        request(&mut next_socket).await;
+        let settled=fixture.recorded_facts(&session).await;
+        assert!(settled.iter().any(|recorded|matches!(&recorded.fact,maka_agent_facts::durable::Fact::HostToolResultRecorded{tool:key,..} if *key==tool.key)),"the actual Host return is canonical before checking settled activity");
+        assert_eq!(settled.iter().filter(|recorded|matches!(&recorded.fact,maka_agent_facts::durable::Fact::ToolResultAccepted{tool:key,outcome:maka_agent_facts::durable::AcceptedResult::Succeeded,..} if *key==tool.key)).count(),1,"the actual Host tool has one successful accepted result");
+        assert_eq!(counter.effects.load(std::sync::atomic::Ordering::SeqCst), 1);
         let active = json!({"entries":[{"activity":activity,"stopped":false}]});
         assert_eq!(next_apps(&mut watch).await, active);
-        let selector = json!({"sessionId":session,"operationId":"controlled-native-effect"});
+        assert_eq!(
+            fixture
+                .query("computerApps", json!({"sessionId":session}))
+                .await
+                .unwrap(),
+            active
+        );
+        let selector = json!({"sessionId":session,"operationId":native_operation});
         for identity in [
             Identity::Agent {
-                invocation: invocation.clone(),
+                execution: execution.clone(),
                 operation_id: Some("untrusted-stop".into()),
             },
             Identity::Background {
@@ -217,7 +249,7 @@ async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input
                 )
                 .await;
             if let Ok(prepared) = prepared
-                && let Ok(result) = client.mutate_owned(prepared).await
+                && let Ok(result) = client.mutate_owned(prepared, selector.clone()).await
             {
                 let result = result.result().await;
                 assert!(
@@ -261,6 +293,12 @@ async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input
             json!({"entries":[{"activity":activity,"stopped":true}]})
         );
         drop(watch);
+        response(&mut next_socket).await;
+        fixture.drained().await;
+        drop(apps);
+        drop(interactions);
+        drop(data);
+        drop(access);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     })

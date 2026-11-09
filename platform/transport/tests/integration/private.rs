@@ -68,9 +68,17 @@ impl Fixture {
             control: directory.path().join("control"),
         };
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = Arc::new(support::setup(RootStore::open(owner)).await.unwrap());
+        let store = Arc::new(
+            support::setup(RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS))
+                .await
+                .unwrap(),
+        );
         let owner = Arc::new(RootOwner::create(&caller_root, &namespaces).unwrap());
-        let caller = Arc::new(support::setup(RootStore::open(owner)).await.unwrap());
+        let caller = Arc::new(
+            support::setup(RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS))
+                .await
+                .unwrap(),
+        );
         let (input, packages, observations) = support::caller();
         let source = caller
             .commit_application(Uuid::new_v4(), 0, input, observations, packages)
@@ -370,7 +378,7 @@ async fn private_peer_cannot_delegate_its_caller_intent_to_the_host() {
         Reply::Prepared { .. }
     ));
     assert!(matches!(
-        call.confirm().await.unwrap(),
+        call.confirm(serde_json::Value::Null).await.unwrap(),
         Reply::Aborted {
             cleanup: Ok(()),
             ..

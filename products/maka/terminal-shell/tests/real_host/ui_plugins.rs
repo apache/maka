@@ -54,7 +54,11 @@ async fn a_custom_root_reloads_its_private_state_without_an_agent_in_its_source_
         )
         .unwrap(),
     );
-    let store = Arc::new(RootStore::open(owner).await.unwrap());
+    let store = Arc::new(
+        RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     let manager = support::product_package("host-deployment-manager").await;
     let receipts = support::product_package("receipts").await;
     let gateway = support::product_package("deployment-gateway").await;
@@ -298,7 +302,11 @@ async fn overlay_embedded_view_omits_loading_placeholder_without_clipping_error_
         )
         .unwrap(),
     );
-    let store = Arc::new(RootStore::open(owner).await.unwrap());
+    let store = Arc::new(
+        RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     let manager = support::product_package("host-deployment-manager").await;
     let receipts = support::product_package("receipts").await;
     let gateway = support::product_package("deployment-gateway").await;

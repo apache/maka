@@ -48,7 +48,7 @@ pub struct RootNamespaces {
 
 impl RootNamespaces {
     pub fn for_current_account() -> io::Result<Self> {
-        let home = lock::account_home()?;
+        let home = maka_sandbox::account_home()?;
         #[cfg(target_os = "macos")]
         return Ok(Self {
             ownership: home.join("Library/Application Support/Maka/state-root-owners"),
@@ -84,6 +84,7 @@ struct Identity {
 
 /// Owns the durable root lease. It cannot be cloned or fabricated.
 pub struct RootOwner {
+    pub(crate) operation_live: std::sync::Arc<crate::applications::operations::LiveOperations>,
     canonical_path: PathBuf,
     marker: Marker,
     control_directory: PathBuf,
@@ -283,6 +284,9 @@ impl RootOwner {
         directory(&control_directory)?;
         let control_identity = directory_identity(&control_directory)?;
         Ok(Self {
+            operation_live: std::sync::Arc::new(
+                crate::applications::operations::LiveOperations::default(),
+            ),
             canonical_path,
             marker,
             control_directory,

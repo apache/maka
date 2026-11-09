@@ -19,6 +19,7 @@
 
 //! Client-owned correlation and original receipts, independent of UI nodes.
 use crate::{CONTROL_KIND, CONTROL_METHODS, Result, SETTINGS_KIND, SETTINGS_METHODS, ServiceOwner};
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
@@ -328,13 +329,7 @@ impl Journal {
         .map(|_| ())
     }
     pub(crate) async fn observe(&self, operation: &Operation, receipt: &Receipt) -> Result<()> {
-        if !matches!(
-            receipt,
-            Receipt::Recorded {
-                outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
-                ..
-            }
-        ) {
+        if !matches!(receipt, Receipt::Recorded { .. }) {
             return Ok(());
         }
         self.write(write::Command::Observe {
@@ -411,8 +406,6 @@ impl Journal {
                 .map_err(|error| format!("client journal beginning schema transaction: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, domain TEXT NOT NULL, deployment TEXT NOT NULL, context TEXT NOT NULL, draft_owner TEXT, reference TEXT, receipt TEXT, abandoned INTEGER NOT NULL DEFAULT 0, upload_adopted INTEGER NOT NULL DEFAULT 0)")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating operations table: {error}"))?;
-            sqlx::query("CREATE INDEX IF NOT EXISTS operations_pending ON operations(domain,deployment,draft_owner) WHERE receipt IS NULL AND abandoned=0")
-                .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS dismissed_controls (operation TEXT PRIMARY KEY REFERENCES operations(id))")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating dismissed controls table: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS pending_sends (operation TEXT PRIMARY KEY REFERENCES operations(id), owner TEXT NOT NULL)")
@@ -539,6 +532,8 @@ impl Journal {
             .bind(&correlation)
             .bind(&correlation)
             .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
             .fetch_all(&self.pool)
             .await
             .map_err(error)?;
@@ -565,7 +560,7 @@ impl Journal {
         host: &DeploymentRef,
         instance: &InstanceId,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND json_extract(context,'$.correlation.kind')='ui' AND json_extract(context,'$.correlation.instance')=? AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC")
+        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND json_extract(context,'$.correlation.kind')='ui' AND json_extract(context,'$.correlation.instance')=? AND (receipt IS NULL OR json_extract(receipt,'$.outcome.kind') IN ('unresolved','unknown') OR json_extract(receipt,'$.cleanup.kind') != 'confirmed') AND abandoned=0 ORDER BY rowid DESC")
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
             .bind(serde_json::to_string(instance).map_err(error)?)
@@ -672,7 +667,10 @@ fn decode_operation(row: SqliteRow) -> Result<Operation> {
 }
 fn accepted_send(receipt: &Receipt, session: &str) -> bool {
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -685,9 +683,9 @@ fn accepted_send(receipt: &Receipt, session: &str) -> bool {
             .is_some_and(|id| !id.is_empty())
         && match value.get("kind").and_then(Value::as_str) {
             Some("started") => value
-                .get("invocationId")
+                .get("runId")
                 .and_then(Value::as_str)
-                .is_some_and(|id| !id.is_empty()),
+                .is_some_and(|id| Uuid::parse_str(id).is_ok_and(|id| !id.is_nil())),
             Some("queued") => value
                 .get("revision")
                 .and_then(Value::as_u64)
@@ -702,7 +700,10 @@ pub(crate) fn queued_send(operation: &Operation) -> Option<(&str, u64)> {
         return None;
     }
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -722,9 +723,16 @@ pub(crate) fn queued_send(operation: &Operation) -> Option<(&str, u64)> {
 
 pub(crate) fn retryable_send(operation: &Operation) -> bool {
     operation.abandoned
+        || matches!(
+            &operation.receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::NotExecuted { .. },
+                ..
+            })
+        )
         || matches!(&operation.receipt,
             Some(Receipt::Recorded {
-                outcome: OperationOutcome::Returned { value }, ..
+                outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, ..
             }) if matches!(value.get("kind").and_then(Value::as_str), Some("rejected" | "not_your_worker")))
 }
 fn error(error: impl std::fmt::Display) -> String {
@@ -762,8 +770,25 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
     ) {
         return Ok(None);
     }
+    match &operation.receipt {
+        Some(Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Failure { diagnostic },
+                },
+            ..
+        }) => return Err(format!("attachment upload failed: {diagnostic}")),
+        Some(Receipt::Recorded {
+            outcome: OperationOutcome::NotExecuted { .. },
+            ..
+        }) => return Ok(None),
+        _ => {}
+    }
     let Some(Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     }) = &operation.receipt
     else {
@@ -789,7 +814,6 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
     }
     Ok(Some(attachment))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,7 +887,9 @@ mod tests {
                         &operation,
                         &Receipt::Recorded {
                             outcome: OperationOutcome::Returned {
-                                value: serde_json::json!({"accepted":1}),
+                                result: OperationResult::Success {
+                                    value: serde_json::json!({"accepted":1}),
+                                },
                             },
                             cleanup: OperationCleanup::Confirmed,
                         },
@@ -901,7 +927,9 @@ mod tests {
                     loaded.receipt,
                     Some(Receipt::Recorded {
                         outcome: OperationOutcome::Returned {
-                            value: serde_json::json!({"accepted":1}),
+                            result: OperationResult::Success {
+                                value: serde_json::json!({"accepted":1})
+                            },
                         },
                         cleanup: OperationCleanup::Confirmed,
                     })
@@ -965,7 +993,9 @@ mod tests {
                             &operation,
                             &Receipt::Recorded {
                                 outcome: OperationOutcome::Returned {
-                                    value: serde_json::json!({"kind":"started"}),
+                                    result: OperationResult::Success {
+                                        value: serde_json::json!({"kind":"started"}),
+                                    },
                                 },
                                 cleanup: OperationCleanup::Confirmed,
                             },

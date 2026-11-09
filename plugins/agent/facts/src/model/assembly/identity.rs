@@ -24,10 +24,7 @@ use crate::model::ModelToolCall;
 impl StepBuilder {
     /// Validate the durable step identity before consuming its stream.
     /// Provider identities remain unchanged throughout acceptance.
-    pub fn for_step(step_id: &str) -> Result<Self, ModelError> {
-        if step_id.is_empty() {
-            return Err(invalid("invalid model step identity"));
-        }
+    pub fn for_step(_step_id: crate::durable::StepId) -> Result<Self, ModelError> {
         Ok(Self::default())
     }
 
@@ -73,8 +70,16 @@ mod tests {
 
     #[test]
     fn complete_step_and_tool_identities_and_names_preserve_original_values() {
-        assert!(StepBuilder::for_step("").is_err());
-        let mut builder = StepBuilder::for_step(&"step".repeat(1025)).unwrap();
+        assert!(serde_json::from_value::<crate::durable::StepId>(json!("")).is_err());
+        assert!(
+            serde_json::from_value::<crate::durable::StepId>(json!("step".repeat(1025))).is_err()
+        );
+        let step_id = crate::durable::StepId::try_from(uuid::Uuid::from_u128(1)).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::durable::StepId>(json!(step_id)).unwrap(),
+            step_id
+        );
+        let mut builder = StepBuilder::for_step(step_id).unwrap();
         builder
             .push(call("call".repeat(2049), "echo_name".repeat(40), false))
             .unwrap();
@@ -89,7 +94,7 @@ mod tests {
     fn malformed_call_poisoning_prevents_completed_steps() {
         for provider in [false, true] {
             for (id, name) in [(String::new(), "echo".into()), ("id".into(), String::new())] {
-                let mut builder = StepBuilder::for_step("step").unwrap();
+                let mut builder = StepBuilder::for_step(crate::durable::StepId::new()).unwrap();
                 assert!(builder.push(call(id, name, provider)).is_err());
                 assert!(builder.push(finish()).is_err());
                 assert!(builder.finish().is_err());

@@ -24,15 +24,14 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::{
     ComputerAppDecision, ComputerAppPlatform, ComputerAppRisk, GrantCapability, GrantScope,
-    SystemPermissionGrant,
+    PermissionDecision, PermissionScope, SystemPermissionGrant,
 };
-use maka_sandbox::grant;
 
 pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::Error> {
     use PermissionKind::{AllowAlways, AllowOnce, RejectOnce};
     let choice = |id, name, kind| PermissionChoice { id, name, kind };
     let mut offer = Permission {
-        session: snapshot.session_id.clone(),
+        session: snapshot.execution.session_id.clone(),
         request_id: snapshot.request_id.clone(),
         title: String::new(),
         description: None,
@@ -62,7 +61,7 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             ..
         } => {
             offer.title = if tool_use_id.is_none() {
-                format!("{} (permission for this turn)", request.reason)
+                format!("{} (permission for this Run)", request.reason)
             } else {
                 request.reason.clone()
             };
@@ -77,7 +76,7 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 choice(
                     "allow_once",
                     if tool_use_id.is_none() {
-                        "Allow for this turn"
+                        "Allow for this Run"
                     } else {
                         "Allow once"
                     },
@@ -228,18 +227,18 @@ pub(super) fn answer(
             };
             InteractionAnswer::Permissions {
                 decision: if allow {
-                    grant::Decision::Allow {
+                    PermissionDecision::Allow {
                         permissions: request.permissions.clone(),
-                        // Executor baseline approval is necessarily turn-scoped;
+                        // Executor baseline approval is necessarily Run-scoped;
                         // request() discloses this in both title and option label.
                         scope: if tool_use_id.is_some() {
-                            grant::Scope::Once
+                            PermissionScope::Once
                         } else {
-                            grant::Scope::Turn
+                            PermissionScope::Run
                         },
                     }
                 } else {
-                    grant::Decision::Deny
+                    PermissionDecision::Deny
                 },
             }
         }
@@ -295,8 +294,14 @@ mod tests {
     use super::super::tests::{Callback, request, snapshot};
     use super::*;
     use agent_client_protocol::v2::schema as acp;
+    use maka_agent_facts::durable::{
+        AuthorizationObligation, ExternalTaskId, ModelAttemptId, ToolKey,
+    };
     use maka_agent_facts::interaction::PermissionRequest;
-    use maka_sandbox::Network;
+    use maka_sandbox::{
+        Network, grant,
+        workspace::{BindingStamp, PermissionBasis},
+    };
     use serde_json::json;
     fn answer(
         snapshot: &InteractionRecord,
@@ -309,11 +314,29 @@ mod tests {
     }
 
     fn permission(tool: Option<&str>) -> InteractionRecord {
+        let (target, tool_use_id) = match tool {
+            Some(call) => {
+                let tool = ToolKey {
+                    attempt: ModelAttemptId::new(),
+                    call: call.into(),
+                };
+                let display_id = format!("{}:{}", tool.attempt, tool.call);
+                (AuthorizationObligation::Tool { tool }, Some(display_id))
+            }
+            None => (
+                AuthorizationObligation::External {
+                    task: ExternalTaskId::new(),
+                    operation: "00000000-0000-4000-8000-000000000002".parse().unwrap(),
+                },
+                None,
+            ),
+        };
         snapshot(InteractionRequest::Permissions {
-            tool_use_id: tool.map(str::to_owned),
-            basis: maka_agent_facts::workspace::PermissionBasis {
+            target,
+            tool_use_id,
+            basis: PermissionBasis {
                 boundary_revision: 0,
-                binding: maka_agent_facts::workspace::BindingStamp {
+                binding: BindingStamp {
                     id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
                     permission_epoch: 0,
                 },
@@ -590,7 +613,7 @@ mod tests {
             assert_eq!(
                 answer(&snapshot, response).unwrap(),
                 InteractionAnswer::Permissions {
-                    decision: grant::Decision::Deny
+                    decision: PermissionDecision::Deny
                 }
             );
         }
@@ -606,10 +629,7 @@ mod tests {
 
     #[test]
     fn baseline_and_tool_approval_preserve_exact_permissions_and_disclose_scope() {
-        for (tool, scope) in [
-            (None, grant::Scope::Turn),
-            (Some("tool"), grant::Scope::Once),
-        ] {
+        for tool in [None, Some("tool")] {
             let snapshot = permission(tool);
             let callback =
                 super::super::tests::request(&snapshot, &acp::ClientCapabilities::default())
@@ -618,8 +638,20 @@ mod tests {
                 panic!("Expected permission callback")
             };
             if tool.is_none() {
-                assert_eq!(typed.options[0].name, "Allow for this turn");
+                assert_eq!(typed.options[0].name, "Allow for this Run");
                 assert!(typed.subject.is_none());
+                assert!(
+                    answer(
+                        &snapshot,
+                        json!({"outcome":{"outcome":"selected","optionId":"allow_once"}})
+                    )
+                    .unwrap_err()
+                    .to_string()
+                    .contains(
+                        "Permission display identity differs from its typed obligation or basis"
+                    )
+                );
+                continue;
             } else {
                 assert!(matches!(
                     typed.subject,
@@ -636,11 +668,29 @@ mod tests {
                 )
                 .unwrap(),
                 InteractionAnswer::Permissions {
-                    decision: grant::Decision::Allow {
+                    decision: PermissionDecision::Allow {
                         permissions: request.permissions.clone(),
-                        scope
+                        scope: PermissionScope::Once
                     }
                 }
+            );
+            let mut foreign = snapshot.clone();
+            let InteractionRequest::Permissions {
+                target: AuthorizationObligation::Tool { tool },
+                ..
+            } = &mut foreign.request
+            else {
+                panic!("original tool obligation");
+            };
+            tool.attempt = ModelAttemptId::new();
+            assert!(
+                answer(
+                    &foreign,
+                    json!({"outcome":{"outcome":"selected","optionId":"allow_once"}})
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("Permission display identity differs from its typed obligation or basis")
             );
         }
     }
@@ -649,8 +699,11 @@ mod tests {
     fn command_permission_uses_v2_command_subject() {
         use maka_agent_facts::interaction::PermissionCommand;
         let InteractionRequest::Permissions {
-            basis, mut request, ..
-        } = permission(None).request.clone()
+            target,
+            tool_use_id,
+            basis,
+            mut request,
+        } = permission(Some("tool")).request
         else {
             panic!()
         };
@@ -659,7 +712,8 @@ mod tests {
             cwd: "/tmp".into(),
         });
         let snapshot = snapshot(InteractionRequest::Permissions {
-            tool_use_id: Some("tool".into()),
+            target,
+            tool_use_id: tool_use_id.clone(),
             basis,
             request,
         });
@@ -672,7 +726,10 @@ mod tests {
             panic!("Expected command subject")
         };
         assert_eq!(command.cwd.0, std::path::Path::new("/tmp"));
-        assert_eq!(command.tool_call_id.unwrap().to_string(), "tool");
+        assert_eq!(
+            command.tool_call_id.unwrap().to_string(),
+            tool_use_id.unwrap()
+        );
     }
     #[test]
     fn service_approval_names_the_exact_call_and_never_offers_persistent_authority() {

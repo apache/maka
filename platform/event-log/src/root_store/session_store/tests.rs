@@ -35,7 +35,9 @@ async fn fixture() -> (tempfile::TempDir, RootStore, SessionStore, SessionStore)
         )
         .unwrap(),
     );
-    let root = RootStore::open(owner).await.unwrap();
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let first = "scope-a";
     let second = "scope-b".to_owned();
     let a = root

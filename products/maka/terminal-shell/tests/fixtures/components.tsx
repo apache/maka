@@ -70,10 +70,12 @@ function Sandbox() {
 function Consent() {
   const sent = signal('No answer');
   const record: InteractionRecord = {
-    turnId: 'original-turn',
-    runId: 'original-run',
+    execution: {
+      sessionId: 'original-session',
+      turnId: 'original-turn',
+      runId: '00000000-0000-4000-8000-000000000001',
+    },
     createdAt: 1,
-    sessionId: 'original-session',
     requestId: 'original-consent',
     outcome: null,
     request: {
@@ -110,7 +112,7 @@ function Consent() {
       <View style={{ flex: 1 }}>
         <Text>{sent()}</Text>
         <InteractionComposer
-          sessionId={record.sessionId}
+          sessionId={record.execution.sessionId}
           requestId={record.requestId}
           confirming={() => false}
           focusComposer={() => {}}
@@ -169,7 +171,8 @@ function CompletionComposer(props: { prediction?: boolean }) {
     retrySend: unexpected,
     checkSend: unexpected,
     dismissSend: unexpected,
-    invocation: () => null,
+    run: () => null,
+    execution: () => null,
     prediction: {
       current: prediction,
       dismiss(sourceTurnId) {
@@ -178,9 +181,11 @@ function CompletionComposer(props: { prediction?: boolean }) {
       },
     },
     stopping: () => false,
-    resumable: () => null,
-    resuming: () => false,
-    resume: unexpected,
+    continuation: () => null,
+    continuing: () => false,
+    continueRun: unexpected,
+    adjudicating: () => false,
+    adjudicateRisk: unexpected,
     backend: () => backend,
     modelDetails: () => ({
       kind: 'ready',
@@ -493,14 +498,14 @@ function ActivityFollow() {
           group={() => ({
             kind: 'process',
             key: 'process',
-            turnId: 'turn',
+            turnKey: 'turn',
             members: [],
             rowIds: ids(),
             toolIds: ['tool'],
             closed: false,
           })}
           turn={() => ({
-            turnId: 'turn',
+            turnKey: 'turn',
             timing: null,
             active: true,
             finalOutputIds: [],

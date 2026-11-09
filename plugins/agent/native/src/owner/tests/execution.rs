@@ -21,6 +21,7 @@ use super::*;
 
 async fn cancelled(fixture: &Fixture, listener: &TcpListener, session: &str) -> Value {
     let sent = fixture.send(session).await.unwrap();
+    let run = fixture.delivered_run(&sent).await;
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
     let stopped = fixture
@@ -28,7 +29,7 @@ async fn cancelled(fixture: &Fixture, listener: &TcpListener, session: &str) -> 
             2,
             "stop",
             json!({
-                "sessionId":session, "invocationId":sent["invocationId"]
+                "sessionId":session, "runId":run
             }),
             Uuid::new_v4(),
         )
@@ -40,16 +41,16 @@ async fn cancelled(fixture: &Fixture, listener: &TcpListener, session: &str) -> 
         .query(
             "execution",
             json!({
-                "sessionId":session, "invocationId":sent["invocationId"]
+                "sessionId":session, "runId":run
             }),
         )
         .await
         .unwrap();
-    assert_eq!(read["execution"]["state"], "cancelled");
+    assert_eq!(read["execution"]["state"]["kind"], "cancelled");
     read["execution"].clone()
 }
-async fn resume_input(fixture: &Fixture, source: &Value) -> Value {
-    json!({"sessionId":source["sessionId"], "sourceInvocationId":source["invocationId"],
+async fn continuation_input(fixture: &Fixture, source: &Value) -> Value {
+    json!({"sessionId":source["sessionId"], "sourceRunId":source["runId"],
         "sourceHighWater":source["highWater"], "model":fixture.selection().await})
 }
 
@@ -60,58 +61,76 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
         let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
         let session = fixture.create("Resume original").await;
         let source = cancelled(&fixture, &listener, &session).await;
-        let boundary = fixture.session(&session).await.invocation_boundary(&session,source["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
-        let maka_agent_facts::input::InvocationInput::Message {source_messages,..} = boundary.root_input() else {panic!("original message")};
+        let history=fixture.history(&session);
+        let run=serde_json::from_value(source["runId"].clone()).unwrap();
+        let original=history.run_source(run).await.unwrap();
+        let input_bytes=history.content(run,&original.spec.input).await.unwrap();
+        let maka_agent_facts::input::RunInput::Message{source_messages,..}=serde_json::from_slice(&input_bytes).unwrap() else{panic!("original message")};
         let message = source_messages[0].message.message_id.clone();
+        let original_work = fixture.query("work",json!({"sessionId":session,"target":{"kind":"run","runId":run}})).await.unwrap();
+        let original_delivery = fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":message}})).await.unwrap();
+        assert_eq!(original_work["kind"], "delivered");
+        assert_eq!(original_work["execution"], source);
+        assert_eq!(original_work["answer"], Value::Null);
+        assert_eq!(original_delivery, original_work);
 
         let later = fixture.mutation(2, "send", json!({"sessionId":session, "message":"Later separate request", "backend":model_backend(&fixture.selection().await)}), Uuid::new_v4()).await.unwrap();
+        let later_run=fixture.delivered_run(&later).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         response(&mut socket).await;
         fixture.drained().await;
-        let read = fixture.query("execution", json!({"sessionId":session,"invocationId":source["invocationId"]})).await.unwrap();
+        let read = fixture.query("execution", json!({"sessionId":session,"runId":source["runId"]})).await.unwrap();
         assert_eq!(read["execution"], source, "exact receipt must not become the Session tip");
         let other = fixture.create("Other session").await;
-        assert_eq!(fixture.query("execution", json!({"sessionId":other,"invocationId":source["invocationId"]})).await.unwrap(), json!({"kind":"missing"}));
-        assert!(fixture.query("execution", json!({"sessionId":"foreign","invocationId":source["invocationId"]})).await.is_err());
-        let input = resume_input(&fixture, &source).await;
+        assert_eq!(fixture.query("execution", json!({"sessionId":other,"runId":source["runId"]})).await.unwrap(), json!({"kind":"missing"}));
+        assert!(fixture.query("execution", json!({"sessionId":"foreign","runId":source["runId"]})).await.is_err());
+        let input = continuation_input(&fixture, &source).await;
         let operation = Uuid::new_v4();
-        let prepared = fixture.app.client().prepare_mutation(fixture.binding(2).await, "resume".into(), input.clone(), scope(&fixture.issuer, true), operation, Attachments::new().into()).await.unwrap();
-        let reference = prepared.reference().clone();
+        let prepared = fixture.app.client().prepare_mutation(fixture.binding(2).await, "continueRun".into(), input.clone(), scope(&fixture.issuer, true), operation, Attachments::new().into()).await.unwrap();
+        assert_eq!(prepared.reference().operation,operation);
         drop(prepared);
-        let resumed = fixture.mutation(2, "resume", input.clone(), operation).await.unwrap();
+        let resumed = fixture.mutation(2, "continueRun", input.clone(), operation).await.unwrap();
         assert_eq!(resumed["kind"], "started", "{resumed}");
         let execution = &resumed["execution"];
-        assert_ne!(execution["invocationId"], source["invocationId"]);
-        assert_ne!(execution["invocationId"], later["invocationId"]);
+        assert_ne!(execution["runId"], source["runId"]);
+        assert_ne!(execution["runId"],serde_json::to_value(later_run).unwrap());
         let (mut socket, _) = listener.accept().await.unwrap();
         let replay = request(&mut socket).await;
         assert!(replay["messages"].as_array().unwrap().iter().any(|message| message["content"] == "Hello"));
         assert!(!replay.to_string().contains("Later separate request"));
         response(&mut socket).await;
         fixture.drained().await;
-        let duplicate = fixture.mutation(2, "resume", input.clone(), operation).await.unwrap();
+        let duplicate = fixture.mutation(2, "continueRun", input.clone(), operation).await.unwrap();
         assert_eq!(duplicate, resumed, "operation journal returns original reply");
-        let second = fixture.mutation(2, "resume", input.clone(), Uuid::new_v4()).await.unwrap();
-        assert_eq!(second, json!({"kind":"parked","reason":"already_continued"}));
+        let second = fixture.mutation(2, "continueRun", input.clone(), Uuid::new_v4()).await.unwrap();
+        assert_eq!(second, json!({"kind":"rejected","reason":"already_continued"}));
         let selected = fixture.config.catalog().await.unwrap().connections.remove(0);
         assert!(matches!(fixture.config.remove_connection(RemoveCatalogConnectionInput {
             expected: ConnectionVersionBasis { connection_id: selected.connection_id, revision: selected.revision },
         }).await.unwrap(), CatalogMutationResult::Committed { .. }));
         fixture.store.set_session_archived::<StoredSessionConfiguration>(&session, true, now()).await.unwrap();
         std::fs::rename(&fixture.workspace, fixture.workspace.with_extension("removed")).unwrap();
-        let accepted = fixture.owner.resume(serde_json::from_value(input).unwrap(), &reference).await.unwrap();
-        let accepted = serde_json::to_value(accepted).unwrap();
-        assert_eq!(accepted["execution"]["invocationId"], execution["invocationId"]);
-        assert_eq!(accepted["execution"]["state"], "completed");
+        let accepted=fixture.mutation(2,"continueRun",input,operation).await.unwrap();
+        assert_eq!(accepted,resumed,"original SDK receipt survives unavailable admission prerequisites");
+        let accepted=fixture.query("execution",json!({"sessionId":session,"runId":execution["runId"]})).await.unwrap();
+        assert_eq!(accepted["execution"]["runId"], execution["runId"]);
+        assert_eq!(accepted["execution"]["state"]["kind"], "completed");
         let delivery = fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":message}})).await.unwrap();
         assert_eq!(delivery["kind"],"delivered");
         assert_eq!(delivery["shared"],false);
-        assert_eq!(delivery["execution"],accepted["execution"],"message follows canonical continuation, never later unrelated work");
-        let original_work = fixture.query("work",json!({"sessionId":session,"target":{"kind":"invocation","invocationId":source["invocationId"]}})).await.unwrap();
-        assert_eq!(original_work,delivery,"direct admission follows the same explicit continuation");
-        assert_eq!(original_work["answer"]["text"],"Elegant response");
-        assert_eq!(fixture.query("work",json!({"sessionId":session,"target":{"kind":"invocation","invocationId":source["invocationId"]},"cursor":{"invocationId":source["invocationId"],"offset":9000}})).await.unwrap(),json!({"kind":"changed"}),"old cursor must be rejected before applying its offset to a new answer");
+        assert_eq!(delivery, original_delivery, "original message delivery never redirects to a continuation or unrelated Run");
+        let source_work = fixture.query("work",json!({"sessionId":session,"target":{"kind":"run","runId":source["runId"]}})).await.unwrap();
+        assert_eq!(source_work, original_work, "source Run work and its original cancelled answer remain immutable");
+        assert_eq!(source_work["execution"], source);
+        let continued_work = fixture.query("work",json!({"sessionId":session,"target":{"kind":"run","runId":execution["runId"]}})).await.unwrap();
+        assert_eq!(continued_work["execution"], accepted["execution"]);
+        assert_eq!(continued_work["answer"]["text"], "Elegant response");
+        let unrelated_work = fixture.query("work",json!({"sessionId":session,"target":{"kind":"run","runId":later_run}})).await.unwrap();
+        assert_eq!(unrelated_work["execution"]["runId"], serde_json::to_value(later_run).unwrap());
+        assert_eq!(unrelated_work["answer"]["text"], "Elegant response");
+        assert_eq!(fixture.query("execution",json!({"sessionId":session,"runId":source["runId"]})).await.unwrap()["execution"],source);
+        assert_eq!(fixture.query("work",json!({"sessionId":session,"target":{"kind":"run","runId":execution["runId"]},"cursor":{"runId":source["runId"],"offset":9000}})).await.unwrap(),json!({"kind":"changed"}),"source cursor must be rejected before applying its offset to the new target Run");
 
 
         assert!(tokio::time::timeout(Duration::from_millis(30), listener.accept()).await.is_err(), "no second model request");
@@ -121,7 +140,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
 }
 
 #[tokio::test]
-async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_work() {
+async fn continuation_rejects_stale_foreign_busy_sources_and_accepts_completed_sources() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fixture = Fixture::new(
@@ -131,14 +150,18 @@ async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_wor
         .await;
         let session = fixture.create("Resume fences").await;
         let source = cancelled(&fixture, &listener, &session).await;
-        let input = resume_input(&fixture, &source).await;
+        let input = continuation_input(&fixture, &source).await;
         for (field, value, reason) in [
             (
                 "sourceHighWater",
                 json!(source["highWater"].as_u64().unwrap() + 1),
                 "source_changed",
             ),
-            ("sourceInvocationId", json!("missing"), "source_missing"),
+            (
+                "sourceRunId",
+                json!(maka_agent_facts::durable::RunId::new()),
+                "source_missing",
+            ),
             (
                 "sessionId",
                 json!(fixture.create("Other").await),
@@ -149,39 +172,149 @@ async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_wor
             invalid[field] = value;
             assert_eq!(
                 fixture
-                    .mutation(2, "resume", invalid, Uuid::new_v4())
+                    .mutation(2, "continueRun", invalid, Uuid::new_v4())
                     .await
                     .unwrap(),
-                json!({"kind":"parked","reason":reason})
+                json!({"kind":"rejected","reason":reason})
             );
         }
+        let source_query = json!({"sessionId":session,"runId":source["runId"]});
+        assert_eq!(
+            fixture
+                .query("continuationAvailability", source_query.clone())
+                .await
+                .unwrap(),
+            json!({"kind":"ready","source":source})
+        );
         let active = fixture.send(&session).await.unwrap();
+        let active_run = fixture.delivered_run(&active).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         assert_eq!(
             fixture
-                .mutation(2, "resume", input.clone(), Uuid::new_v4())
+                .query(
+                    "continuationAvailability",
+                    json!({"sessionId":session,"runId":active_run})
+                )
                 .await
                 .unwrap(),
-            json!({"kind":"parked","reason":"busy"})
+            json!({"kind":"rejected","reason":"source_not_terminal"})
+        );
+        assert_eq!(
+            fixture
+                .query("continuationAvailability", source_query)
+                .await
+                .unwrap(),
+            json!({"kind":"rejected","reason":"busy"})
+        );
+        assert_eq!(
+            fixture
+                .mutation(2, "continueRun", input.clone(), Uuid::new_v4())
+                .await
+                .unwrap(),
+            json!({"kind":"rejected","reason":"busy"})
         );
         response(&mut socket).await;
         fixture.drained().await;
         let completed = fixture
+            .query("execution", json!({"sessionId":session,"runId":active_run}))
+            .await
+            .unwrap();
+        assert_eq!(completed["execution"]["state"]["kind"], "completed");
+        let history = fixture.history(&session);
+        assert_eq!(
+            history.successor(active_run).await.unwrap(),
+            None,
+            "completion must not automatically continue a Run"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                .await
+                .is_err(),
+            "completion must not start another provider request"
+        );
+        let completed_query = json!({"sessionId":session,"runId":active_run});
+        assert_eq!(
+            fixture
+                .query("continuationAvailability", completed_query.clone())
+                .await
+                .unwrap(),
+            json!({"kind":"ready","source":completed["execution"]})
+        );
+        let completed_input = continuation_input(&fixture, &completed["execution"]).await;
+        let continued = fixture
+            .mutation(2, "continueRun", completed_input.clone(), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(continued["kind"], "started", "{continued}");
+        assert_ne!(
+            continued["execution"]["runId"],
+            completed["execution"]["runId"]
+        );
+        assert_ne!(
+            continued["execution"]["turnId"],
+            completed["execution"]["turnId"]
+        );
+        let continued_run: maka_agent_facts::durable::RunId =
+            serde_json::from_value(continued["execution"]["runId"].clone()).unwrap();
+        assert_eq!(
+            history.successor(active_run).await.unwrap(),
+            Some(continued_run)
+        );
+        let (mut continued_socket, _) = listener.accept().await.unwrap();
+        let outgoing = request(&mut continued_socket).await;
+        assert!(
+            outgoing["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["content"] == "Hello")
+        );
+        response(&mut continued_socket).await;
+        fixture.drained().await;
+        let continued_work = fixture
             .query(
-                "execution",
-                json!({"sessionId":session,"invocationId":active["invocationId"]}),
+                "work",
+                json!({"sessionId":session,"target":{"kind":"run","runId":continued_run}}),
             )
             .await
             .unwrap();
-        let completed_input = resume_input(&fixture, &completed["execution"]).await;
+        assert_eq!(
+            continued_work["execution"]["runId"],
+            continued["execution"]["runId"]
+        );
+        assert_eq!(continued_work["execution"]["state"]["kind"], "completed");
+        assert_eq!(continued_work["answer"]["text"], "Elegant response");
         assert_eq!(
             fixture
-                .mutation(2, "resume", completed_input, Uuid::new_v4())
+                .query("execution", completed_query.clone())
                 .await
                 .unwrap(),
-            json!({"kind":"parked","reason":"source_not_resumable"})
+            completed,
+            "manual continuation must not reopen or mutate the completed source"
         );
+        assert_eq!(
+            fixture
+                .query("continuationAvailability", completed_query)
+                .await
+                .unwrap(),
+            json!({"kind":"rejected","reason":"already_continued"})
+        );
+        assert_eq!(
+            fixture
+                .mutation(2, "continueRun", completed_input, Uuid::new_v4())
+                .await
+                .unwrap(),
+            json!({"kind":"rejected","reason":"already_continued"})
+        );
+        let facts = fixture.recorded_facts(&session).await;
+        for run in [active_run, continued_run] {
+            assert_eq!(
+                facts.iter().filter(|record|record.run == run && matches!(&record.fact, maka_agent_facts::durable::Fact::ModelAttemptPrepared {..})).count(),
+                1,
+                "one provider attempt per Run: continuation neither reopens the source nor repeats its own request"
+            );
+        }
         // Replacing the directory at the same path must not authorize replay.
         std::fs::rename(
             &fixture.workspace,
@@ -191,10 +324,10 @@ async fn resume_rejects_stale_foreign_busy_and_completed_sources_without_new_wor
         std::fs::create_dir(&fixture.workspace).unwrap();
         assert_eq!(
             fixture
-                .mutation(2, "resume", input, Uuid::new_v4())
+                .mutation(2, "continueRun", input, Uuid::new_v4())
                 .await
                 .unwrap(),
-            json!({"kind":"parked","reason":"workspace_changed"})
+            json!({"kind":"rejected","reason":"workspace_changed"})
         );
         assert!(
             tokio::time::timeout(Duration::from_millis(30), listener.accept())
@@ -219,11 +352,12 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
         .await;
         let session = fixture.create("Resume after reactivation").await;
         let source = cancelled(&fixture, &listener, &session).await;
-        let input = resume_input(&fixture, &source).await;
+        let input = continuation_input(&fixture, &source).await;
         let deployment = fixture.app.source().unwrap().deployment;
         fixture.app.shutdown().await.unwrap();
         let captured = Arc::new(StdMutex::new(None));
         let capture = captured.clone();
+        let durable = fixture.owner.durable.clone();
         let mut native = NativeRegistry::default();
         maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
         native
@@ -231,11 +365,15 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
                 IMPLEMENTATION.into(),
                 Arc::new(move |context, configuration| {
                     let capture = capture.clone();
+                    let durable = durable.clone();
                     Box::pin(async move {
                         let owner = Owner::open(
                             context,
                             configuration,
                             crate::owner::tests::bundled_catalog(),
+                            durable,
+                            super::native_helper(),
+                            None,
                         )
                         .await
                         .unwrap();
@@ -269,7 +407,7 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
         fixture.app.ready().await.unwrap();
         fixture.owner = captured.lock().unwrap().take().unwrap();
         let resumed = fixture
-            .mutation(2, "resume", input, Uuid::new_v4())
+            .mutation(2, "continueRun", input, Uuid::new_v4())
             .await
             .unwrap();
         assert_eq!(resumed["kind"], "started", "{resumed}");
@@ -286,15 +424,15 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
         let execution = fixture
             .query(
                 "execution",
-                json!({"sessionId":session,"invocationId":resumed["execution"]["invocationId"]}),
+                json!({"sessionId":session,"runId":resumed["execution"]["runId"]}),
             )
             .await
             .unwrap();
-        assert_eq!(execution["execution"]["state"], "completed");
+        assert_eq!(execution["execution"]["state"]["kind"], "completed");
         let old = fixture
             .query(
                 "execution",
-                json!({"sessionId":session,"invocationId":source["invocationId"]}),
+                json!({"sessionId":session,"runId":source["runId"]}),
             )
             .await
             .unwrap();
@@ -319,18 +457,49 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
         .await;
         let session = fixture.create("Resume permission boundary").await;
         let source = cancelled(&fixture, &listener, &session).await;
+        let history = fixture.history(&session);
+        let source_run = serde_json::from_value(source["runId"].clone()).unwrap();
+        let original = history.run_source(source_run).await.unwrap();
         let changed = files::change(&fixture, &session, "read_only", false, true).await;
         assert_eq!(changed["session"]["boundaryRevision"], 1);
+        let current = fixture.owner.session(&session).await.unwrap();
+        let current_basis = current.configuration.permission_basis();
+        assert_ne!(original.spec.permission_basis, current_basis);
+        assert_eq!(
+            fixture
+                .query(
+                    "continuationAvailability",
+                    json!({"sessionId":session,"runId":source_run})
+                )
+                .await
+                .unwrap(),
+            json!({"kind":"ready","source":source}),
+            "downgrading current permissions does not make a terminal source ineligible"
+        );
         let resumed = fixture
             .mutation(
                 2,
-                "resume",
-                resume_input(&fixture, &source).await,
+                "continueRun",
+                continuation_input(&fixture, &source).await,
                 Uuid::new_v4(),
             )
             .await
             .unwrap();
         assert_eq!(resumed["kind"], "started", "{resumed}");
+        let continued_run = serde_json::from_value(resumed["execution"]["runId"].clone()).unwrap();
+        let continued = history.run_source(continued_run).await.unwrap();
+        assert_eq!(
+            continued.spec.permission_basis, current_basis,
+            "new admission captures the entire current Root permission basis"
+        );
+        assert_ne!(
+            continued.spec.permission_ceiling, original.spec.permission_ceiling,
+            "new admission cannot inherit the source's old writable grant"
+        );
+        assert_eq!(
+            continued.spec.permission_ceiling.approval,
+            maka_sandbox::Approval::Never
+        );
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         files::tool_response(&mut socket, json!({"path":"blocked.txt","content":"never"})).await;
@@ -349,11 +518,13 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
         assert!(!fixture.workspace.join("blocked.txt").exists());
         assert!(
             fixture
-                .session(&session)
-                .await
-                .pending_interactions(&session)
+                .owner
+                .durable
+                .interactions()
+                .pending(&session)
                 .await
                 .unwrap()
+                .records
                 .is_empty()
         );
         fixture.app.shutdown().await.unwrap();
@@ -364,7 +535,7 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
 }
 
 #[tokio::test]
-async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_source() {
+async fn continuation_availability_observes_without_admission_and_rechecks_the_source() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fixture = Fixture::new(
@@ -373,12 +544,13 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
         )
         .await;
         let session = fixture.create("Resumable observation").await;
-        let query = json!({"sessionId":session,"model":fixture.selection().await});
+        let missing_query = json!({"sessionId":session,"runId":maka_agent_facts::durable::RunId::new()});
         assert_eq!(
-            fixture.query("resumable", query.clone()).await.unwrap(),
-            json!({"kind":"unavailable","reason":"source_missing"})
+            fixture.query("continuationAvailability", missing_query).await.unwrap(),
+            json!({"kind":"rejected","reason":"source_missing"})
         );
         let source = cancelled(&fixture, &listener, &session).await;
+        let query = json!({"sessionId":session,"runId":source["runId"]});
         let mcp_record = fixture.workspace.join("resume-mcp.jsonl");
         let mcp_config = fixture.workspace.join(".maka/mcp.json");
         std::fs::create_dir_all(mcp_config.parent().unwrap()).unwrap();
@@ -389,24 +561,32 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
         }}})).unwrap()).unwrap();
         let project = fixture.query("projectMcp", json!({"sessionId":session})).await.unwrap();
         fixture.mutation(2, "trustProjectMcp", json!({"sessionId":session,"revision":project["revision"]}), Uuid::new_v4()).await.unwrap();
-        let store = fixture.session(&session).await;
-        let before = store.committed_sequence().await.unwrap();
+        let root_read = rusqlite::Connection::open_with_flags(
+            fixture.root.join(maka_event_log::root::ROOT_DATABASE),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).unwrap();
+        let root_before: i64 = root_read.pragma_query_value(None, "data_version", |row|row.get(0)).unwrap();
+        let before=fixture.through(&session).await;
         for _ in 0..2 {
             assert_eq!(
-                fixture.query("resumable", query.clone()).await.unwrap(),
+                fixture.query("continuationAvailability", query.clone()).await.unwrap(),
                 json!({"kind":"ready","source":source})
             );
         }
         assert_eq!(
-            store.committed_sequence().await.unwrap(),
+            fixture.through(&session).await,
             before,
             "observation must not admit a turn or reserve a continuation"
         );
+        let root_after: i64 = root_read.pragma_query_value(None, "data_version", |row|row.get(0)).unwrap();
+        assert_eq!(root_after, root_before, "availability must not commit any Root writes, including non-Agent state");
+        drop(root_read);
         assert!(!mcp_record.exists(), "status observation must not start MCP servers");
-        let input = resume_input(&fixture, &source).await;
+        assert!(tokio::time::timeout(Duration::from_millis(30), listener.accept()).await.is_err(), "availability must not dispatch a model request");
+        let input = continuation_input(&fixture, &source).await;
         let operation = Uuid::new_v4();
         let resumed = fixture
-            .mutation(2, "resume", input.clone(), operation)
+            .mutation(2, "continueRun", input.clone(), operation)
             .await
             .unwrap();
         assert_eq!(resumed["kind"], "started");
@@ -422,51 +602,55 @@ async fn resumable_observes_without_admission_and_resume_rechecks_the_observed_s
                 .any(|message| message["content"] == "Hello")
         );
         assert_eq!(
-            fixture.query("resumable", query.clone()).await.unwrap(),
-            json!({"kind":"unavailable","reason":"busy"})
+            fixture.query("continuationAvailability", query.clone()).await.unwrap(),
+            json!({"kind":"rejected","reason":"already_continued"})
         );
         response(&mut socket).await;
         fixture.drained().await;
         assert_eq!(
             fixture
-                .mutation(2, "resume", input.clone(), operation)
+                .mutation(2, "continueRun", input.clone(), operation)
                 .await
                 .unwrap(),
             resumed
         );
         assert_eq!(
             fixture
-                .mutation(2, "resume", input, Uuid::new_v4())
+                .mutation(2, "continueRun", input, Uuid::new_v4())
                 .await
                 .unwrap(),
-            json!({"kind":"parked","reason":"already_continued"})
+            json!({"kind":"rejected","reason":"already_continued"})
         );
         assert_eq!(
-            fixture.query("resumable", query.clone()).await.unwrap(),
-            json!({"kind":"unavailable","reason":"source_not_resumable"})
+            fixture.query("continuationAvailability", query.clone()).await.unwrap(),
+            json!({"kind":"rejected","reason":"already_continued"})
         );
-        // The latest completed run hides older interrupted work from the composer.
+        let completed = fixture.query("execution", json!({"sessionId":session,"runId":resumed["execution"]["runId"]})).await.unwrap();
+        assert_eq!(completed["execution"]["state"]["kind"], "completed");
+        assert_eq!(fixture.query("continuationAvailability", json!({"sessionId":session,"runId":resumed["execution"]["runId"]})).await.unwrap(), json!({"kind":"ready","source":completed["execution"]}), "every terminal Run is eligible, not just interrupted work");
         let source = cancelled(&fixture, &listener, &session).await;
+        let query = json!({"sessionId":session,"runId":source["runId"]});
+        assert_eq!(fixture.query("continuationAvailability", query.clone()).await.unwrap(), json!({"kind":"ready","source":source}));
         fixture
             .store
             .set_session_archived::<StoredSessionConfiguration>(&session, true, now())
             .await
             .unwrap();
         assert_eq!(
-            fixture.query("resumable", query).await.unwrap(),
-            json!({"kind":"unavailable","reason":"archived"})
+            fixture.query("continuationAvailability", query).await.unwrap(),
+            json!({"kind":"rejected","reason":"archived"})
         );
         assert_eq!(
             fixture
                 .mutation(
                     2,
-                    "resume",
-                    resume_input(&fixture, &source).await,
+                    "continueRun",
+                    continuation_input(&fixture, &source).await,
                     Uuid::new_v4()
                 )
                 .await
                 .unwrap(),
-            json!({"kind":"parked","reason":"archived"})
+            json!({"kind":"rejected","reason":"archived"})
         );
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -507,6 +691,7 @@ async fn resume_filters_incompatible_reasoning_but_preserves_portable_history() 
         response_with_thinking(&mut same_socket, "portable current answer", Some("compatible current reasoning")).await;
         fixture.drained().await;
         let sent=fixture.send(&session).await.unwrap();
+        let run=fixture.delivered_run(&sent).await;
         let(mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
         let mut preview=fixture.owner.preview_reader(&session).await.unwrap();
         let delta=json!({"id":"thinking","choices":[{"index":0,"delta":{"reasoning_content":"unfinished reasoning"},"finish_reason":null}]});
@@ -517,12 +702,12 @@ async fn resume_filters_incompatible_reasoning_but_preserves_portable_history() 
             if visible {break;}
             preview.changed().await.unwrap();
         }
-        fixture.mutation(2,"stop",json!({"sessionId":session,"invocationId":sent["invocationId"]}),Uuid::new_v4()).await.unwrap();
+        fixture.mutation(2,"stop",json!({"sessionId":session,"runId":run}),Uuid::new_v4()).await.unwrap();
         fixture.drained().await;
-        let result=fixture.query("resumable",json!({"sessionId":session,"model":fixture.selection().await})).await;
+        let result=fixture.query("continuationAvailability",json!({"sessionId":session,"runId":run})).await;
         assert_eq!(result.as_ref().unwrap()["kind"],"ready","{result:?}");
         let source = &result.unwrap()["source"];
-        let resumed = fixture.mutation(2,"resume",resume_input(&fixture, source).await,Uuid::new_v4()).await.unwrap();
+        let resumed = fixture.mutation(2,"continueRun",continuation_input(&fixture, source).await,Uuid::new_v4()).await.unwrap();
         assert_eq!(resumed["kind"], "started");
         assert_ne!(resumed["execution"]["turnId"], source["turnId"]);
         let (mut resumed_socket, _) = listener.accept().await.unwrap();

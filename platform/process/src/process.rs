@@ -22,8 +22,8 @@ use crate::{
     output::{Captured, Outcome, Termination},
     tail,
 };
-use maka_agent_facts::shell_run::PipeStream;
 use maka_agent_facts::tools::ToolError;
+use maka_plugin_core::shell_run::PipeStream;
 use std::{io, time::Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -92,12 +92,12 @@ async fn settle(
     };
     #[cfg(unix)]
     let signal_applied = {
-        let applied = child.interrupt().unwrap_or(false);
+        let applied = child.interrupt().await.map_err(unknown)?;
         // The original unreaped root pins its group until the final signal.
         tokio::time::sleep(Duration::from_secs(2)).await;
         applied
     };
-    child.terminate().map_err(unknown)?;
+    child.terminate().await.map_err(unknown)?;
     #[cfg(windows)]
     let signal_applied = true;
     tokio::time::timeout(Duration::from_secs(4), child.wait())

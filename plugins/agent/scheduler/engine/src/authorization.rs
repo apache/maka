@@ -18,7 +18,7 @@
  */
 
 use crate::{Error, task::Creator};
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_capabilities::authorization::Id;
 use maka_capabilities::call::Scope;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ pub enum Origin {
     Agent(Scope),
 }
 impl Origin {
-    pub fn agent(&self) -> Result<Option<&Invocation>, Error> {
+    pub fn agent(&self) -> Result<Option<&ExecutionIdentity>, Error> {
         match self {
             Self::User { .. } => Ok(None),
             Self::Agent(call) => call

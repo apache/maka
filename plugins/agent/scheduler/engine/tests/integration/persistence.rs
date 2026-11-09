@@ -19,11 +19,11 @@
 
 use super::support::SqlStore;
 use futures_util::{FutureExt, future::BoxFuture};
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Record;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
 use maka_event_log::EventLog;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Record;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use maka_scheduler::{
     plan::Plan,
     repository::Repository,
@@ -41,8 +41,8 @@ struct PausedRead {
 impl Store for PausedRead {
     fn scan(
         &self,
-        query: maka_capabilities::storage::Scan,
-    ) -> BoxFuture<'_, Result<maka_capabilities::storage::Page, StoreError>> {
+        query: maka_plugin_core::storage::Scan,
+    ) -> BoxFuture<'_, Result<maka_plugin_core::storage::Page, StoreError>> {
         self.inner.scan(query)
     }
     fn read(&self, key: String) -> BoxFuture<'_, Result<Option<Record>, StoreError>> {

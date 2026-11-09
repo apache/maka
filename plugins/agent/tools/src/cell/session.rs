@@ -17,475 +17,986 @@
  * under the License.
  */
 
-use super::{CellTool, CodeInput, NestedTools, WaitInput};
+use super::{CodeInput, WaitInput};
+use crate::{CodeExecutor, PreparedEffect, ToolCatalog, ToolDefinition};
 use futures_util::FutureExt;
-use maka_agent_facts::language::Language;
-use maka_agent_facts::tool_call::ToolCallIdentity;
-use maka_agent_facts::tool_call::ToolOrigin;
-use maka_agent_facts::tool_output::ToolContent;
-use maka_agent_facts::tool_output::ToolOutput;
-use maka_agent_facts::tool_output::ToolSuccess;
-use maka_agent_facts::tools::ToolError;
-use maka_code_runtime::{
-    CellAbort, CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata,
+use maka_agent_facts::{
+    cells::*,
+    durable::{ContentRef, FactId, UnixMillis},
+    tool_call::ToolRejection,
+    tool_output::{ToolContent, ToolOutput, ToolSuccess},
+    tools::{ToolError, ToolExecutor, ToolFuture},
 };
+use maka_code_runtime::{CellContext, CellOutput, CellResult, CellStore, ToolMetadata};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use uuid::Uuid;
 
-#[derive(Clone)]
-pub(crate) struct Cells(Arc<State>);
-
-struct State {
-    cells: Mutex<BTreeMap<String, Arc<Cell>>>,
-    execution: Arc<tokio::sync::RwLock<()>>,
-    store: CellStore,
-    cancellation: CancellationToken,
-    tasks: TaskTracker,
-    fatal: Mutex<Option<ToolError>>,
-    notification_gate: NotificationGate,
-    notification_high_water: tokio::sync::Mutex<u64>,
-    notification_changed: tokio::sync::Notify,
+pub type CellFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ToolError>> + Send + 'a>>;
+#[derive(Clone, Debug)]
+pub struct CellChange {
+    pub id: FactId,
+    pub at: UnixMillis,
+    pub event: CellEvent,
 }
-
-struct Cell {
-    context: CellContext,
-    cancellation: CancellationToken,
-    observer: tokio::sync::Mutex<()>,
-    done: watch::Receiver<Option<Result<Observation, ToolError>>>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum Observation {
-    Running {
-        cell_id: String,
-        content: Vec<CellOutput>,
-    },
-    Completed {
-        cell_id: String,
-        content: Vec<CellOutput>,
-        result: Value,
-    },
-    Terminated {
-        cell_id: String,
-        content: Vec<CellOutput>,
-    },
-}
-
-impl Cells {
-    pub fn new(store: CellStore) -> Self {
-        Self(Arc::new(State {
-            store,
-            cells: Mutex::default(),
-            execution: Arc::default(),
-            cancellation: CancellationToken::new(),
-            tasks: TaskTracker::new(),
-            fatal: Mutex::default(),
-            notification_gate: NotificationGate::default(),
-            notification_high_water: tokio::sync::Mutex::new(0),
-            notification_changed: tokio::sync::Notify::new(),
-        }))
-    }
-
-    pub fn cancel(&self) {
-        self.0.cancellation.cancel();
-    }
-
-    pub async fn shutdown(&self) -> Result<(), ToolError> {
-        self.0.notification_gate.close();
-        self.cancel();
-        self.0.tasks.close();
-        self.0.tasks.wait().await;
-        self.check()
-    }
-
-    /// Linearize final model output with notification acceptance. A newer
-    /// committed notification requires another step; later callbacks see closure.
-    pub async fn finish_output(&self, observed: u64) -> Result<bool, ToolError> {
-        loop {
-            let changed = self.0.notification_changed.notified();
-            self.check()?;
-            let high_water = self.0.notification_high_water.lock().await;
-            if *high_water > observed {
-                return Ok(false);
-            }
-            if self.0.notification_gate.close_if_empty(
-                self.0
-                    .cells
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .map(|cell| &cell.context),
-            ) {
-                return Ok(true);
-            }
-            drop(high_water);
-            changed.await;
+impl CellChange {
+    pub fn new(event: CellEvent, at: UnixMillis) -> Self {
+        Self {
+            id: FactId::new(),
+            at,
+            event,
         }
     }
-
-    pub async fn has_unread_notifications(&self, observed: u64) -> bool {
-        *self.0.notification_high_water.lock().await > observed
+}
+#[derive(Clone)]
+pub struct CellContent {
+    pub reference: ContentRef,
+    pub bytes: Vec<u8>,
+}
+impl CellContent {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            reference: ContentRef {
+                digest: maka_agent_facts::artifact::content_digest(&bytes),
+                bytes: bytes.len() as u64,
+            },
+            bytes,
+        }
     }
+    pub fn json(value: &impl Serialize) -> Result<Self, ToolError> {
+        serde_json::to_vec(value)
+            .map(Self::new)
+            .map_err(persistence)
+    }
+}
+/// An actual Native owner supplies this port and retains its original work custody.
+/// It validates canonical CellStarted/ChildPrepared before invoking the Host.
+/// The Host journals its original CallerIntent before final admission; Cell binding
+/// and receipt observations may arrive later, including after observer loss.
+/// A persisted CellOwner or this trait's Rust implementation is not itself a Host grant.
+pub trait CellPersistence: Send + Sync {
+    fn owner(&self) -> CellOwner;
+    fn now(&self) -> UnixMillis;
+    fn append(&self, changes: Vec<CellChange>, contents: Vec<CellContent>) -> CellFuture<'_, ()>;
+    fn read(&self, cell: CellId) -> CellFuture<'_, Option<CellView>>;
+    fn content(&self, cell: CellId, reference: ContentRef) -> CellFuture<'_, Vec<u8>>;
+    /// Execute one new child under this Cell's original real capability. The
+    /// adapter owns canonical ChildPrepared/Bound/Observed and original resources.
+    fn invoke(
+        &self,
+        cell: CellId,
+        operation: Uuid,
+        name: String,
+        input: Value,
+        catalog: ToolCatalog,
+        cancellation: CancellationToken,
+    ) -> ToolFuture<ToolOutput>;
+}
+#[derive(Clone)]
+pub struct CodeCells(Arc<State>);
+struct State {
+    executor: CodeExecutor,
+    store: CellStore,
+    live: Mutex<BTreeMap<CellId, Arc<Live>>>,
+    displayed: Mutex<BTreeMap<CellId, usize>>,
+    starting: Mutex<BTreeSet<CellId>>,
+    tasks: TaskTracker,
+    physical_changes: watch::Sender<()>,
+    cancellation: CancellationToken,
+    execution: Arc<tokio::sync::RwLock<()>>,
+    admission: tokio::sync::Mutex<()>,
+}
+struct StartingCell {
+    state: Arc<State>,
+    cell: CellId,
+}
+impl Drop for StartingCell {
+    fn drop(&mut self) {
+        self.state.starting.lock().unwrap().remove(&self.cell);
+        self.state.physical_changes.send_replace(());
+    }
+}
+struct Live {
+    context: CellContext,
+    cancel: CancellationToken,
+    observer: tokio::sync::Mutex<()>,
+    done: watch::Receiver<Option<Result<(), ToolError>>>,
+    output: Mutex<Vec<CellOutput>>,
+}
+pub use maka_agent_facts::cells::CellObservation;
 
-    pub fn check(&self) -> Result<(), ToolError> {
-        let failure = self.0.fatal.lock().unwrap().clone().or_else(|| {
-            self.0
-                .cells
+#[derive(Clone)]
+pub struct CellAdmission {
+    id: CellId,
+    started: CellChange,
+    source: CellContent,
+}
+impl CellAdmission {
+    pub fn new(source: String, owner: CellOwner, at: UnixMillis) -> Self {
+        let id = match &owner {
+            CellOwner::Agent { link, call } => CellId::for_agent(*link, call),
+            CellOwner::Standalone { .. } => CellId::new(),
+        };
+        let source = CellContent::new(source.into_bytes());
+        let started = CellChange {
+            id: id.started_fact_id(),
+            at,
+            event: CellEvent::Started {
+                cell: id,
+                owner,
+                source: source.reference.clone(),
+            },
+        };
+        Self {
+            id,
+            started,
+            source,
+        }
+    }
+    pub fn id(&self) -> CellId {
+        self.id
+    }
+}
+#[derive(Clone)]
+pub struct ObservedCell {
+    pub state: CellReplyState,
+    pub observation: CellObservation,
+    display_from: usize,
+}
+impl ObservedCell {
+    pub fn display(&self) -> &[CellOutput] {
+        match &self.observation {
+            CellObservation::Running { content, .. }
+            | CellObservation::Completed { content, .. } => &content[self.display_from..],
+            CellObservation::Interrupted { .. } => &[],
+        }
+    }
+}
+
+impl CodeCells {
+    pub fn new(executor: CodeExecutor, store: CellStore) -> Self {
+        Self(Arc::new(State {
+            executor,
+            store,
+            live: Mutex::default(),
+            displayed: Mutex::default(),
+            starting: Mutex::default(),
+            tasks: TaskTracker::new(),
+            physical_changes: watch::channel(()).0,
+            cancellation: CancellationToken::new(),
+            execution: Arc::default(),
+            admission: tokio::sync::Mutex::new(()),
+        }))
+    }
+    pub fn definitions(&self, catalog: &ToolCatalog) -> Vec<ToolDefinition> {
+        Self::definitions_for(catalog, self.0.executor.language())
+    }
+    pub fn definitions_for(
+        catalog: &ToolCatalog,
+        language: maka_agent_facts::execution::CodeLanguage,
+    ) -> Vec<ToolDefinition> {
+        let mut exec = super::definition(language);
+        exec.description.push_str(&super::declarations(
+            catalog.nested().definitions(),
+            language,
+        ));
+        let mut definitions = vec![exec, super::wait_definition()];
+        definitions.extend(catalog.direct_only().definitions().cloned());
+        definitions
+    }
+    pub fn prepare(
+        &self,
+        name: &str,
+        input: &Value,
+        catalog: ToolCatalog,
+        port: Arc<dyn CellPersistence>,
+        cancellation: CancellationToken,
+        steering: CancellationToken,
+    ) -> Result<PreparedEffect, ToolRejection> {
+        let cells = self.clone();
+        match name {
+            "exec" => {
+                let input = super::source(input, self.0.executor.language())?;
+                Ok(PreparedEffect::new(move |effect_cancel| {
+                    Box::pin(async move {
+                        if cancellation.is_cancelled() {
+                            return Err(ToolError::Failed(
+                                "Cell call cancelled before start".into(),
+                            ));
+                        }
+                        cells
+                            .start(input, catalog, port, effect_cancel, steering)
+                            .await
+                    })
+                }))
+            }
+            "wait" => {
+                let input = super::wait_input(input)?;
+                Ok(PreparedEffect::new(move |effect_cancel| {
+                    Box::pin(
+                        async move { cells.observe(input, port, effect_cancel, steering).await },
+                    )
+                }))
+            }
+            _ => Err(ToolRejection::Unavailable),
+        }
+    }
+    pub fn cancel(&self) {
+        self.0.cancellation.cancel();
+        for cell in self.0.live.lock().unwrap().values() {
+            cell.cancel.cancel();
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancellation.is_cancelled()
+    }
+    /// Physical interpreter liveness only; canonical existence always comes from the port.
+    pub fn physical_changes(&self) -> watch::Receiver<()> {
+        self.0.physical_changes.subscribe()
+    }
+    pub fn has_live(&self, cell: CellId) -> bool {
+        self.0.starting.lock().unwrap().contains(&cell)
+            || self
+                .0
+                .live
+                .lock()
+                .unwrap()
+                .get(&cell)
+                .is_some_and(|live| live.done.borrow().is_none())
+    }
+    pub fn is_idle(&self) -> bool {
+        self.0.starting.lock().unwrap().is_empty()
+            && self
+                .0
+                .live
                 .lock()
                 .unwrap()
                 .values()
-                .find_map(|cell| cell.context.failure())
-        });
+                .all(|c| c.done.borrow().is_some())
+    }
+    pub async fn shutdown(&self) -> Result<(), ToolError> {
+        self.cancel();
+        let _admission = self.0.admission.lock().await;
+        self.0.tasks.close();
+        self.0.tasks.wait().await;
+        let cells = std::mem::take(&mut *self.0.live.lock().unwrap());
+        let failure = cells
+            .values()
+            .find_map(|cell| match &*cell.done.borrow() {
+                Some(Err(
+                    error @ (ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                )) => Some(error.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                cells.values().find_map(|cell| match &*cell.done.borrow() {
+                    Some(Err(error)) => Some(error.clone()),
+                    _ => None,
+                })
+            });
+        drop(cells);
+        self.0.displayed.lock().unwrap().clear();
         match failure {
-            Some(error) => {
-                self.0.cancellation.cancel();
-                Err(error)
-            }
+            Some(error) => Err(error),
             None => Ok(()),
         }
     }
-
-    pub fn is_idle(&self) -> bool {
-        self.0
-            .cells
-            .lock()
-            .unwrap()
-            .values()
-            .all(|cell| cell.done.borrow().is_some())
-    }
-
-    pub async fn changed(&self) {
-        self.0.notification_changed.notified().await;
-    }
-
-    pub async fn start(
+    async fn start(
         &self,
-        tool: CellTool,
-        language: Language,
+        input: CodeInput,
+        catalog: ToolCatalog,
+        port: Arc<dyn CellPersistence>,
         cancellation: CancellationToken,
         steering: CancellationToken,
     ) -> Result<ToolSuccess, ToolError> {
-        self.check()?;
-        if self.0.cancellation.is_cancelled() || cancellation.is_cancelled() {
-            return Err(ToolError::Failed("code session is closed".into()));
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        let call_id = uuid::Uuid::new_v4().to_string();
-        let metadata = tool
-            .catalog
-            .definitions()
-            .map(|definition| ToolMetadata {
-                name: tool.cells.tool_identifier(&definition.name),
-                description: super::declarations(
-                    std::slice::from_ref(definition),
-                    tool.cells.language(),
-                ),
-            })
-            .collect();
-        let store = self.0.store.clone();
-        let gate = self.0.notification_gate.clone();
-        let context = tokio::task::spawn_blocking(move || {
-            CellContext::with_notification_gate(store, metadata, gate)
+        let admission = CellAdmission::new(input.code, port.owner(), port.now());
+        let id = self
+            .start_cell(&admission, catalog, port.clone(), cancellation.clone())
+            .await?;
+        let observed = self
+            .observe_cell(
+                id,
+                Duration::from_millis(input.yield_time_ms),
+                false,
+                port,
+                cancellation,
+                steering,
+            )
+            .await?;
+        tokio::task::spawn_blocking(move || {
+            Self::project_observation(id, observed, input.max_output_tokens)
         })
         .await
-        .map_err(|error| ToolError::Persistence(error.to_string()))?
-        .map_err(|error| ToolError::Persistence(error.message))?;
-        let (done, completion) = watch::channel(None);
-        let token = cancellation.child_token();
-        let cell = Arc::new(Cell {
-            context: context.clone(),
-            cancellation: token.clone(),
-            observer: tokio::sync::Mutex::new(()),
-            done: completion,
-        });
-        {
-            let mut cells = self.0.cells.lock().unwrap();
-            cells.insert(id.clone(), cell);
-        }
-        let CodeInput {
-            code,
-            yield_time_ms,
-            max_output_tokens,
-        } = tool.input;
-        let nested = Arc::new(NestedTools {
-            execution: self.0.execution.clone(),
-            catalog: tool.catalog,
-            journal: tool.journal.clone(),
-            origin: ToolOrigin::CodeMode {
-                parent_operation_id: id.clone(),
-                parent_tool_call_id: call_id.clone(),
-            },
-        });
-        let journal = tool.journal;
-        let identity = ToolCallIdentity {
-            tool_call_id: call_id,
-            origin: ToolOrigin::CodeCell {
-                parent_operation_id: tool.parent_operation_id,
-                parent_tool_call_id: tool.parent_tool_call_id,
-            },
-        };
-        let root_id = id.clone();
-        let state = self.0.clone();
-        let (started, ready) = oneshot::channel();
-        self.0.tasks.spawn(async move {
-            let effect_context = context.clone();
-            let shutdown = state.cancellation.clone();
-            let notification_state = state.clone();
-            let result = std::panic::AssertUnwindSafe(async move {
-                let notifications = journal.clone();
-                let notification_id = root_id.clone();
-                let completion_id = root_id.clone();
-                let operation = journal.invoke_call_with(
-                    root_id,
-                    identity,
-                    "code_cell".into(),
-                    // Source is already authoritative in the linked exec T1.
-                    Value::Null,
-                    None,
-                    token.clone(),
-                    move |cancellation| {
-                        Box::pin(async move {
-                            let _ = started.send(());
-                            let execution = tool.cells.execute_module(code, nested, cancellation.clone(), effect_context.clone());
-                            tokio::pin!(execution);
-                            let result = loop {
-                                tokio::select! {
-                                    biased;
-                                    _ = effect_context.notified() => {
-                                        if let Err(error) = publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await {
-                                            effect_context.fail(error.clone());
-                                            cancellation.cancel();
-                                            let _ = execution.await;
-                                            return Err(error);
-                                        }
-                                    }
-                                    result = &mut execution => break result,
-                                }
-                            };
-                            publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await?;
-                            let result = serde_json::to_value(result.map_err(abort)?)
-                                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
-                            Ok(project(Observation::Completed {
-                                cell_id: completion_id,
-                                content: effect_context.take_output(),
-                                result,
-                            }, max_output_tokens))
-                        })
-                    },
-                );
-                tokio::pin!(operation);
-                tokio::select! {
-                    result = &mut operation => result,
-                    _ = shutdown.cancelled() => {
-                        token.cancel();
-                        operation.await
-                    },
-                }
-            })
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| {
-                Err(ToolError::CleanupUnconfirmed(
-                    "code cell worker panicked".into(),
-                ))
-            });
-            let result = result.and_then(|value| {
-                match serde_json::from_value::<Observation>(value) {
-                    Ok(completion @ Observation::Completed { .. }) => Ok(completion),
-                    Ok(_) => Err(ToolError::CleanupUnconfirmed("cell completion has no result".into())),
-                    Err(error) => Err(ToolError::CleanupUnconfirmed(error.to_string())),
-                }
-            });
-            let result = match result {
-                Ok(result) => {
-                    // The worker owns this blocking publication through physical
-                    // settlement, even if its caller stops awaiting the result.
-                    match tokio::task::spawn_blocking(move || context.commit()).await {
-                        Ok(Ok(())) => Ok(result),
-                        Ok(Err(error)) => Err(ToolError::Persistence(error.message)),
-                        Err(error) => Err(ToolError::Persistence(error.to_string())),
-                    }
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error @ (ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))) =
-                &result
-            {
-                state
-                    .fatal
-                    .lock()
-                    .unwrap()
-                    .get_or_insert_with(|| error.clone());
-                state.cancellation.cancel();
-            }
-            done.send_replace(Some(result));
-            state.notification_changed.notify_one();
-        });
-        // The independent cell T1 must precede settlement of its starting exec.
-        // A failed T1 drops this sender; observation propagates the stored failure.
-        let _ = ready.await;
-        self.observe(
-            WaitInput {
-                cell_id: id,
-                yield_time_ms,
-                max_tokens: max_output_tokens,
-                terminate: false,
-            },
-            language,
-            cancellation,
-            steering,
-        )
-        .await
+        .map_err(persistence)
     }
-
-    pub async fn observe(
+    /// Retain this admission on uncertain acknowledgement. An existing canonical
+    /// identity is observed, never permission to start its script a second time.
+    pub async fn start_cell(
         &self,
-        request: WaitInput,
-        language: Language,
+        admission: &CellAdmission,
+        catalog: ToolCatalog,
+        port: Arc<dyn CellPersistence>,
+        cancellation: CancellationToken,
+    ) -> Result<CellId, ToolError> {
+        let _admission = self.0.admission.lock().await;
+        if self.0.cancellation.is_cancelled() || cancellation.is_cancelled() {
+            return Err(ToolError::Failed("code owner is closed".into()));
+        }
+        let id = admission.id;
+        self.0.starting.lock().unwrap().insert(id);
+        let _starting = StartingCell {
+            state: self.0.clone(),
+            cell: id,
+        };
+        if port.owner()
+            != match &admission.started.event {
+                CellEvent::Started { owner, .. } => owner.clone(),
+                _ => unreachable!(),
+            }
+        {
+            return Err(ToolError::Failed(
+                "Cell admission belongs to another owner".into(),
+            ));
+        }
+        if let Some(original) = port.read(id).await? {
+            if original.owner != port.owner() || original.source != admission.source.reference {
+                return Err(ToolError::Persistence(
+                    "Cell admission identity conflict".into(),
+                ));
+            }
+            return Ok(id);
+        }
+        // Durable admission precedes every script instruction and child effect.
+        port.append(
+            vec![admission.started.clone()],
+            vec![admission.source.clone()],
+        )
+        .await?;
+        let source = String::from_utf8(admission.source.bytes.clone()).map_err(persistence)?;
+        let catalog = catalog.nested();
+        let metadata = catalog
+            .definitions()
+            .map(|d| ToolMetadata {
+                name: self.0.executor.tool_identifier(&d.name),
+                description: super::declarations(std::iter::once(d), self.0.executor.language()),
+            })
+            .collect();
+        let context = CellContext::new(self.0.store.clone(), metadata)
+            .map_err(|e| ToolError::Persistence(e.message))?;
+        let (done, receiver) = watch::channel(None);
+        let live = Arc::new(Live {
+            context: context.clone(),
+            cancel: cancellation.child_token(),
+            observer: tokio::sync::Mutex::new(()),
+            done: receiver,
+            output: Mutex::default(),
+        });
+        self.0.live.lock().unwrap().insert(id, live.clone());
+        if self.0.cancellation.is_cancelled() {
+            live.cancel.cancel();
+        }
+        let state = self.0.clone();
+        let worker_port = port.clone();
+        let worker_live = live.clone();
+        self.0.tasks.spawn(async move {
+            let work = std::panic::AssertUnwindSafe(run_cell(
+                state.clone(),
+                worker_live.clone(),
+                id,
+                source,
+                catalog,
+                worker_port.clone(),
+            ))
+            .catch_unwind()
+            .await;
+            let result = match work {
+                Ok(result) => result,
+                Err(_) => Err(record_vm_uncertainty(
+                    &worker_port,
+                    id,
+                    &worker_live,
+                    "Cell worker panicked; VM cleanup requires original closure evidence".into(),
+                )
+                .await),
+            };
+            let complete = result.is_ok();
+            done.send_replace(Some(result));
+            if complete {
+                state.live.lock().unwrap().remove(&id);
+            }
+            state.physical_changes.send_replace(());
+        });
+        Ok(id)
+    }
+    async fn observe(
+        &self,
+        input: WaitInput,
+        port: Arc<dyn CellPersistence>,
         cancellation: CancellationToken,
         steering: CancellationToken,
     ) -> Result<ToolSuccess, ToolError> {
-        self.check()?;
-        let cell = self.0.cells.lock().unwrap().get(&request.cell_id).cloned()
-            .ok_or_else(|| ToolError::Failed(match language {
-                Language::En => "cell is unavailable: finished, cleared, or from another Run; do not repeat effects blindly",
-                Language::ZhCn => "代码单元不可用：它已完成、已清理，或属于其他 Run；请勿盲目重复执行可能产生效果的操作",
-                Language::ZhTw => "程式碼單元無法使用：它已完成、已清除，或屬於其他 Run；請勿盲目重複執行可能產生效果的操作",
-            }.into()))?;
-        let _observer = cell
-            .observer
-            .try_lock()
-            .map_err(|_| ToolError::Failed("cell already has an observer".into()))?;
-        if request.terminate {
-            cell.cancellation.cancel();
-        }
-        let mut done = cell.done.clone();
-        if done.borrow().is_none() {
-            let deadline = tokio::time::Instant::now()
-                .checked_add(Duration::from_millis(request.yield_time_ms));
-            let elapsed = async {
-                match deadline {
-                    Some(deadline) => tokio::time::sleep_until(deadline).await,
-                    None => std::future::pending::<()>().await,
-                }
-            };
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(ToolError::Failed("cell observation cancelled".into())),
-                _ = steering.cancelled(), if !request.terminate => {},
-                _ = done.changed() => {},
-                _ = cell.context.yielded(), if !request.terminate => {},
-                _ = elapsed => {},
+        let uuid = Uuid::parse_str(&input.cell_id)
+            .map_err(|_| ToolError::Failed("invalid Cell identity".into()))?;
+        let id = CellId::try_from(uuid).map_err(|e| ToolError::Failed(e.into()))?;
+        let observed = self
+            .observe_cell(
+                id,
+                Duration::from_millis(input.yield_time_ms),
+                input.terminate,
+                port,
+                cancellation,
+                steering,
+            )
+            .await?;
+        tokio::task::spawn_blocking(move || {
+            Self::project_observation(id, observed, input.max_tokens)
+        })
+        .await
+        .map_err(persistence)
+    }
+    pub async fn observe_cell(
+        &self,
+        id: CellId,
+        yield_time: Duration,
+        terminate: bool,
+        port: Arc<dyn CellPersistence>,
+        cancellation: CancellationToken,
+        steering: CancellationToken,
+    ) -> Result<ObservedCell, ToolError> {
+        // Absence in the live map has no historical meaning, including after restart.
+        let mut canonical = port
+            .read(id)
+            .await?
+            .ok_or_else(|| ToolError::Failed("Cell was not recorded in this session".into()))?;
+        let live = self.0.live.lock().unwrap().get(&id).cloned();
+        let _observer = live
+            .as_ref()
+            .map(|live| {
+                live.observer
+                    .try_lock()
+                    .map_err(|_| ToolError::Failed("Cell already has an observer".into()))
+            })
+            .transpose()?;
+        let mut new_output = Vec::new();
+        if let Some(live) = &live {
+            if terminate {
+                live.cancel.cancel();
             }
+            let mut done = live.done.clone();
+            if done.borrow().is_none() {
+                tokio::select! {
+                    _=cancellation.cancelled()=>return Err(ToolError::Failed("Cell observation cancelled".into())),
+                    _=steering.cancelled(),if !terminate=>{},
+                    _=done.changed()=>{},
+                    _=live.context.yielded(),if !terminate=>{},
+                    _=tokio::time::sleep(yield_time)=>{},
+                }
+            }
+            if let Some(Err(error)) = &*done.borrow() {
+                return Err(error.clone());
+            }
+            if let Some(error) = live.context.failure() {
+                return Err(error);
+            }
+            {
+                let mut output = live.output.lock().unwrap();
+                new_output = live.context.take_output();
+                output.extend(new_output.iter().cloned());
+            }
+            canonical = port
+                .read(id)
+                .await?
+                .ok_or_else(|| ToolError::Persistence("admitted Cell disappeared".into()))?;
         }
-        let result = done.borrow().clone();
-        if result.is_none() && done.has_changed().is_err() {
-            let error =
-                ToolError::CleanupUnconfirmed("cell worker closed without settlement".into());
-            self.0
-                .fatal
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| error.clone());
-            self.0.cancellation.cancel();
-            return Err(error);
-        }
-        // Fatal failures always escape before consuming output or permitting a
-        // new model step, even if user code caught its own nested exception.
-        self.check()?;
-        let observation = match result {
-            None => Observation::Running {
-                cell_id: request.cell_id.clone(),
-                content: cell.context.take_output(),
+        let evidence = match &canonical.status {
+            CellStatus::Running => CellReplyState::Running,
+            CellStatus::Completed { result, .. } => CellReplyState::Completed {
+                result: result.clone(),
             },
-            Some(Ok(completion)) => completion,
-            Some(Err(ToolError::Failed(_))) if cell.cancellation.is_cancelled() => {
-                Observation::Terminated {
-                    cell_id: request.cell_id.clone(),
-                    content: cell.context.take_output(),
-                }
-            }
-            Some(Err(error)) => Observation::Completed {
-                cell_id: request.cell_id.clone(),
-                content: cell.context.take_output(),
-                result: json!({"ok":false,"error":error.to_string()}),
+            CellStatus::Interrupted { report } => CellReplyState::Interrupted {
+                report: report.clone(),
             },
         };
-        if !matches!(observation, Observation::Running { .. }) {
-            self.0.cells.lock().unwrap().remove(&request.cell_id);
-        }
-        Ok(project(observation, request.max_tokens))
+        let observation = match canonical.status {
+            CellStatus::Running => {
+                if live.is_none() {
+                    return Err(ToolError::OutcomeUnknown("Cell interpreter and old handles expired at Host restart; original child effects must be reconciled before replanning".into()));
+                }
+                CellObservation::Running {
+                    cell_id: id,
+                    content: new_output,
+                }
+            }
+            CellStatus::Completed { result, .. } => {
+                let bytes = port.content(id, result).await?;
+                let completion = tokio::task::spawn_blocking(move || {
+                    serde_json::from_slice::<CellObservation>(&bytes).map_err(persistence)
+                })
+                .await
+                .map_err(persistence)??;
+                self.0.live.lock().unwrap().remove(&id);
+                completion
+            }
+            CellStatus::Interrupted { report } => {
+                let bytes = port.content(id, report).await?;
+                self.0.live.lock().unwrap().remove(&id);
+                let report = tokio::task::spawn_blocking(move || {
+                    serde_json::from_slice(&bytes).map_err(persistence)
+                })
+                .await
+                .map_err(persistence)??;
+                CellObservation::Interrupted {
+                    cell_id: id,
+                    report,
+                }
+            }
+        };
+        let display_from = match &observation {
+            CellObservation::Running { content, .. } => {
+                *self.0.displayed.lock().unwrap().entry(id).or_default() += content.len();
+                0
+            }
+            CellObservation::Completed { .. } => {
+                self.0.displayed.lock().unwrap().remove(&id).unwrap_or(0)
+            }
+            CellObservation::Interrupted { .. } => {
+                self.0.displayed.lock().unwrap().remove(&id);
+                0
+            }
+        };
+        Ok(ObservedCell {
+            state: evidence,
+            observation,
+            display_from,
+        })
     }
 }
-
-async fn publish_notifications(
-    state: &State,
-    journal: &maka_agent_facts::tools::ToolJournal,
-    cell_id: &str,
-    context: &CellContext,
-    max_tokens: usize,
+async fn run_cell(
+    state: Arc<State>,
+    live: Arc<Live>,
+    id: CellId,
+    source: String,
+    catalog: ToolCatalog,
+    port: Arc<dyn CellPersistence>,
 ) -> Result<(), ToolError> {
-    let mut high_water = state.notification_high_water.lock().await;
+    let nested = Arc::new(Nested {
+        port: port.clone(),
+        cell: id,
+        catalog,
+        execution: state.execution.clone(),
+        context: live.context.clone(),
+    });
+    let prepared = match state
+        .executor
+        .prepare_module(source, nested, live.cancel.clone(), live.context.clone())
+        .await
+    {
+        Ok(prepared) => prepared,
+        Err(maka_code_runtime::CellAbort::VmCleanupUnconfirmed(message)) => {
+            return Err(record_vm_uncertainty(&port, id, &live, message).await);
+        }
+        Err(error) => return record_closed_interruption(&port, id, error.to_string(), None).await,
+    };
+    let binding = prepared.binding().clone();
+    let descriptor = match CellContent::json(&binding.descriptor) {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            if let Err(cleanup) = prepared.abort().await {
+                return Err(record_vm_uncertainty(
+                    &port,
+                    id,
+                    &live,
+                    format!("{error}; prepared VM cleanup: {cleanup}"),
+                )
+                .await);
+            }
+            record_closed_interruption(&port, id, error.to_string(), None).await?;
+            state.executor.release_binding(&binding);
+            return Err(error);
+        }
+    };
+    let change = CellChange::new(
+        CellEvent::VmBound {
+            cell: id,
+            binding: CellVmBinding {
+                runtime: binding.runtime.clone(),
+                version: binding.version,
+                descriptor: descriptor.reference.clone(),
+            },
+        },
+        port.now(),
+    );
+    if let Err(error) = port.append(vec![change], vec![descriptor]).await {
+        live.context.fail(error.clone());
+        if let Err(cleanup) = prepared.abort().await {
+            return Err(record_vm_uncertainty(
+                &port,
+                id,
+                &live,
+                format!("{error}; prepared VM cleanup: {cleanup}"),
+            )
+            .await);
+        }
+        record_closed_interruption(&port, id, error.to_string(), None).await?;
+        state.executor.release_binding(&binding);
+        return Err(error);
+    }
+    let run = prepared.execute_bound();
+    tokio::pin!(run);
+    let result = loop {
+        tokio::select! {
+            biased;
+            _=live.context.notified()=>{
+                if let Err(error)=publish_notifications(&live.context,id,&port).await {
+                    live.context.fail(error.clone());
+                    live.cancel.cancel();
+                    if let Err(maka_code_runtime::CellAbort::VmCleanupUnconfirmed(message))=run.await {return Err(record_vm_uncertainty(&port,id,&live,format!("{error}; VM cleanup: {message}")).await);}
+                    return Err(record_notification_failure(&state,&live,id,&port,&binding,error).await);
+                }
+            },
+            result=&mut run=>break result,
+        }
+    };
+    if let Err(maka_code_runtime::CellAbort::VmCleanupUnconfirmed(message)) = result {
+        return Err(record_vm_uncertainty(&port, id, &live, message).await);
+    }
+    if let Err(error) = publish_notifications(&live.context, id, &port).await {
+        return Err(record_notification_failure(&state, &live, id, &port, &binding, error).await);
+    }
+    let canonical = port
+        .read(id)
+        .await?
+        .ok_or_else(|| ToolError::Persistence("Cell admission lost".into()))?;
+    let result = if canonical.children.values().any(|child| !child.known())
+        || canonical.blocks_effect_admission()
+    {
+        Err(maka_code_runtime::CellAbort::Tool(ToolError::OutcomeUnknown("Cell has unresolved original child effects; write tools are blocked until original receipt reconciliation".into())))
+    } else {
+        result
+    };
+    let output = {
+        let mut pending = live.output.lock().unwrap();
+        let mut output = std::mem::take(&mut *pending);
+        output.extend(live.context.take_output());
+        output
+    };
+    let published = match result {
+        Ok(result @ CellResult::Success { .. }) => {
+            let context = live.context.clone();
+            let (event, contents) = tokio::task::spawn_blocking(move || -> Result<_, ToolError> {
+                let observation = CellObservation::Completed {
+                    cell_id: id,
+                    content: output,
+                    result: serde_json::to_value(result).map_err(persistence)?,
+                };
+                let final_result = CellContent::json(&observation)?;
+                let draft = context
+                    .take_draft()
+                    .map_err(|e| ToolError::Persistence(e.message))?;
+                let mut values = BTreeMap::new();
+                let mut contents = vec![final_result.clone()];
+                for (key, bytes) in draft.values {
+                    let blob = CellContent::new(bytes);
+                    values.insert(key, blob.reference.clone());
+                    contents.push(blob);
+                }
+                Ok((
+                    CellEvent::Completed {
+                        cell: id,
+                        result: final_result.reference,
+                        publication: SessionPublication {
+                            values,
+                            loaded_tools: draft.loaded_tools,
+                        },
+                    },
+                    contents,
+                ))
+            })
+            .await
+            .map_err(persistence)??;
+            let change = CellChange::new(event, port.now());
+            // No publication here. Engine accepts this final result and its exact
+            // draft in one Root transaction, including background completions.
+            port.append(vec![change], contents).await
+        }
+        failed => {
+            let content = tokio::task::spawn_blocking(move || -> Result<CellContent, ToolError> {
+                let diagnostic = match failed {
+                    Ok(result) => serde_json::to_value(result)
+                        .map_err(persistence)?
+                        .to_string(),
+                    Err(error) => error.to_string(),
+                };
+                CellContent::json(&CellInterruption {
+                    cell: id,
+                    diagnostic,
+                    children: canonical.children,
+                    prior_output: Some(CellPriorOutput { content: output }),
+                })
+            })
+            .await
+            .map_err(persistence)??;
+            port.append(
+                vec![CellChange::new(
+                    CellEvent::Interrupted {
+                        cell: id,
+                        report: content.reference.clone(),
+                    },
+                    port.now(),
+                )],
+                vec![content],
+            )
+            .await
+        }
+    };
+    if published.is_ok() {
+        state.executor.release_binding(&binding);
+    }
+    published
+}
+async fn record_vm_uncertainty(
+    port: &Arc<dyn CellPersistence>,
+    cell: CellId,
+    live: &Live,
+    message: String,
+) -> ToolError {
+    live.context
+        .fail(ToolError::CleanupUnconfirmed(message.clone()));
+    live.cancel.cancel();
+    let observation = async {
+        let original = port
+            .read(cell)
+            .await?
+            .ok_or_else(|| persistence("Cell admission lost during VM cleanup observation"))?;
+        let event = CellEvent::VmCleanupUnconfirmed {
+            cell,
+            binding: original.vm,
+            diagnostic: message.clone(),
+        };
+        port.append(vec![CellChange::new(event, port.now())], vec![])
+            .await
+    }
+    .await;
+    ToolError::CleanupUnconfirmed(match observation {
+        Ok(()) => message,
+        Err(error) => format!("{message}; VM uncertainty persistence: {error}"),
+    })
+}
+// The original VM result has already confirmed teardown, independently of this metadata failure.
+async fn record_notification_failure(
+    state: &State,
+    live: &Live,
+    cell: CellId,
+    port: &Arc<dyn CellPersistence>,
+    binding: &maka_code_runtime::VmBinding,
+    error: ToolError,
+) -> ToolError {
+    live.context.fail(error.clone());
+    let content = {
+        let mut pending = live.output.lock().unwrap();
+        let mut output = std::mem::take(&mut *pending);
+        output.extend(live.context.take_output());
+        output
+    };
+    match record_closed_interruption(
+        port,
+        cell,
+        error.to_string(),
+        Some(CellPriorOutput { content }),
+    )
+    .await
+    {
+        Ok(()) => {
+            state.executor.release_binding(binding);
+            error
+        }
+        Err(report) => ToolError::Persistence(format!(
+            "{error}; recording closed VM interruption: {report}"
+        )),
+    }
+}
+async fn record_closed_interruption(
+    port: &Arc<dyn CellPersistence>,
+    cell: CellId,
+    diagnostic: String,
+    prior_output: Option<CellPriorOutput>,
+) -> Result<(), ToolError> {
+    let original = port
+        .read(cell)
+        .await?
+        .ok_or_else(|| persistence("Cell admission lost before VM start"))?;
+    if !matches!(original.status, CellStatus::Running) {
+        return Ok(());
+    }
+    let content = tokio::task::spawn_blocking(move || {
+        CellContent::json(&CellInterruption {
+            cell,
+            diagnostic,
+            children: original.children,
+            prior_output,
+        })
+    })
+    .await
+    .map_err(persistence)??;
+    port.append(
+        vec![CellChange::new(
+            CellEvent::Interrupted {
+                cell,
+                report: content.reference.clone(),
+            },
+            port.now(),
+        )],
+        vec![content],
+    )
+    .await
+}
+async fn publish_notifications(
+    context: &CellContext,
+    cell: CellId,
+    port: &Arc<dyn CellPersistence>,
+) -> Result<(), ToolError> {
     for text in context.take_notifications() {
-        let mut remaining = max_tokens.saturating_mul(4);
-        let model_text = clip(&text, &mut remaining);
-        *high_water = journal.notify(cell_id.into(), text, model_text).await?;
-        state.notification_changed.notify_one();
+        let content = tokio::task::spawn_blocking(move || {
+            CellContent::json(&CellNotification {
+                schema_version: CELL_NOTIFICATION_SCHEMA_VERSION,
+                body: CellNotificationBody::Text { text },
+            })
+        })
+        .await
+        .map_err(persistence)??;
+        let id = FactId::new();
+        let change = CellChange::new(
+            CellEvent::NotificationQueued {
+                cell,
+                notification: id,
+                content: content.reference.clone(),
+            },
+            port.now(),
+        );
+        port.append(vec![change], vec![content]).await?;
     }
     Ok(())
 }
-
-fn abort(error: CellAbort) -> ToolError {
-    match error {
-        CellAbort::Tool(error) => error,
-        CellAbort::Cancelled => ToolError::Failed("code execution cancelled".into()),
-        CellAbort::Internal(error) => ToolError::CleanupUnconfirmed(error),
+struct Nested {
+    port: Arc<dyn CellPersistence>,
+    cell: CellId,
+    catalog: ToolCatalog,
+    execution: Arc<tokio::sync::RwLock<()>>,
+    context: CellContext,
+}
+impl ToolExecutor for Nested {
+    fn names(&self) -> Vec<String> {
+        self.catalog.names()
+    }
+    fn invoke(&self, name: String, input: Value, cancel: CancellationToken) -> ToolFuture {
+        let port = self.port.clone();
+        let cell = self.cell;
+        let catalog = self.catalog.clone();
+        let gate = self.execution.clone();
+        let context = self.context.clone();
+        let parallel = catalog.semantics(&name) == Ok(crate::ToolSemantics::Parallel);
+        Box::pin(async move {
+            let _gate = if parallel {
+                futures_util::future::Either::Left(gate.read_owned().await)
+            } else {
+                futures_util::future::Either::Right(gate.write_owned().await)
+            };
+            if let Some(error) = context.failure() {
+                return Err(error);
+            }
+            let result = port
+                .invoke(cell, Uuid::new_v4(), name.clone(), input, catalog, cancel)
+                .await;
+            if let Err(
+                error @ (ToolError::Persistence(_)
+                | ToolError::CleanupUnconfirmed(_)
+                | ToolError::OutcomeUnknown(_)
+                | ToolError::OperationUnknown { .. }
+                | ToolError::OperationCleanupUnconfirmed { .. }),
+            ) = &result
+            {
+                context.fail(error.clone());
+            }
+            let value = result?
+                .into_code_value()
+                .map_err(|e| ToolError::Failed(e.into()))?;
+            context
+                .stage_loaded(std::collections::BTreeSet::from([name]))
+                .map_err(|_| {
+                    context
+                        .failure()
+                        .expect("loaded draft failure remains fatal")
+                })?;
+            Ok(value)
+        })
     }
 }
-
-fn project(observation: Observation, max_tokens: usize) -> ToolSuccess {
-    let raw = serde_json::to_value(&observation).expect("typed cell observation");
-    let failed =
-        matches!(&observation, Observation::Completed { result, .. } if result["ok"] == false);
-    let (content, summary) = match observation {
-        Observation::Running { cell_id, content } => {
-            (content, json!({"state":"running","cell_id":cell_id}))
-        }
-        Observation::Completed {
-            cell_id,
-            content,
-            result,
-        } => (
-            content,
-            json!({"state":"completed","cell_id":cell_id,"result":result}),
-        ),
-        Observation::Terminated { cell_id, content } => {
-            (content, json!({"state":"terminated","cell_id":cell_id}))
-        }
-    };
-    let mut remaining = max_tokens.saturating_mul(4);
-    let mut parts = vec![ToolContent::Text(clip(
-        &summary.to_string(),
-        &mut remaining,
-    ))];
-    for output in content {
-        parts.push(match output {
-            CellOutput::Text { text } => ToolContent::Text(clip(&text, &mut remaining)),
-            CellOutput::Image { image } => ToolContent::Image(image),
-            CellOutput::Media { content, detail } => ToolContent::Media { content, detail },
-        });
-    }
-    ToolSuccess::content(ToolOutput::Json(raw), parts).reporting_error(failed)
+fn persistence(error: impl std::fmt::Display) -> ToolError {
+    ToolError::Persistence(error.to_string())
 }
-
+impl CodeCells {
+    pub fn project_observation(
+        cell: CellId,
+        observed: ObservedCell,
+        max_tokens: usize,
+    ) -> ToolSuccess {
+        let ObservedCell {
+            state,
+            observation,
+            display_from,
+        } = observed;
+        let is_error = matches!(state, CellReplyState::Interrupted { .. });
+        let raw = serde_json::to_value(&observation).expect("typed Cell observation");
+        let (content, summary) = match observation {
+            CellObservation::Running { cell_id, content } => {
+                (content, json!({"state":"running","cell_id":cell_id}))
+            }
+            CellObservation::Completed {
+                cell_id,
+                content,
+                result,
+            } => (
+                content,
+                json!({"state":"completed","cell_id":cell_id,"result":result}),
+            ),
+            CellObservation::Interrupted { cell_id, report } => (
+                Vec::new(),
+                json!({"state":"interrupted","cell_id":cell_id,"report":report,"heap":"expired","bindings":"invalid"}),
+            ),
+        };
+        let mut remaining = max_tokens.saturating_mul(4);
+        let mut parts = vec![ToolContent::Text(clip(
+            &summary.to_string(),
+            &mut remaining,
+        ))];
+        for output in content.into_iter().skip(display_from) {
+            parts.push(match output {
+                CellOutput::Text { text } => ToolContent::Text(clip(&text, &mut remaining)),
+                CellOutput::Image { image } => ToolContent::Image(image),
+                CellOutput::Media { content, detail } => ToolContent::Media { content, detail },
+            });
+        }
+        ToolSuccess::content(
+            ToolOutput::Cell(Box::new(CellReply {
+                cell,
+                state,
+                observation: raw,
+            })),
+            parts,
+        )
+        .reporting_error(is_error)
+    }
+}
 fn clip(text: &str, remaining: &mut usize) -> String {
     if *remaining == 0 {
         return String::new();

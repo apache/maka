@@ -250,39 +250,3 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
         super::windows::private_directory(path)
     }
 }
-
-pub(super) fn account_home() -> io::Result<PathBuf> {
-    #[cfg(unix)]
-    {
-        use std::{ffi::CStr, os::unix::ffi::OsStrExt};
-        // OS account identity, deliberately independent of HOME/XDG environment overrides.
-        let mut buffer = vec![0_u8; 65536];
-        let mut record: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut result = std::ptr::null_mut();
-        let error = unsafe {
-            libc::getpwuid_r(
-                libc::geteuid(),
-                &mut record,
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &mut result,
-            )
-        };
-        if error != 0 {
-            return Err(io::Error::from_raw_os_error(error));
-        }
-        if result.is_null() || record.pw_dir.is_null() {
-            return Err(io::Error::other("OS account home is unavailable"));
-        }
-        let bytes = unsafe { CStr::from_ptr(record.pw_dir) }.to_bytes();
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
-        if !path.is_absolute() {
-            return Err(io::Error::other("OS account home must be absolute"));
-        }
-        Ok(path)
-    }
-    #[cfg(windows)]
-    {
-        super::windows::account_home()
-    }
-}

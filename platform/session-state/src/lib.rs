@@ -17,268 +17,209 @@
  * under the License.
  */
 
-//! Host-lifetime scratch and discovery state. Disk owns idle sessions and staged
-//! writes; four fixed SQLite caches bound residency independently of session count.
-use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
+//! Synchronous SessionData reads and private Cell drafts. Canonical publication
+//! belongs to the domain owner and its Root transaction, never this crate.
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
-    hash::{Hash, Hasher},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("session state I/O: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("session state database: {0}")]
-    Sql(#[from] rusqlite::Error),
     #[error("session state JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("session state is retired")]
-    Retired,
+    #[error("session draft is frozen")]
+    Frozen,
     #[error("session state unavailable: {0}")]
     Unavailable(String),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-struct Partition {
-    db: Connection,
-    failure: Option<String>,
+/// A session-bound read port. Implementations read canonical JSON bytes and
+/// discovery facts. Blocking adapters must only be called on dedicated VM or
+/// blocking threads, not on async executor workers.
+pub trait SessionDataReader: Send + Sync {
+    fn load(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    fn loaded(&self) -> Result<BTreeSet<String>>;
 }
-struct Inner {
-    partitions: [Mutex<Partition>; 4],
-    // Connections close before their directory is removed.
-    _directory: tempfile::TempDir,
-}
+
 #[derive(Clone)]
-pub struct Backend(Arc<Inner>);
-#[derive(Clone)]
-pub struct Session {
-    backend: Backend,
-    id: String,
-    partition: usize,
-}
-pub struct Snapshot {
-    session: Session,
-    id: i64,
+pub struct Session(Arc<SessionInner>);
+
+struct SessionInner {
+    reader: Arc<dyn SessionDataReader>,
+    loaded: Mutex<Option<BTreeSet<String>>>,
 }
 
-const SCHEMA: &str = "
-PRAGMA journal_mode=DELETE;
-PRAGMA synchronous=OFF;
-PRAGMA cache_size=-1024;
-PRAGMA mmap_size=0;
-PRAGMA temp_store=FILE;
-CREATE TABLE sessions(id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0, retired INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, revision INTEGER NOT NULL, committed INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX snapshot_revision ON snapshots(session, revision);
-CREATE TABLE versions(session TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, end_revision INTEGER, value BLOB NOT NULL, PRIMARY KEY(session,key,revision)) WITHOUT ROWID;
-CREATE INDEX obsolete_versions ON versions(session,end_revision) WHERE end_revision IS NOT NULL;
-CREATE TABLE pending(snapshot INTEGER NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(snapshot,key)) WITHOUT ROWID;
-CREATE TABLE loaded(session TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session,name)) WITHOUT ROWID;
-";
+/// Serialized JSON write set, not a published snapshot. The owner must append
+/// these values and completion acceptance in the same canonical transaction.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SessionDraft {
+    pub values: BTreeMap<String, Vec<u8>>,
+    pub loaded_tools: Option<BTreeSet<String>>,
+}
 
-impl Backend {
-    pub fn temporary() -> Result<Self> {
-        let directory = tempfile::tempdir()?;
-        let mut partitions = Vec::new();
-        for index in 0..4 {
-            let db = Connection::open(directory.path().join(format!("{index}.sqlite")))?;
-            db.execute_batch(SCHEMA)?;
-            partitions.push(Mutex::new(Partition { db, failure: None }));
-        }
-        Ok(Self(Arc::new(Inner {
-            partitions: partitions.try_into().ok().expect("four partitions"),
-            _directory: directory,
-        })))
-    }
+pub struct Draft {
+    reader: Arc<dyn SessionDataReader>,
+    state: Mutex<Option<DraftState>>,
+}
 
-    /// A stable identity; obtaining a handle never resurrects a retired session.
-    pub fn session(&self, id: &str) -> Session {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        id.hash(&mut hash);
-        Session {
-            backend: self.clone(),
-            id: id.into(),
-            partition: hash.finish() as usize % 4,
-        }
-    }
+#[derive(Default)]
+struct DraftState {
+    reads: BTreeMap<String, Option<Vec<u8>>>,
+    values: BTreeMap<String, Vec<u8>>,
+    loaded_tools: Option<BTreeSet<String>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
+    mutex
+        .lock()
+        .map_err(|_| Error::Unavailable("session draft lock poisoned".into()))
+}
+
+fn decode(bytes: &[u8]) -> Result<Value> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    decoder.disable_recursion_limit();
+    let value = Value::deserialize(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
 }
 
 impl Session {
-    fn access<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut partition = self.backend.0.partitions[self.partition]
-            .lock()
-            .map_err(|_| Error::Unavailable("partition lock poisoned".into()))?;
-        if let Some(error) = &partition.failure {
-            return Err(Error::Unavailable(error.clone()));
+    pub fn new(reader: Arc<dyn SessionDataReader>) -> Self {
+        Self(Arc::new(SessionInner {
+            reader,
+            loaded: Mutex::new(None),
+        }))
+    }
+
+    /// Bind an independent discovery draft to the same canonical reader.
+    /// Cloning a Session instead shares its pending discovery changes.
+    pub fn fork_draft(&self) -> Self {
+        Self::new(self.0.reader.clone())
+    }
+
+    pub fn draft(&self) -> Draft {
+        Draft {
+            reader: self.0.reader.clone(),
+            state: Mutex::new(Some(DraftState::default())),
         }
-        f(&mut partition.db)
-    }
-
-    fn live(&self, db: &Connection) -> Result<()> {
-        db.execute("INSERT OR IGNORE INTO sessions(id) VALUES(?)", [&self.id])?;
-        let retired: bool = db.query_row(
-            "SELECT retired FROM sessions WHERE id=?",
-            [&self.id],
-            |row| row.get(0),
-        )?;
-        if retired { Err(Error::Retired) } else { Ok(()) }
-    }
-
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        self.access(|db| {
-            self.live(db)?;
-            db.execute("INSERT INTO snapshots(session,revision) SELECT id,revision FROM sessions WHERE id=?", [&self.id])?;
-            Ok(Snapshot { session: self.clone(), id: db.last_insert_rowid() })
-        })
-    }
-
-    pub fn retire(&self) -> Result<()> {
-        self.access(|db| {
-            let tx = db.transaction()?;
-            tx.execute("INSERT INTO sessions(id,retired) VALUES(?,1) ON CONFLICT(id) DO UPDATE SET retired=1", [&self.id])?;
-            tx.execute("DELETE FROM pending WHERE snapshot IN (SELECT id FROM snapshots WHERE session=?)", [&self.id])?;
-            tx.execute("DELETE FROM snapshots WHERE session=?", [&self.id])?;
-            tx.execute("DELETE FROM versions WHERE session=?", [&self.id])?;
-            tx.execute("DELETE FROM loaded WHERE session=?", [&self.id])?;
-            tx.commit()?;
-            Ok(())
-        })
     }
 
     pub fn loaded(&self) -> Result<BTreeSet<String>> {
-        self.access(|db| {
-            self.live(db)?;
-            Ok(db
-                .prepare("SELECT name FROM loaded WHERE session=?")?
-                .query_map([&self.id], |row| row.get(0))?
-                .collect::<std::result::Result<_, _>>()?)
-        })
+        let loaded = lock(&self.0.loaded)?;
+        match loaded.as_ref() {
+            Some(names) => Ok(names.clone()),
+            None => self.0.reader.loaded(),
+        }
+    }
+
+    /// Stage only; callers own canonical acceptance and publication.
+    pub fn stage_loaded(&self, names: BTreeSet<String>) -> Result<()> {
+        *lock(&self.0.loaded)? = Some(names);
+        Ok(())
     }
 
     pub fn update_loaded(&self, update: impl FnOnce(&mut BTreeSet<String>)) -> Result<()> {
-        self.access(|db| {
-            self.live(db)?;
-            let tx = db.transaction()?;
-            let mut names = tx
-                .prepare("SELECT name FROM loaded WHERE session=?")?
-                .query_map([&self.id], |row| row.get(0))?
-                .collect::<std::result::Result<BTreeSet<String>, _>>()?;
-            update(&mut names);
-            tx.execute("DELETE FROM loaded WHERE session=?", [&self.id])?;
-            for name in names {
-                tx.execute("INSERT INTO loaded VALUES(?,?)", params![self.id, name])?;
-            }
-            tx.commit()?;
-            Ok(())
-        })
+        let mut loaded = lock(&self.0.loaded)?;
+        if loaded.is_none() {
+            *loaded = Some(self.0.reader.loaded()?);
+        }
+        update(loaded.as_mut().expect("loaded draft initialized"));
+        Ok(())
+    }
+
+    /// Take only this discovery scope's changes. Use fork_draft before binding
+    /// independent tool calls; this must not drain another Cell's staging.
+    pub fn take_loaded_changes(&self) -> Result<Option<BTreeSet<String>>> {
+        Ok(lock(&self.0.loaded)?.take())
     }
 }
 
-// Without INDEXED BY, SQLite can prefer the primary key and scan every live
-// key in this session. Collection must visit only obsolete-version candidates;
-// make that access path a query contract rather than a statistics-dependent hint.
-const COLLECT_SQL: &str = "
-    DELETE FROM versions INDEXED BY obsolete_versions
-    WHERE session=? AND end_revision IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM snapshots
-        WHERE snapshots.session=versions.session
-          AND snapshots.revision>=versions.revision
-          AND snapshots.revision<versions.end_revision
-          AND NOT EXISTS (
-            SELECT 1 FROM pending
-            WHERE pending.snapshot=snapshots.id AND pending.key=versions.key
-          )
-      )";
-
-fn collect(db: &Connection, session: &str) -> Result<()> {
-    // Keep exactly versions visible to an actual snapshot, not every version
-    // newer than the oldest snapshot. No read transaction spans cell execution.
-    db.execute(COLLECT_SQL, [session])?;
-    Ok(())
-}
-
-impl Snapshot {
+impl Draft {
+    /// Read own writes first; other keys capture their first canonical read,
+    /// including absence. No full-session snapshot or eager copying is needed.
     pub fn load(&self, key: &str) -> Result<Option<Value>> {
-        let bytes: Option<Vec<u8>> = self.session.access(|db| {
-            self.session.live(db)?;
-            Ok(db.query_row(
-                "SELECT value FROM (
-                    SELECT 0 AS priority,value FROM pending WHERE snapshot=?1 AND key=?2
-                    UNION ALL
-                    SELECT 1 AS priority,value FROM versions WHERE session=?3 AND key=?2
-                        AND revision<=(SELECT revision FROM snapshots WHERE id=?1)
-                        AND (end_revision IS NULL OR end_revision>(SELECT revision FROM snapshots WHERE id=?1))
-                ) ORDER BY priority LIMIT 1",
-                params![self.id,key,self.session.id], |row| row.get(0),
-            ).optional()?)
-        })?;
-        // Decode outside the partition lock. These bytes were serialized from
-        // an accepted Value; language-specific depth limits belong to the bridge.
-        bytes
-            .map(|bytes| {
-                let mut decoder = serde_json::Deserializer::from_slice(&bytes);
-                decoder.disable_recursion_limit();
-                let value = Value::deserialize(&mut decoder)?;
-                decoder.end()?;
-                Ok(value)
-            })
-            .transpose()
+        let bytes = {
+            let mut state = lock(&self.state)?;
+            let state = state.as_mut().ok_or(Error::Frozen)?;
+            if let Some(bytes) = state.values.get(key) {
+                Some(bytes.clone())
+            } else {
+                if !state.reads.contains_key(key) {
+                    state.reads.insert(key.into(), self.reader.load(key)?);
+                }
+                state.reads[key].clone()
+            }
+        };
+        bytes.as_deref().map(decode).transpose()
     }
 
     pub fn store(&self, key: &str, value: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(value)?;
-        self.session.access(|db| {
-            self.session.live(db)?;
-            let committed: bool = db.query_row("SELECT committed FROM snapshots WHERE id=?", [self.id], |row| row.get(0))?;
-            if committed { return Err(Error::Unavailable("snapshot already committed".into())); }
-            db.execute("INSERT INTO pending VALUES(?,?,?) ON CONFLICT(snapshot,key) DO UPDATE SET value=excluded.value", params![self.id,key,bytes])?;
-            Ok(())
-        })
+        let mut state = lock(&self.state)?;
+        let state = state.as_mut().ok_or(Error::Frozen)?;
+        state.reads.remove(key);
+        state.values.insert(key.into(), bytes);
+        Ok(())
     }
 
-    /// Publish only after successful canonical tool settlement. The complete
-    /// write set is atomic; unrelated concurrent writes are never overwritten.
-    pub fn commit(&self) -> Result<()> {
-        self.session.access(|db| {
-            self.session.live(db)?;
-            let tx = db.transaction()?;
-            let committed: bool = tx.query_row("SELECT committed FROM snapshots WHERE id=?", [self.id], |row| row.get(0))?;
-            if committed { return Ok(()); }
-            tx.execute("UPDATE snapshots SET committed=1 WHERE id=?", [self.id])?;
-            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?", [&self.session.id])?;
-            let revision: i64 = tx.query_row("SELECT revision FROM sessions WHERE id=?", [&self.session.id], |row| row.get(0))?;
-            tx.execute("UPDATE versions SET end_revision=? WHERE session=? AND end_revision IS NULL AND key IN (SELECT key FROM pending WHERE snapshot=?)", params![revision,self.session.id,self.id])?;
-            tx.execute("INSERT INTO versions(session,key,revision,value) SELECT ?,key,?,value FROM pending WHERE snapshot=?", params![self.session.id,revision,self.id])?;
-            collect(&tx, &self.session.id)?;
-            tx.commit()?;
-            Ok(())
+    /// Discovery changes must be explicitly routed to this Cell's draft, not
+    /// implicitly taken from the Session shared by concurrent Cells.
+    pub fn stage_loaded(&self, names: BTreeSet<String>) -> Result<()> {
+        let mut state = lock(&self.state)?;
+        state
+            .as_mut()
+            .ok_or(Error::Frozen)?
+            .loaded_tools
+            .get_or_insert_default()
+            .extend(names);
+        Ok(())
+    }
+
+    /// Seal and transfer the write set exactly once. Dropping a live or frozen
+    /// draft has no external effects; there is deliberately no commit method.
+    pub fn freeze(&self) -> Result<SessionDraft> {
+        let state = lock(&self.state)?.take().ok_or(Error::Frozen)?;
+        Ok(SessionDraft {
+            values: state.values,
+            loaded_tools: state.loaded_tools,
         })
     }
 }
 
-impl Drop for Snapshot {
-    fn drop(&mut self) {
-        let result = self.session.access(|db| {
-            let tx = db.transaction()?;
-            tx.execute("DELETE FROM pending WHERE snapshot=?", [self.id])?;
-            tx.execute("DELETE FROM snapshots WHERE id=?", [self.id])?;
-            collect(&tx, &self.session.id)?;
-            tx.commit()?;
-            Ok(())
-        });
-        // Drop cannot return an I/O failure. Fail subsequent use closed rather
-        // than silently hiding a leaked lease or uncollected staging state.
-        if let Err(error) = result
-            && let Ok(mut partition) =
-                self.session.backend.0.partitions[self.session.partition].lock()
-        {
-            partition.failure = Some(error.to_string());
-        }
+/// Explicitly ephemeral scratch for standalone interpreters and CUA. This
+/// backend never publishes values; Agent sessions must use a canonical reader.
+#[derive(Clone, Default)]
+pub struct Backend(Arc<Mutex<BTreeMap<String, Session>>>);
+
+struct EphemeralReader;
+
+impl SessionDataReader for EphemeralReader {
+    fn load(&self, _key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn loaded(&self) -> Result<BTreeSet<String>> {
+        Ok(BTreeSet::new())
+    }
+}
+
+impl Backend {
+    pub fn temporary() -> Result<Self> {
+        Ok(Self::default())
+    }
+
+    pub fn session(&self, id: &str) -> Session {
+        self.0
+            .lock()
+            .expect("ephemeral session registry lock poisoned")
+            .entry(id.into())
+            .or_insert_with(|| Session::new(Arc::new(EphemeralReader)))
+            .clone()
     }
 }
 
@@ -286,255 +227,273 @@ impl Drop for Snapshot {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    #[test]
-    fn collecting_one_obsolete_version_does_not_scan_live_keys() {
-        use rusqlite::StatementStatus;
-
-        let mut measurements = Vec::new();
-        for live_keys in [1_000, 10_000, 100_000] {
-            let session = Backend::temporary().unwrap().session("gc-scaling");
-            let steps = session
-                .access(|db| {
-                    // Build the same on-disk layout as committed cells, without
-                    // measuring fixture creation or issuing thousands of commits.
-                    db.execute(
-                        "WITH RECURSIVE keys(n) AS (
-                        SELECT 0 UNION ALL SELECT n+1 FROM keys WHERE n+1<?1
-                    ) INSERT INTO versions(session,key,revision,value)
-                      SELECT ?2,printf('%08d',n),1,x'30' FROM keys",
-                        params![live_keys, session.id],
-                    )?;
-                    db.execute(
-                        "INSERT INTO versions(session,key,revision,end_revision,value)
-                     VALUES(?,'00000000',0,1,x'30')",
-                        [&session.id],
-                    )?;
-                    let mut statement = db.prepare(COLLECT_SQL)?;
-                    assert_eq!(statement.execute([&session.id])?, 1);
-                    let steps = statement.get_status(StatementStatus::VmStep);
-                    assert_eq!(
-                        db.query_row(
-                            "SELECT count(*) FROM versions WHERE session=?",
-                            [&session.id],
-                            |row| row.get::<_, i64>(0),
-                        )?,
-                        live_keys
-                    );
-                    Ok(steps)
-                })
-                .unwrap();
-            measurements.push((live_keys, steps));
+    /// An explicit test domain owner; drafts cannot publish through the reader.
+    #[derive(Default)]
+    struct Owner {
+        values: Mutex<BTreeMap<String, Vec<u8>>>,
+        loaded: Mutex<BTreeSet<String>>,
+        unavailable: AtomicBool,
+        reads: AtomicUsize,
+    }
+    impl Owner {
+        fn session(self: &Arc<Self>) -> Session {
+            Session::new(self.clone())
         }
-        eprintln!("GC VM steps (live keys, one obsolete version): {measurements:?}");
-        for (_, steps) in &measurements {
-            assert!(*steps <= 256, "GC scanned live keys: {measurements:?}");
+        fn accept(&self, draft: SessionDraft) -> Result<()> {
+            self.available()?;
+            self.values.lock().unwrap().extend(draft.values);
+            if let Some(names) = draft.loaded_tools {
+                *self.loaded.lock().unwrap() = names;
+            }
+            Ok(())
         }
-        let baseline = measurements[0].1;
-        assert!(
-            measurements
-                .iter()
-                .all(|(_, steps)| (*steps - baseline).abs() <= 32),
-            "GC work grew with live key count: {measurements:?}"
-        );
+        fn available(&self) -> Result<()> {
+            if self.unavailable.load(Ordering::SeqCst) {
+                Err(Error::Unavailable("test owner unavailable".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl SessionDataReader for Owner {
+        fn load(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.available()?;
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.values.lock().unwrap().get(key).cloned())
+        }
+        fn loaded(&self) -> Result<BTreeSet<String>> {
+            self.available()?;
+            Ok(self.loaded.lock().unwrap().clone())
+        }
     }
 
     #[test]
-    fn snapshots_read_own_writes_and_publish_only_changed_keys() {
-        let backend = Backend::temporary().unwrap();
-        let session = backend.session("s");
-        let seed = session.snapshot().unwrap();
+    fn draft_reads_and_publication_visit_only_accessed_keys() {
+        for live_keys in [1_000, 10_000, 100_000] {
+            let owner = Arc::new(Owner::default());
+            *owner.values.lock().unwrap() = (0..live_keys)
+                .map(|n| (format!("{n:08}"), b"0".to_vec()))
+                .collect();
+            let draft = owner.session().draft();
+            assert_eq!(owner.reads.load(Ordering::SeqCst), 0);
+            assert_eq!(draft.load("00000000").unwrap(), Some(json!(0)));
+            assert_eq!(draft.load("00000000").unwrap(), Some(json!(0)));
+            draft.store("00000000", &json!(1)).unwrap();
+            let changes = draft.freeze().unwrap();
+            assert_eq!(changes.values.len(), 1);
+            owner.accept(changes).unwrap();
+            assert_eq!(owner.values.lock().unwrap().len(), live_keys);
+            assert_eq!(
+                owner.session().draft().load("00000000").unwrap(),
+                Some(json!(1))
+            );
+            assert_eq!(owner.reads.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn drafts_read_own_writes_and_publish_only_changed_keys() {
+        let owner = Arc::new(Owner::default());
+        let session = owner.session();
+        let seed = session.draft();
         seed.store("a", &json!(1)).unwrap();
-        seed.commit().unwrap();
-        drop(seed);
-        let first = session.snapshot().unwrap();
-        let second = session.snapshot().unwrap();
+        owner.accept(seed.freeze().unwrap()).unwrap();
+        let first = session.draft();
+        // First reads, including absence, are stable within this Cell.
+        assert_eq!(first.load("a").unwrap(), Some(json!(1)));
+        assert_eq!(first.load("b").unwrap(), None);
+        let second = session.draft();
         second.store("a", &json!(2)).unwrap();
         second.store("b", &json!(3)).unwrap();
-        second.commit().unwrap();
+        owner.accept(second.freeze().unwrap()).unwrap();
         assert_eq!(first.load("a").unwrap(), Some(json!(1)));
         assert_eq!(first.load("b").unwrap(), None);
         first.store("a", &json!(4)).unwrap();
         assert_eq!(first.load("a").unwrap(), Some(json!(4)));
-        first.commit().unwrap();
-        first.commit().unwrap();
-        let latest = session.snapshot().unwrap();
+        owner.accept(first.freeze().unwrap()).unwrap();
+        assert!(matches!(first.freeze(), Err(Error::Frozen)));
+        let latest = session.draft();
         assert_eq!(latest.load("a").unwrap(), Some(json!(4)));
         assert_eq!(latest.load("b").unwrap(), Some(json!(3)));
-        let abandoned = session.snapshot().unwrap();
+        let abandoned = session.draft();
         abandoned.store("a", &json!(99)).unwrap();
         drop(abandoned);
-        assert_eq!(
-            session.snapshot().unwrap().load("a").unwrap(),
-            Some(json!(4))
-        );
+        assert_eq!(session.draft().load("a").unwrap(), Some(json!(4)));
     }
 
     #[test]
-    fn old_snapshot_does_not_pin_intermediate_versions() {
-        let session = Backend::temporary().unwrap().session("s");
-        let seed = session.snapshot().unwrap();
+    fn old_draft_does_not_pin_canonical_intermediate_values() {
+        let owner = Arc::new(Owner::default());
+        let session = owner.session();
+        let seed = session.draft();
         seed.store("key", &json!(0)).unwrap();
-        seed.commit().unwrap();
-        drop(seed);
-        let old = session.snapshot().unwrap();
-        // Only values 0 and 2 remain visible; the intermediate value 1 must
-        // be collected while the old reader is still held.
+        owner.accept(seed.freeze().unwrap()).unwrap();
+        let old = session.draft();
+        assert_eq!(old.load("key").unwrap(), Some(json!(0)));
         for index in [1, 2] {
-            let cell = session.snapshot().unwrap();
+            let cell = session.draft();
             cell.store("key", &json!(index)).unwrap();
-            cell.commit().unwrap();
+            owner.accept(cell.freeze().unwrap()).unwrap();
         }
         assert_eq!(old.load("key").unwrap(), Some(json!(0)));
-        let count = || {
-            session
-                .access(|db| {
-                    Ok(db.query_row("SELECT count(*) FROM versions", [], |r| r.get::<_, i64>(0))?)
-                })
-                .unwrap()
-        };
-        assert_eq!(count(), 2);
+        assert_eq!(session.draft().load("key").unwrap(), Some(json!(2)));
+        assert_eq!(owner.values.lock().unwrap().len(), 1);
         drop(old);
-        assert_eq!(count(), 1);
+        assert_eq!(owner.values.lock().unwrap().len(), 1);
     }
 
     #[test]
-    fn retirement_fences_existing_and_new_handles_without_reusing_leases() {
-        let backend = Backend::temporary().unwrap();
-        let session = backend.session("retired");
-        let unused_handle = backend.session("retired");
-        let old = session.snapshot().unwrap();
+    fn unavailable_owner_fences_reads_and_acceptance_without_crossing_sessions() {
+        let owner = Arc::new(Owner::default());
+        let session = owner.session();
+        let unused = session.clone();
+        let old = session.draft();
         old.store("key", &json!(1)).unwrap();
-        session.retire().unwrap();
-        assert!(matches!(unused_handle.snapshot(), Err(Error::Retired)));
-        assert!(matches!(old.commit(), Err(Error::Retired)));
-        assert!(matches!(old.load("key"), Err(Error::Retired)));
+        owner.unavailable.store(true, Ordering::SeqCst);
         assert!(matches!(
-            backend.session("retired").snapshot(),
-            Err(Error::Retired)
+            unused.draft().load("missing"),
+            Err(Error::Unavailable(_))
         ));
-        // Another session in the same partition must not lose its new lease.
-        let other = (0..100)
-            .map(|n| backend.session(&format!("other-{n}")))
-            .find(|s| s.partition == session.partition)
-            .unwrap();
-        let live = other.snapshot().unwrap();
+        assert!(matches!(old.load("missing"), Err(Error::Unavailable(_))));
+        assert!(matches!(
+            owner.accept(old.freeze().unwrap()),
+            Err(Error::Unavailable(_))
+        ));
+        assert!(matches!(
+            owner.session().draft().load("missing"),
+            Err(Error::Unavailable(_))
+        ));
+        let other = Arc::new(Owner::default());
+        let live = other.session().draft();
         live.store("key", &json!(2)).unwrap();
         drop(old);
-        live.commit().unwrap();
-        assert_eq!(
-            other.snapshot().unwrap().load("key").unwrap(),
-            Some(json!(2))
-        );
+        other.accept(live.freeze().unwrap()).unwrap();
+        assert_eq!(other.session().draft().load("key").unwrap(), Some(json!(2)));
     }
 
     #[test]
-    fn discovery_handles_share_authority_without_crossing_sessions() {
-        let backend = Backend::temporary().unwrap();
-        backend
-            .session("first")
+    fn discovery_drafts_share_only_their_scope_and_publish_explicitly() {
+        let first = Arc::new(Owner::default());
+        let second = Arc::new(Owner::default());
+        let session = first.session();
+        let same_scope = session.clone();
+        session
             .update_loaded(|names| {
                 names.insert("search".into());
             })
             .unwrap();
-        backend
-            .session("second")
+        let other_session = second.session();
+        other_session
             .update_loaded(|names| {
                 names.insert("read".into());
             })
             .unwrap();
-        let session = backend.session("first");
-        assert_eq!(session.loaded().unwrap(), BTreeSet::from(["search".into()]));
-        backend
-            .session("first")
-            .update_loaded(BTreeSet::clear)
-            .unwrap();
-        assert!(session.loaded().unwrap().is_empty());
         assert_eq!(
-            backend.session("second").loaded().unwrap(),
+            same_scope.loaded().unwrap(),
+            BTreeSet::from(["search".into()])
+        );
+        assert!(session.fork_draft().loaded().unwrap().is_empty());
+        first
+            .accept(SessionDraft {
+                values: BTreeMap::new(),
+                loaded_tools: session.take_loaded_changes().unwrap(),
+            })
+            .unwrap();
+        second
+            .accept(SessionDraft {
+                values: BTreeMap::new(),
+                loaded_tools: other_session.take_loaded_changes().unwrap(),
+            })
+            .unwrap();
+        assert_eq!(
+            first.session().loaded().unwrap(),
+            BTreeSet::from(["search".into()])
+        );
+        session.update_loaded(BTreeSet::clear).unwrap();
+        first
+            .accept(SessionDraft {
+                values: BTreeMap::new(),
+                loaded_tools: session.take_loaded_changes().unwrap(),
+            })
+            .unwrap();
+        assert!(same_scope.loaded().unwrap().is_empty());
+        assert_eq!(
+            second.session().loaded().unwrap(),
             BTreeSet::from(["read".into()])
         );
     }
 
     #[test]
-    fn concurrent_cells_merge_distinct_keys_and_order_same_key_by_commit() {
-        let session = Backend::temporary().unwrap().session("parallel");
-        let first = session.snapshot().unwrap();
-        let second = session.snapshot().unwrap();
-        let (committed, ready) = std::sync::mpsc::channel();
+    fn concurrent_cells_merge_distinct_keys_and_order_same_key_by_acceptance() {
+        let owner = Arc::new(Owner::default());
+        let session = owner.session();
+        let first = session.draft();
+        let second = session.draft();
+        assert_eq!(second.load("left").unwrap(), None);
+        let (accepted, ready) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
+            let first_owner = owner.clone();
             scope.spawn(move || {
                 first.store("left", &json!(1)).unwrap();
                 first.store("same", &json!("first")).unwrap();
-                first.commit().unwrap();
-                committed.send(()).unwrap();
+                first_owner.accept(first.freeze().unwrap()).unwrap();
+                accepted.send(()).unwrap();
             });
+            let second_owner = owner.clone();
             scope.spawn(move || {
                 second.store("right", &json!(2)).unwrap();
                 second.store("same", &json!("second")).unwrap();
                 ready.recv().unwrap();
                 assert_eq!(second.load("left").unwrap(), None);
-                second.commit().unwrap();
+                second_owner.accept(second.freeze().unwrap()).unwrap();
             });
         });
-        let final_state = session.snapshot().unwrap();
+        let final_state = session.draft();
         assert_eq!(final_state.load("left").unwrap(), Some(json!(1)));
         assert_eq!(final_state.load("right").unwrap(), Some(json!(2)));
         assert_eq!(final_state.load("same").unwrap(), Some(json!("second")));
     }
 
     #[test]
-    fn collocated_sessions_keep_values_and_cancelled_staging_independent() {
-        let backend = Backend::temporary().unwrap();
-        let first = backend.session("first");
-        let second = (0..)
-            .map(|index| backend.session(&format!("other-{index}")))
-            .find(|session| session.partition == first.partition)
-            .unwrap();
-        for (session, value) in [(&first, "first"), (&second, "second")] {
-            let committed = session.snapshot().unwrap();
-            committed.store("key", &json!(value)).unwrap();
-            committed.commit().unwrap();
+    fn sessions_keep_values_and_cancelled_staging_independent() {
+        let first = Arc::new(Owner::default());
+        let second = Arc::new(Owner::default());
+        for (owner, value) in [(&first, "first"), (&second, "second")] {
+            let draft = owner.session().draft();
+            draft.store("key", &json!(value)).unwrap();
+            owner.accept(draft.freeze().unwrap()).unwrap();
         }
-        let abandoned = first.snapshot().unwrap();
+        let abandoned = first.session().draft();
         abandoned.store("key", &json!("unpublished")).unwrap();
         abandoned.store("cancelled", &json!(true)).unwrap();
         drop(abandoned);
         assert_eq!(
-            first.snapshot().unwrap().load("key").unwrap(),
+            first.session().draft().load("key").unwrap(),
             Some(json!("first"))
         );
-        assert_eq!(first.snapshot().unwrap().load("cancelled").unwrap(), None);
+        assert_eq!(first.session().draft().load("cancelled").unwrap(), None);
         assert_eq!(
-            second.snapshot().unwrap().load("key").unwrap(),
+            second.session().draft().load("key").unwrap(),
             Some(json!("second"))
         );
-        first
-            .access(|db| {
-                for table in ["snapshots", "pending"] {
-                    assert_eq!(
-                        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
-                            .get::<_, i64>(0))?,
-                        0
-                    );
-                }
-                Ok(())
-            })
-            .unwrap();
+        assert_eq!(first.values.lock().unwrap().len(), 1);
+        assert_eq!(second.values.lock().unwrap().len(), 1);
     }
 
     #[test]
     fn storage_failure_is_not_a_missing_key() {
-        let session = Backend::temporary().unwrap().session("failure");
-        let snapshot = session.snapshot().unwrap();
-        session
-            .access(|db| {
-                db.execute("DROP TABLE versions", [])?;
-                Ok(())
-            })
-            .unwrap();
-        assert!(matches!(snapshot.load("missing"), Err(Error::Sql(_))));
-        drop(snapshot);
-        assert!(matches!(session.snapshot(), Err(Error::Unavailable(_))));
+        let owner = Arc::new(Owner::default());
+        let session = owner.session();
+        let draft = session.draft();
+        owner.unavailable.store(true, Ordering::SeqCst);
+        assert!(matches!(draft.load("missing"), Err(Error::Unavailable(_))));
+        drop(draft);
+        assert!(matches!(
+            session.draft().load("missing"),
+            Err(Error::Unavailable(_))
+        ));
+        assert!(matches!(session.loaded(), Err(Error::Unavailable(_))));
     }
 }

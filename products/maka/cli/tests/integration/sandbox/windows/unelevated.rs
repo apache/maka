@@ -163,7 +163,7 @@ pub(super) fn verify(root: &Path, state: &Path, work: &Path) -> io::Result<()> {
         ("TMP", work.to_string_lossy().into_owned()),
         (
             "USERPROFILE",
-            maka_event_log::root::windows::account_home()?
+            maka_sandbox::account_home()?
                 .to_string_lossy()
                 .into_owned(),
         ),

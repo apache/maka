@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_event_log::usage::{AuxiliarySource, Origin, Outcome};
+use maka_agent_facts::accounting::{AuxiliarySource, Origin, Outcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| {
@@ -58,11 +58,14 @@ async fn pair(listener: &TcpListener) -> ((Value, TcpStream), (Value, TcpStream)
     }
 }
 async fn attempts(f: &Fixture, session: &str) -> Vec<maka_agent_facts::accounting::ModelAttempt> {
-    f.store
-        .usage_activity(
-            maka_event_log::root_store::UsageQuery {
+    f.owner
+        .durable
+        .usage()
+        .activity(
+            maka_agent_state::usage::UsageQuery {
                 from: 0.0,
                 to: 253402300799999.0,
+                owner: Some(f.owner.run_owner()),
                 session_id: Some(session.into()),
                 through: None,
             },
@@ -94,6 +97,8 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         let input = json!({"sessionId":session,"message":text,"backend":model_backend(&f.selection().await)});
         let operation = Uuid::new_v4();
         let sent = f.mutation(2, "send", input.clone(), operation).await.unwrap();
+        let run = f.delivered_run(&sent).await;
+        let execution = f.history(&session).run_source(run).await.unwrap().execution();
         let ((main, mut main_socket), (title, mut title_socket)) = pair(&listener).await;
         assert_eq!(main["reasoning_effort"], "high");
         assert_eq!(title["reasoning_effort"], "none");
@@ -104,8 +109,8 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         response(&mut main_socket).await;
         // An auxiliary title is owned by the Host, so main-turn completion does not cancel it.
         loop {
-            let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
-            if matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { .. }) { break; }
+            let boundary = f.owner.durable.frontier(execution.run_id).await.unwrap();
+            if boundary.terminal.is_some() { break; }
             tokio::task::yield_now().await;
         }
         response_with_text(&mut title_socket, "  cafe\u{301}\n\u{202e}任务😀  ").await;
@@ -116,7 +121,7 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         let original = attempts(&f, &session).await;
         assert_eq!(original.len(), 2);
         let auxiliary = original.iter().find(|attempt| matches!(attempt.origin, Origin::Auxiliary { .. })).unwrap();
-        assert!(matches!(&auxiliary.origin, Origin::Auxiliary { source: AuxiliarySource::SessionTitle { invocation } } if invocation.invocation_id == sent["invocationId"].as_str().unwrap()));
+        assert!(matches!(&auxiliary.origin, Origin::Auxiliary { source: AuxiliarySource::SessionTitle { execution: original } } if original == &execution));
         assert_eq!(auxiliary.outcome, Outcome::Success);
         assert_eq!(auxiliary.usage.input_tokens, Some(1));
         assert_eq!(auxiliary.usage.output_tokens, Some(2));
@@ -136,7 +141,7 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         let current = attempts(&f, &session).await;
         assert_eq!(current.len(), 3);
         assert_eq!(current.iter().filter(|attempt| matches!(attempt.origin, Origin::Auxiliary { .. })).count(), 1);
-        assert_eq!(f.session(&session).await.get_session::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().configuration.title, "café 任务😀");
+        assert_eq!(f.session(&session).await.get::<StoredSessionConfiguration>().await.unwrap().unwrap().configuration.title, "café 任务😀");
         f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -149,11 +154,13 @@ async fn title_manual_rename_even_to_placeholder_and_archive_win_in_flight() {
         for archive in [false, true] {
             let session = automatic(&f).await;
             let sent = f.send(&session).await.unwrap();
+            let run = f.delivered_run(&sent).await;
+            let execution = f.history(&session).run_source(run).await.unwrap().execution();
             let ((_, mut main), (_, mut title)) = pair(&listener).await;
             response(&mut main).await;
             loop {
-                let boundary = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
-                if matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { .. }) { break; }
+                let boundary = f.owner.durable.frontier(execution.run_id).await.unwrap();
+                if boundary.terminal.is_some() { break; }
                 tokio::task::yield_now().await;
             }
             if archive {
@@ -237,13 +244,13 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
         }), Uuid::new_v4()).await.unwrap();
         let (mut main_socket, _) = listener.accept().await.unwrap();
         let main_request = request(&mut main_socket).await;
-        let accepted = f.owner.runs.lock().await.controls.get(&session).unwrap().basis.model.clone().unwrap();
-        let opening = f.session(&session).await.invocation_boundary(&session, sent["invocationId"].as_str().unwrap())
-            .await.unwrap().unwrap().0;
-        let configuration = f.session(&(opening.invocation).session_id).await.invocation_configuration(&opening.invocation).await.unwrap().unwrap();
+        let run = f.delivered_run(&sent).await;
+        let execution = f.history(&session).run_source(run).await.unwrap().execution();
+        let custody = f.live_access(&session).await.custody().clone();
+        let opening = f.history(&session).run_source(execution.run_id).await.unwrap();
         let chinese = prompt_language::select_language(&f, "zh-CN").await;
         let (generated, title_request) = tokio::join!(
-            f.owner.generate_title(opening.invocation, accepted),
+            f.owner.generate_title(execution.clone(), custody),
             async {
                 let (mut title_socket, _) = listener.accept().await.unwrap();
                 let outgoing = request(&mut title_socket).await;
@@ -259,10 +266,15 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
             f.session_database(&session),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).unwrap();
-        let recorded_language: String = raw.query_row(
-            "SELECT json_extract(event_header, '$.language') FROM event_log WHERE kind='auxiliary_model_started' AND json_extract(event_header, '$.source.kind')='session_title' AND json_extract(event_header, '$.source.invocation.session_id')=?1",
-            [&session], |row| row.get(0),
+        let title_attempt = physical_attempts.iter().find(|attempt|
+            matches!(&attempt.origin, Origin::Auxiliary { source: AuxiliarySource::SessionTitle { execution: original } } if original == &execution)
+        ).expect("original title request has canonical accounting");
+        let spec_bytes: Vec<u8> = raw.query_row(
+            "SELECT c.payload FROM agent_usage_aux_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.request=?1 AND s.owner=?2 AND s.session=?3",
+            rusqlite::params![title_attempt.request_id, serde_json::to_string(&f.owner.run_owner()).unwrap(), session],
+            |row| row.get(0),
         ).unwrap();
+        let recorded: maka_agent_state::usage::AuxiliarySpec = serde_json::from_slice(&spec_bytes).unwrap();
         drop(raw);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -270,14 +282,14 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
         assert_eq!(english["kind"], "committed");
         assert_eq!(chinese["kind"], "committed");
         assert!(generated.is_ok(), "title generation failed: {generated:?}");
-        assert_eq!(configuration.language, maka_agent_facts::language::Language::En);
+        assert_eq!(opening.spec.language, maka_agent_facts::language::Language::En);
         assert_eq!(main_request["messages"].as_array().unwrap().iter()
             .find(|message| message["role"] == "user").unwrap()["content"], original);
         assert_eq!(title_request["messages"][1]["content"], original);
         let instruction = title_request["messages"][0]["content"].as_str().unwrap();
         assert!(instruction.contains("会话标题"), "new title capture must use current Chinese builtin copy: {title_request}");
         assert!(instruction.contains("与消息语言相同"), "the title's output language still follows original user text: {title_request}");
-        assert_eq!(recorded_language, "zh-CN");
+        assert_eq!(recorded.language, maka_agent_facts::language::Language::ZhCn);
         assert_eq!(title, "Investigate title capture");
         assert_eq!(physical_attempts.len(), 2);
         assert_eq!(physical_attempts.iter().filter(|attempt| matches!(attempt.origin, Origin::Auxiliary { .. })).count(), 1);

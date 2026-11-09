@@ -63,34 +63,26 @@ pub(super) async fn composition(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::composition::RequestComposition {
-    let prefix = fixture
-        .session(session)
+    let history = fixture.history(session);
+    let cut = history.capture().await.unwrap();
+    for item in fixture
+        .history_items(session)
         .await
-        .scoped_prefix(
-            maka_agent_facts::event::LogScope::Session { id: session.into() },
-            128,
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-    let requested = prefix
-        .events
-        .iter()
+        .into_iter()
         .rev()
-        .find(|row| {
-            matches!(
-                row.event.fact,
-                maka_agent_facts::event::Fact::ModelRequested { .. }
-            )
-        })
-        .expect("actual model dispatch must retain ModelRequested");
-    fixture
-        .session(session)
-        .await
-        .request_composition(session, &requested.event.id)
-        .await
-        .unwrap()
-        .unwrap()
+        .filter(|item| item.sequence <= cut.through_sequence)
+    {
+        if let Fact::ModelAttemptPrepared { step, .. } = item.recorded.fact {
+            let request = history
+                .request(&cut, item.recorded.run, step)
+                .await
+                .unwrap();
+            if request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main {
+                return request.composition;
+            }
+        }
+    }
+    panic!("actual model dispatch must retain its prepared Main request")
 }
 
 pub(super) fn assert_frozen_context(

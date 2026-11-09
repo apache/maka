@@ -87,7 +87,7 @@ pub(crate) async fn row(
     Ok(read_pages(
         |through, position| client.query("agent", "history", json!({"sessionId":session,"through":through,"position":position,"includeThinking":true})),
         Some(through),
-        HistoryPosition::Row { position, field: HistoryField::Body },
+        HistoryPosition::Row { position: position.clone(), field: HistoryField::Body },
         Some(position),
     ).await?.chunks)
 }
@@ -119,7 +119,14 @@ where
         through: fence,
         chunks,
         ..
-    } = query(Some(through), HistoryPosition::Row { position, field }).await?;
+    } = query(
+        Some(through),
+        HistoryPosition::Row {
+            position: position.clone(),
+            field,
+        },
+    )
+    .await?;
     freeze(&mut Some(through), fence)?;
     let chunk = chunks
         .into_iter()
@@ -150,10 +157,10 @@ where
             after: next,
             ..
         } = query(through, position).await?;
-        freeze(&mut through, fence)?;
+        let fence = freeze(&mut through, fence)?;
         for chunk in chunks {
-            if let Some(row) = row {
-                if chunk.position != row || chunk.field != HistoryField::Body {
+            if let Some(row) = &row {
+                if &chunk.position != row || chunk.field != HistoryField::Body {
                     return Err("History omitted the requested tool row".into());
                 }
                 let complete = chunk.offset + chunk.text.len() as u64 == chunk.total_bytes;
@@ -184,12 +191,15 @@ where
     }
 }
 
-fn freeze(through: &mut Option<u64>, fence: u64) -> Result<(), Error> {
+fn freeze(through: &mut Option<u64>, fence: Option<u64>) -> Result<u64, Error> {
+    // This consumer queries live Session history, whose fence is a captured
+    // raw-event cut. Imported snapshot reads have no such sequence domain.
+    let fence = fence.ok_or("Live Session history omitted its captured fence")?;
     if through.is_some_and(|through| through != fence) {
         return Err("History fence changed during replay".into());
     }
     *through = Some(fence);
-    Ok(())
+    Ok(fence)
 }
 
 #[cfg(test)]

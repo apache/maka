@@ -95,15 +95,23 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         std::fs::remove_file(f.workspace.join("unsaved.txt")).unwrap();
         let payload = "完整原文\n".repeat(2600);
         files::call(&listener, &f, &session, json!({"path":"tracked.txt","content":payload})).await;
-        let boundary = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap().invocation;
-        let execution = json!({"sessionId":session,"invocationId":boundary.invocation_id});
+        let original_run=f.latest_run(&session).await.run;
+        let execution = json!({"sessionId":session,"runId":original_run});
         assert_eq!(f.mutation(2,"snapshotPatch",execution.clone(),Uuid::new_v4()).await.unwrap()["kind"],"busy");
         assert_eq!(files::finish(&listener,&f).await["kind"], "completed");
         assert_eq!(std::fs::read_to_string(path.join("tracked.txt")).unwrap(), payload);
         assert_eq!(std::fs::read_to_string(f.workspace.join("tracked.txt")).unwrap(), "base\n");
         let borrowed=f.mutation(2,"create",json!({"title":"Borrowed","labels":[],"workspace":{"kind":"session","sessionId":session}}),Uuid::new_v4()).await.unwrap();
         assert_eq!(borrowed["session"]["workspace"]["path"],path.to_str().unwrap());
-        assert_eq!(f.store.workspace_fence(path.to_str().unwrap()).await.unwrap().0.len(),2);
+        let members=f.store.scoped_sessions::<Value>(
+            maka_event_log::sessions::CatalogScope::Workspace(path.to_str().unwrap().into()),None,
+            maka_event_log::sessions::SessionPosition::Start,
+            maka_event_log::sessions::CatalogFilter {roots_only:false,archived_only:false,include_archived:true},
+        ).await.unwrap();
+        assert_eq!(members.sessions.len(),2);
+        assert!(members.next_cursor.is_none());
+        assert!(members.sessions.iter().any(|member|member.id==session));
+        assert!(members.sessions.iter().any(|member|Some(member.id.as_str())==borrowed["session"]["id"].as_str()));
         let original=f.mutation(2,"snapshotPatch",execution.clone(),Uuid::new_v4()).await.unwrap();
         assert_eq!(original["kind"],"ready", "{original}");
         let patch=read_patch(&f,&execution).await;
@@ -121,16 +129,21 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         assert_eq!(archived["toolName"], "WorkspaceFile");
         assert!(archived["page"]["next"].is_object());
         let archive_address = maka_agent_facts::archive::ToolResultAddress::parse(archived["resourceRef"].as_str().unwrap()).unwrap();
-        let successor_receipt = f.session(&session).await.resolve_tool_result(&session, archive_address.event_id()).await.unwrap();
+        let history=f.history(&session);
+        let cut=history.capture().await.unwrap();
+        let source=history.resolve_tool_result(&cut,archive_address.event_id()).await.unwrap().expect("actual original tool-result source");
+        let successor_receipt=service_tools::tool_return(&f,&session,&source.item).await.body.output;
         let maka_agent_facts::tool_output::ToolOutput::Operation(reply) = &successor_receipt else { panic!("successor must retain the original service receipt") };
         assert_eq!(reply.reference.method, "write");
         assert_eq!(reply.receipt, Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value: json!({"kind":"completed","value":{
+            outcome: OperationOutcome::Returned { result: OperationResult::Success { value: json!({"kind":"completed","value":{
                 "kind":"file_write","path":path.join("tracked.txt"),"bytes":"successor\n".len(),"previousContent":payload
-            }}) },
+            }}) } },
             cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
         });
-        assert!(f.session(borrowed["session"]["id"].as_str().unwrap()).await.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
+        let foreign=f.history(borrowed["session"]["id"].as_str().unwrap());
+        let foreign_cut=foreign.capture().await.unwrap();
+        assert!(foreign.resolve_tool_result(&foreign_cut,archive_address.event_id()).await.unwrap().is_none());
         assert_eq!(std::fs::read_to_string(path.join("tracked.txt")).unwrap(), "successor\n");
         assert_eq!(f.mutation(2,"snapshotPatch",execution.clone(),Uuid::new_v4()).await.unwrap(),original);
         assert_eq!(read_patch(&f,&execution).await,patch);
@@ -142,11 +155,15 @@ async fn isolated_native_files_and_immutable_patch_survive_successor_and_restart
         f.app.shutdown().await.unwrap();
         let mut native=NativeRegistry::default();
         maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-        crate::owner::tests::provide_all(&mut native).unwrap();
+        crate::owner::tests::provide_all(&mut native, f.owner.durable.clone()).unwrap();
         f.app=Application::start_from_store(f.store.clone(),deployment,native,f.issuer.clone(),Arc::new(Grant(f.issuer.clone(),None)),Some(maka_host_js::factory(Default::default()))).await.unwrap();
         f.app.ready().await.unwrap();
-        assert_eq!(f.session(&session).await.resolve_tool_result(&session, archive_address.event_id()).await.unwrap(), successor_receipt);
-        assert!(f.session(borrowed["session"]["id"].as_str().unwrap()).await.resolve_tool_result(borrowed["session"]["id"].as_str().unwrap(), archive_address.event_id()).await.is_err());
+        let reopened_cut=history.capture().await.unwrap();
+        let reopened=history.resolve_tool_result(&reopened_cut,archive_address.event_id()).await.unwrap().expect("original source survives restart");
+        assert_eq!(service_tools::tool_return(&f,&session,&reopened.item).await.body.output, successor_receipt);
+        let foreign=f.history(borrowed["session"]["id"].as_str().unwrap());
+        let foreign_cut=foreign.capture().await.unwrap();
+        assert!(foreign.resolve_tool_result(&foreign_cut,archive_address.event_id()).await.unwrap().is_none());
         assert_eq!(read_patch(&f,&execution).await,patch);
         assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["session"]["workspace"]["path"],path.to_str().unwrap());
         f.app.shutdown().await.unwrap();

@@ -49,3 +49,6 @@ nsh-gpui-terminal.workspace = true
 [dev-dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"] }
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+maka-sandbox.workspace = true

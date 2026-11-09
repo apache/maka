@@ -52,14 +52,19 @@ impl Session {
                     )
                     .await;
                 if result.is_ok() {
-                    self.raw_computer
-                        .handles
-                        .insert(handle, invocation.turn().into());
+                    self.raw_computer.handles.insert(
+                        handle,
+                        (
+                            invocation.session().to_owned(),
+                            invocation.turn().to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                    );
                 }
                 (result, true)
             }
             NativeComputerCall::DragMove { handle, point } => {
-                self.raw_handle_started(&handle, invocation.turn())?;
+                self.raw_handle_started(&handle, invocation)?;
                 let point: NativePoint = native_decode(point)?;
                 (
                     self.raw_desktop(
@@ -76,7 +81,7 @@ impl Session {
                 )
             }
             NativeComputerCall::DragEnd { handle } => {
-                self.raw_handle_started(&handle, invocation.turn())?;
+                self.raw_handle_started(&handle, invocation)?;
                 let result = self
                     .raw_desktop(
                         NativeDesktopRequest::DragEnd {
@@ -115,13 +120,16 @@ impl Session {
         result
     }
 
-    fn raw_handle_started(&self, handle: &str, turn: &str) -> Result<(), ToolError> {
-        if self
-            .raw_computer
-            .handles
-            .get(handle)
-            .is_some_and(|owner| owner == turn)
-        {
+    fn raw_handle_started(
+        &self,
+        handle: &str,
+        invocation: &crate::InvocationContext<'_>,
+    ) -> Result<(), ToolError> {
+        if self.raw_computer.handles.get(handle).is_some_and(|owner| {
+            owner.0 == invocation.session()
+                && owner.1 == invocation.turn()
+                && &owner.2 == invocation.execution_correlation()
+        }) {
             Ok(())
         } else {
             Err(failed("Sky drag handle has not been started"))
@@ -138,7 +146,7 @@ impl Session {
         Driver::input_raw_desktop(
             &self.native,
             self.epoch,
-            invocation.turn(),
+            invocation,
             request,
             cancellation,
             language,

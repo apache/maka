@@ -24,14 +24,17 @@ use super::*;
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 #[derive(Default)]
 pub(super) struct NativeTurns {
-    owners: std::collections::HashMap<String, Arc<cua_driver_sdk::NativeDesktopOwner>>,
-    closed: std::collections::HashSet<String>,
+    owners: std::collections::HashMap<
+        (String, String, crate::ExecutionCorrelation),
+        Arc<cua_driver_sdk::NativeDesktopOwner>,
+    >,
+    closed: std::collections::HashSet<(String, String, crate::ExecutionCorrelation)>,
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub(super) struct ActiveInput {
     bound: Arc<BoundSession>,
-    turn: String,
+    scope: (String, String, crate::ExecutionCorrelation),
     owner: Arc<cua_driver_sdk::NativeDesktopOwner>,
 }
 
@@ -72,7 +75,7 @@ impl Driver {
     pub(crate) async fn input_raw_desktop(
         driver: &Arc<Mutex<Self>>,
         epoch: NativeEpochId,
-        turn: &str,
+        invocation: &crate::InvocationContext<'_>,
         request: platform_linux::input::native_desktop::NativeDesktopRequest,
         cancellation: &CancellationToken,
         language: Language,
@@ -85,12 +88,17 @@ impl Driver {
                 "Computer Use cancelled before native input dispatch".into(),
             ));
         }
+        let scope = (
+            invocation.session().to_owned(),
+            invocation.turn().to_owned(),
+            invocation.execution_correlation().clone(),
+        );
         let bound = driver.lock().await.bind_epoch(epoch, language)?;
         let session = bound.ready(language).await?;
         let device = driver.lock().await.native_input.clone();
         let mut device = device.lock().await;
         if let Some(previous) = device.as_ref()
-            && (!Arc::ptr_eq(&previous.bound, &bound) || previous.turn != turn)
+            && (!Arc::ptr_eq(&previous.bound, &bound) || previous.scope != scope)
         {
             previous.owner.seal();
             previous.owner.close().await.map_err(|error| {
@@ -101,22 +109,22 @@ impl Driver {
             let mut turns = previous.bound.native_turns.lock().await;
             if turns
                 .owners
-                .get(&previous.turn)
+                .get(&previous.scope)
                 .is_some_and(|owner| Arc::ptr_eq(owner, &previous.owner))
             {
-                turns.owners.remove(&previous.turn);
+                turns.owners.remove(&previous.scope);
             }
             drop(turns);
             *device = None;
         }
         let owner = {
             let mut turns = bound.native_turns.lock().await;
-            if turns.closed.contains(turn) {
+            if turns.closed.contains(&scope) {
                 return Err(ToolError::Failed("native desktop turn is closed".into()));
             }
             // Passive SDK construction conveys no authority and opens no X11
             // connection. Every operation still enters the actual named tool.
-            match turns.owners.entry(turn.to_owned()) {
+            match turns.owners.entry(scope.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
                 std::collections::hash_map::Entry::Vacant(entry) => entry
                     .insert(
@@ -129,7 +137,7 @@ impl Driver {
         };
         *device = Some(ActiveInput {
             bound: bound.clone(),
-            turn: turn.to_owned(),
+            scope,
             owner: owner.clone(),
         });
         if cancellation.is_cancelled() {
@@ -154,16 +162,19 @@ impl Driver {
     pub(crate) async fn finish_raw_native_turn(
         driver: &Arc<Mutex<Self>>,
         epoch: NativeEpochId,
+        session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
+        let scope = (session.to_owned(), turn.to_owned(), execution.clone());
         let bound = driver.lock().await.sessions.get(&epoch).cloned();
         let Some(bound) = bound else {
             return Ok(());
         };
         let owner = {
             let mut turns = bound.native_turns.lock().await;
-            turns.closed.insert(turn.to_owned());
-            let owner = turns.owners.get(turn).cloned();
+            turns.closed.insert(scope.clone());
+            let owner = turns.owners.get(&scope).cloned();
             if let Some(owner) = &owner {
                 owner.seal();
             }
@@ -176,7 +187,7 @@ impl Driver {
                 .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
             // Failed close never reaches removal. The real connection/pressed
             // state stays owned and quarantined for subsequent cleanup.
-            bound.native_turns.lock().await.owners.remove(turn);
+            bound.native_turns.lock().await.owners.remove(&scope);
         }
         Ok(())
     }
@@ -306,8 +317,19 @@ mod retirement_tests {
         owner.seal();
         {
             let mut turns = bound.native_turns.lock().await;
-            turns.closed.insert("original-turn".into());
-            turns.owners.insert("original-turn".into(), owner);
+            turns.closed.insert((
+                "original-session".into(),
+                "original-turn".into(),
+                crate::ExecutionCorrelation::new("original-execution").unwrap(),
+            ));
+            turns.owners.insert(
+                (
+                    "original-session".into(),
+                    "original-turn".into(),
+                    crate::ExecutionCorrelation::new("original-execution").unwrap(),
+                ),
+                owner,
+            );
         }
         driver.sessions.remove(&epoch);
         let (reply, pending) = watch::channel(None);
@@ -355,14 +377,11 @@ mod retirement_tests {
         driver.close().await.unwrap();
         assert!(matches!(driver.state, State::Closed));
         assert!(bound.native_turns.lock().await.owners.is_empty());
-        assert!(
-            bound
-                .native_turns
-                .lock()
-                .await
-                .closed
-                .contains("original-turn")
-        );
+        assert!(bound.native_turns.lock().await.closed.contains(&(
+            "original-session".into(),
+            "original-turn".into(),
+            crate::ExecutionCorrelation::new("original-execution").unwrap()
+        )));
         assert!(
             session
                 .get_session(GetSessionInput { session: None })

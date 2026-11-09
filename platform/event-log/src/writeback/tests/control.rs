@@ -123,4 +123,5 @@ async fn control_rows_and_receipts_share_one_confirmed_full_commit() {
             .workspace,
         workspace
     );
+    log.connection.shutdown().await.unwrap();
 }

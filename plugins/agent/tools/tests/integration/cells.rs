@@ -17,388 +17,347 @@
  * under the License.
  */
 
-use super::support::preflight as fixture;
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::tool_call::ToolOrigin;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
+use super::support::preflight::{Fixture, Standalone, observe};
+use maka_agent_facts::{
+    cells::{
+        CELL_NOTIFICATION_SCHEMA_VERSION, CellEvent, CellId, CellInterruption, CellNotification,
+        CellNotificationBody, CellObservation, CellOutput, CellReplyState, CellStatus,
+    },
+    durable::FactId,
+    execution::CodeLanguage,
+    tool_output::{DurableToolProjection, ProjectionPart, ToolOutput},
+    tools::{ToolExecutor, ToolFuture},
+};
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
-use maka_tools::CodeExecutor;
 use maka_tools::{
-    RunTools, ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
-    ToolSemantics,
+    CellAdmission, CellChange, CellContent, CellPersistence, CodeCells, CodeExecutor, ToolCatalog,
+    ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime},
+};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-struct Block(Arc<Notify>);
+#[derive(Default)]
+struct Block {
+    release: Arc<Notify>,
+    entered: Notify,
+    calls: AtomicUsize,
+}
 impl ToolExecutor for Block {
     fn names(&self) -> Vec<String> {
         vec!["block".into()]
     }
     fn invoke(&self, _: String, _: Value, cancellation: CancellationToken) -> ToolFuture {
-        let release = self.0.clone();
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        // The returned future owns the release source, independent of its observer.
+        let release = self.release.clone().notified_owned();
         Box::pin(async move {
-            tokio::select! { _ = release.notified() => {}, _ = cancellation.cancelled() => {} }
+            tokio::select! { _ = release => {}, _ = cancellation.cancelled() => {} }
             Ok(json!({"settled":true}))
         })
     }
 }
-
-async fn invoke(
-    log: &EventLog,
-    run: &RunTools,
-    invocation: &Invocation,
-    step: &str,
-    name: &str,
-    input: Value,
-) -> Value {
-    invoke_result(log, run, invocation, step, name, input)
+fn catalog(block: Arc<Block>) -> ToolCatalog {
+    ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            freeform: None,
+            output_schema: None,
+            provider: None,
+            name: "block".into(),
+            description: "wait".into(),
+            input_schema: json!({"type":"object"}),
+        },
+        handler: ToolHandler::Immediate(block),
+        nesting: ToolNesting::Nestable,
+        semantics: ToolSemantics::Parallel,
+    }])
+    .unwrap()
+}
+async fn start(
+    cells: &CodeCells,
+    port: Arc<Standalone>,
+    catalog: ToolCatalog,
+    source: String,
+) -> CellId {
+    let admission = CellAdmission::new(source, port.owner(), port.now());
+    cells
+        .start_cell(&admission, catalog, port, CancellationToken::new())
         .await
         .unwrap()
 }
-
-async fn invoke_result(
-    log: &EventLog,
-    run: &RunTools,
-    invocation: &Invocation,
-    step: &str,
-    name: &str,
-    input: Value,
-) -> Result<Value, maka_agent_facts::tools::ToolError> {
-    let call = fixture::call(step, name, input);
-    log.append_batch(&[
-        EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ModelRequested {
-                source_capture: maka_agent_facts::event::SourceCapture {
-                    publication_watermark: 0,
-                    prior_unknown: false,
-                },
-                context_breakdown: None,
-                item_acceptance: false,
-                step_id: step.into(),
-                model_id: "fixture".into(),
-                source_scope: maka_agent_facts::event::LogScope::Root,
-                source_high_water: 0,
-                source_digest: String::new(),
-                effective_source_digest: None,
-                input_digest: String::new(),
-                route_identity: String::new(),
-                checkpoint_event_id: None,
-                purpose: maka_agent_facts::context::ModelPurpose::Main,
-                context: None,
-            },
-        ))
-        .unwrap(),
-        EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ModelCompleted {
-                step_id: step.into(),
-                output: fixture::completion(invocation, step, std::slice::from_ref(&call)),
-            },
-        ))
-        .unwrap(),
-    ])
-    .await
-    .unwrap();
-    run.capture(".", CancellationToken::new())
-        .await
-        .unwrap()
-        .into_step(step)
-        .prepare(call, CancellationToken::new())
-        .await?
-        .publish(&[])
-        .await?
-        .start()
-        .await
+fn text_outputs(outputs: &[CellOutput]) -> Vec<&str> {
+    outputs
+        .iter()
+        .map(|output| match output {
+            CellOutput::Text { text } => text.as_str(),
+            _ => panic!("expected text output"),
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run_end() {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        let log = Arc::new(EventLog::open(&path).await.unwrap());
-        let invocation = fixture::invocation("cells");
-        log.create_session(&invocation.session_id, "create", &json!({}), 1).await.unwrap();
-        fixture::accepted(&log, &invocation, &[]).await;
-        let release = Arc::new(Notify::new());
-        let catalog = ToolCatalog::new([ToolRegistration {
-            definition:ToolDefinition { freeform: None, output_schema: None, provider:None,name:"block".into(),description:"wait".into(),input_schema:json!({"type":"object"}) },
-            handler:ToolHandler::Immediate(Arc::new(Block(release.clone()))),nesting:ToolNesting::Nestable,semantics:ToolSemantics::Parallel,
-        }]).unwrap();
-        let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
-        let run = RunTools::new(maka_agent_facts::language::Language::En, log.clone(), invocation.clone(), catalog, ToolMode::CodeMode, CodeExecutor::new(CellLimits::default()).unwrap(), loaded.clone());
-        let first = invoke(&log, &run, &invocation, "first", "exec", json!("// @exec: {\"yield_time_ms\":1000,\"max_output_tokens\":1000}\ntext('early'); await yield_control(); await tools.block({}); text('late'); store('n',42);")).await;
-        assert_eq!(first["state"], "running");
-        assert_eq!(first["content"], json!([{"kind":"text","text":"early"}]));
-        let cell_id = first["cell_id"].as_str().unwrap();
-        assert!(log.append(&maka_agent_facts::event::EventWrite::plain(maka_agent_facts::event::RuntimeEvent::new(invocation.clone(), Fact::ToolNotified {
-            operation_id: "first:first".into(), text: "forged".into(), model_text: "forged".into(),
-        })).unwrap()).await.is_err(), "only the cell, not its exec control, owns notifications");
-        let prefix = log.prefix(100, 1024*1024).await.unwrap();
-        assert!(prefix.events.iter().any(|e| matches!(&e.event.fact, Fact::ToolDispatched {operation_id,call,..}
-            if operation_id==cell_id && matches!(&call.origin,ToolOrigin::CodeCell{parent_operation_id,..} if parent_operation_id=="first:first"))));
-        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.contains(&cell_id.to_string()));
-        release.notify_one();
-        let last = invoke(&log,&run,&invocation,"observe","wait",json!({"cell_id":cell_id,"max_tokens":1000})).await;
-        assert_eq!(last["state"],"completed");
-        assert!(log.append(&maka_agent_facts::event::EventWrite::plain(maka_agent_facts::event::RuntimeEvent::new(invocation.clone(), Fact::ToolNotified {
-            operation_id: cell_id.into(), text: "late".into(), model_text: "late".into(),
-        })).unwrap()).await.is_err(), "settled cells cannot inject notifications");
-        assert_eq!(last["result"]["value"],Value::Null);
-        assert_eq!(last["content"],json!([{"kind":"text","text":"late"}]));
-        loaded.clear().unwrap();
-        let next = invoke(&log,&run,&invocation,"next","exec",json!({"code":format!("const complete_source = {}; text(load('n'));", serde_json::to_string(&"甲".repeat(24_000)).unwrap())})).await;
-        assert_eq!(next["content"][0]["text"],"42");
-        let stopping = invoke(&log,&run,&invocation,"stopping","exec",json!({"code":"notify('stoppable'); await yield_control(); await tools.block({});"})).await;
-        assert_eq!(stopping["state"],"running");
-        let stopped = invoke(&log,&run,&invocation,"terminate","wait",json!({"cell_id":stopping["cell_id"],"terminate":true})).await;
-        assert_eq!(stopped["state"],"terminated");
-        assert_eq!(stopped["content"],json!([]), "termination must not repeat previously observed output");
-        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
-        let unfinished = invoke(&log,&run,&invocation,"unfinished","exec",json!({"code":"notify('pending'); await yield_control(); await tools.block({});"})).await;
-        assert_eq!(unfinished["state"],"running");
-        run.shutdown().await.unwrap();
-        assert!(log.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
-        let fence = log.prefix(100,1024*1024).await.unwrap().high_water;
-        let headers = log.transcript_headers(&invocation.session_id, &maka_event_log::transcript::TranscriptRead {
-            through: fence, position: None, direction: maka_event_log::transcript::TranscriptDirection::Older, limit: 8,
-        }).await.unwrap();
-        let mut result = false;
-        for header in headers {
-            let bytes = log.transcript_fragment(&invocation.session_id, header.position, 0, header.total_bytes).await.unwrap();
-            let row: Value = serde_json::from_slice(&bytes).unwrap();
-            result |= row["type"] == "tool_result";
+        let root = Fixture::open(directory.path(), "cells").await;
+        let port = root.port();
+        let block = Arc::new(Block::default());
+        let catalog = catalog(block.clone());
+        let cells = root.cells(CodeExecutor::new(CellLimits::default()).unwrap());
+        let first = start(&cells, port.clone(), catalog.clone(), "text('early'); await yield_control(); await tools.block({}); text('late'); store('n',42);".into()).await;
+        let early = observe(&cells, first, false, port.clone()).await;
+        assert_eq!(early.state, CellReplyState::Running);
+        assert_eq!(text_outputs(early.display()), ["early"]);
+        block.entered.notified().await;
+        let forged = CellContent::json(&CellNotification {schema_version: CELL_NOTIFICATION_SCHEMA_VERSION, body: CellNotificationBody::Text {text: "forged".into()}}).unwrap();
+        assert!(port.append(vec![CellChange::new(CellEvent::NotificationQueued {cell: CellId::new(), notification: FactId::new(), content: forged.reference.clone()}, port.now())], vec![forged]).await.is_err(), "a notification requires its actual original Cell source");
+        let running = port.read(first).await.unwrap().unwrap();
+        assert_eq!(running.owner, port.owner());
+        assert!(running.pending());
+        let operation = *running.children.keys().next().unwrap();
+        let source = root.events().await;
+        let bound = source.iter().find(|entry| matches!(entry.event.event, CellEvent::VmBound {cell, ..} if cell == first)).unwrap().sequence;
+        let prepared = source.iter().find(|entry| matches!(entry.event.event, CellEvent::ChildPrepared {cell, operation: op, ..} if cell == first && op == operation)).unwrap().sequence;
+        let admitted = source.iter().find(|entry| matches!(entry.event.event, CellEvent::ChildAdmitted {cell, operation: op} if cell == first && op == operation)).unwrap().sequence;
+        assert!(bound < prepared && prepared < admitted, "the actual child remains linked to its original VM and Cell before effects");
+        block.release.notify_one();
+        let late = observe(&cells, first, false, port.clone()).await;
+        assert!(matches!(late.state, CellReplyState::Completed {..}));
+        assert_eq!(text_outputs(late.display()), ["late"], "a live observer sees only its new display delta");
+        let CellObservation::Completed {content, result, ..} = &late.observation else { panic!("original completion missing") };
+        assert_eq!(text_outputs(content), ["early", "late"], "the canonical result remains complete independently of display deltas");
+        assert_eq!(result["value"], Value::Null);
+        let CellReplyState::Completed {result: original} = late.state else {unreachable!()};
+        let canonical: CellObservation = port.raw(first, original.clone()).await;
+        assert_eq!(serde_json::to_value(canonical).unwrap(), serde_json::to_value(late.observation).unwrap());
+        let complete_source = format!("const complete_source = {}; text(load('n'));", serde_json::to_string(&"甲".repeat(24_000)).unwrap());
+        let next = start(&cells, port.clone(), catalog.clone(), complete_source.clone()).await;
+        let next_output = observe(&cells, next, false, port.clone()).await;
+        assert_eq!(text_outputs(next_output.display()), ["42"]);
+        let next_view = port.read(next).await.unwrap().unwrap();
+        assert_eq!(port.content(next, next_view.source).await.unwrap(), complete_source.as_bytes());
+        let stopping = start(&cells, port.clone(), catalog.clone(), "notify('stoppable'); await yield_control(); await tools.block({});".into()).await;
+        block.entered.notified().await;
+        assert_eq!(observe(&cells, stopping, false, port.clone()).await.state, CellReplyState::Running);
+        let stopped = observe(&cells, stopping, true, port.clone()).await;
+        assert!(matches!(stopped.state, CellReplyState::Interrupted {..}));
+        assert!(stopped.display().is_empty(), "termination must not repeat previously observed output");
+        let unfinished = start(&cells, port.clone(), catalog, "notify('pending'); await yield_control(); await tools.block({});".into()).await;
+        block.entered.notified().await;
+        assert_eq!(observe(&cells, unfinished, false, port.clone()).await.state, CellReplyState::Running);
+        cells.shutdown().await.unwrap();
+        root.settle().await;
+        for id in [first, next, stopping, unfinished] {
+            let view = port.read(id).await.unwrap().unwrap();
+            assert!(!view.pending());
+            assert!(view.physical_cleanup_confirmed());
         }
-        assert!(result, "nested cells remain renderable after their control call settles");
-        drop(run);
-        fixture::close(log).await;
-        let reopened = EventLog::open(&path).await.unwrap();
-        assert!(reopened.invocation_recovery(&invocation).await.unwrap().uncertain_operations.is_empty());
-        reopened.close().await.unwrap();
+        let source = root.events().await;
+        let mut notices = Vec::new();
+        for entry in &source {
+            if let CellEvent::NotificationQueued {cell, content, ..} = &entry.event.event {
+                let notice: CellNotification = port.raw(*cell, content.clone()).await;
+                let CellNotificationBody::Text {text} = notice.body else {panic!("unexpected notification source")};
+                notices.push((*cell, text));
+            }
+        }
+        assert_eq!(notices, [(stopping, "stoppable".into()), (unfinished, "pending".into())]);
+        assert_eq!(block.calls.load(Ordering::SeqCst), 3);
+        drop(cells); drop(port);
+        root.close().await;
+        let reopened = Fixture::open(directory.path(), "cells").await;
+        let port = reopened.port();
+        let recovered: CellObservation = port.raw(first, original).await;
+        let CellObservation::Completed {content, ..} = recovered else {panic!("original source is not renderable")};
+        assert_eq!(text_outputs(&content), ["early", "late"]);
+        for id in [first, next, stopping, unfinished] {assert!(!port.read(id).await.unwrap().unwrap().pending());}
+        assert_eq!(reopened.events().await.len(), source.len(), "reading original reports cannot publish or repeat notifications");
+        drop(port);
+        reopened.close().await;
     }).await.expect("Code Mode observation and shutdown must not hang");
 }
 
 #[tokio::test]
 async fn a_throwing_cell_settles_as_an_error_result() {
     let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap(),
-    );
-    let invocation = fixture::invocation("throwing");
-    log.create_session(&invocation.session_id, "create", &json!({}), 1)
-        .await
-        .unwrap();
-    fixture::accepted(&log, &invocation, &[]).await;
-    let catalog = ToolCatalog::new([]).unwrap();
-    let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
-    let run = RunTools::new(
-        maka_agent_facts::language::Language::En,
-        log.clone(),
-        invocation.clone(),
-        catalog,
-        ToolMode::CodeMode,
-        CodeExecutor::new(CellLimits::default()).unwrap(),
-        loaded.clone(),
-    );
-    let thrown = invoke(
-        &log,
-        &run,
-        &invocation,
-        "throw",
-        "exec",
-        json!({"code":"throw new Error('boom');"}),
+    let root = Fixture::open(directory.path(), "throwing").await;
+    let port = root.port();
+    let cells = root.cells(CodeExecutor::new(CellLimits::default()).unwrap());
+    let cell = start(
+        &cells,
+        port.clone(),
+        ToolCatalog::default(),
+        "throw new Error('boom');".into(),
     )
     .await;
-    assert_eq!(thrown["result"]["ok"], false);
-    run.shutdown().await.unwrap();
-    let fence = log.prefix(100, 1024 * 1024).await.unwrap().high_water;
-    let headers = log
-        .transcript_headers(
-            &invocation.session_id,
-            &maka_event_log::transcript::TranscriptRead {
-                through: fence,
-                position: None,
-                direction: maka_event_log::transcript::TranscriptDirection::Older,
-                limit: 8,
-            },
-        )
-        .await
-        .unwrap();
-    let mut errors = Vec::new();
-    for header in headers {
-        let bytes = log
-            .transcript_fragment(
-                &invocation.session_id,
-                header.position,
-                0,
-                header.total_bytes,
-            )
-            .await
-            .unwrap();
-        let row: Value = serde_json::from_slice(&bytes).unwrap();
-        if row["type"] == "tool_result" {
-            errors.push(row["isError"].clone());
-        }
-    }
+    let observed = observe(&cells, cell, false, port.clone()).await;
+    let CellReplyState::Interrupted { report } = &observed.state else {
+        panic!("throwing Cell did not record an error")
+    };
+    let canonical: CellInterruption = port.raw(cell, report.clone()).await;
+    assert!(canonical.diagnostic.contains("boom"));
     assert_eq!(
-        errors,
-        [true, true],
-        "both the exec call and its cell report the failure"
+        serde_json::from_str::<Value>(&canonical.diagnostic).unwrap()["ok"],
+        false
     );
-    loaded.clear().unwrap();
-    drop(run);
-    fixture::close(log).await;
+    let normalized = CodeCells::project_observation(cell, observed, 1000)
+        .into_durable("throw-observation", SystemTime::now(), &root.execution)
+        .unwrap();
+    assert!(
+        normalized.is_error,
+        "both the canonical Cell and its model-visible observation report failure"
+    );
+    let ToolOutput::Cell(reply) = normalized.output else {
+        panic!("Cell observation lost its typed evidence")
+    };
+    assert_eq!(
+        reply.observation["report"]["diagnostic"],
+        canonical.diagnostic
+    );
+    cells.shutdown().await.unwrap();
+    assert!(!port.read(cell).await.unwrap().unwrap().pending());
+    drop(cells);
+    drop(port);
+    root.close().await;
 }
 
 #[tokio::test]
 async fn collected_cell_recovery_uses_the_original_run_language_and_keeps_user_output() {
-    use maka_agent_facts::{language::Language, tools::ToolError};
-    for (language, unavailable, caution) in [
-        (
-            Language::En,
-            "cell is unavailable",
-            "do not repeat effects blindly",
-        ),
-        (Language::ZhCn, "代码单元不可用", "请勿盲目重复执行"),
-        (Language::ZhTw, "程式碼單元無法使用", "請勿盲目重複執行"),
-    ] {
+    for language in ["en", "zh-CN", "zh-TW"] {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            EventLog::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        let invocation = fixture::invocation("collected-cell-language");
-        log.create_session(&invocation.session_id, "create", &json!({}), 1)
-            .await
-            .unwrap();
-        fixture::accepted(&log, &invocation, &[]).await;
-        let run = RunTools::new(
-            language,
-            log.clone(),
-            invocation.clone(),
-            ToolCatalog::default(),
-            ToolMode::CodeMode,
-            CodeExecutor::new(CellLimits::default()).unwrap(),
-            maka_tools::availability::LoadedTools::temporary().unwrap(),
-        );
-        let finished = invoke(
-            &log,
-            &run,
-            &invocation,
-            "execute",
-            "exec",
-            json!({"code":"text('original 用户資料');"}),
+        let root = Fixture::open(directory.path(), language).await;
+        let port = root.port();
+        let block = Arc::new(Block::default());
+        block.release.notify_one();
+        let cells = root.cells(CodeExecutor::new(CellLimits::default()).unwrap());
+        let cell = start(
+            &cells,
+            port.clone(),
+            catalog(block.clone()),
+            "await tools.block({}); text('original 用户資料');".into(),
         )
         .await;
-        let missing = invoke_result(
-            &log,
-            &run,
-            &invocation,
-            "observe-collected",
-            "wait",
-            json!({"cell_id":finished["cell_id"]}),
-        )
-        .await;
-        run.shutdown().await.unwrap();
-        drop(run);
-        fixture::close(log).await;
-        assert_eq!(finished["state"], "completed");
+        let finished = observe(&cells, cell, false, port.clone()).await;
+        assert!(matches!(finished.state, CellReplyState::Completed { .. }));
+        assert_eq!(text_outputs(finished.display()), ["original 用户資料"]);
+        let original = serde_json::to_value(&finished.observation).unwrap();
+        cells.shutdown().await.unwrap();
+        drop(cells);
+        let source_count = root.events().await.len();
+        // Heap collection and a different current interpreter do not invalidate a recorded report.
+        let cold = root.cells(
+            CodeExecutor::new(CellLimits::default())
+                .unwrap()
+                .with_language(CodeLanguage::Python),
+        );
+        let recovered = observe(&cold, cell, false, port.clone()).await;
+        assert_eq!(recovered.state, finished.state);
         assert_eq!(
-            finished["content"],
-            json!([{"kind":"text","text":"original 用户資料"}])
+            serde_json::to_value(&recovered.observation).unwrap(),
+            original
         );
-        let Err(ToolError::Failed(message)) = missing else {
-            panic!("waiting on the actually collected cell must fail")
-        };
+        assert_eq!(text_outputs(recovered.display()), ["original 用户資料"]);
+        let missing = cold
+            .observe_cell(
+                CellId::new(),
+                Duration::ZERO,
+                false,
+                port.clone(),
+                CancellationToken::new(),
+                CancellationToken::new(),
+            )
+            .await;
         assert!(
-            message.starts_with(unavailable),
-            "missing-cell recovery language differs: {message}"
+            matches!(missing, Err(maka_agent_facts::tools::ToolError::Failed(message)) if message.contains("not recorded"))
         );
-        assert!(
-            message.contains(caution),
-            "missing-cell recovery must warn against duplicate effects: {message}"
+        assert_eq!(root.events().await.len(), source_count);
+        assert_eq!(
+            block.calls.load(Ordering::SeqCst),
+            1,
+            "neither cold observation nor absence replays the original child"
         );
+        cold.shutdown().await.unwrap();
+        drop(cold);
+        drop(port);
+        root.close().await;
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cells_accept_concurrent_work_and_honor_the_requested_output_budget() {
     let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap(),
-    );
-    let invocation = fixture::invocation("many-cells");
-    log.create_session(&invocation.session_id, "create", &json!({}), 1)
-        .await
-        .unwrap();
-    fixture::accepted(&log, &invocation, &[]).await;
-    let catalog = ToolCatalog::new([ToolRegistration {
-        definition: ToolDefinition {
-            name: "block".into(),
-            description: "wait".into(),
-            input_schema: json!({"type":"object"}),
-            freeform: None,
-            output_schema: None,
-            provider: None,
-        },
-        handler: ToolHandler::Immediate(Arc::new(Block(Arc::new(Notify::new())))),
-        nesting: ToolNesting::Nestable,
-        semantics: ToolSemantics::Parallel,
-    }])
-    .unwrap();
-    let run = RunTools::new(
-        maka_agent_facts::language::Language::En,
-        log.clone(),
-        invocation.clone(),
-        catalog,
-        ToolMode::CodeMode,
-        CodeExecutor::new(CellLimits::default()).unwrap(),
-        maka_tools::availability::LoadedTools::temporary().unwrap(),
-    );
+    let root = Fixture::open(directory.path(), "many-cells").await;
+    let port = root.port();
+    let block = Arc::new(Block::default());
+    let catalog = catalog(block.clone());
+    let cells = root.cells(CodeExecutor::new(CellLimits::default()).unwrap());
+    let expected = "x".repeat(140 * 1024);
+    let mut originals = Vec::new();
     for index in 0..5 {
-        let result = invoke(&log, &run, &invocation, &format!("cell-{index}"), "exec", json!({
-            "code": "text('x'.repeat(140 * 1024)); await yield_control(); await tools.block({});",
-            "max_output_tokens": 50_000,
-        })).await;
-        assert_eq!(result["state"], "running");
-        assert_eq!(
-            result["content"][0]["text"].as_str().unwrap(),
-            "x".repeat(140 * 1024)
-        );
+        let cell = start(
+            &cells,
+            port.clone(),
+            catalog.clone(),
+            "text('x'.repeat(140 * 1024)); await yield_control(); await tools.block({});".into(),
+        )
+        .await;
+        block.entered.notified().await;
+        let observed = observe(&cells, cell, false, port.clone()).await;
+        assert_eq!(observed.state, CellReplyState::Running);
+        assert_eq!(text_outputs(observed.display()), [expected.as_str()]);
+        let normalized = CodeCells::project_observation(cell, observed, 50_000)
+            .into_durable(
+                &format!("observe-{index}"),
+                SystemTime::now(),
+                &root.execution,
+            )
+            .unwrap();
+        let DurableToolProjection::Content { parts } = normalized.projection else {
+            panic!("model-facing Cell output lost its requested budget projection")
+        };
+        assert!(matches!(parts.last(), Some(ProjectionPart::Text {text}) if text == &expected));
+        let ToolOutput::Cell(reply) = normalized.output else {
+            panic!("full raw observation missing")
+        };
+        assert_eq!(reply.observation["content"][0]["text"], expected);
+        originals.push(cell);
     }
-    let history = log.prefix(128, 4 * 1024 * 1024).await.unwrap();
-    let complete = history.events.iter().filter(|stored| matches!(
-        &stored.event.fact,
-        Fact::ToolSettled { outcome: maka_agent_facts::event::ToolOutcome::Succeeded {
-            model_projection: maka_agent_facts::tool_output::DurableToolProjection::Text { text }, ..
-        }, .. } if text.ends_with(&"x".repeat(140 * 1024))
-    )).count();
+    assert_eq!(
+        block.calls.load(Ordering::SeqCst),
+        5,
+        "five distinct actual child effects coexist"
+    );
+    cells.shutdown().await.unwrap();
+    root.settle().await;
+    let source = root.events().await;
+    let mut complete = 0;
+    for cell in originals {
+        let view = port.read(cell).await.unwrap().unwrap();
+        assert!(!view.pending());
+        assert!(view.physical_cleanup_confirmed());
+        let CellStatus::Interrupted { report } = view.status else {
+            panic!("unfinished Cell has no original interruption evidence")
+        };
+        let report: CellInterruption = port.raw(cell, report).await;
+        assert_eq!(
+            text_outputs(&report.prior_output.unwrap().content),
+            [expected.as_str()]
+        );
+        complete += source.iter().filter(|entry| matches!(entry.event.event, CellEvent::Interrupted {cell: id, ..} if id == cell)).count();
+    }
     assert_eq!(
         complete, 5,
-        "each model-visible observation retains the requested output"
+        "each original source retains the complete previously observed output"
     );
-    run.shutdown().await.unwrap();
-    assert!(
-        log.invocation_recovery(&invocation)
-            .await
-            .unwrap()
-            .uncertain_operations
-            .is_empty()
-    );
-    drop(run);
-    fixture::close(log).await;
+    drop(cells);
+    drop(port);
+    root.close().await;
 }

@@ -159,24 +159,11 @@ async function main(args) {
     return;
   }
   if (action === 'replay') {
-    mkdirSync(join(root, 'target/tmp'), { recursive: true });
-    await command(
-      'cargo',
-      [
-        'nextest',
-        'run',
-        '--archive-file',
-        join(temporary, `root-tests-${rest[0]}.tar.zst`),
-        '--extract-to',
-        root,
-        '--extract-overwrite',
-        '--profile',
-        'ci',
-        '--partition',
-        rest[1],
-        ...rest.slice(2),
-      ],
-      { cwd: root },
+    await executor(root).replay(
+      join(temporary, `root-tests-${rest[0]}.tar.zst`),
+      root,
+      JSON.parse(rest[2]),
+      ['--profile', 'ci', '--partition', rest[1], ...rest.slice(3)],
     );
     return;
   }

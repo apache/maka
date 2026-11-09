@@ -142,7 +142,8 @@ async fn scenario() {
             .stream_in_conversation(input, CancellationToken::new(), lane.clone())
             .await
             .unwrap();
-        let mut builder = StepBuilder::for_step("native-search").unwrap();
+        let step_id = maka_agent_facts::durable::StepId::new();
+        let mut builder = StepBuilder::for_step(step_id).unwrap();
         while let Some(event) = stream.next().await {
             builder.push(event.unwrap().event).unwrap();
         }

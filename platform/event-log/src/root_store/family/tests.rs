@@ -18,8 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::session::CopyPurpose;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn owner(path: &std::path::Path) -> Arc<root::RootOwner> {
     Arc::new(
@@ -33,18 +32,10 @@ fn owner(path: &std::path::Path) -> Arc<root::RootOwner> {
         .unwrap(),
     )
 }
-fn copy(source: &str, target: &str, purpose: CopyPurpose) -> SessionCopy {
-    SessionCopy {
-        source_session_id: source.into(),
-        target_session_id: target.into(),
-        expected_source_revision: 1,
-        purpose,
-    }
-}
 fn origin(id: &str, authority: Option<&str>) -> PluginSession {
     PluginSession {
         session_id: id.into(),
-        creator: maka_capabilities::storage::Namespace::new(
+        creator: maka_plugin_core::storage::Namespace::new(
             "test",
             maka_plugin_core::scope::Scope::try_from("profile".to_owned()).unwrap(),
         )
@@ -56,121 +47,165 @@ fn origin(id: &str, authority: Option<&str>) -> PluginSession {
 }
 
 #[tokio::test]
-async fn copy_and_authority_inherit_source_instead_of_target_hash() {
+async fn history_metadata_does_not_supply_management_authority_or_reparent_dependencies() {
+    use crate::sessions::{RemovalAuthority, RemoveFamilyResult};
     let directory = tempfile::tempdir().unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    store
+        .create_session("parent", "parent", &json!({}), 1)
+        .await
+        .unwrap();
+    let mut managed = origin("managed", None);
+    managed.managed = true;
+    store
+        .create_plugin_session(&managed, &json!({}), 1)
+        .await
+        .unwrap();
+    let revision = origin("revision", Some("parent"));
+    store
+        .create_plugin_session(
+            &revision,
+            &json!({"historySource":"managed","parentSessionId":"managed"}),
+            2,
+        )
+        .await
+        .unwrap();
+    let managed_before = store
+        .get_session::<Value>("managed")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        store
+            .remove_session_family(
+                "managed",
+                managed_before.revision,
+                RemovalAuthority::Granted {
+                    namespace: revision.creator.clone(),
+                    sessions: ["revision".into()].into_iter().collect()
+                }
+            )
+            .await,
+        Err(StoreError::SessionConflict)
+    ));
+    assert_eq!(
+        store.get_session::<Value>("managed").await.unwrap(),
+        Some(managed_before.clone())
+    );
+    let expected = store
+        .get_session::<Value>("parent")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let RemoveFamilyResult::Accepted(plan) = store
+        .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
+        .await
+        .unwrap()
+    else {
+        panic!("original Root lifecycle dependency");
+    };
+    assert_eq!(plan.remove, ["parent"]);
+    assert_eq!(plan.archive, ["revision"]);
+    assert_eq!(
+        store.get_session::<Value>("managed").await.unwrap(),
+        Some(managed_before)
+    );
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn creation_authority_uses_source_instead_of_target_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     store
         .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
     let targets: Vec<String> = (0..3).map(|index| format!("target-{index}")).collect();
-    for (target, purpose) in targets.iter().zip([
-        CopyPurpose::Branch {
-            position: maka_agent_facts::session::ForkPosition::End,
-            side_conversation: false,
-        },
-        CopyPurpose::EmptySideConversation,
-    ]) {
-        assert!(matches!(
-            store
-                .copy_session(copy("source", target, purpose), &json!({}), 2)
-                .await
-                .unwrap(),
-            SessionCopyResult::Committed(_)
-        ));
+    for target in &targets {
+        store
+            .create_plugin_session(&origin(target, Some("source")), &json!({}), 2)
+            .await
+            .unwrap();
     }
-    store
-        .create_plugin_session(&origin(&targets[2], Some("source")), &json!({}), 2)
-        .await
-        .unwrap();
-    let authority = store.log.preview_bundle("source").await.unwrap();
-    assert_eq!(authority.sessions.len(), 4);
+    let authority = store.preview_session_removal("source").await.unwrap();
+    assert_eq!(authority.remove, ["source"]);
+    assert_eq!(authority.archive, targets);
     store.close().await.unwrap();
-}
-
-async fn exported() -> Vec<u8> {
-    exported_from("bundle-root").await
-}
-
-async fn exported_from(root: &str) -> Vec<u8> {
-    let directory = tempfile::tempdir().unwrap();
-    let source = EventLog::open(&directory.path().join("source.sqlite"))
-        .await
-        .unwrap();
-    source
-        .create_session("bundle-root", "bundle-root", &json!({}), 1)
-        .await
-        .unwrap();
-    source
-        .copy_session(
-            copy(
-                "bundle-root",
-                "bundle-child",
-                CopyPurpose::EmptySideConversation,
-            ),
-            &json!({}),
-            2,
-        )
-        .await
-        .unwrap();
-    let inventory = source.preview_bundle(root).await.unwrap();
-    let (bytes, _) = source
-        .export_bundle(root, &inventory.subtree_digest, Vec::new())
-        .await
-        .unwrap();
-    source.close().await.unwrap();
-    bytes
 }
 
 #[tokio::test]
-async fn durable_bundle_pending_reservation_recovers_all_members() {
-    let bytes = exported().await;
+async fn pending_family_reservation_reopens_with_one_original_terminal_rejection() {
     let directory = tempfile::tempdir().unwrap();
     let owner = owner(directory.path());
-    let store = RootStore::open(owner.clone()).await.unwrap();
-    let mut staged = crate::bundle::StagedBundle::read(bytes.as_slice())
+    let store = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
-    staged.validate_history().await.unwrap();
-    let members = staged.family_members().await.unwrap();
-    let stage = uuid::Uuid::new_v4().to_string();
-    let directory = owner.canonical_path().join("runtime-stages");
-    root::private_directory(&directory).unwrap();
-    let path = stage_path(&directory, &stage).unwrap();
-    let digest = staged.summary().digest.clone();
-    staged
-        .persist(&path, store.stage_owner().unwrap())
-        .await
-        .unwrap();
-    let binding = maka_agent_facts::artifact::content_digest(b"binding");
-    let command = Creation::Bundle {
-        stage,
-        digest,
-        binding: binding.clone(),
-        configurations: std::collections::BTreeMap::from([
-            ("bundle-root".into(), json!({})),
-            ("bundle-child".into(), json!({})),
-        ]),
-        members: members.clone(),
+    let reference = maka_sandbox::workspace::BindingRef {
+        id: uuid::Uuid::new_v4(),
+        permission_epoch_at_attach: 0,
+        metadata_epoch_at_attach: 0,
+    };
+    let claim = origin("family-root", None);
+    let command = Creation::Plugin {
+        origin: (&claim).into(),
+        configuration: json!({"workspace":reference,"boundary_revision":0}),
+        created_at: 2,
     };
     store
-        .reserve_family("bundle-root", &binding, command, members)
+        .reserve_family(
+            "family-root",
+            &claim.fingerprint,
+            command,
+            vec!["family-root".into(), "family-child".into()],
+        )
         .await
         .unwrap();
     assert!(matches!(
-        store.session("bundle-child").await,
+        store.session("family-child").await,
         Err(StoreError::SessionNotFound)
     ));
+    assert!(
+        store
+            .log
+            .get_session::<Value>("family-root")
+            .await
+            .unwrap()
+            .is_none()
+    );
     store.close().await.unwrap();
-    let store = RootStore::open(owner).await.unwrap();
-    assert!(!path.exists());
+    let store = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    for id in ["family-root", "family-child"] {
+        assert!(matches!(
+            store.session(id).await,
+            Err(StoreError::SessionNotFound)
+        ));
+        assert!(matches!(
+            store
+                .probe_session_create::<Value>(id, &claim.fingerprint)
+                .await,
+            Err(StoreError::SessionCreationRejected(
+                CreationRejection::MissingWorkspaceBinding
+            ))
+        ));
+        assert!(store.log.get_session::<Value>(id).await.unwrap().is_none());
+    }
     store.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn atomic_family_reservation_cannot_leave_partial_members() {
     let directory = tempfile::tempdir().unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     store
         .create_session("occupied", "occupied", &json!({}), 1)
         .await
@@ -195,21 +230,22 @@ async fn atomic_family_reservation_cannot_leave_partial_members() {
 #[tokio::test]
 async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
     let directory = tempfile::tempdir().unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
-    store
-        .create_session("source", "source", &json!({}), 1)
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
-    let mut request = copy("source", "rejected", CopyPurpose::EmptySideConversation);
-    request.expected_source_revision = 2;
-    let command = Creation::Copy {
-        request: request.clone(),
-        origin: None,
+    let claim = origin("rejected", Some("source"));
+    let command = Creation::Plugin {
+        origin: (&claim).into(),
         configuration: json!({}),
         created_at: 2,
     };
     let command = store
-        .reserve_family("rejected", "copy", command, vec!["rejected".into()])
+        .reserve_family(
+            "rejected",
+            &claim.fingerprint,
+            command,
+            vec!["rejected".into()],
+        )
         .await
         .unwrap();
     let creation = store
@@ -218,23 +254,12 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         .await
         .unwrap();
     let rejection = commit(&store, &store.log, command).await.unwrap();
-    assert!(matches!(
-        rejection,
-        Some(CreationRejection::SourceRevisionConflict { actual: 1, .. })
-    ));
-    let mut probe = Box::pin(store.session_copy_receipt("rejected"));
+    assert_eq!(rejection, Some(CreationRejection::MissingDependency));
+    let mut probe = Box::pin(store.probe_session_create::<Value>("rejected", &claim.fingerprint));
     assert!(futures_util::poll!(&mut probe).is_pending());
-    // The immutable request would succeed now, but its original rejection wins.
+    // The same immutable command could now succeed, but its original rejection wins.
     store
-        .log
-        .connection
-        .run(|db| {
-            db.execute(
-                "UPDATE session_control SET revision=2 WHERE id='source'",
-                rusqlite::params![],
-            )?;
-            Ok(())
-        })
+        .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
     store
@@ -253,19 +278,20 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
     assert!(matches!(
         probe.await,
         Err(StoreError::SessionCreationRejected(
-            CreationRejection::SourceRevisionConflict { actual: 1, .. }
+            CreationRejection::MissingDependency
         ))
     ));
-    let command = Creation::Copy {
-        request,
-        origin: None,
+    let command = Creation::Plugin {
+        origin: (&claim).into(),
         configuration: json!({}),
         created_at: 2,
     };
     assert!(matches!(
-        store.finish_creation("rejected", "copy", command).await,
+        store
+            .finish_creation("rejected", &claim.fingerprint, command)
+            .await,
         Err(StoreError::SessionCreationRejected(
-            CreationRejection::SourceRevisionConflict { actual: 1, .. }
+            CreationRejection::MissingDependency
         ))
     ));
     assert!(
@@ -280,117 +306,80 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
 }
 
 #[tokio::test]
-async fn every_family_missing_binding_rejects_and_reopens() {
-    use maka_agent_facts::import::{Content, Record, Source};
+async fn plugin_missing_binding_rejects_and_reopens() {
     let directory = tempfile::tempdir().unwrap();
     let owner = owner(directory.path());
-    let store = RootStore::open(owner.clone()).await.unwrap();
+    let store = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     store
         .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
-    let reference = maka_agent_facts::workspace::BindingRef {
+    let reference = maka_sandbox::workspace::BindingRef {
         id: uuid::Uuid::new_v4(),
         permission_epoch_at_attach: 0,
         metadata_epoch_at_attach: 0,
     };
-    let configuration = json!({"workspace": reference, "boundary_revision": 0});
-    let missing = |result: Result<SessionRecord<Value>, StoreError>| {
-        assert!(matches!(
-            result,
-            Err(StoreError::SessionCreationRejected(
-                CreationRejection::MissingWorkspaceBinding
-            ))
-        ));
-    };
-    missing(
-        store
-            .create_plugin_session(&origin("plugin", None), &configuration, 2)
-            .await,
-    );
+    let configuration = json!({"workspace":reference,"boundary_revision":0});
     assert!(matches!(
         store
-            .copy_session(
-                copy("source", "copy", CopyPurpose::EmptySideConversation),
-                &configuration,
-                2
-            )
+            .create_plugin_session(&origin("plugin", None), &configuration, 2)
             .await,
         Err(StoreError::SessionCreationRejected(
             CreationRejection::MissingWorkspaceBinding
         ))
     ));
-    missing(
-        store
-            .import_session(
-                &origin("import", None),
-                &Source {
-                    adapter: "test".into(),
-                    session_id: "foreign".into(),
-                },
-                &configuration,
-                vec![Record {
-                    source_message_id: "message".into(),
-                    source_turn_id: "turn".into(),
-                    timestamp: None,
-                    content: Content::User {
-                        text: "Hello".into(),
-                    },
-                }],
-                2,
-            )
-            .await,
-    );
-    let bytes = exported().await;
-    let staged = crate::bundle::StagedBundle::read(bytes.as_slice())
+    store.close().await.unwrap();
+    let store = RootStore::open(owner, crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
-    let fingerprint = maka_agent_facts::artifact::content_digest(b"binding");
     assert!(matches!(
-        store
-            .import_bundle(
-                staged,
-                &fingerprint,
-                std::collections::BTreeMap::from([
-                    ("bundle-root".into(), json!({})),
-                    ("bundle-child".into(), configuration)
-                ])
-            )
-            .await,
-        Err(crate::bundle::BundleError::Store(
-            StoreError::SessionCreationRejected(CreationRejection::MissingWorkspaceBinding)
-        ))
+        store.session("plugin").await,
+        Err(StoreError::SessionNotFound)
     ));
-    store.close().await.unwrap();
-    let store = RootStore::open(owner).await.unwrap();
-    for id in ["plugin", "copy", "import", "bundle-root", "bundle-child"] {
-        assert!(matches!(
-            store.session(id).await,
-            Err(StoreError::SessionNotFound)
-        ));
-    }
     assert!(store.session("source").await.is_ok());
     store.close().await.unwrap();
 }
 
-async fn creation_blocks_relocation(import: bool) {
+async fn creation_blocks_relocation() {
     use crate::projects::ProjectRegistration;
-    use maka_agent_facts::import::{Content, Record, Source};
     use std::time::Duration;
     let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(RootStore::open(owner(directory.path())).await.unwrap());
+    let store = Arc::new(
+        RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     let registration = |path: &str| ProjectRegistration {
         identity: format!("folder:{path}"),
         path: path.into(),
         name: "Project".into(),
         is_worktree: false,
     };
+    let old = directory.path().join("old");
+    let new = directory.path().join("new");
+    let mut workspaces = Vec::new();
+    for path in [&old, &new] {
+        std::fs::create_dir(path).unwrap();
+        workspaces.push(
+            store
+                .workspace(
+                    cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap(),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let fence = store.fence_workspaces(&workspaces).await.unwrap();
+    let old = old.to_str().unwrap();
+    let new = new.to_str().unwrap();
     let project = store
-        .register_project(registration("/old"), true, 1)
+        .register_project(registration(old), true, 1)
         .await
         .unwrap();
     let binding = store
-        .attach_workspace("owner", &json!({"projectId":project.id,"path":"/old"}))
+        .attach_workspace("owner", &json!({"projectId":project.id,"path":old}))
         .await
         .unwrap();
     let target = "pinned-target";
@@ -411,33 +400,10 @@ async fn creation_blocks_relocation(import: bool) {
     let creating = store.clone();
     let creation = tokio::spawn(async move {
         let configuration = json!({"workspace":binding,"boundary_revision":0});
-        if import {
-            creating
-                .import_session(
-                    &origin(target, None),
-                    &Source {
-                        adapter: "test".into(),
-                        session_id: "foreign".into(),
-                    },
-                    &configuration,
-                    vec![Record {
-                        source_message_id: "message".into(),
-                        source_turn_id: "turn".into(),
-                        timestamp: None,
-                        content: Content::User {
-                            text: "Hello".into(),
-                        },
-                    }],
-                    2,
-                )
-                .await
-                .map(|_| ())
-        } else {
-            creating
-                .create_session(target, "create", &configuration, 2)
-                .await
-                .map(|_| ())
-        }
+        creating
+            .create_session(target, "create", &configuration, 2)
+            .await
+            .map(|_| ())
     });
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -454,13 +420,14 @@ async fn creation_blocks_relocation(import: bool) {
     })
     .await
     .unwrap();
-    let selected = json!({"projectId":project.id,"path":"/new"});
+    let selected = json!({"projectId":project.id,"path":new});
     assert!(matches!(
         store
             .relink_project(
                 &project.id,
                 "owner",
-                registration("/new"),
+                &fence,
+                registration(new),
                 3,
                 selected.clone()
             )
@@ -486,7 +453,7 @@ async fn creation_blocks_relocation(import: bool) {
     .await
     .unwrap();
     store
-        .relink_project(&project.id, "owner", registration("/new"), 3, selected)
+        .relink_project(&project.id, "owner", &fence, registration(new), 3, selected)
         .await
         .unwrap();
     assert_eq!(
@@ -498,15 +465,11 @@ async fn creation_blocks_relocation(import: bool) {
             .permission_epoch,
         1
     );
+    drop(fence);
     store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn ordinary_creation_holds_destination_binding_against_relocation() {
-    creation_blocks_relocation(false).await;
-}
-
-#[tokio::test]
-async fn complete_import_holds_destination_binding_against_relocation() {
-    creation_blocks_relocation(true).await;
+    creation_blocks_relocation().await;
 }

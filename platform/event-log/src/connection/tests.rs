@@ -26,6 +26,123 @@ use tokio::sync::oneshot;
 const DEADLINE: Duration = Duration::from_secs(10);
 
 #[tokio::test]
+async fn committed_write_hints_ignore_rollback_and_include_ddl() {
+    use crate::writeback::{Notification, Prepared, Statement};
+
+    struct Sql {
+        ddl: bool,
+        rollback: bool,
+        changed: bool,
+    }
+    impl Statement for Sql {
+        type Value = ();
+        type Output = ();
+        fn execute(self, db: &Connection) -> Result<Prepared<()>, crate::StoreError> {
+            if self.ddl {
+                db.execute_batch("CREATE TABLE committed_ddl(value INTEGER)")?;
+            } else {
+                db.execute("INSERT INTO results(value) VALUES(1)", [])?;
+            }
+            if self.rollback {
+                return Err(crate::StoreError::InvalidTransition(
+                    "reject after insert".into(),
+                ));
+            }
+            Ok(Prepared {
+                value: (),
+                changed: self.changed,
+                notification: Notification::METADATA,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &crate::StoreError) -> bool {
+            false
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let owner = open(directory.path()).await;
+    let mut changes = owner.subscribe_changes();
+    changes.borrow_and_update();
+    let commits = crate::commits::CommitHub::new(0).notice();
+    assert!(
+        owner
+            .write(
+                Sql {
+                    ddl: false,
+                    rollback: true,
+                    changed: true
+                },
+                commits.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert!(!changes.has_changed().unwrap());
+    owner
+        .write(
+            Sql {
+                ddl: false,
+                rollback: false,
+                changed: false,
+            },
+            commits.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(!changes.has_changed().unwrap());
+    let rows = owner
+        .read(|db| Ok(db.query_row("SELECT count(*) FROM results", [], |r| r.get::<_, i64>(0))?))
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    owner
+        .write(
+            Sql {
+                ddl: true,
+                rollback: false,
+                changed: true,
+            },
+            commits.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    owner
+        .run(|db| {
+            db.execute_batch("BEGIN; INSERT INTO results(value) VALUES(2)")?;
+            Err::<(), _>(crate::StoreError::InvalidTransition("raw rejection".into()))
+        })
+        .await
+        .unwrap_err();
+    assert!(!changes.has_changed().unwrap());
+    owner
+        .write(
+            Sql {
+                ddl: false,
+                rollback: false,
+                changed: true,
+            },
+            commits,
+        )
+        .await
+        .unwrap();
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(
+        owner
+            .read(|db| Ok(
+                db.query_row("SELECT sum(value) FROM results", [], |r| r.get::<_, i64>(0))?
+            ))
+            .await
+            .unwrap(),
+        1
+    );
+    owner.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn failed_startup_retains_the_original_cause_when_sql_close_is_unconfirmed() {
     let error = OwnedConnection::open(
         OpenOptions::temporary(),
@@ -126,41 +243,43 @@ fn accepted_write_survives_waiter_and_runtime_and_retains_lease_until_close() {
     clippy::async_yields_async,
     reason = "The close receipt must outlive the caller runtime under test"
 )]
-fn accepted_typed_append_survives_destruction_of_its_calling_runtime() {
-    use crate::EventLog;
-    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+fn accepted_typed_statement_survives_destruction_of_its_calling_runtime() {
+    use crate::writeback::{Notification, Prepared, Statement};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Append {
+        committed: Arc<AtomicUsize>,
+    }
+    impl Statement for Append {
+        type Value = Arc<AtomicUsize>;
+        type Output = ();
+        fn execute(self, db: &Connection) -> Result<Prepared<Self::Value>, crate::StoreError> {
+            db.execute("INSERT INTO results(value) VALUES (42)", [])?;
+            Ok(Prepared {
+                value: self.committed,
+                changed: true,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(value: Self::Value) {
+            value.fetch_add(1, Ordering::SeqCst);
+        }
+        fn isolated_rejection(_: &crate::StoreError) -> bool {
+            false
+        }
+    }
 
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let event = RuntimeEvent::new(
-        Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        },
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                content: "accepted before runtime shutdown".into(),
-                source_messages: vec![],
-                request_fingerprint: None,
-            },
-        },
-    );
-    let write = EventWrite::plain(event.clone()).unwrap();
+    let committed = Arc::new(AtomicUsize::new(0));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let (release, gate) = std::sync::mpsc::channel();
     let receipt = runtime.block_on(async {
-        let log = EventLog::open(&path).await.unwrap();
-        log.create_session("session", "session", &serde_json::json!({}), 0)
-            .await
-            .unwrap();
+        let owner = open(directory.path()).await;
         let (entered, started) = oneshot::channel();
-        let mut holding_writer = Box::pin(log.connection.run(move |_| {
+        let mut holding_writer = Box::pin(owner.run(move |_| {
             entered.send(()).unwrap();
             gate.recv_timeout(DEADLINE).unwrap();
             Ok(())
@@ -170,14 +289,22 @@ fn accepted_typed_append_survives_destruction_of_its_calling_runtime() {
             .await
             .unwrap()
             .unwrap();
-        let mut append = Box::pin(log.append_batch(std::slice::from_ref(&write)));
+        let mut append = Box::pin(owner.write(
+            Append {
+                committed: committed.clone(),
+            },
+            crate::commits::CommitHub::new(0).notice(),
+        ));
         assert!(futures_util::poll!(&mut append).is_pending());
+        assert_eq!(committed.load(Ordering::SeqCst), 0);
         drop(append);
         drop(holding_writer);
-        log.connection.request_shutdown();
-        log.connection.close_receipt()
+        owner.request_shutdown();
+        owner.close_receipt()
     });
     drop(runtime);
+    assert!(FileLease::is_held(&directory.path().join("actor.lock")).unwrap());
+    assert_eq!(committed.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -188,16 +315,19 @@ fn accepted_typed_append_survives_destruction_of_its_calling_runtime() {
             .await
             .unwrap()
             .unwrap();
-        let reopened = EventLog::open(&path).await.unwrap();
-        let through = reopened.committed_sequence().await.unwrap();
-        let stored = reopened
-            .execution_event(&event.invocation, &event.id, through)
-            .await
-            .unwrap()
-            .expect("accepted append remains durable after its caller runtime is gone");
-        assert_eq!(stored.event, event);
-        reopened.close().await.unwrap();
     });
+    assert_eq!(
+        committed.load(Ordering::SeqCst),
+        1,
+        "the original typed conversion runs after confirmed commit despite losing its receiver"
+    );
+    assert!(!FileLease::is_held(&directory.path().join("actor.lock")).unwrap());
+    let db = Connection::open(directory.path().join("actor.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT value FROM results", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        42
+    );
 }
 
 #[tokio::test]
@@ -207,9 +337,26 @@ async fn cancelled_long_read_cleans_its_connection_and_leaves_writer_available()
     let (entered, started) = oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
     let (finished, cancelled) = oneshot::channel();
-    // Observation has one physical reader, so the following job proves reuse
-    // of the very connection whose progress hook interrupted the long query.
-    let mut read = Box::pin(owner.observe(move |db| {
+    // Keep the other readers occupied until the cancelled connection is reused.
+    let mut parked = Vec::new();
+    let mut parked_releases = Vec::new();
+    for _ in 1..owner.reads.len() {
+        let (entered, started) = oneshot::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let mut job = Box::pin(owner.read(move |_| {
+            entered.send(()).unwrap();
+            gate.recv_timeout(DEADLINE).unwrap();
+            Ok(())
+        }));
+        assert!(futures_util::poll!(&mut job).is_pending());
+        tokio::time::timeout(DEADLINE, started)
+            .await
+            .unwrap()
+            .unwrap();
+        parked.push(job);
+        parked_releases.push(release);
+    }
+    let mut read = Box::pin(owner.read_interruptible(move |db| {
         db.execute_batch("BEGIN; CREATE TEMP TABLE cancelled_probe(value INTEGER)")?;
         entered.send(()).unwrap();
         gate.recv_timeout(DEADLINE).unwrap();
@@ -237,7 +384,7 @@ async fn cancelled_long_read_cleans_its_connection_and_leaves_writer_available()
     );
     let remaining = tokio::time::timeout(
         DEADLINE,
-        owner.observe(|db| {
+        owner.read(|db| {
             assert!(
                 db.is_autocommit(),
                 "cancelled read transaction was rolled back"
@@ -256,6 +403,12 @@ async fn cancelled_long_read_cleans_its_connection_and_leaves_writer_available()
         remaining, 0,
         "cancelled transaction left no temporary table"
     );
+    for release in parked_releases {
+        release.send(()).unwrap();
+    }
+    for job in parked {
+        tokio::time::timeout(DEADLINE, job).await.unwrap().unwrap();
+    }
     owner
         .run(|db| {
             db.execute("INSERT INTO results VALUES (7)", [])?;

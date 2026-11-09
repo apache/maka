@@ -153,7 +153,7 @@ async fn live_adoption_preserves_original_mutation_preparation_and_unchanged_act
                 )
                 .await
                 .unwrap();
-            let second = client.mutate_owned(prepared).await.unwrap().result().await;
+            let second = client.mutate_owned(prepared, Value::Null).await.unwrap().result().await;
             assert!(matches!(
                 second.receipt,
                 Receipt::Recorded {

@@ -95,6 +95,7 @@ pub(super) struct ScopeIdentity {
     pub epoch: String,
     pub session: String,
     pub turn: String,
+    pub execution: crate::ExecutionCorrelation,
     pub operation_id: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,7 +305,9 @@ impl ParentCapabilities {
         let routing = expected
             .filter(|expected| *expected == &observed)
             .ok_or_else(|| failed("Browser session preparation invocation identity mismatch"))
-            .and_then(|expected| preparation.check_scope(&expected.turn, &expected.operation_id));
+            .and_then(|expected| {
+                preparation.check_scope(&expected.turn, &expected.execution, &expected.operation_id)
+            });
         let authorization = self.authorization.clone();
         Box::pin(async move {
             routing?;
@@ -686,7 +689,7 @@ impl ParentCallbacks {
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let prepared = binding
-                .check_turn(&token.key.identity.turn)
+                .check_scope(&token.key.identity.turn, &token.key.identity.execution)
                 .and_then(|()| effect_preparation_scope(&state, &token, effect_id));
             match prepared {
                 Ok((scope, lifetime, invocation_id)) => {
@@ -764,6 +767,7 @@ impl ParentCallbacks {
             if state.closed.is_some()
                 || scope.phase != ParentScopePhase::Accepting
                 || request.turn_id != token.key.identity.turn
+                || request.execution != token.key.identity.execution
                 || request.browser_id != document.browser_id
                 || request.generation != document.generation
                 || request.opener_tab_id.to_string() != document.tab_id
@@ -1138,7 +1142,14 @@ impl ParentCallbacks {
             }
         }
     }
-    pub fn seal_matching(&self, owner: &str, epoch: Option<&str>, turn: Option<&str>) {
+    pub fn seal_matching(
+        &self,
+        owner: &str,
+        epoch: Option<&str>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) {
         let identities = {
             let state = self.0.state.lock().unwrap();
             state
@@ -1151,7 +1162,9 @@ impl ParentCallbacks {
                         .values()
                         .map(|(identity, _)| identity.clone()),
                 )
-                .filter(|identity| matches_identity(identity, owner, epoch, turn))
+                .filter(|identity| {
+                    matches_identity(identity, owner, epoch, session, turn, execution)
+                })
                 .collect::<HashSet<_>>()
         };
         for identity in identities {
@@ -1835,7 +1848,14 @@ impl WorkerCallbacks {
         }
     }
     #[cfg(feature = "native-desktop")]
-    pub fn seal_matching(&self, owner: &str, epoch: Option<&str>, turn: Option<&str>) {
+    pub fn seal_matching(
+        &self,
+        owner: &str,
+        epoch: Option<&str>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) {
         let identities = self
             .0
             .state
@@ -1844,7 +1864,7 @@ impl WorkerCallbacks {
             .scopes
             .values()
             .map(|scope| scope.token.key.identity.clone())
-            .filter(|identity| matches_identity(identity, owner, epoch, turn))
+            .filter(|identity| matches_identity(identity, owner, epoch, session, turn, execution))
             .collect::<HashSet<_>>();
         for identity in identities {
             self.seal(&identity);
@@ -2009,10 +2029,14 @@ fn matches_identity(
     identity: &ScopeIdentity,
     owner: &str,
     epoch: Option<&str>,
+    session: Option<&str>,
     turn: Option<&str>,
+    execution: Option<&crate::ExecutionCorrelation>,
 ) -> bool {
     identity.owner == owner
         && epoch.is_none_or(|epoch| identity.epoch == epoch)
+        && session.is_none_or(|session| identity.session == session)
+        && execution.is_none_or(|execution| &identity.execution == execution)
         && turn.is_none_or(|turn| identity.turn == turn)
 }
 #[cfg(feature = "native-desktop")]
@@ -2328,7 +2352,7 @@ impl BrowserEffectScope for RemoteEffectScope {
         let token = self.token.clone();
         let effect_id = self.effect_id;
         Box::pin(async move {
-            binding.check_turn(&token.key.identity.turn)?;
+            binding.check_scope(&token.key.identity.turn, &token.key.identity.execution)?;
             let (id, response) = {
                 let _emission = worker.0.emission.lock().unwrap();
                 let id = allocate(&worker.0.next)?;
@@ -2697,6 +2721,7 @@ mod scoped_effect_tests {
             epoch: "transport-epoch".into(),
             session: "session".into(),
             turn: "turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "completed-input-operation".into(),
         }
     }
@@ -2720,8 +2745,9 @@ mod scoped_effect_tests {
             browser_id: "browser".into(),
             generation: "generation".into(),
             turn_id: "turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             tab_id: "actual-retained-tab".into(),
-            subject: crate::BrowserLeaseSubject::PhysicalClaim {
+            subject: maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim {
                 claim_id: "actual-retained-claim".into(),
             },
         }
@@ -2768,12 +2794,17 @@ mod scoped_effect_tests {
         async fn prepare(
             &mut self,
             host: Arc<dyn BrowserHostEffects>,
+            invocation_id: u64,
+            source: ScopeIdentity,
         ) -> (BrowserServices, Arc<ServicesAuthority>) {
             let worker = self.worker.clone();
-            let waiting =
-                tokio::spawn(
-                    async move { worker.prepare(11, key(), CancellationToken::new()).await },
-                );
+            let mut requested = key();
+            requested.identity = source.clone();
+            let waiting = tokio::spawn(async move {
+                worker
+                    .prepare(invocation_id, requested, CancellationToken::new())
+                    .await
+            });
             let WorkerMessage::Prepare {
                 request_id, key, ..
             } = self.worker_message().await
@@ -2783,10 +2814,10 @@ mod scoped_effect_tests {
             let authority = Arc::new(ServicesAuthority::default());
             self.parent
                 .prepare(
-                    11,
+                    invocation_id,
                     request_id,
                     key,
-                    &identity(),
+                    &source,
                     ParentCapabilities {
                         authorization: Some(authority.clone()),
                         effects: Some(host),
@@ -2855,7 +2886,7 @@ mod scoped_effect_tests {
     async fn real_callback_bridge_mints_proxy_only_after_host_admission_and_retires_at_terminal() {
         let mut fixture = Fixture::new();
         let host = Arc::new(ScopedHost::default());
-        let (services, authority) = fixture.prepare(host.clone()).await;
+        let (services, authority) = fixture.prepare(host.clone(), 11, identity()).await;
         let called = Arc::new(AtomicUsize::new(0));
         let observed = called.clone();
         let (scope_sender, scope_receiver) = oneshot::channel();
@@ -2936,10 +2967,70 @@ mod scoped_effect_tests {
     }
 
     #[tokio::test]
+    async fn exact_execution_seal_keeps_same_turn_original_effect_of_another_execution_live() {
+        let mut fixture = Fixture::new();
+        let first_host = Arc::new(ScopedHost::default());
+        let second_host = Arc::new(ScopedHost::default());
+        let first = identity();
+        let mut second = first.clone();
+        second.execution = crate::ExecutionCorrelation::new("another-live-execution").unwrap();
+        let (first_services, _) = fixture.prepare(first_host.clone(), 11, first.clone()).await;
+        let (second_services, _) = fixture
+            .prepare(second_host.clone(), 12, second.clone())
+            .await;
+        let first_actual = Arc::new(ActualEffectScope::default());
+        let second_actual = Arc::new(ActualEffectScope::default());
+        let (_, _, first_pending, _, first_scope, first_finish) = fixture
+            .start(&first_services, &first_host, first_actual.clone())
+            .await;
+        let (_, _, second_pending, _, second_scope, second_finish) = fixture
+            .start(&second_services, &second_host, second_actual.clone())
+            .await;
+        fixture.parent.seal_matching(
+            &first.owner,
+            Some(&first.epoch),
+            Some(&first.session),
+            Some(&first.turn),
+            Some(&first.execution),
+        );
+        let sealed = fixture.parent_message().await;
+        fixture.worker.handle(sealed).unwrap();
+        assert!(
+            first_scope
+                .check_session_preparation(binding(), CancellationToken::new())
+                .await
+                .is_err()
+        );
+        let mut second_binding = binding();
+        second_binding.execution = second.execution;
+        let checking = tokio::spawn(async move {
+            second_scope
+                .check_session_preparation(second_binding, CancellationToken::new())
+                .await
+        });
+        let requested = fixture.worker_message().await;
+        fixture.parent.handle(requested).unwrap();
+        let checked = fixture.parent_message().await;
+        fixture.worker.handle(checked).unwrap();
+        checking.await.unwrap().unwrap();
+        assert!(first_actual.bindings.lock().unwrap().is_empty());
+        assert_eq!(second_actual.bindings.lock().unwrap().len(), 1);
+        first_finish.send(Ok(())).unwrap();
+        let completed = fixture.worker_message().await;
+        fixture.parent.handle(completed).unwrap();
+        first_pending.await.unwrap();
+        second_finish.send(Ok(())).unwrap();
+        let completed = fixture.worker_message().await;
+        fixture.parent.handle(completed).unwrap();
+        second_pending.await.unwrap();
+        assert!(fixture.faults.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn real_callback_bridge_refuses_foreign_old_and_sealed_effect_scope_without_host_check() {
         let mut fixture = Fixture::new();
         let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
+        let (services, _) = fixture.prepare(host.clone(), 11, identity()).await;
         let actual = Arc::new(ActualEffectScope::default());
         let (token, effect_id, pending, _, scope, finish) =
             fixture.start(&services, &host, actual.clone()).await;
@@ -2961,6 +3052,12 @@ mod scoped_effect_tests {
             (902, effect_id, {
                 let mut wrong = binding();
                 wrong.turn_id = "old-turn".into();
+                wrong
+            }),
+            (903, effect_id, {
+                let mut wrong = binding();
+                wrong.execution =
+                    crate::ExecutionCorrelation::new("another-live-execution").unwrap();
                 wrong
             }),
         ] {
@@ -3003,7 +3100,7 @@ mod scoped_effect_tests {
     async fn cancelled_scope_check_preserves_actual_cleanup_uncertainty_and_physical_tail() {
         let mut fixture = Fixture::new();
         let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
+        let (services, _) = fixture.prepare(host.clone(), 11, identity()).await;
         let actual_error = uncertain("actual scoped check cleanup");
         let ToolError::CleanupUnconfirmed(expected_cleanup) =
             super::super::authorization_cleanup(Err(actual_error.clone())).unwrap()
@@ -3073,7 +3170,7 @@ mod scoped_effect_tests {
     async fn dropping_actual_bridge_closes_narrow_scope_without_faking_effect_completion() {
         let mut fixture = Fixture::new();
         let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
+        let (services, _) = fixture.prepare(host.clone(), 11, identity()).await;
         let actual = Arc::new(ActualEffectScope::default());
         let (token, id, pending, _, scope, finish) =
             fixture.start(&services, &host, actual.clone()).await;
@@ -3105,7 +3202,7 @@ mod scoped_effect_tests {
     #[tokio::test]
     async fn legacy_host_default_refuses_scoped_effect_without_calling_child_factory() {
         let mut fixture = Fixture::new();
-        let (services, _) = fixture.prepare(Arc::new(LegacyHost)).await;
+        let (services, _) = fixture.prepare(Arc::new(LegacyHost), 11, identity()).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
         let (rejected, rejection) = oneshot::channel();

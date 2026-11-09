@@ -26,6 +26,8 @@ mod command;
 pub mod detached;
 mod directory;
 mod environment;
+pub mod isolated;
+pub mod lifetime;
 pub mod pipe;
 pub use command::Command;
 #[cfg(target_os = "linux")]
@@ -61,7 +63,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub enum PipeEvent {
     Started,
     Output {
-        stream: maka_agent_facts::shell_run::PipeStream,
+        stream: maka_plugin_core::shell_run::PipeStream,
         bytes: Vec<u8>,
     },
 }
@@ -394,3 +396,6 @@ async fn timeout(ms: Option<u64>) {
         None => std::future::pending().await,
     }
 }
+
+#[cfg(target_os = "macos")]
+mod stdio_exec;

@@ -20,17 +20,14 @@
 use crate::{
     EventLog, StoreError,
     applications::operations::{Dispatch, OperationRequest},
-    message_admissions::PendingMessageAdmission,
     root::{ROOT_DATABASE, RootNamespaces, RootOwner},
 };
-use maka_agent_facts::event::{CommitError, EventWrite, Fact, InvocationInput, RuntimeEvent};
-use maka_capabilities::call::Identity;
 use maka_packages::{MANIFEST_FILE, Package};
 use maka_plugin_core::{
     composition::{Configuration, Input, InstanceId, Node, PackageUse},
-    contract::{Contract, Interface, Method, MethodMode, Transport},
+    contract::{Availability, Contract, Export, Interface, Method, MethodMode, Transport},
     deployment::DeploymentRef,
-    operation::{OperationCleanup, OperationOutcome},
+    operation::{OperationCleanup, OperationOutcome, OperationResult},
     package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::json;
@@ -44,9 +41,9 @@ use std::{
 };
 use tokio::sync::oneshot;
 use uuid::Uuid;
-mod admissions;
 mod control;
-use admissions::{admission, forbid_rollback, gate, hook};
+mod statements;
+use statements::{Insert, forbid_rollback, gate, hook};
 
 async fn store() -> (tempfile::TempDir, Arc<EventLog>) {
     let dir = tempfile::tempdir().unwrap();
@@ -64,23 +61,13 @@ async fn store() -> (tempfile::TempDir, Arc<EventLog>) {
     for id in ["a", "b"] {
         log.create_session(id, id, &json!({}), 0).await.unwrap();
     }
+    log.connection.run(|db| {
+        db.execute_batch("CREATE TABLE writeback_probe(sequence INTEGER PRIMARY KEY, value TEXT UNIQUE NOT NULL)")?;
+        Ok(())
+    }).await.unwrap();
     (dir, log)
 }
-fn opening(admission: &PendingMessageAdmission) -> EventWrite {
-    EventWrite::plain(RuntimeEvent::new(
-        admission.invocation.clone(),
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                content: admission.source.message.content.clone(),
-                source_messages: vec![admission.source.clone()],
-                request_fingerprint: None,
-            },
-        },
-    ))
-    .unwrap()
-}
-fn counts(log: &EventLog) -> (i64, i64, i64, i64) {
+fn counts(log: &EventLog) -> (i64, i64, i64) {
     let db = rusqlite::Connection::open(
         log.owned_root()
             .unwrap()
@@ -88,10 +75,10 @@ fn counts(log: &EventLog) -> (i64, i64, i64, i64) {
             .join(ROOT_DATABASE),
     )
     .unwrap();
-    db.query_row("SELECT (SELECT count(*) FROM application_intents), (SELECT count(*) FROM application_operations), (SELECT count(*) FROM message_admissions), (SELECT count(*) FROM event_log)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
+    db.query_row("SELECT (SELECT count(*) FROM application_intents), (SELECT count(*) FROM application_operations), (SELECT count(*) FROM writeback_probe)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
 }
 async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> DeploymentRef {
-    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {host: Some(EntryDeclaration { implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()}), ui: None,composition:None}})).unwrap())])).unwrap();
+    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {host: Some(EntryDeclaration { implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::from([("service".into(), Export { contract: contract(), availability: Availability::Required })])}), ui: None,composition:None}})).unwrap())])).unwrap();
     store
         .commit_application(
             deployment,
@@ -122,49 +109,37 @@ async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> Deployment
 fn consumer() -> InstanceId {
     InstanceId(vec![Uuid::from_u128(42)])
 }
+fn contract() -> Contract {
+    Contract {
+        name: "writeback.changes".into(),
+        version: 1,
+        transport: Transport::Local,
+        interface: Interface::Service {
+            methods: BTreeMap::from([(
+                "change".into(),
+                Method {
+                    mode: MethodMode::Mutation,
+                    input: json!({"type":"object"}).into(),
+                    output: json!({}).into(),
+                    resources: BTreeMap::new(),
+                    progress: None,
+                },
+            )]),
+        },
+    }
+}
 async fn request(store: &EventLog) -> OperationRequest {
     OperationRequest {
-        source: store
-            .commit_application(
-                Uuid::new_v4(),
-                0,
-                maka_plugin_core::composition::Input {
-                    base: None,
-                    ui: None,
-                    instances: BTreeMap::new(),
-                },
-                vec![],
-                vec![],
-            )
-            .await
-            .unwrap(),
-        namespace: InstanceId(vec![Uuid::new_v4()]),
-        consumer: InstanceId(vec![Uuid::new_v4()]),
+        source: source(store, Uuid::new_v4(), 0).await,
+        namespace: consumer(),
+        consumer: consumer(),
         export: "service".into(),
         method: "change".into(),
         operation: Uuid::new_v4(),
-        contract: Contract {
-            name: "changes".into(),
-            version: 1,
-            transport: Transport::Local,
-            interface: Interface::Service {
-                methods: BTreeMap::from([(
-                    "change".into(),
-                    Method {
-                        progress: None,
-                        mode: MethodMode::Mutation,
-                        input: serde_json::json!({}).into(),
-                        output: serde_json::json!({}).into(),
-                        resources: BTreeMap::new(),
-                    },
-                )]),
-            },
-        },
-        input: serde_json::json!({"outer":{"z":1,"a":2},"text":"original"}),
+        contract: contract(),
+        input: json!({"outer":{"z":1,"a":2},"text":"original"}),
         capture: None,
-        origin: Identity::Remote {
-            request_id: Uuid::new_v4(),
-        },
+        origin: json!({"requestId":Uuid::new_v4()}),
     }
 }
 
@@ -183,9 +158,10 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
     let Dispatch::New(prior) = log.dispatch_operation(request(&log).await).await.unwrap() else {
         panic!("prior claim")
     };
-    let returned = OperationOutcome::Returned { value: json!(true) };
-    let pending = admission("a");
-    let opened = [opening(&admission("b"))];
+    log.start_operation(&prior).unwrap();
+    let returned = OperationOutcome::Returned {
+        result: OperationResult::Success { value: json!(true) },
+    };
     let baseline = counts(&log);
     let count = Arc::new(AtomicUsize::new(0));
     let seen = count.clone();
@@ -207,19 +183,24 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
         json!(null),
     ));
     let mut dispatch = Box::pin(log.dispatch_operation(operation.clone()));
-    let mut missing = Box::pin(log.admit_message(admission("missing")));
+    let mut missing = Box::pin(log.connection.write(
+        Insert::for_session("missing", "missing"),
+        log.commits.notice(),
+    ));
     let mut duplicate = Box::pin(log.dispatch_operation(operation.clone()));
-    let mut admission = Box::pin(log.admit_message(pending.clone()));
-    let mut append = Box::pin(log.append_batch(&opened));
-    let mut settlement =
-        Box::pin(log.finish_operation(&prior, returned.clone(), OperationCleanup::Confirmed));
+    let mut append = Box::pin(
+        log.connection
+            .write(Insert::for_session("accepted", "a"), log.commits.notice()),
+    );
+    let mut settlement = Box::pin(log.record_operation_outcome(&prior, returned.clone()));
+    let mut cleanup = Box::pin(log.record_operation_cleanup(&prior, OperationCleanup::Confirmed));
     assert!(futures_util::poll!(&mut intent).is_pending());
     assert!(futures_util::poll!(&mut dispatch).is_pending());
     assert!(futures_util::poll!(&mut missing).is_pending());
     assert!(futures_util::poll!(&mut duplicate).is_pending());
-    assert!(futures_util::poll!(&mut admission).is_pending());
     assert!(futures_util::poll!(&mut append).is_pending());
     assert!(futures_util::poll!(&mut settlement).is_pending());
+    assert!(futures_util::poll!(&mut cleanup).is_pending());
     let mut commits = log.subscribe_commits();
     commits.borrow_and_update();
     release.send(()).unwrap();
@@ -233,31 +214,26 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
     assert!(futures_util::poll!(&mut intent).is_pending());
     assert!(futures_util::poll!(&mut dispatch).is_pending());
     assert!(futures_util::poll!(&mut duplicate).is_pending());
-    assert!(futures_util::poll!(&mut admission).is_pending());
     assert!(futures_util::poll!(&mut append).is_pending());
     assert!(futures_util::poll!(&mut settlement).is_pending());
+    assert!(futures_util::poll!(&mut cleanup).is_pending());
     release_commit.send(()).unwrap();
     assert_eq!(intent.await.unwrap().intent().reference, reference);
     assert!(matches!(dispatch.await, Ok(Dispatch::New(_))));
     assert!(matches!(missing.await, Err(StoreError::SessionNotFound)));
     assert!(matches!(duplicate.await, Ok(Dispatch::Existing(_))));
-    assert_eq!(admission.await.unwrap(), pending);
-    let sequence = append.await.unwrap()[0];
+    let sequence = append.await.unwrap();
     assert_eq!(settlement.await.unwrap().outcome, returned);
+    assert_eq!(cleanup.await.unwrap().cleanup, OperationCleanup::Confirmed);
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(
         *commits.borrow(),
         sequence,
-        "metadata never overwrites the event sequence"
+        "metadata never overwrites the committed domain sequence"
     );
     assert_eq!(
         counts(&log),
-        (
-            baseline.0 + 1,
-            baseline.1 + 1,
-            baseline.2 + 1,
-            baseline.3 + 1
-        )
+        (baseline.0 + 1, baseline.1 + 1, baseline.2 + 1)
     );
     // No-op metadata hints are independent of durable changes.
     let replay_commits = Arc::new(AtomicUsize::new(0));
@@ -273,7 +249,7 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
         .unwrap();
     assert!(commits.has_changed().unwrap());
     commits.borrow_and_update();
-    log.finish_operation(&prior, returned, OperationCleanup::Confirmed)
+    log.record_operation_outcome(&prior, returned)
         .await
         .unwrap();
     assert!(commits.has_changed().unwrap());
@@ -284,7 +260,62 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
     ));
     assert!(!commits.has_changed().unwrap());
     assert_eq!(replay_commits.load(Ordering::SeqCst), 0);
+    let next_request = request(&log).await;
+    let prior_request = request(&log).await;
+    let prior_reference = prior_request.reference().unwrap();
+    let Dispatch::New(prior) = log.dispatch_operation(prior_request).await.unwrap() else {
+        panic!("original retiring worker claim");
+    };
+    log.start_operation(&prior).unwrap();
+    let before_retirement = counts(&log);
+    let (release, blocked) = statements::gate(&log).await;
+    let outcome = OperationOutcome::Returned {
+        result: OperationResult::Success {
+            value: json!({"retiring":"original T2"}),
+        },
+    };
+    let mut accepted_t0 = Box::pin(log.dispatch_operation(next_request));
+    let mut accepted_t2 = Box::pin(log.record_operation_outcome(&prior, outcome.clone()));
+    let mut accepted_cleanup =
+        Box::pin(log.record_operation_cleanup(&prior, OperationCleanup::Confirmed));
+    assert!(futures_util::poll!(&mut accepted_t0).is_pending());
+    assert!(futures_util::poll!(&mut accepted_t2).is_pending());
+    assert!(futures_util::poll!(&mut accepted_cleanup).is_pending());
+    log.connection.request_shutdown();
+    assert!(matches!(
+        log.connection
+            .write(Insert::for_session("too-late", "a"), log.commits.notice())
+            .await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    release.send(()).unwrap();
+    blocked.await.unwrap();
+    assert!(matches!(accepted_t0.await, Ok(Dispatch::New(_))));
+    assert_eq!(accepted_t2.await.unwrap().outcome, outcome);
+    assert_eq!(
+        accepted_cleanup.await.unwrap().cleanup,
+        OperationCleanup::Confirmed
+    );
+    let root_owner = log.root_owner.as_ref().unwrap().clone();
     log.connection.shutdown().await.unwrap();
+    assert_eq!(
+        counts(&log),
+        (
+            before_retirement.0,
+            before_retirement.1 + 1,
+            before_retirement.2
+        )
+    );
+    let reopened = EventLog::for_root(root_owner).await.unwrap();
+    let original = reopened
+        .operation_observation(&prior_reference)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.reference, prior_reference);
+    assert_eq!(original.outcome, outcome);
+    assert_eq!(original.cleanup, OperationCleanup::Confirmed);
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -302,7 +333,7 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
         let reference = operation.reference().unwrap();
         let baseline = counts(&log);
         log.connection.run(|db| {
-            db.execute_batch("CREATE TEMP TRIGGER mixed_fault AFTER INSERT ON message_admissions WHEN NEW.session_id='a' BEGIN SELECT RAISE(ABORT, 'mixed storage fault'); END;")?;
+            db.execute_batch("CREATE TEMP TRIGGER mixed_fault AFTER INSERT ON writeback_probe WHEN NEW.value='poison' BEGIN SELECT RAISE(ABORT, 'mixed storage fault'); END;")?;
             Ok(())
         }).await.unwrap();
         if rollback_fails {
@@ -316,11 +347,19 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
             json!(null),
         ));
         let mut dispatch = Box::pin(log.dispatch_operation(operation.clone()));
-        let mut missing = Box::pin(log.admit_message(admission("missing")));
+        let mut missing = Box::pin(log.connection.write(
+            Insert::for_session("missing", "missing"),
+            log.commits.notice(),
+        ));
         let mut duplicate = Box::pin(log.dispatch_operation(operation));
-        let mut poison = Box::pin(log.admit_message(admission("a")));
-        let opened = [opening(&admission("b"))];
-        let mut unstarted = Box::pin(log.append_batch(&opened));
+        let mut poison = Box::pin(
+            log.connection
+                .write(Insert::for_session("poison", "a"), log.commits.notice()),
+        );
+        let mut unstarted = Box::pin(
+            log.connection
+                .write(Insert::for_session("unstarted", "b"), log.commits.notice()),
+        );
         assert!(futures_util::poll!(&mut intent).is_pending());
         assert!(futures_util::poll!(&mut dispatch).is_pending());
         assert!(futures_util::poll!(&mut missing).is_pending());
@@ -336,6 +375,7 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
             dispatch.await.err().unwrap(),
             duplicate.await.err().unwrap(),
             poison.await.err().unwrap(),
+            unstarted.await.err().unwrap(),
         ];
         for failure in failures {
             if rollback_fails {
@@ -356,7 +396,6 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
             matches!(missing.await, Err(StoreError::SessionNotFound)),
             "proved isolation survives outer uncertainty"
         );
-        assert!(matches!(unstarted.await, Err(CommitError::Rejected(_))));
         assert!(!commits.has_changed().unwrap());
         let closed = log.connection.shutdown().await;
         assert_eq!(closed.is_err(), rollback_fails);
@@ -389,12 +428,13 @@ async fn mixed_deferred_commit_failure_releases_no_claim_but_acknowledged_cleanu
         json!(null),
     ));
     let mut dispatch = Box::pin(log.dispatch_operation(operation.clone()));
-    let mut missing = Box::pin(log.admit_message(admission("missing")));
+    let mut missing = Box::pin(log.connection.write(
+        Insert::for_session("missing", "missing"),
+        log.commits.notice(),
+    ));
     assert!(futures_util::poll!(&mut intent).is_pending());
     assert!(futures_util::poll!(&mut dispatch).is_pending());
     assert!(futures_util::poll!(&mut missing).is_pending());
-    let mut recovery = Box::pin(log.operation_observation(&reference));
-    assert!(futures_util::poll!(&mut recovery).is_pending());
     let mut commits = log.subscribe_commits();
     commits.borrow_and_update();
     release.send(()).unwrap();
@@ -408,7 +448,12 @@ async fn mixed_deferred_commit_failure_releases_no_claim_but_acknowledged_cleanu
         StoreError::CommitUnknown(_)
     ));
     assert!(matches!(missing.await, Err(StoreError::SessionNotFound)));
-    assert!(recovery.await.unwrap().is_none());
+    assert!(
+        log.operation_observation(&reference)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(!commits.has_changed().unwrap());
     assert_eq!(counts(&log), baseline);
     // Observations after the failure use the same owner, with no remaining
@@ -462,9 +507,12 @@ async fn mixed_authority_failure_preserves_io_kind_and_closes_before_reusing_wri
         operation.reference().unwrap(),
         json!(null),
     ));
-    let mut admission = Box::pin(log.admit_message(admission("a")));
+    let mut append = Box::pin(
+        log.connection
+            .write(Insert::for_session("authority", "a"), log.commits.notice()),
+    );
     assert!(futures_util::poll!(&mut intent).is_pending());
-    assert!(futures_util::poll!(&mut admission).is_pending());
+    assert!(futures_util::poll!(&mut append).is_pending());
     let mut control = Box::pin(log.connection.run(|_| {
         panic!("lost authority cannot run next control");
         #[allow(unreachable_code)]
@@ -473,7 +521,7 @@ async fn mixed_authority_failure_preserves_io_kind_and_closes_before_reusing_wri
     assert!(futures_util::poll!(&mut control).is_pending());
     release.send(()).unwrap();
     gate.await.unwrap();
-    for error in [intent.await.err().unwrap(), admission.await.err().unwrap()] {
+    for error in [intent.await.err().unwrap(), append.await.err().unwrap()] {
         let StoreError::Io(error) = error.underlying() else {
             panic!("{error:?}")
         };
@@ -492,7 +540,7 @@ async fn mixed_authority_failure_preserves_io_kind_and_closes_before_reusing_wri
         0
     );
     assert_eq!(
-        db.query_row("SELECT count(*) FROM message_admissions", [], |r| r
+        db.query_row("SELECT count(*) FROM writeback_probe", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         0

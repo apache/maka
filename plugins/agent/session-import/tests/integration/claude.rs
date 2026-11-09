@@ -18,12 +18,12 @@
  */
 
 use maka_agent_facts::import::Content;
-use maka_capabilities::call::Resources;
-use maka_capabilities::call::Ticket;
 use maka_capabilities::filesystem::OpenFile;
 use maka_capabilities::filesystem::ReadAuthorization;
 use maka_capabilities::filesystem::ReadError;
 use maka_capabilities::filesystem::ReadRoot;
+use maka_plugin_core::work::resources::Resources;
+use maka_plugin_core::work::resources::Ticket;
 use maka_session_import::{Error, claude};
 use serde_json::{Value, json};
 use std::{

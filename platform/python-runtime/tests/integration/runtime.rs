@@ -19,8 +19,7 @@
 
 use maka_agent_facts::tools::{ToolError, ToolExecutor, ToolFuture};
 use maka_code_runtime::{
-    CellAbort, CellContext, CellDiagnosticKind, CellLimits, CellOutput, CellResult, CellStore,
-    ToolMetadata,
+    CellAbort, CellContext, CellDiagnosticKind, CellLimits, CellOutput, CellResult, ToolMetadata,
 };
 use maka_python_runtime::CodeExecutor;
 use serde_json::{Value, json};
@@ -56,7 +55,7 @@ fn executor(limits: CellLimits) -> CodeExecutor {
 }
 fn context() -> CellContext {
     CellContext::new(
-        CellStore::temporary().unwrap(),
+        Arc::new(super::SessionData::default()).store(),
         vec![ToolMetadata {
             name: "echo".into(),
             description: "echo JSON".into(),
@@ -74,9 +73,11 @@ fn success(result: CellResult) -> usize {
     }
 }
 async fn run(source: &str, context: CellContext) -> Result<CellResult, CellAbort> {
-    executor(CellLimits::default())
-        .execute_module(source.into(), echo(), CancellationToken::new(), context)
-        .await
+    let prepared = executor(CellLimits::default())
+        .prepare_module(source.into(), echo(), CancellationToken::new(), context)
+        .await?;
+    let _binding = prepared.binding().clone();
+    prepared.execute_bound().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -94,10 +95,10 @@ async fn python_fanout_and_partial_failure_use_real_host_tools() {
         })
     }));
     let context = context();
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        executor(CellLimits::default()).execute_module(
-            r#"
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let prepared = executor(CellLimits::default())
+            .prepare_module(
+                r#"
 import asyncio
 async def settled(n):
     try:
@@ -106,12 +107,15 @@ async def settled(n):
         return {"ok": False, "error": str(exc)}
 text(await asyncio.gather(settled(1), settled(2)))
 "#
-            .into(),
-            tools,
-            CancellationToken::new(),
-            context.clone(),
-        ),
-    )
+                .into(),
+                tools,
+                CancellationToken::new(),
+                context.clone(),
+            )
+            .await?;
+        let _binding = prepared.binding().clone();
+        prepared.execute_bound().await
+    })
     .await
     .unwrap()
     .unwrap();
@@ -128,7 +132,8 @@ text(await asyncio.gather(settled(1), settled(2)))
 
 #[tokio::test]
 async fn output_store_metadata_and_fresh_globals_obey_cell_contract() {
-    let store = CellStore::temporary().unwrap();
+    let owner = Arc::new(super::SessionData::default());
+    let store = owner.store();
     let first = CellContext::new(
         store.clone(),
         vec![ToolMetadata {
@@ -161,7 +166,7 @@ secret
         first.take_notifications().into_iter().collect::<Vec<_>>(),
         ["ready"]
     );
-    first.commit().unwrap();
+    owner.accept(first.take_draft().unwrap());
     let second = CellContext::new(store, vec![]).unwrap();
     success(
         run(
@@ -245,10 +250,15 @@ async fn cpu_memory_parse_and_os_errors_stay_inside_worker() {
             CellDiagnosticKind::ExecutionError,
         ),
     ] {
-        let result = executor(limits)
-            .execute_module(source.into(), echo(), CancellationToken::new(), context())
-            .await
-            .unwrap();
+        let result = async {
+            let prepared = executor(limits)
+                .prepare_module(source.into(), echo(), CancellationToken::new(), context())
+                .await?;
+            let _binding = prepared.binding().clone();
+            prepared.execute_bound().await
+        }
+        .await
+        .unwrap();
         assert!(
             matches!(result,CellResult::Failure{error,..} if error.kind==kind),
             "{source}"
@@ -265,16 +275,21 @@ async fn tool_waits_and_python_sleep_do_not_spend_execution_budget() {
             Ok(input)
         })
     }));
-    let result = executor(CellLimits {
-        timeout: Duration::from_millis(200),
-        ..Default::default()
-    })
-    .execute_module(
-        "import asyncio\nawait tools.wait({})\nawait asyncio.sleep(0.4)\ntext('done')".into(),
-        tools,
-        CancellationToken::new(),
-        context(),
-    )
+    let result = async {
+        let prepared = executor(CellLimits {
+            timeout: Duration::from_millis(200),
+            ..Default::default()
+        })
+        .prepare_module(
+            "import asyncio\nawait tools.wait({})\nawait asyncio.sleep(0.4)\ntext('done')".into(),
+            tools,
+            CancellationToken::new(),
+            context(),
+        )
+        .await?;
+        let _binding = prepared.binding().clone();
+        prepared.execute_bound().await
+    }
     .await
     .unwrap();
     assert_eq!(success(result), 1);
@@ -315,9 +330,14 @@ async fn completion_and_failure_cancel_unawaited_tools_and_wait_for_cleanup() {
         };
         let source = format!("tools.wait({{}})\nawait tools.echo({{}})\n{tail}");
         let mut task = tokio::spawn(async move {
-            executor(CellLimits::default())
-                .execute_module(source, tools, CancellationToken::new(), context())
-                .await
+            async {
+                let prepared = executor(CellLimits::default())
+                    .prepare_module(source, tools, CancellationToken::new(), context())
+                    .await?;
+                let _binding = prepared.binding().clone();
+                prepared.execute_bound().await
+            }
+            .await
         });
         tokio::time::timeout(Duration::from_secs(5), cancelled.notified())
             .await
@@ -362,9 +382,14 @@ async fn cancellation_and_dropped_observer_drain_the_owned_effect() {
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
         let task = tokio::spawn(async move {
-            executor(CellLimits::default())
-                .execute_module("await tools.wait({})".into(), tools, token, context())
-                .await
+            async {
+                let prepared = executor(CellLimits::default())
+                    .prepare_module("await tools.wait({})".into(), tools, token, context())
+                    .await?;
+                let _binding = prepared.binding().clone();
+                prepared.execute_bound().await
+            }
+            .await
         });
         tokio::time::timeout(Duration::from_secs(5), started.notified())
             .await
@@ -386,9 +411,14 @@ async fn cancellation_and_dropped_observer_drain_the_owned_effect() {
     let cancellation = CancellationToken::new();
     let token = cancellation.clone();
     let task = tokio::spawn(async move {
-        executor(CellLimits::default())
-            .execute_module("while True: pass".into(), echo(), token, context())
-            .await
+        async {
+            let prepared = executor(CellLimits::default())
+                .prepare_module("while True: pass".into(), echo(), token, context())
+                .await?;
+            let _binding = prepared.binding().clone();
+            prepared.execute_bound().await
+        }
+        .await
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     cancellation.cancel();
@@ -407,7 +437,15 @@ async fn caught_fatal_tool_error_cannot_publish_success() {
         Box::pin(async { Err(ToolError::Persistence("journal unavailable".into())) })
     }));
     let context = context();
-    let result=executor(CellLimits::default()).execute_module("try:\n    await tools.echo({})\nexcept Exception:\n    text('caught')\nawait tools.echo({})".into(),tools,CancellationToken::new(),context).await;
+    let prepared = executor(CellLimits::default())
+        .prepare_module(
+            "try:\n    await tools.echo({})\nexcept Exception:\n    text('caught')\nawait tools.echo({})".into(),
+            tools, CancellationToken::new(), context,
+        )
+        .await
+        .unwrap();
+    let _binding = prepared.binding().clone();
+    let result = prepared.execute_bound().await;
     assert!(matches!(
         result,
         Err(CellAbort::Tool(ToolError::Persistence(_)))
@@ -433,10 +471,15 @@ async fn json_depth_is_independent_of_request_and_reply_framing() {
                 if host_value { "None" } else { "v" }
             );
             success(
-                executor(CellLimits::default())
-                    .execute_module(source, tools, CancellationToken::new(), context.clone())
-                    .await
-                    .unwrap(),
+                async {
+                    let prepared = executor(CellLimits::default())
+                        .prepare_module(source, tools, CancellationToken::new(), context.clone())
+                        .await?;
+                    let _binding = prepared.binding().clone();
+                    prepared.execute_bound().await
+                }
+                .await
+                .unwrap(),
             );
             let expected = if depth < 128 { "leaf" } else { "rejected" };
             assert!(
@@ -454,23 +497,31 @@ async fn parent_cell_can_await_child_without_a_worker_pool_deadlock() {
         let child = child.clone();
         Box::pin(async move {
             success(
-                child
-                    .execute_module("text('child')".into(), echo(), cancel, context())
-                    .await
-                    .unwrap(),
+                async {
+                    let prepared = child
+                        .prepare_module("text('child')".into(), echo(), cancel, context())
+                        .await?;
+                    let _binding = prepared.binding().clone();
+                    prepared.execute_bound().await
+                }
+                .await
+                .unwrap(),
             );
             Ok(json!("child settled"))
         })
     }));
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        executor(CellLimits::default()).execute_module(
-            "text(await tools.echo({}))".into(),
-            tools,
-            CancellationToken::new(),
-            context(),
-        ),
-    )
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let prepared = executor(CellLimits::default())
+            .prepare_module(
+                "text(await tools.echo({}))".into(),
+                tools,
+                CancellationToken::new(),
+                context(),
+            )
+            .await?;
+        let _binding = prepared.binding().clone();
+        prepared.execute_bound().await
+    })
     .await
     .unwrap()
     .unwrap();
@@ -479,19 +530,21 @@ async fn parent_cell_can_await_child_without_a_worker_pool_deadlock() {
 
 #[tokio::test]
 async fn execution_budget_accumulates_across_host_resumes() {
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        executor(CellLimits {
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let prepared = executor(CellLimits {
             timeout: Duration::from_millis(150),
             ..Default::default()
         })
-        .execute_module(
+        .prepare_module(
             "while True:\n    await tools.echo({})".into(),
             echo(),
             CancellationToken::new(),
             context(),
-        ),
-    )
+        )
+        .await?;
+        let _binding = prepared.binding().clone();
+        prepared.execute_bound().await
+    })
     .await
     .unwrap()
     .unwrap();

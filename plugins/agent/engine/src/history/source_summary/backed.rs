@@ -1193,7 +1193,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_backed_metadata_observer_keeps_full_until_worker_completion() {
-        let (_directory, root, execution, captured) =
+        let (_directory, root, execution, captured, effects) =
             super::super::tests::captured_summary_source().await;
         let arena = CaptureArena::new(captured, None).await.unwrap();
         let record = arena
@@ -1264,6 +1264,7 @@ mod tests {
         );
         arena.close().await.unwrap();
         drop(arena);
+        effects.settle().await.unwrap();
         execution.finish();
         root.shutdown().await.unwrap();
     }

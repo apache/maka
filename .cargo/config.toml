@@ -21,8 +21,12 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 # Keep debug information in retained objects instead of packing V8's duplicate
 # archive member names into a dSYM.
+# Swift runtime dependencies are transitive; every final executable needs this rpath.
 [target.'cfg(target_os = "macos")']
-rustflags = ["-C", "split-debuginfo=unpacked"]
+rustflags = [
+    "-C", "split-debuginfo=unpacked",
+    "-C", "link-arg=-Wl,-rpath,/usr/lib/swift",
+]
 
 # Inherited wrappers such as kache repack these debug maps using relative object
 # paths, producing missing-object warnings and unusable symbols. Let Cargo and

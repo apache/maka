@@ -20,7 +20,7 @@
 use super::{CommandError, Progress};
 use crate::Error;
 use crate::name;
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::{ExecutionIdentity, RunId};
 use maka_agent_facts::input::MessageInput;
 use maka_agent_facts::message::Placement;
 use serde::{Deserialize, Serialize};
@@ -34,14 +34,14 @@ pub struct Enqueue {
     pub operation_id: String,
     /// Canonical message identity, suitable for optimistic Client presentation.
     pub message_id: String,
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub content: MessageInput,
     pub placement: Placement,
 }
 impl Enqueue {
     pub fn operation(&self) -> super::SessionOperation {
         super::SessionOperation {
-            session_id: self.invocation.session_id.clone(),
+            session_id: self.execution.session_id.clone(),
             operation_id: self.operation_id.clone(),
         }
     }
@@ -49,14 +49,7 @@ impl Enqueue {
         name(&self.operation_id)?;
         maka_agent_facts::interaction::entity_id(&self.message_id)
             .map_err(|reason| Error::Invalid(reason.into()))?;
-        for id in [
-            &self.invocation.session_id,
-            &self.invocation.turn_id,
-            &self.invocation.run_id,
-            &self.invocation.invocation_id,
-        ] {
-            name(id)?;
-        }
+        name(&self.execution.session_id)?;
         maka_agent_facts::message::validate_sources(&self.content, &[])
             .map_err(|e| Error::Invalid(e.into()))
     }
@@ -74,7 +67,7 @@ impl Enqueue {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageReceipt {
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub message_id: String,
     pub request_digest: String,
 }
@@ -90,7 +83,7 @@ pub enum MessageState {
     Pending,
     Cancelled,
     Delivered {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         /// False for steering or a batched Turn. Delivery is not exclusive ownership.
         exclusive: bool,
         progress: Box<Progress>,
@@ -129,8 +122,7 @@ pub struct Excerpt {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnswerCursor {
-    #[schemars(length(min = 1, max = 256))]
-    pub invocation_id: String,
+    pub run_id: RunId,
     #[schemars(range(max = 9007199254740991_u64))]
     pub offset: u64,
 }
@@ -153,7 +145,6 @@ impl SessionMessage {
         name(&self.session_id)?;
         name(&self.message_id)?;
         if let Some(cursor) = &self.cursor {
-            name(&cursor.invocation_id)?;
             if cursor.offset > 9_007_199_254_740_991 {
                 return Err(Error::Invalid("invalid answer cursor".into()));
             }

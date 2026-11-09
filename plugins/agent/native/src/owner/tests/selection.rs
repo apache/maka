@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_engine::ModelSource;
+use maka_agent_facts::durable::BackendSpec;
 
 pub(super) async fn edit(
     fixture: &Fixture,
@@ -212,14 +213,17 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
         }
         assert_eq!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","backend":{"kind":"model","connectionId":selection.connection_id,"modelId":selection.model_id,"thinkingLevel":"ultra"}}), Uuid::new_v4()).await.unwrap(),
             json!({"kind":"rejected","sessionId":session,"reason":"model_unavailable","skills":null}));
-        let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
+        let queued=fixture.owner.durable.queue();
+        let pending=queued.read(session.clone()).await.unwrap().entries;
         assert_eq!(pending.len(), 2);
         for (entry, level) in pending.iter().zip([Off, Low]) {
-            let basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone()).unwrap();
-            assert_eq!(basis.model.unwrap().thinking_level, Some(level));
+            let BackendSpec::Model{descriptor,..}=&entry.request.spec.backend else{panic!("queued model backend")};
+            let bytes=queued.content(session.clone(),entry.request.id.clone(),descriptor.clone()).await.unwrap();
+            let accepted=crate::model::AcceptedModel::from_backend(&entry.request.spec.backend,&bytes).unwrap();
+            assert_eq!(accepted.thinking_level,Some(level));
         }
         let queue = fixture.query("queue", json!({"sessionId":session})).await.unwrap();
-        let rejected = fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":queue["revision"],"edit":{"kind":"promote","messageId":pending[0].source.message.message_id}}), Uuid::new_v4()).await.unwrap();
+        let rejected = fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":queue["revision"],"edit":{"kind":"promote","messageId":pending[0].request.message_id}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(rejected, json!({"kind":"rejected","reason":"execution_changed"}));
         response(&mut socket).await;
         for expected in ["none", "low"] {
@@ -228,7 +232,7 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
             response(&mut socket).await;
         }
         fixture.drained().await;
-        assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
+        assert!(queued.read(session.clone()).await.unwrap().entries.is_empty());
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

@@ -19,7 +19,6 @@
 
 use super::*;
 use crate::checkpoints::{LoadOperation, LoadState};
-use maka_agent_ports::session::history::Position;
 
 fn request(revision: Revision) -> LoadOperation {
     LoadOperation {
@@ -32,7 +31,12 @@ fn request(revision: Revision) -> LoadOperation {
 async fn exact_load_is_idempotent_isolated_and_survives_head_move() {
     let dir = tempfile::tempdir().unwrap();
     let (store, handle, publish) = fixture(dir.path()).await;
-    let head = published(&handle.publish(publish.clone()).await.unwrap());
+    let head = published(
+        &handle
+            .publish(publish.clone(), snapshot_file())
+            .await
+            .unwrap(),
+    );
     let input = request(head.revision);
     let (a, b) = tokio::join!(
         handle.load_exact(input.clone()),
@@ -51,7 +55,7 @@ async fn exact_load_is_idempotent_isolated_and_survives_head_move() {
     let mut next = publish;
     next.operation = Uuid::from_u128(102);
     next.expected_revision = Some(head.revision);
-    let newer = published(&handle.publish(next).await.unwrap());
+    let newer = published(&handle.publish(next, snapshot_file()).await.unwrap());
     let mut conflict = input.clone();
     conflict.revision = newer.revision;
     assert!(
@@ -68,31 +72,46 @@ async fn exact_load_is_idempotent_isolated_and_survives_head_move() {
     assert!(handle.load_receipt(stale).await.unwrap().is_none());
     assert_eq!(handle.load_exact(input.clone()).await.unwrap(), value);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(dir.path())).await.unwrap();
+    let store = RootStore::open(owner(dir.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert_eq!(
         handle.load_receipt(input.clone()).await.unwrap(),
-        Some(value)
+        Some(value.clone())
     );
-    handle
-        .loaded_history(input.operation, "source".into(), Position::Tail, false)
+    assert_eq!(
+        handle.loaded_checkpoint(input.operation).await.unwrap(),
+        value
+    );
+    assert_original_snapshot(
+        handle
+            .loaded_snapshot(input.operation)
+            .await
+            .unwrap()
+            .snapshot,
+    );
+    store
+        .create_session("foreign", "foreign", &json!({}), 1)
         .await
         .unwrap();
-    assert!(matches!(
-        handle
-            .loaded_history(input.operation, "foreign".into(), Position::Tail, false)
-            .await,
-        Err(StoreError::SessionNotFound)
-    ));
-    let mut foreign = scope();
-    foreign.deployment = Uuid::new_v4();
-    let other = store.history_checkpoints("source", foreign).await.unwrap();
+    let foreign_session = store.history_checkpoints("foreign", scope()).await.unwrap();
     assert!(
-        other
-            .loaded_history(input.operation, "source".into(), Position::Tail, false)
+        foreign_session
+            .loaded_checkpoint(input.operation)
             .await
             .is_err()
     );
+    assert!(
+        foreign_session
+            .loaded_snapshot(input.operation)
+            .await
+            .is_err()
+    );
+    let mut foreign = scope();
+    foreign.deployment = Uuid::new_v4();
+    let other = store.history_checkpoints("source", foreign).await.unwrap();
+    assert!(other.loaded_snapshot(input.operation).await.is_err());
     store.close().await.unwrap();
     assert!(handle.load_receipt(input).await.is_err());
 }

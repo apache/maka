@@ -17,28 +17,34 @@
  * under the License.
  */
 
-use crate::support::code_mode as fixture;
-use crate::support::store::SessionFixture;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use maka_agent_engine::{Engine, RunWork};
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::tools::ToolError;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
-use maka_code_runtime::CellLimits;
-use maka_model::{ModelExecutor, ProviderKind};
-use maka_tools::CodeExecutor;
-use maka_tools::{
-    ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
+use crate::code_mode_lifetime::{backend, configuration, configure_model, message};
+use crate::support::{
+    code_mode as fixture,
+    native::{FixtureService, NativeFixture},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::future::BoxFuture;
+use maka_agent_api::contract::ForkResult;
+use maka_agent_facts::{
+    cells::CellEvent,
+    durable::{Fact, RunId, Terminal},
+};
+use maka_agent_state::Store;
+use maka_host_runtime::application::{
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeOwner, NativeRetirement,
+};
+use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Notify,
 };
-use tokio_util::sync::CancellationToken;
 
 #[derive(Default)]
 struct Gates {
@@ -48,33 +54,79 @@ struct Gates {
 struct GateHandler {
     gates: Arc<Gates>,
 }
-impl ToolExecutor for GateHandler {
-    fn names(&self) -> Vec<String> {
-        vec!["gate".into(), "hold".into()]
-    }
-    fn invoke(&self, name: String, _: Value, cancel: CancellationToken) -> ToolFuture {
+impl Handler for GateHandler {
+    fn call(&self, name: String, _: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
+        assert!(context.operation().is_some() && context.operation_scope().is_some());
+        assert!(
+            context.work_custody().is_some(),
+            "the real Native Run must own this call"
+        );
         let gates = self.gates.clone();
         Box::pin(async move {
-            let gate = if name == "gate" {
-                &gates.gate
-            } else {
-                &gates.hold
+            let gate = match name.as_str() {
+                "gate" => &gates.gate,
+                "hold" => &gates.hold,
+                _ => return Err(HandlerError::from("unknown fixture gate")),
             };
-            tokio::select! { _ = gate.notified() => Ok(Value::Null), _ = cancel.cancelled() => Err(ToolError::Failed("cancelled".into())) }
+            tokio::select! {
+                _ = gate.notified() => Ok(HandlerValue::Json(Value::Null)),
+                _ = context.scope().cancellation.cancelled() => Err(HandlerError::from("cancelled")),
+            }
         })
     }
 }
-async fn notices(log: &SessionFixture) {
-    let mut commits = log.subscribe_commits();
+impl NativeOwner for GateHandler {
+    fn prepare_retirement(&self) -> Option<Box<dyn NativeRetirement>> {
+        Some(Box::new(()))
+    }
+    fn close(&self) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+fn service(gates: Arc<Gates>, names: &[&str]) -> FixtureService {
+    FixtureService::new(
+        Contract {
+            name: "fixture.Gates".into(),
+            version: 1,
+            transport: Transport::Remote,
+            interface: Interface::Service {
+                methods: names
+                    .iter()
+                    .map(|name| {
+                        (
+                            (*name).into(),
+                            Method {
+                                mode: MethodMode::Mutation,
+                                input: json!({"type":"object"}).into(),
+                                output: json!({}).into(),
+                                resources: BTreeMap::new(),
+                                progress: None,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        },
+        Arc::new(GateHandler { gates }),
+    )
+}
+async fn notices(state: &Store, run: RunId) {
+    let mut commits = state.subscribe().unwrap();
     loop {
         commits.borrow_and_update();
-        if log
-            .prefix(100, 1024 * 1024)
+        if state
+            .history(run, 0, 256)
             .await
             .unwrap()
-            .events
             .iter()
-            .filter(|e| matches!(e.event.fact, Fact::ToolNotified { .. }))
+            .filter(|e| {
+                matches!(
+                    e.fact,
+                    Fact::Cell {
+                        event: CellEvent::NotificationQueued { .. }
+                    }
+                )
+            })
             .count()
             == 2
         {
@@ -84,7 +136,7 @@ async fn notices(log: &SessionFixture) {
     }
 }
 struct GatePricing {
-    log: Arc<SessionFixture>,
+    source: OnceLock<(Store, String)>,
     gates: Arc<Gates>,
     before_commit: bool,
     calls: std::sync::atomic::AtomicUsize,
@@ -102,10 +154,26 @@ impl maka_agent_engine::pricing::Pricing for GatePricing {
             let index = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.before_commit && index == 1 {
                 self.gates.gate.notify_one();
-                notices(&self.log).await;
+                let (state, session) = self
+                    .source
+                    .get()
+                    .expect("actual Native Session attached before sending");
+                notices(
+                    state,
+                    state.latest_run(session.clone()).await.unwrap().unwrap(),
+                )
+                .await;
             }
             if index == 2 {
-                notices(&self.log).await;
+                let (state, session) = self
+                    .source
+                    .get()
+                    .expect("actual Native Session attached before sending");
+                notices(
+                    state,
+                    state.latest_run(session.clone()).await.unwrap().unwrap(),
+                )
+                .await;
             }
             Ok(maka_agent_facts::pricing::Quote {
                 provider_id: provider.into(),
@@ -183,20 +251,30 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
     tokio::time::timeout(Duration::from_secs(35), async {
       for before_commit in [false, true] {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
-
         let gates = Arc::new(Gates::default());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pricing = Arc::new(GatePricing {
+            source:OnceLock::new(), gates:gates.clone(), before_commit,
+            calls:std::sync::atomic::AtomicUsize::new(0),
+        });
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let f = NativeFixture::open_with_pricing(
+            directory.path(), configuration(directory.path(), &["gate", "hold"]),
+            service(gates.clone(), &["gate", "hold"]), pricing.clone(),
+        ).await.unwrap();
+        let model = configure_model(&f, &base, true).await;
+        let session = f.create("media", directory.path(), Some(backend(&model))).await.unwrap();
+        assert!(pricing.source.set((f.state.clone(), session.clone())).is_ok());
         let audio_url = format!("data:audio/wav;base64,{}", STANDARD.encode(wav()));
         let script = format!("// @exec: {{\"yield_time_ms\":0}}\nawait tools.gate({{}}); notify('first notice'); notify('second notice'); audio({}); await tools.hold({{}});", serde_json::to_string(&audio_url).unwrap());
-        let server_gates = gates.clone(); let observed = log.clone(); let expected_audio = audio_url.clone();
+        let server_gates = gates.clone(); let observed = f.state.clone(); let expected_audio = audio_url.clone();
+        let observed_session = session.clone();
+        let server_listener = listener.clone();
         let server = tokio::spawn(async move {
-            let (mut socket, first) = next_request(&listener).await;
+            let (mut socket, first) = next_request(&server_listener).await;
             assert_eq!(first["tools"][0]["type"], "custom");
             reply(&mut socket, json!({"type":"custom_tool_call","id":"exec-item","call_id":"exec-call","name":"exec","input":script}), 0).await;
-            let (mut socket, second) = next_request(&listener).await;
+            let (mut socket, second) = next_request(&server_listener).await;
             assert!(notifications(&second).is_empty());
             let result = second["input"].as_array().unwrap().iter().find(|item| item["type"] == "custom_tool_call_output").unwrap();
             let running: Value = serde_json::from_str(result["output"].as_str().unwrap()).unwrap();
@@ -204,11 +282,14 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
             // The physical retry keeps the original logical input even when
             // a live cell publishes during preparation or retry backoff.
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: 43\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"busy\",\"type\":\"limit\"}}").await.unwrap();
-            if !before_commit { server_gates.gate.notify_one(); notices(&observed).await; }
-            let (mut socket, retry) = next_request(&listener).await;
+            if !before_commit {
+                server_gates.gate.notify_one();
+                notices(&observed, observed.latest_run(observed_session).await.unwrap().unwrap()).await;
+            }
+            let (mut socket, retry) = next_request(&server_listener).await;
             assert_eq!(retry, second, "physical retries cannot claim a new notification cut");
             reply(&mut socket, text("tentative answer", 1), 1).await;
-            let (mut socket, third) = next_request(&listener).await;
+            let (mut socket, third) = next_request(&server_listener).await;
             assert_eq!(notifications(&third), ["first notice", "second notice"]);
             let input = third["input"].as_array().unwrap();
             let answer = input.iter().position(|item| item["content"][0]["text"] == "tentative answer").unwrap();
@@ -216,42 +297,38 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
             assert!(answer < notice, "notifications do not rewrite the request already in flight");
             server_gates.hold.notify_one();
             reply(&mut socket, json!({"type":"function_call","id":"wait-item","call_id":"wait-call","name":"wait","arguments":json!({"cell_id":running["cell_id"]}).to_string()}), 2).await;
-            let (mut socket, fourth) = next_request(&listener).await;
+            let (mut socket, fourth) = next_request(&server_listener).await;
             assert_eq!(notifications(&fourth), ["first notice", "second notice"]);
             let output = fourth["input"].as_array().unwrap().iter().find(|item| item["type"] == "function_call_output").unwrap();
             assert!(output["output"].as_array().unwrap().iter().any(|part| part["type"] == "input_audio" && part["audio_url"] == expected_audio));
             reply(&mut socket, text("done", 3), 3).await;
             fourth
         });
-        let mut input = fixture::input(&base, "media", Arc::new(fixture::Effects { log:log.clone(), count:Arc::default(), together:Arc::new(tokio::sync::Barrier::new(2)) }));
-        input.provider.kind = ProviderKind::OpenaiResponses; input.provider_options = json!({"openai":{"store":false}});
-        let handler = Arc::new(GateHandler { gates: gates.clone() });
-        if let RunWork::Message { tools, .. } = &mut input.work {
-            *tools = ToolCatalog::new(["gate", "hold"].map(|name| ToolRegistration {
-                definition:ToolDefinition { name:name.into(), description:"fixture gate".into(), input_schema:json!({"type":"object"}), provider:None, freeform:None, output_schema:None },
-                handler:ToolHandler::Immediate(handler.clone()), nesting:ToolNesting::Nestable, semantics:ToolSemantics::Parallel,
-            })).unwrap();
-        }
-        let engine = Engine::with_pricing(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap(), Arc::new(GatePricing { log:log.clone(), gates, before_commit, calls:std::sync::atomic::AtomicUsize::new(0) })).unwrap();
-        engine.run(log.store(), input.clone(), CancellationToken::new()).await.unwrap();
-        server.await.unwrap(); engine.drain().await; drop(engine);
-        let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
-        log.root().copy_session(maka_event_log::sessions::SessionCopy { source_session_id:"session".into(), target_session_id:"copy".into(), expected_source_revision:revision,
-            purpose:maka_agent_facts::session::CopyPurpose::Branch { position: maka_agent_facts::session::ForkPosition::End, side_conversation:false } }, &json!({}), 2).await.unwrap();
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        input.provider.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        input.invocation.session_id = "copy".into(); input.invocation.turn_id="next-turn".into(); input.invocation.run_id="next-run".into(); input.invocation.invocation_id="next-invocation".into();
+        assert_eq!(message(&f, &session, "question media").await.terminal, Some(Terminal::Completed));
+        server.await.unwrap();
+        let observed = f.query("observe", json!({"sessionId":session})).await.unwrap();
+        let copy = f.mutation_value("fork", json!({
+            "sessionId":session,"expectedRevision":observed["session"]["revision"],
+            "position":{"kind":"end"},"title":"copy","labels":[],
+        })).await.unwrap();
+        let ForkResult::Forked {session:copy} = serde_json::from_value(copy).unwrap() else {
+            panic!("actual completed Session must fork at its exact End revision")
+        };
+        f.shutdown().await.unwrap();
+        drop(pricing);
+        let reopened = NativeFixture::open_with_service(
+            directory.path(), configuration(directory.path(), &["gate", "hold"]),
+            service(Arc::new(Gates::default()), &["gate", "hold"]),
+        ).await.unwrap();
         let replay = tokio::spawn(async move {
             let (mut socket, request) = next_request(&listener).await;
             assert_eq!(notifications(&request), ["first notice", "second notice"]);
             assert!(request["input"].as_array().unwrap().iter().any(|item| item["output"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "input_audio" && part["audio_url"] == audio_url))));
             reply(&mut socket, text("replayed", 4), 4).await;
         });
-        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(5)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
-        engine.run(log.select("copy").await.unwrap().store(), input, CancellationToken::new()).await.unwrap(); replay.await.unwrap(); engine.drain().await; drop(engine);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+        assert_eq!(message(&reopened, &copy.id, "question after restart").await.terminal, Some(Terminal::Completed));
+        replay.await.unwrap();
+        reopened.shutdown().await.unwrap();
       }
     }).await.expect("notification and audio lifecycle must make bounded progress");
 }
@@ -260,68 +337,54 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
 async fn a_background_cell_delivers_final_text_and_audio_without_wait_and_after_restart() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
         let gates = Arc::new(Gates::default());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let f = NativeFixture::open_with_service(
+            directory.path(), configuration(directory.path(), &["gate"]), service(gates.clone(), &["gate"]),
+        ).await.unwrap();
+        let model = configure_model(&f, &base, true).await;
+        let session = f.create("final-cell", directory.path(), Some(backend(&model))).await.unwrap();
         let audio = format!("data:audio/wav;base64,{}", STANDARD.encode(wav()));
         let script = format!("// @exec: {{\"yield_time_ms\":0}}\nawait tools.gate({{}}); text('final background output'); audio({});", serde_json::to_string(&audio).unwrap());
-        let observed = log.clone();
+        let observed = f.state.clone();
+        let observed_session = session.clone();
         let released = gates.clone();
         let expected_audio = audio.clone();
+        let server_listener = listener.clone();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = next_request(&listener).await;
+            let (mut socket, _) = next_request(&server_listener).await;
             reply(&mut socket, json!({"type":"custom_tool_call","id":"exec-item","call_id":"exec-call","name":"exec","input":script}), 0).await;
-            let (mut socket, _) = next_request(&listener).await;
-            let mut changes = observed.subscribe_commits();
+            let (mut socket, _) = next_request(&server_listener).await;
+            let mut changes = observed.subscribe().unwrap();
             released.gate.notify_one();
             loop {
-                let prefix = observed.prefix(100, 1024 * 1024).await.unwrap();
-                if prefix.events.iter().any(|entry| {
-                    let Fact::ToolDispatched { operation_id, name, .. } = &entry.event.fact else { return false; };
-                    name == "code_cell" && prefix.events.iter().any(|settled| matches!(&settled.event.fact, Fact::ToolSettled { operation_id: id, .. } if id == operation_id))
-                }) { break; }
+                changes.borrow_and_update();
+                let run = observed.latest_run(observed_session.clone()).await.unwrap().unwrap();
+                let records = observed.history(run, 0, 256).await.unwrap();
+                if records.iter().any(|entry| matches!(&entry.fact,
+                    Fact::Cell {event:CellEvent::Completed {..}})) { break; }
                 changes.changed().await.unwrap();
             }
             reply(&mut socket, text("interim", 1), 1).await;
-            let (mut socket, final_request) = next_request(&listener).await;
+            let (mut socket, final_request) = next_request(&server_listener).await;
             assert_final_cell_media(&final_request, &expected_audio);
             reply(&mut socket, text("complete", 2), 2).await;
         });
-        let mut input = fixture::input(&base, "final-cell", Arc::new(fixture::Effects { log: log.clone(), count: Arc::default(), together: Arc::new(tokio::sync::Barrier::new(2)) }));
-        input.provider.kind = ProviderKind::OpenaiResponses;
-        input.provider_options = json!({"openai":{"store":false}});
-        if let RunWork::Message { tools, .. } = &mut input.work {
-            *tools = ToolCatalog::new([ToolRegistration {
-                definition: ToolDefinition { name:"gate".into(), description:"fixture gate".into(), input_schema:json!({"type":"object"}), provider:None, freeform:None, output_schema:None },
-                handler: ToolHandler::Immediate(Arc::new(GateHandler { gates })), nesting: ToolNesting::Nestable, semantics: ToolSemantics::Parallel,
-            }]).unwrap();
-        }
-        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(10)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
-        engine.run(log.store(), input.clone(), CancellationToken::new()).await.unwrap();
+        assert_eq!(message(&f, &session, "question final-cell").await.terminal, Some(Terminal::Completed));
         server.await.unwrap();
-        engine.drain().await;
-        drop(engine);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = Arc::new(SessionFixture::open(&path).await.unwrap());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        input.provider.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        input.invocation.turn_id = "next-turn".into();
-        input.invocation.run_id = "next-run".into();
-        input.invocation.invocation_id = "next-invocation".into();
-        if let RunWork::Message { tools, .. } = &mut input.work { *tools = ToolCatalog::default(); }
+        f.shutdown().await.unwrap();
+        let reopened = NativeFixture::open_with_service(
+            directory.path(), configuration(directory.path(), &[]), service(Arc::new(Gates::default()), &["gate"]),
+        ).await.unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, request) = next_request(&listener).await;
             assert_final_cell_media(&request, &audio);
             reply(&mut socket, text("reopened", 3), 3).await;
         });
-        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(10)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
-        engine.run(reopened.store(), input, CancellationToken::new()).await.unwrap();
+        assert_eq!(message(&reopened, &session, "question after restart").await.terminal, Some(Terminal::Completed));
         server.await.unwrap();
-        engine.drain().await;
-        drop(engine);
-        Arc::try_unwrap(reopened).ok().unwrap().close().await.unwrap();
+        reopened.shutdown().await.unwrap();
     }).await.unwrap();
 }
 

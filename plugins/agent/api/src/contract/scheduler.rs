@@ -73,7 +73,7 @@ pub struct ScheduledTarget {
     pub workspace: Workspace,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
-    pub binding: maka_agent_facts::workspace::BindingStamp,
+    pub binding: maka_sandbox::workspace::BindingStamp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

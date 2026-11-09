@@ -21,10 +21,12 @@
 mod page;
 mod resource;
 mod shell;
+mod source;
 mod tool_result;
 pub use page::{ReadPage, TextPageScan};
-pub use resource::ResourceAddress;
-pub use shell::ReadMetadata;
+pub use resource::{ResourceAddress, imported_tool_result_path, parse_imported_tool_result_path};
+pub use shell::{ReadMetadata, read_shell_page};
+pub use source::{Utf8Page, json_page, projection_page};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -155,6 +157,17 @@ impl ReadInput {
 }
 
 impl ReadRequest {
+    pub fn bind_imported_tool_result(
+        &mut self,
+        address: &crate::history::HistoryRowAddress,
+    ) -> Result<(), ReadError> {
+        if self.is_continuation() {
+            return Err(ReadError::InvalidContinuation);
+        }
+        self.path = imported_tool_result_path(address).map_err(|_| ReadError::InvalidInput)?;
+        Ok(())
+    }
+
     pub fn is_continuation(&self) -> bool {
         matches!(self.start, Start::Continuation { .. })
     }
@@ -202,6 +215,43 @@ fn present_limit<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonZeroUsize>
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn imported_continuations_keep_the_original_leaf_range_and_complete_tail_hash() {
+        let address = crate::history::HistoryRowAddress::Imported {
+            path: vec![crate::durable::RunId::new()],
+            snapshot: crate::history_snapshot::SnapshotId::new(),
+            message_ordinal: 4,
+            part_ordinal: 2,
+        };
+        let uri = imported_tool_result_path(&address).unwrap();
+        let input: ReadInput = serde_json::from_value(json!({
+            "path": uri, "offset": 1, "limit": 2,
+        }))
+        .unwrap();
+        let mut request = input.resolve().unwrap();
+        request.bind_imported_tool_result(&address).unwrap();
+        let text = format!("skip\n{}\nend\noutside", "π🙂".repeat(1000));
+        let page = request.page_with_budget(&text, 1000).unwrap();
+        assert_eq!(page.offset, 1);
+        assert!(page.partial_line);
+        let next = page.next.unwrap();
+        assert_eq!(next.limit, NonZeroUsize::new(2));
+        let mut continuation = next.resolve().unwrap();
+        assert_eq!(
+            parse_imported_tool_result_path(continuation.path()).unwrap(),
+            Some(address.clone())
+        );
+        assert_eq!(
+            continuation.bind_imported_tool_result(&address),
+            Err(ReadError::InvalidContinuation)
+        );
+        assert!(continuation.page_with_budget(&text, 1000).is_ok());
+        assert_eq!(
+            continuation.page(&text.replace("outside", "changed")),
+            Err(ReadError::ContentChanged)
+        );
+    }
 
     #[test]
     fn continuation_decoding_is_strict_and_never_combines_position_with_line_offset() {

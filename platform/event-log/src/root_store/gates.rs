@@ -40,6 +40,7 @@ pub(super) enum Key {
 }
 
 pub(super) struct Gates {
+    pub(super) workspaces: super::workspace_fence::Registry,
     entries: Mutex<HashMap<Key, Weak<Registration>>>,
     stop: CancellationToken,
     lifetime: Mutex<Lifetime>,
@@ -49,8 +50,34 @@ pub(super) struct Gates {
 struct Lifetime {
     active: usize,
     recovering: bool,
-    unconfirmed: Vec<crate::connection::custody::Custody>,
+    unconfirmed: Vec<Arc<RetainedEntry>>,
 }
+struct RetainedEntry {
+    _custody: crate::connection::custody::Custody,
+}
+
+pub(super) struct RetainedSettlement {
+    gates: Arc<Gates>,
+    entry: Arc<RetainedEntry>,
+}
+impl RetainedSettlement {
+    pub(super) fn confirm_cleanup(self) {
+        let retained = {
+            let mut lifetime = self.gates.lifetime.lock().unwrap();
+            let index = lifetime
+                .unconfirmed
+                .iter()
+                .position(|entry| Arc::ptr_eq(entry, &self.entry))
+                .expect("original retained owner can only settle once");
+            lifetime.unconfirmed.swap_remove(index)
+        };
+        // Custody destruction may finish work and re-enter the gates registry.
+        drop(retained);
+        drop(self.entry);
+        self.gates.changed.notify_waiters();
+    }
+}
+
 struct Registration {
     key: Key,
     registry: Weak<Gates>,
@@ -76,6 +103,7 @@ pub(super) struct ExclusivePins {
 impl Gates {
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
+            workspaces: super::workspace_fence::Registry::default(),
             entries: Mutex::new(HashMap::new()),
             stop: CancellationToken::new(),
             lifetime: Mutex::new(Lifetime::default()),
@@ -132,8 +160,28 @@ impl Gates {
         self.changed.notify_waiters();
     }
     pub(super) fn retain_unconfirmed(&self, custody: crate::connection::custody::Custody) {
-        self.lifetime.lock().unwrap().unconfirmed.push(custody);
+        self.lifetime
+            .lock()
+            .unwrap()
+            .unconfirmed
+            .push(Arc::new(RetainedEntry { _custody: custody }));
         self.changed.notify_waiters();
+    }
+    pub(super) fn retain_with_settlement(
+        self: &Arc<Self>,
+        custody: crate::connection::custody::Custody,
+    ) -> RetainedSettlement {
+        let entry = Arc::new(RetainedEntry { _custody: custody });
+        self.lifetime
+            .lock()
+            .unwrap()
+            .unconfirmed
+            .push(entry.clone());
+        self.changed.notify_waiters();
+        RetainedSettlement {
+            gates: self.clone(),
+            entry,
+        }
     }
     pub(super) fn is_closing(&self) -> bool {
         self.stop.is_cancelled()
@@ -155,6 +203,22 @@ impl Gates {
                     && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty())
                 {
                     return !lifetime.unconfirmed.is_empty();
+                }
+            }
+            changed.await;
+        }
+    }
+    /// A failed shutdown receipt is final, but its original owner may still
+    /// receive actual late cleanup evidence before closing its original SQL.
+    pub(super) async fn wait_for_settlement(&self) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let lifetime = self.lifetime.lock().unwrap();
+                if lifetime.active == 0 && lifetime.unconfirmed.is_empty() {
+                    return;
                 }
             }
             changed.await;

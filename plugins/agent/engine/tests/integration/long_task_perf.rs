@@ -17,34 +17,44 @@
  * under the License.
  */
 
-//! Ignored engine-only benchmark; no Host admission or agent.send transport.
-//! Run a release test binary with --ignored --exact long_task_perf::engine_long_history --nocapture.
-//! MAKA_ENGINE_PERF_TURNS=250,1000 MAKA_ENGINE_PERF_REPETITIONS=5
-//! MAKA_ENGINE_PERF_CHECKPOINT=1 adds a real compact Run before each timed Run.
-//! MAKA_ENGINE_PERF_TOOL_EVERY=20 MAKA_ENGINE_PERF_TOOLS_PER_TURN=1 models sparse tools.
-//! Set those to 1 and 8 for dense stress; MAKA_ENGINE_PERF_RESULT_BYTES=128 controls payloads.
-//! Optional MAKA_ENGINE_PERF_FIXTURE_DIR=/tmp/maka-perf and MAKA_ENGINE_PERF_FIXTURE_TAG=<revision>
-//! cache pristine bundles, imported into a fresh Root for every sample. Use separate tags/directories per build.
-//! Checkpoint histories compact every 1000 turns; raw requests retain the HTTP fixture's 16 MiB limit.
-use crate::support::store::SessionFixture;
-use crate::support::{context as fixture, image_projection::identity};
-use maka_agent_facts::{
-    context::ModelPurpose,
-    event::{EventWrite, Fact, InvocationOutcome, LogScope, RuntimeEvent},
-    input::InvocationInput,
-    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind},
-    tool_call::ToolCallIdentity,
-    tool_output::ToolOutput,
+//! Ignored release harness, measurement version 2: public Native SDK admission,
+//! queue delivery, preparation, HTTP and the same Run's canonical terminal.
+//! The retired Engine::run engine-only timings are not comparable to these timings.
+//! Run with --release --ignored --exact long_task_perf::engine_long_history --nocapture.
+//! Defaults: TURNS=250,1000 REPETITIONS=5 TOOL_EVERY=20 TOOLS_PER_TURN=1 RESULT_BYTES=128.
+//! All settings use MAKA_ENGINE_PERF_. Dense stress uses TOOL_EVERY=1 TOOLS_PER_TURN=8.
+//! CHECKPOINT=1 runs actual SDK compact outside measurement (at most 1000 seed turns).
+//! FIXTURE_DIR and explicit FIXTURE_TAG cache versioned CLI transcript bundles in
+//! temporary storage, not the retired EventLog/Root bundle format. Every sample
+//! imports into a fresh Root. Setup, import and compact are outside measurement.
+use crate::support::{
+    context::{SUMMARY, respond},
+    native::NativeFixture,
 };
+use maka_agent_api::{
+    Configuration, ModelSelection,
+    contract::{BackendPreference, CompactResult, SendResult},
+};
+use maka_agent_facts::{
+    durable::{BackendSpec, Fact, RunId, RunOrigin, Terminal},
+    model::ModelPart,
+};
+use maka_agent_state::queue::MessageResolution;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    fs::File,
+    io::{BufWriter, Read, Write},
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
-use tokio::net::TcpListener;
-use tokio_util::sync::CancellationToken;
+use tokio::{
+    io::AsyncReadExt,
+    net::{TcpListener, TcpStream},
+};
+
+const CACHE_FORMAT: &str = "native-sdk-perf-cli-jsonl-v1";
+const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 fn setting(name: &str, default: usize) -> usize {
     std::env::var(name).map_or(default, |value| {
@@ -52,268 +62,8 @@ fn setting(name: &str, default: usize) -> usize {
     })
 }
 
-// Tool turns follow stale_pruning; ordinary turns persist validated streamed text.
-// Commit actual body receipts before the closed turn; setup stays outside measurement.
-async fn seed(
-    log: &SessionFixture,
-    range: std::ops::Range<usize>,
-    result_bytes: usize,
-    tool_every: usize,
-    tools_per_turn: usize,
-) -> (usize, usize) {
-    let mut event_count = 0;
-    let mut tool_results = 0;
-    for turn in range {
-        let invocation = identity(&format!("history-{turn}"));
-        let step = format!("step-{turn}");
-        let tool_count = if turn % tool_every == 0 {
-            tools_per_turn
-        } else {
-            0
-        };
-        let calls: Vec<_> = (0..tool_count)
-            .map(|call| {
-                json!({
-                    "kind":"tool_call", "call":{
-                        "id":format!("call-{turn}-{call}"), "name":"Read",
-                        "input":{"kind":"json","data":{"path":format!("file-{turn}-{call}")}}, "provider_executed":false
-                    }
-                })
-            })
-            .collect();
-        let mut writes = Vec::new();
-        for fact in [
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    source_messages: Vec::new(),
-                    content: format!("question-history-{turn}").into(),
-                    request_fingerprint: None,
-                },
-            },
-            Fact::ModelRequested {
-                source_capture: maka_agent_facts::event::SourceCapture {
-                    publication_watermark: 0,
-                    prior_unknown: false,
-                },
-                item_acceptance: tool_count == 0,
-                purpose: ModelPurpose::Main,
-                context: None,
-                context_breakdown: None,
-                checkpoint_event_id: None,
-                effective_source_digest: None,
-                step_id: step.clone(),
-                model_id: "test".into(),
-                source_scope: LogScope::Session {
-                    id: "session".into(),
-                },
-                source_high_water: *log.subscribe_commits().borrow() + 1,
-                source_digest: "legacy".into(),
-                input_digest: "legacy".into(),
-                route_identity: "legacy".into(),
-            },
-        ] {
-            writes.push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
-        }
-        let mut writer =
-            crate::support::model_records::writer(invocation.clone(), &step, tool_count == 0);
-        let observations = if tool_count > 0 {
-            let parts: Vec<maka_agent_facts::model::ModelPart> =
-                serde_json::from_value(json!(calls)).unwrap();
-            let mut events: Vec<_> = parts
-                .into_iter()
-                .map(|part| match part {
-                    maka_agent_facts::model::ModelPart::ToolCall { call } => {
-                        ModelEvent::ToolCall(call)
-                    }
-                    _ => unreachable!("fixture contains tool calls"),
-                })
-                .collect();
-            events.push(ModelEvent::Finished {
-                compaction: None,
-                reason: ModelFinishReason::ToolCalls,
-                usage: ModelUsage::default(),
-                provider_options: None,
-            });
-            events
-        } else {
-            let mut events = vec![ModelEvent::PartStarted {
-                id: "text".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            }];
-            for _ in 0..13 {
-                events.push(ModelEvent::PartDelta {
-                    id: "text".into(),
-                    text: "durable conversation text. ".into(),
-                    provider_options: None,
-                });
-            }
-            events.push(ModelEvent::PartFinished {
-                id: "text".into(),
-                provider_options: None,
-            });
-            events.push(ModelEvent::Finished {
-                compaction: None,
-                reason: ModelFinishReason::Stop,
-                usage: ModelUsage::default(),
-                provider_options: None,
-            });
-            events
-        };
-        writes.extend(crate::support::model_records::observations(
-            &mut writer,
-            observations,
-        ));
-        let sequences = log.append_batch(&writes).await.unwrap();
-        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
-        event_count += writes.len();
-        writes.clear();
-        let completed = writer.completed().unwrap();
-        assert_eq!(completed.local_call_ids().len(), tool_count);
-        let output = completed.completion();
-        writes.push(
-            EventWrite::plain(RuntimeEvent::new(
-                invocation.clone(),
-                Fact::ModelCompleted {
-                    step_id: step.clone(),
-                    output,
-                },
-            ))
-            .unwrap(),
-        );
-        for call in 0..tool_count {
-            let call_id = format!("call-{turn}-{call}");
-            let operation = format!("{step}:{call_id}");
-            writes.push(
-                EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::ToolDispatched {
-                        presentation: None,
-                        title: None,
-                        operation_id: operation.clone(),
-                        call: ToolCallIdentity::provider(step.clone(), call_id),
-                        name: "Read".into(),
-                        input: json!({"path":format!("file-{turn}-{call}")}),
-                    },
-                ))
-                .unwrap(),
-            );
-            writes.push(
-                EventWrite::tool_success(
-                    format!("result-{turn}-{call}"),
-                    SystemTime::now(),
-                    invocation.clone(),
-                    operation,
-                    ToolOutput::Json(json!({"content":"x".repeat(result_bytes)})).into(),
-                )
-                .unwrap()
-                .0,
-            );
-        }
-        writes.push(
-            EventWrite::plain(RuntimeEvent::new(
-                invocation,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Completed,
-                },
-            ))
-            .unwrap(),
-        );
-        event_count += writes.len();
-        tool_results += tool_count;
-        log.append_batch(&writes).await.unwrap();
-    }
-    (event_count, tool_results)
-}
-
-// Only fixture setup uses compaction; never include it in the measured Run.
-async fn compact(worker: &maka_agent_engine::Engine, log: &SessionFixture, through_turn: usize) {
-    println!(
-        "{}",
-        json!({"phase":"compact_start", "through_turn":through_turn})
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let request = fixture::read_request(&mut socket).await;
-        assert!(request["messages"].as_array().unwrap().len() > 1);
-        fixture::respond(&mut socket, fixture::SUMMARY, "stop").await;
-    });
-    let before = *log.subscribe_commits().borrow();
-    let invocation = tokio::time::timeout(
-        Duration::from_secs(300),
-        worker.run(
-            log.store(),
-            fixture::input(&base, &format!("compact-{through_turn}"), true),
-            CancellationToken::new(),
-        ),
-    )
-    .await
-    .expect("compact timed out")
-    .expect("compact failed");
-    let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
-        panic!("compact fixture unexpectedly parked")
-    };
-    server.await.unwrap();
-    let through = *log.subscribe_commits().borrow();
-    let page = log
-        .session_events("session", before, through, 512, 1024 * 1024)
-        .await
-        .unwrap();
-    assert!(page.next_after.is_none(), "unexpectedly large compact Run");
-    assert!(
-        page.events
-            .iter()
-            .any(|event| event.event.invocation == invocation
-                && matches!(event.event.fact, Fact::ContextCheckpointRecorded { .. }))
-    );
-    println!(
-        "{}",
-        json!({"phase":"compact_done", "through_turn":through_turn})
-    );
-}
-
-async fn prepare(
-    log: &Arc<SessionFixture>,
-    turns: usize,
-    result_bytes: usize,
-    tool_every: usize,
-    tools_per_turn: usize,
-    checkpoint: bool,
-) -> (usize, usize) {
-    println!(
-        "{}",
-        json!({"phase":"seed_start", "history_turns":turns, "checkpoint":checkpoint})
-    );
-    let started = Instant::now();
-    let worker = fixture::engine();
-    let mut counts = (0, 0);
-    for start in (0..turns).step_by(1000) {
-        let end = (start + 1000).min(turns);
-        let batch = seed(log, start..end, result_bytes, tool_every, tools_per_turn).await;
-        counts.0 += batch.0;
-        counts.1 += batch.1;
-        if checkpoint {
-            compact(&worker, log, end).await;
-        }
-        println!(
-            "{}",
-            json!({"phase":"seed_progress", "history_turns":end, "history_events":counts.0})
-        );
-    }
-    worker.drain().await;
-    println!(
-        "{}",
-        json!({"phase":"seed_done", "history_turns":turns, "setup_ms":started.elapsed().as_secs_f64()*1000.0})
-    );
-    counts
-}
-
 fn cache_directory() -> Option<PathBuf> {
     let directory = PathBuf::from(std::env::var_os("MAKA_ENGINE_PERF_FIXTURE_DIR")?);
-    // Never accept an application-data location for benchmark fixture caches.
     let allowed = [std::env::temp_dir(), PathBuf::from("/tmp")];
     assert!(
         allowed.iter().any(|root| directory.starts_with(root)),
@@ -331,9 +81,308 @@ fn cache_directory() -> Option<PathBuf> {
     Some(directory)
 }
 
+fn fingerprint(path: &Path) -> String {
+    let mut file = File::open(path).unwrap();
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let n = file.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+    }
+    hex::encode(digest.finalize())
+}
+
+// Foreign records are inert input to the real CLI importer, never local Run facts.
+fn seed(
+    path: &Path,
+    turns: usize,
+    result_bytes: usize,
+    tool_every: usize,
+    tools_per_turn: usize,
+) -> Value {
+    let mut file = BufWriter::new(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap(),
+    );
+    let mut raw_records = 0usize;
+    let mut write = |row: Value| {
+        serde_json::to_writer(&mut file, &row).unwrap();
+        file.write_all(b"\n").unwrap();
+        raw_records += 1;
+    };
+    write(
+        json!({"type":"session_meta","payload":{"id":"perf-foreign-history","cwd":"/foreign/perf","model_provider":"foreign-fixture"}}),
+    );
+    let mut messages = 0usize;
+    let mut tools = 0usize;
+    for turn in 0..turns {
+        write(
+            json!({"type":"turn_context","payload":{"turn_id":format!("history-{turn}"),"model":"foreign-test"}}),
+        );
+        write(
+            json!({"type":"event_msg","payload":{"type":"user_message","message":format!("question-history-{turn}")}}),
+        );
+        messages += 1;
+        if turn % tool_every == 0 {
+            for call in 0..tools_per_turn {
+                let id = format!("call-{turn}-{call}");
+                write(
+                    json!({"type":"response_item","payload":{"type":"function_call","call_id":id,"name":"Read","arguments":json!({"path":format!("file-{turn}-{call}")}).to_string()}}),
+                );
+                write(
+                    json!({"type":"response_item","payload":{"type":"function_call_output","call_id":id,"output":{"content":"x".repeat(result_bytes)}}}),
+                );
+                messages += 2;
+                tools += 1;
+            }
+        } else {
+            write(
+                json!({"type":"event_msg","payload":{"type":"agent_message","message":"durable conversation text. ".repeat(13)}}),
+            );
+            messages += 1;
+        }
+    }
+    file.flush().unwrap();
+    file.get_ref().sync_all().unwrap();
+    json!({"history_raw_records":raw_records,"history_imported_messages":messages,"history_tool_results":tools})
+}
+
+fn configuration(workspace: &Path, source: &Path) -> Configuration {
+    serde_json::from_value(json!({
+        "locale":"en","tools":[],"automaticTitles":false,
+        "workspaceRoots":[{"label":"Disposable workspace","path":workspace}],
+        "importRoots":[{"label":"Pristine CLI fixture","path":source}],
+        "permissions":{"access":"workspace_write","requestPermissions":false},
+    }))
+    .unwrap()
+}
+
+async fn imported(f: &NativeFixture, workspace: &Path, counts: &Value) -> (String, RunId) {
+    let roots = f
+        .query("importDirectories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let sources = f.mutation_value("import", json!({"kind":"save_source","revision":0,"id":null,"name":"Pristine long history","location":{"kind":"codex","path":roots["roots"][0]["path"]}})).await.unwrap();
+    assert_eq!(sources["kind"], "sources");
+    let source = json!({"id":sources["sources"][0]["id"],"revision":sources["revision"]});
+    let catalog = f.query("imports", json!({"kind":"catalog","source":source,"query":{"text":"","includeArchived":false,"cursor":null}})).await.unwrap();
+    let entries = catalog["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let preview = f.query("imports", json!({"kind":"preview","source":source,"entry":{"sessionId":entries[0]["id"],"path":entries[0]["path"]},"digest":null,"after":0})).await.unwrap();
+    assert_eq!(preview["kind"], "preview");
+    assert_eq!(
+        preview["preview"]["records"],
+        counts["history_imported_messages"]
+    );
+    let destinations = f
+        .query("directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let target = destinations["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|root| root["path"].as_str() == workspace.to_str())
+        .expect("configured disposable destination root");
+    let copied = f.mutation_value("import", json!({"kind":"copy","selection":preview["preview"]["selection"],"path":target["path"],"title":"Long-task fixture"})).await.unwrap();
+    assert_eq!(copied["kind"], "imported");
+    let session = copied["session"]["id"].as_str().unwrap().to_owned();
+    let runs = f.state.runs(session.clone(), None, 16).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    let marker = f.state.frontier(runs[0]).await.unwrap();
+    assert!(matches!(marker.spec.backend, BackendSpec::Historical {}));
+    assert!(matches!(marker.spec.origin, RunOrigin::Imported { .. }));
+    assert_eq!(marker.terminal, Some(Terminal::Completed));
+    assert!(
+        marker.attempts.is_empty() && marker.tools.is_empty(),
+        "foreign history cannot execute"
+    );
+    assert!(
+        f.state
+            .queue()
+            .read(session.clone())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    (session, marker.run)
+}
+
+async fn delivered(f: &NativeFixture, session: &str, sent: SendResult) -> RunId {
+    let SendResult::Queued { message_id, .. } = sent else {
+        panic!("SDK send must return the original Queued receipt")
+    };
+    let mut changes = f.state.subscribe().unwrap();
+    loop {
+        changes.borrow_and_update();
+        match f
+            .state
+            .queue()
+            .resolve_message(session.into(), message_id.clone())
+            .await
+            .unwrap()
+        {
+            MessageResolution::Delivered { run, shared: false } => return run,
+            MessageResolution::Pending => changes.changed().await.unwrap(),
+            other => panic!("original message was not delivered exactly once: {other:?}"),
+        }
+    }
+}
+
+async fn line(socket: &mut TcpStream, limit: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n") {
+        assert!(bytes.len() < limit);
+        bytes.push(socket.read_u8().await.unwrap());
+    }
+    bytes
+}
+
+async fn read_request(socket: &mut TcpStream) -> Value {
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        assert!(header.len() < 64 * 1024);
+        header.push(socket.read_u8().await.unwrap());
+    }
+    let header = String::from_utf8(header).unwrap();
+    assert!(header.starts_with("POST /v1/chat/completions "));
+    let chunked = header.lines().any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.eq_ignore_ascii_case("transfer-encoding")
+                && value.trim().eq_ignore_ascii_case("chunked")
+        })
+    });
+    let mut body = Vec::new();
+    if chunked {
+        loop {
+            let size = line(socket, 1024).await;
+            let size = usize::from_str_radix(
+                std::str::from_utf8(&size)
+                    .unwrap()
+                    .trim()
+                    .split(';')
+                    .next()
+                    .unwrap(),
+                16,
+            )
+            .unwrap();
+            assert!(
+                size <= MAX_REQUEST_BYTES - body.len(),
+                "request exceeds 16 MiB fixture limit"
+            );
+            if size == 0 {
+                assert_eq!(line(socket, 2).await, b"\r\n");
+                break;
+            }
+            let start = body.len();
+            body.resize(start + size, 0);
+            socket.read_exact(&mut body[start..]).await.unwrap();
+            assert_eq!(line(socket, 2).await, b"\r\n");
+        }
+    } else {
+        let size: usize = header
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(key, value)| {
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+            })
+            .expect("HTTP request length");
+        assert!(
+            size <= MAX_REQUEST_BYTES,
+            "request exceeds 16 MiB fixture limit"
+        );
+        body.resize(size, 0);
+        socket.read_exact(&mut body).await.unwrap();
+    }
+    serde_json::from_slice(&body).unwrap()
+}
+
+async fn facts(f: &NativeFixture, run: RunId) -> Vec<maka_agent_facts::durable::RecordedFact> {
+    let mut after = 0;
+    let mut result = Vec::new();
+    loop {
+        let page = f.state.history(run, after, 256).await.unwrap();
+        let full = page.len() == 256;
+        if let Some(last) = page.last() {
+            after = last.revision;
+        }
+        result.extend(page);
+        if !full {
+            return result;
+        }
+    }
+}
+
+async fn compact(
+    f: &NativeFixture,
+    session: &str,
+    model: &ModelSelection,
+    listener: &TcpListener,
+    through_turn: usize,
+) {
+    println!(
+        "{}",
+        json!({"phase":"compact_start","through_turn":through_turn})
+    );
+    let (summary, ()) = tokio::join!(
+        async {
+            let value = f
+                .mutation_value("compact", json!({"sessionId":session,"model":model}))
+                .await
+                .unwrap();
+            let CompactResult::Started { execution } = serde_json::from_value(value).unwrap()
+            else {
+                panic!("actual SDK compact did not start")
+            };
+            f.wait_terminal(execution.run_id).await.unwrap()
+        },
+        async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request["messages"].as_array().unwrap().len() > 1);
+            respond(&mut socket, SUMMARY, "stop").await;
+        }
+    );
+    assert_eq!(summary.terminal, Some(Terminal::Completed));
+    assert!(summary.baseline.is_some());
+    assert!(
+        facts(f, summary.run)
+            .await
+            .iter()
+            .any(|recorded| matches!(recorded.fact, Fact::ContextCompacted { .. }))
+    );
+    println!(
+        "{}",
+        json!({"phase":"compact_done","through_turn":through_turn})
+    );
+}
+
+fn storage_bytes(path: &Path) -> (u64, u64) {
+    let database = path.join("root").join(maka_event_log::root::ROOT_DATABASE);
+    let bytes = std::fs::metadata(&database).unwrap().len();
+    let wal = PathBuf::from(format!("{}-wal", database.to_str().unwrap()));
+    let wal_bytes = match std::fs::metadata(wal) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => panic!("Root WAL metadata: {error}"),
+    };
+    assert!(bytes > 0);
+    (bytes, wal_bytes)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "release performance harness: creates disposable long histories"]
-#[allow(clippy::assertions_on_constants)] // Compile in debug; reject only execution.
+#[allow(clippy::assertions_on_constants)]
 async fn engine_long_history() {
     assert!(
         !cfg!(debug_assertions),
@@ -348,225 +397,192 @@ async fn engine_long_history() {
     let result_bytes = setting("MAKA_ENGINE_PERF_RESULT_BYTES", 128);
     let tool_every = setting("MAKA_ENGINE_PERF_TOOL_EVERY", 20);
     let tools_per_turn = setting("MAKA_ENGINE_PERF_TOOLS_PER_TURN", 1);
-    assert!(tool_every > 0 && tools_per_turn > 0);
     let checkpoint = setting("MAKA_ENGINE_PERF_CHECKPOINT", 0) == 1;
-    assert!(repetitions > 0 && turns.iter().all(|turns| *turns > 0));
+    assert!(tool_every > 0 && tools_per_turn > 0);
+    assert!(repetitions > 0 && !turns.is_empty() && turns.iter().all(|turns| *turns > 0));
     let cache = cache_directory();
     let tag = cache.as_ref().map(|_| {
         std::env::var("MAKA_ENGINE_PERF_FIXTURE_TAG")
             .expect("cached fixtures require an explicit revision tag")
     });
     let source_fingerprint = hex::encode(Sha256::digest(include_bytes!("long_task_perf.rs")));
+    println!(
+        "{}",
+        json!({"phase":"case_map","measurementVersion":2,
+        "retired":["engine-only Engine::run timings","legacy EventLog cache bundles","legacy seeded runtime event count"],
+        "active":"public Native SDK send to HTTP and same canonical Run terminal; includes Host admission and queue",
+        "unavailable":"checkpoint=true with turns>1000: public CLI copy cannot append to the same compacted session; no synthetic checkpoint chain"})
+    );
     for turns in turns {
-        let settings = json!({"turns":turns, "result_bytes":result_bytes, "tool_every":tool_every,
-            "tools_per_turn":tools_per_turn, "checkpoint":checkpoint, "fixture_tag":tag,
-            "source_fingerprint":source_fingerprint, "compact_every":1000});
-        let cache_paths = cache.as_ref().map(|directory| {
-            let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&settings).unwrap()));
-            let stem = format!(
-                "engine-t{turns}-b{result_bytes}-e{tool_every}-n{tools_per_turn}-c{}-{fingerprint}",
-                usize::from(checkpoint)
-            );
-            (
-                directory.join(format!("{stem}.bundle")),
-                directory.join(format!("{stem}.json")),
-            )
-        });
-        if let Some((database, metadata)) = &cache_paths {
-            if !database.exists() && !metadata.exists() {
-                let staging = tempfile::tempdir_in(cache.as_ref().unwrap()).unwrap();
-                let staging_database = staging.path().join("events.sqlite");
-                let log = Arc::new(SessionFixture::open(&staging_database).await.unwrap());
-                let (events, tools) = prepare(
-                    &log,
-                    turns,
-                    result_bytes,
-                    tool_every,
-                    tools_per_turn,
-                    checkpoint,
-                )
-                .await;
-                let high_water = *log.subscribe_commits().borrow();
-                log.write_bundle(database).await.unwrap();
-                Arc::try_unwrap(log)
-                    .ok()
-                    .expect("fixture still has owners")
-                    .close()
-                    .await
-                    .unwrap();
-                let record = json!({"settings":settings, "history_events":events, "history_tool_results":tools, "high_water":high_water});
-                use std::io::Write;
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(metadata)
-                    .unwrap();
-                file.write_all(serde_json::to_string(&record).unwrap().as_bytes())
-                    .unwrap();
-                file.sync_all().unwrap();
+        assert!(
+            !checkpoint || turns <= 1000,
+            "multi-checkpoint imported seed is unavailable; do not substitute only the final checkpoint"
+        );
+        let settings = json!({"turns":turns,"result_bytes":result_bytes,"tool_every":tool_every,"tools_per_turn":tools_per_turn,"checkpoint":checkpoint,"fixture_tag":tag,"source_fingerprint":source_fingerprint,"compact_every":1000,"cache_format":CACHE_FORMAT,"measurementVersion":2});
+        let cached = cache.as_ref().map(|directory| {
+            let key = hex::encode(Sha256::digest(serde_json::to_vec(&settings).unwrap()));
+            let bundle = directory.join(format!("native-sdk-{key}.bundle"));
+            let metadata = directory.join(format!("native-sdk-{key}.json"));
+            if !bundle.exists() && !metadata.exists() {
+                let counts = seed(&bundle, turns, result_bytes, tool_every, tools_per_turn);
+                let record = json!({"format":CACHE_FORMAT,"settings":settings,"counts":counts,"sha256":fingerprint(&bundle)});
+                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&metadata).unwrap();
+                serde_json::to_writer(&mut file, &record).unwrap(); file.sync_all().unwrap();
             }
-            assert!(
-                database.is_file() && metadata.is_file(),
-                "incomplete fixture cache; use a fresh cache directory"
-            );
-            let record: Value = serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
+            assert!(bundle.is_file() && metadata.is_file(), "incomplete fixture cache; use a fresh cache directory");
+            let record: Value = serde_json::from_reader(File::open(metadata).unwrap()).unwrap();
+            assert_eq!(record["format"], CACHE_FORMAT);
             assert_eq!(record["settings"], settings, "fixture settings mismatch");
-        }
+            assert_eq!(record["sha256"].as_str().unwrap(), fingerprint(&bundle));
+            (bundle, record["counts"].clone())
+        });
         for repetition in 0..repetitions {
             let directory = tempfile::tempdir().unwrap();
-            let database = directory.path().join("events.sqlite");
-            let cached = cache_paths.as_ref().map(|(_source, metadata)| {
-                let record: Value =
-                    serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
-                record
-            });
-            let open_started = Instant::now();
-            let log = Arc::new(if let Some((source, _)) = &cache_paths {
-                println!(
-                    "{}",
-                    json!({"phase":"fixture_import_start", "history_turns":turns, "repetition":repetition})
-                );
-                let fixture = SessionFixture::from_bundle(&database, source)
-                    .await
-                    .expect("fixture bundle import failed");
-                println!(
-                    "{}",
-                    json!({"phase":"fixture_import_done", "history_turns":turns, "repetition":repetition})
-                );
-                fixture
+            let workspace = directory.path().join("workspace");
+            let source = directory.path().join("foreign");
+            let transcript = source.join("sessions/2026/rollout-perf.jsonl");
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+            println!(
+                "{}",
+                json!({"phase":"seed_start","history_turns":turns,"checkpoint":checkpoint})
+            );
+            let setup = Instant::now();
+            let counts = if let Some((bundle, counts)) = &cached {
+                std::fs::copy(bundle, &transcript).unwrap();
+                counts.clone()
             } else {
-                SessionFixture::open(&database)
-                    .await
-                    .expect("fixture Root open/schema validation failed")
-            });
-            let store_open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
-            let (history_events, history_tool_results) = if let Some(record) = cached {
-                assert_eq!(
-                    *log.subscribe_commits().borrow(),
-                    record["high_water"].as_u64().unwrap()
-                );
-                (
-                    record["history_events"].as_u64().unwrap() as usize,
-                    record["history_tool_results"].as_u64().unwrap() as usize,
-                )
-            } else {
-                prepare(
-                    &log,
-                    turns,
-                    result_bytes,
-                    tool_every,
-                    tools_per_turn,
-                    checkpoint,
-                )
-                .await
+                seed(&transcript, turns, result_bytes, tool_every, tools_per_turn)
             };
-            let (last, _) = log
-                .invocation_boundary("session", &format!("invocation-history-{}", turns - 1))
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(
-                last.state.terminal_outcome(),
-                Some(InvocationOutcome::Completed)
-            ));
-            let (database_bytes, database_wal_bytes) = log.storage_bytes();
-            let worker = fixture::engine();
-            let before = *log.subscribe_commits().borrow();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let input = fixture::input(&base, "measured", false);
+            let opened = Instant::now();
+            let f = NativeFixture::open(directory.path(), configuration(&workspace, &source))
+                .await
+                .unwrap();
+            let store_open_ms = opened.elapsed().as_secs_f64() * 1000.0;
+            let model = f.configure_model(&base, "test", "fixture").await.unwrap();
             println!(
                 "{}",
-                json!({"phase":"measure_start", "history_turns":turns, "checkpoint":checkpoint, "repetition":repetition})
+                json!({"phase":"fixture_import_start","history_turns":turns,"repetition":repetition})
             );
-            let started = Instant::now();
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let request = fixture::read_request(&mut socket).await;
-                let receipt_ms = started.elapsed().as_secs_f64() * 1000.0;
-                let messages = request["messages"].to_string();
-                assert!(messages.contains("question-measured"));
-                if checkpoint {
-                    assert!(messages.contains("summary-marker"));
-                } else {
-                    assert!(messages.contains("question-history-0"));
-                    assert!(messages.contains(&format!("question-history-{}", turns - 1)));
-                }
-                let message_count = request["messages"].as_array().unwrap().len();
-                let tool_message_count = request["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|message| message["role"] == "tool")
-                    .count();
-                let bytes = serde_json::to_vec(&request).unwrap().len();
-                fixture::respond(&mut socket, "benchmark-done", "stop").await;
-                (
-                    receipt_ms,
-                    bytes,
-                    messages.len(),
-                    message_count,
-                    tool_message_count,
-                )
-            });
-            let invocation = tokio::time::timeout(
-                Duration::from_secs(300),
-                worker.run(log.store(), input, CancellationToken::new()),
-            )
-            .await
-            .expect("engine Run timed out")
-            .expect("engine Run failed");
-            let completion_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
-                panic!("measured terminal fixture unexpectedly parked")
-            };
+            let (session, marker) = imported(&f, &workspace, &counts).await;
             println!(
                 "{}",
-                json!({"phase":"measure_done", "history_turns":turns, "repetition":repetition})
+                json!({"phase":"fixture_import_done","history_turns":turns,"repetition":repetition})
+            );
+            if checkpoint {
+                tokio::time::timeout(
+                    Duration::from_secs(300),
+                    compact(&f, &session, &model, &listener, turns),
+                )
+                .await
+                .expect("compact timed out");
+            }
+            println!(
+                "{}",
+                json!({"phase":"seed_done","history_turns":turns,"setup_ms":setup.elapsed().as_secs_f64()*1000.0})
+            );
+            let history_canonical_facts = facts(&f, marker).await.len();
+            let (database_bytes, database_wal_bytes) = storage_bytes(directory.path());
+            println!(
+                "{}",
+                json!({"phase":"measure_start","history_turns":turns,"checkpoint":checkpoint,"repetition":repetition})
+            );
+            // This interval intentionally includes the real SDK and queue, unlike version 1.
+            let started = Instant::now();
+            let ((run, terminal), wire) = tokio::time::timeout(Duration::from_secs(300), async {
+                tokio::join!(
+                    async {
+                        let sent = f
+                            .send(
+                                &session,
+                                "question-measured",
+                                Some(BackendPreference::Model {
+                                    connection_id: model.connection_id.clone(),
+                                    model_id: model.model_id.clone(),
+                                    thinking_level: None,
+                                }),
+                            )
+                            .await
+                            .unwrap();
+                        let run = delivered(&f, &session, sent).await;
+                        let terminal = f.wait_terminal(run).await.unwrap();
+                        (run, terminal)
+                    },
+                    async {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let request = read_request(&mut socket).await;
+                        let receipt_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        let messages = request["messages"].to_string();
+                        assert!(messages.contains("question-measured"));
+                        if checkpoint {
+                            assert!(messages.contains("summary-marker"));
+                        } else {
+                            assert!(messages.contains("question-history-0"));
+                            assert!(messages.contains(&format!("question-history-{}", turns - 1)));
+                        }
+                        let rows = request["messages"].as_array().unwrap();
+                        let tools = rows
+                            .iter()
+                            .filter(|message| message["role"] == "tool")
+                            .count();
+                        let bytes = serde_json::to_vec(&request).unwrap().len();
+                        assert!(bytes <= MAX_REQUEST_BYTES);
+                        if !checkpoint {
+                            assert_eq!(
+                                tools as u64,
+                                counts["history_tool_results"].as_u64().unwrap()
+                            );
+                        }
+                        respond(&mut socket, "benchmark-done", "stop").await;
+                        (receipt_ms, bytes, messages.len(), rows.len(), tools)
+                    }
+                )
+            })
+            .await
+            .expect("Native SDK Run timed out");
+            let completion_ms = started.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "{}",
+                json!({"phase":"measure_done","history_turns":turns,"repetition":repetition})
+            );
+            assert_eq!(terminal.run, run);
+            assert_eq!(terminal.terminal, Some(Terminal::Completed));
+            assert_eq!(
+                terminal.attempts.len(),
+                1,
+                "only one measured model request"
+            );
+            let recorded = facts(&f, run).await;
+            assert!(recorded.len() <= 512, "unexpectedly large measured Run");
+            assert!(
+                serde_json::to_vec(&recorded).unwrap().len() <= 1024 * 1024,
+                "measured canonical page exceeds 1 MiB"
+            );
+            assert!(recorded.iter().any(|recorded| matches!(&recorded.fact, Fact::ModelObserved { part:ModelPart::Text { text, .. }, .. } if text.chunks().collect::<String>().contains("benchmark-done"))));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "measured request must not be replayed"
             );
             let (receipt_ms, request_bytes, message_bytes, message_count, tool_message_count) =
-                server.await.unwrap();
-            worker.drain().await;
-            // Verification deliberately outside measured interval. run() success alone is insufficient.
-            let (boundary, _) = log
-                .invocation_boundary("session", &invocation.invocation_id)
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(
-                boundary.state.terminal_outcome(),
-                Some(InvocationOutcome::Completed)
-            ));
-            let through = *log.subscribe_commits().borrow();
-            let page = log
-                .session_events("session", before, through, 512, 1024 * 1024)
-                .await
-                .unwrap();
-            assert!(page.next_after.is_none(), "unexpectedly large measured Run");
-            assert!(page.events.iter().any(|event| {
-                event.event.invocation == invocation
-                    && match &event.event.fact {
-                        Fact::ModelCompleted { output, .. } => serde_json::to_string(output)
-                            .unwrap()
-                            .contains("benchmark-done"),
-                        _ => false,
-                    }
-            }));
+                wire;
             println!(
                 "{}",
                 json!({
-                    "benchmark":"engine_long_history", "checkpoint":checkpoint,
-                    "history_turns":turns, "history_events":history_events,
-                    "history_tool_results":history_tool_results, "tool_every":tool_every, "tools_per_turn":tools_per_turn, "tool_result_content_bytes":result_bytes,
-                    "repetition":repetition, "request_receipt_ms":receipt_ms,
-                    "engine_completion_ms":completion_ms, "request_bytes":request_bytes,
-                    "store_open_ms":store_open_ms, "database_bytes":database_bytes, "database_wal_bytes":database_wal_bytes, "fixture_cached":cache.is_some(),
-                    "request_messages":message_count, "request_tool_messages":tool_message_count,
-                    // A wire-size proxy, not model tokenizer output or fake server's fixed usage.
-                    "message_bytes_div_3_proxy":message_bytes.div_ceil(3),
-                    "outcome":"completed", "errors":0,
+                    "benchmark":"native_sdk_long_history","measurementVersion":2,"checkpoint":checkpoint,
+                    "timing_scope":"Native SDK send, Host admission, queue delivery through same Run terminal",
+                    "history_turns":turns,"history_raw_records":counts["history_raw_records"],"history_imported_messages":counts["history_imported_messages"],"history_canonical_facts":history_canonical_facts,
+                    "history_tool_results":counts["history_tool_results"],"tool_every":tool_every,"tools_per_turn":tools_per_turn,"tool_result_content_bytes":result_bytes,
+                    "repetition":repetition,"native_sdk_request_receipt_ms":receipt_ms,"native_sdk_completion_ms":completion_ms,"request_bytes":request_bytes,
+                    "store_open_ms":store_open_ms,"database_bytes":database_bytes,"database_wal_bytes":database_wal_bytes,"fixture_cached":cached.is_some(),"fixture_cache_format":CACHE_FORMAT,
+                    "request_messages":message_count,"request_tool_messages":tool_message_count,
+                    "message_bytes_div_3_proxy":message_bytes.div_ceil(3),"outcome":"completed","errors":0,
                 })
             );
+            f.shutdown().await.unwrap();
         }
     }
 }

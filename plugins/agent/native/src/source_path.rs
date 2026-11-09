@@ -101,15 +101,26 @@ pub(crate) fn file_path(source: &HistorySource, workspace: &str) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_agent_facts::{durable::FactId, history::HistoryRowAddress};
     use serde_json::json;
     fn source() -> HistorySource {
+        let call = HistoryRowAddress::Live {
+            sequence: 4,
+            fact: FactId::new(),
+            item_index: 0,
+        };
+        let result = HistoryRowAddress::Live {
+            sequence: 5,
+            fact: FactId::new(),
+            item_index: 0,
+        };
         serde_json::from_value(json!({
-            "position":{"sourceSequence":4,"itemIndex":0},"timestamp":1,"role":"tool_call","fields":["arguments"],
+            "position":call,"timestamp":1,"role":"tool_call","fields":["arguments"],
             "field":"arguments","path":["path"],"format":"text","offset":0,
             "totalBytes":8,"text":"test.txt","tool":{"toolUseId":"call",
-                "call":{"ancestorToolUseIds":[],"origin":"provider","position":{"sourceSequence":4,"itemIndex":0},"name":"arbitrary alias","title":null,"pending":false,"dispatched":true,
+                "call":{"ancestorToolUseIds":[],"origin":"provider","position":call,"name":"arbitrary alias","title":null,"pending":false,"dispatched":true,
                     "presentation":"maka.workspace.Files@1/write"},
-                "result":{"position":{"sourceSequence":5,"itemIndex":0},"isError":false,"image":false,"images":0,"settlement":"returned"}}
+                "result":{"position":result,"isError":false,"image":false,"images":0,"settlement":"returned"}}
         }))
         .unwrap()
     }
@@ -174,7 +185,12 @@ mod tests {
                 5 => source.path = None,
                 6 => source.path = Some(vec![SourceSegment::Key("content".into())]),
                 7 => source.field = SourceField::Result,
-                _ => source.position.source_sequence = 99,
+                _ => {
+                    let HistoryRowAddress::Live { sequence, .. } = &mut source.position else {
+                        unreachable!()
+                    };
+                    *sequence = 99;
+                }
             }
             assert_eq!(file_path(&source, cwd), None, "variant {variant}");
         }
@@ -196,7 +212,15 @@ mod tests {
         let mut result = base;
         result.role = SourceRole::ToolResult;
         result.field = SourceField::Result;
-        result.position.source_sequence = 5;
+        result.position = result
+            .tool
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .position
+            .clone();
         result.path = Some(vec![
             SourceSegment::Key("value".into()),
             SourceSegment::Key("path".into()),

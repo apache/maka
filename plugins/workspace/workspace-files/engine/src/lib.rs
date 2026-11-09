@@ -33,6 +33,7 @@ mod grep;
 pub use grep::{GREP_DESCRIPTION, GREP_NAME, grep_schema};
 mod mutation;
 mod patch;
+pub mod publication;
 mod scoped;
 mod write;
 mod write_target;

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::event::Fact;
+use maka_agent_facts::durable::Fact;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 async fn binding(f: &Fixture) -> Binding {
@@ -67,24 +67,17 @@ async fn mutation(f: &Fixture, method: &str, input: Value, secret: Option<&str>)
         .await
         .unwrap();
     let reference = prepared.reference().clone();
-    let recorded = f
-        .store
-        .record_application_intent(
-            reference.source.clone(),
-            prepared.consumer().instance().clone(),
-            reference.clone(),
-            Value::Null,
-        )
-        .await
-        .unwrap();
     let result = client
-        .mutate(prepared, recorded)
+        .mutate_owned(prepared, json!({"reference":reference}))
         .await
         .unwrap()
         .result()
         .await;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: maka_plugin_core::operation::OperationResult::Success { value },
+            },
         ..
     } = result.receipt
     else {
@@ -120,8 +113,14 @@ async fn save(f: &Fixture, revision: Value, enabled: bool) -> Value {
     .await
 }
 
-async fn start(listener: &TcpListener, f: &Fixture, session: &str, url: String) -> Value {
-    let started = f.send(session).await.unwrap();
+async fn start(
+    listener: &TcpListener,
+    f: &Fixture,
+    session: &str,
+    url: String,
+) -> maka_agent_facts::durable::RunId {
+    let queued = f.send(session).await.unwrap();
+    let run = f.delivered_run(&queued).await;
     let (mut socket, _) = listener.accept().await.unwrap();
     let _ = request(&mut socket).await;
     let delta = json!({"id":"web-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"web-call","type":"function","function":{"name":"WebFetch","arguments":json!({"url":url}).to_string()}}]},"finish_reason":null}]});
@@ -129,7 +128,7 @@ async fn start(listener: &TcpListener, f: &Fixture, session: &str, url: String) 
         "data: {delta}\n\ndata: {{\"id\":\"web-model\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
     );
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    started
+    run
 }
 async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     let (mut socket, _) = listener.accept().await.unwrap();
@@ -147,14 +146,15 @@ async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     result
 }
 async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = f.session(session).await.subscribe_commits().unwrap();
+    let interactions = f.owner.durable.interactions();
+    let mut commits = interactions.subscribe().unwrap();
     loop {
-        if let Some(record) = f
-            .session(session)
-            .await
-            .pending_interactions(session)
+        commits.borrow_and_update();
+        if let Some(record) = interactions
+            .pending(session)
             .await
             .unwrap()
+            .records
             .into_iter()
             .next()
         {
@@ -167,8 +167,80 @@ async fn approve(f: &Fixture, record: &InteractionRecord) {
     let InteractionRequest::Permissions { request, .. } = &record.request else {
         panic!("network permission")
     };
-    f.mutation(2, "respond", json!({"sessionId":record.session_id,"requestId":record.request_id,"answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":request.permissions}}}), Uuid::new_v4()).await.unwrap();
+    f.mutation(2, "respond", json!({"sessionId":record.execution.session_id,"requestId":record.request_id,"answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":request.permissions}}}), Uuid::new_v4()).await.unwrap();
 }
+async fn http_head(socket: &mut TcpStream) -> String {
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(socket.read_u8().await.unwrap());
+        assert!(head.len() < 64 * 1024);
+    }
+    String::from_utf8(head).unwrap()
+}
+
+async fn settled_fetch(
+    f: &Fixture,
+    session: &str,
+    run: maka_agent_facts::durable::RunId,
+) -> maka_plugin_core::operation::OperationObservation {
+    let view = f.owner.durable.frontier(run).await.unwrap();
+    let fetches: Vec<_> = view
+        .tools
+        .values()
+        .filter(|tool| tool.call.name == "WebFetch")
+        .collect();
+    assert_eq!(fetches.len(), 1);
+    let key = &fetches[0].key;
+    let recorded = f.history_items(session).await;
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|item| item.recorded.run == run
+                && matches!(
+                    &item.recorded.fact, Fact::ToolAdmitted { tool } if tool == key
+                ))
+            .count(),
+        1,
+        "one outer WebFetch admission, not a count of HTTP requests"
+    );
+    let returns: Vec<_> = recorded
+        .iter()
+        .filter(|item| {
+            item.recorded.run == run
+                && matches!(
+                    &item.recorded.fact, Fact::HostToolResultRecorded { tool, .. } if tool == key
+                )
+        })
+        .collect();
+    assert_eq!(
+        returns.len(),
+        1,
+        "the original Web service has one canonical T2"
+    );
+    let maka_agent_facts::tool_output::ToolOutput::Operation(reply) =
+        service_tools::tool_return(f, session, returns[0])
+            .await
+            .body
+            .output
+    else {
+        panic!("original Web operation receipt")
+    };
+    assert_eq!(fetches[0].original.as_ref(), Some(&reply.reference));
+    let original = f
+        .store
+        .operation(&reply.reference)
+        .unwrap()
+        .operation_observation()
+        .await
+        .unwrap()
+        .expect("original Web SDK observation");
+    assert_eq!(
+        original.cleanup,
+        maka_plugin_core::operation::OperationCleanup::Confirmed
+    );
+    original
+}
+
 #[tokio::test]
 async fn native_web_redirects_require_each_destination_and_cancel_withdraws_pending_permission() {
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -182,50 +254,60 @@ async fn native_web_redirects_require_each_destination_and_cancel_withdraws_pend
         let saved = save(&f, Value::Null, true).await;
         assert_eq!(saved["kind"], "updated");
         assert_eq!(save(&f, Value::Null, false).await["kind"], "changed");
-        start(&model, &f, &session, url.clone()).await;
+        let first_run = start(&model, &f, &session, url.clone()).await;
         let permission = pending(&f, &session).await;
         assert!(tokio::time::timeout(Duration::from_millis(50), first.accept()).await.is_err());
         approve(&f, &permission).await;
         let (mut socket, _) = first.accept().await.unwrap();
-        let mut bytes = [0; 4096]; assert!(socket.read(&mut bytes).await.unwrap() > 0);
+        assert!(http_head(&mut socket).await.starts_with("GET /first "));
         let next = format!("http://{}/result", second.local_addr().unwrap());
         socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {next}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), socket.read(&mut [0; 1])).await.unwrap().unwrap(), 0);
         drop(socket);
         let redirected = pending(&f, &session).await;
         assert_ne!(permission.request_id, redirected.request_id);
         assert!(tokio::time::timeout(Duration::from_millis(50), second.accept()).await.is_err());
         approve(&f, &redirected).await;
-        let (mut socket, _) = second.accept().await.unwrap(); assert!(socket.read(&mut bytes).await.unwrap() > 0);
+        let (mut socket, _) = second.accept().await.unwrap();
+        assert!(http_head(&mut socket).await.starts_with("GET /result "));
         let body = "<html><title>Native</title><body><article><p>Web result retained through the original operation.</p></article></body></html>";
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), socket.read(&mut [0; 1])).await.unwrap().unwrap(), 0);
         drop(socket);
         let result = finish(&model, &f).await;
         assert_eq!(result["kind"], "completed", "{result}");
         assert!(result["value"]["content"].as_str().unwrap().contains("Web result retained"));
-        let facts = service_tools::facts(&f, &session).await;
-        assert!(facts.iter().any(|fact| matches!(fact, Fact::ToolDispatched { name, title: Some(title), .. } if name == "WebFetch" && title.fallback == format!("Read web page · {url}"))));
-        assert_eq!(facts.iter().filter(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "Http")).count(), 2);
+        let view = f.owner.durable.frontier(first_run).await.unwrap();
+        let fetch = view.tools.values().find(|tool| tool.call.name == "WebFetch").expect("actual model WebFetch call");
+        assert_eq!(fetch.decision.as_ref().unwrap().display().title.as_deref(), Some(format!("Read web page · {url}").as_str()));
+        let original = settled_fetch(&f, &session, first_run).await;
+        assert!(matches!(original.outcome, OperationOutcome::Returned {
+            result: maka_plugin_core::operation::OperationResult::Success { .. }
+        }));
+        // Exactly the two accepted destination requests above; no redirect retry.
+        assert!(tokio::time::timeout(Duration::from_millis(50), first.accept()).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(50), second.accept()).await.is_err());
         // A body remains owned until cancellation actually closes its socket.
         let streaming = start(&model, &f, &session, url.clone()).await;
         approve(&f, &pending(&f, &session).await).await;
         let (mut streaming_socket, _) = first.accept().await.unwrap();
-        assert!(streaming_socket.read(&mut bytes).await.unwrap() > 0);
+        assert!(http_head(&mut streaming_socket).await.starts_with("GET /first "));
         streaming_socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\npending body").await.unwrap();
-        f.mutation(2, "stop", json!({"sessionId":session,"invocationId":streaming["invocationId"]}), Uuid::new_v4()).await.unwrap();
+        f.mutation(2, "stop", json!({"sessionId":session,"runId":streaming}), Uuid::new_v4()).await.unwrap();
         f.drained().await;
-        assert_eq!(tokio::time::timeout(Duration::from_secs(2), streaming_socket.read(&mut bytes)).await.unwrap().unwrap(), 0);
-        let facts = service_tools::facts(&f, &session).await;
-        let http_operations: std::collections::BTreeSet<_> = facts.iter().filter_map(|fact| match fact {
-            Fact::ToolDispatched { name, operation_id, .. } if name == "Http" => Some(operation_id.clone()), _ => None,
-        }).collect();
-        assert_eq!(http_operations.len(), 3);
-        assert_eq!(facts.iter().filter(|fact| matches!(fact, Fact::ToolSettled { operation_id, .. } if http_operations.contains(operation_id))).count(), 3);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), streaming_socket.read(&mut [0; 1])).await.unwrap().unwrap(), 0);
+        settled_fetch(&f, &session, streaming).await;
+        // The third accepted HTTP request is the cancelled body, never a replay.
+        assert!(tokio::time::timeout(Duration::from_millis(50), first.accept()).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(50), second.accept()).await.is_err());
         let started = start(&model, &f, &session, url).await;
         let _ = pending(&f, &session).await;
-        f.mutation(2, "stop", json!({"sessionId":session,"invocationId":started["invocationId"]}), Uuid::new_v4()).await.unwrap();
+        f.mutation(2, "stop", json!({"sessionId":session,"runId":started}), Uuid::new_v4()).await.unwrap();
         f.drained().await;
-        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
+        settled_fetch(&f, &session, started).await;
         assert!(tokio::time::timeout(Duration::from_millis(50), first.accept()).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(50), second.accept()).await.is_err());
         assert_eq!(snapshot(&f).await["settings"]["enabled"], true);
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
@@ -245,15 +327,14 @@ async fn native_web_request_binding_tracks_settings_provider_capabilities_and_pr
         let initial = request(&mut socket).await;
 
         assert!(!initial["tools"].to_string().contains("WebFetch"));
-        let invocation = f.session(&session).await.session_projection::<StoredSessionConfiguration>(&session).await.unwrap().unwrap().root_turn.unwrap().invocation;
+        let access = f.live_access(&session).await;
+        let execution = access.execution().clone();
+        let custody = access.custody().clone();
         let available = maka_tools::availability::Availability::new(f.owner.tools.clone(), maka_tools::availability::LoadedTools::temporary().unwrap());
-        let execution_scope = f.session(&session).await.execution_scope(Some(f.owner.session(&session).await.unwrap().configuration.permission_basis())).await.unwrap();
-
-        let execution = execution_scope.store().execution_custody().unwrap();
         let capture = |protocol, capable| {
-            let available = &available; let invocation = invocation.clone(); let execution = execution.clone(); let cwd = f.workspace.to_str().unwrap().to_owned();
+            let available = &available; let execution = execution.clone(); let custody = custody.clone(); let cwd = f.workspace.to_str().unwrap().to_owned(); let cancellation = f.owner.stop.child_token();
             async move { available.capture(Some(maka_agent_facts::tools::ModelToolContext { model: "fixture-model".into(), provider_tools: protocol,
-                capabilities: maka_agent_facts::configuration::ModelCapabilities { web_search: Some(capable), ..Default::default() } }), invocation, Some(execution), cwd, CancellationToken::new()).await.unwrap().all() }
+                capabilities: maka_agent_facts::configuration::ModelCapabilities { web_search: Some(capable), ..Default::default() } }), execution, Some(custody), cwd, cancellation).await.unwrap().all() }
         };
         save(&f, Value::Null, true).await;
         for (protocol, expected) in [(maka_agent_facts::tools::ProviderToolProtocol::OpenaiResponses, "openai.web_search"), (maka_agent_facts::tools::ProviderToolProtocol::AnthropicMessages, "anthropic.web_search_20250305")] {
@@ -280,21 +361,30 @@ async fn native_web_request_binding_tracks_settings_provider_capabilities_and_pr
         let mut old_basis = result["basis"].clone(); old_basis["credentialRevision"] = saved["snapshot"]["credential"]["revision"].clone();
         let rejected = mutation(&f, "search", json!({"basis":old_basis,"input":{"query":"must not contact external service","limit":1}}), None).await;
         assert_eq!(rejected["kind"], "failed");
-        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
         mutation(&f, "deleteKey", json!({"revision":refreshed["snapshot"]["credential"]["revision"]}), None).await;
         assert!(!capture(None, false).await.contains("WebSearch"));
+        drop(bound);
+        drop(custody);
+        drop(access);
 
         response(&mut socket).await; f.drained().await;
 
         for path in f.runtime_databases() {
         let database = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        let mut statement = database.prepare("SELECT request_json || outcome_json || cleanup_json FROM application_operations").unwrap();
-        for row in statement.query_map([], |row| row.get::<_, String>(0)).unwrap() {
-            let row = row.unwrap(); assert!(!row.contains("private-web-"), "credential leaked into operation history");
+        let mut statement = database.prepare("SELECT o.request_json, o.outcome_json, o.cleanup_json, c.payload FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id").unwrap();
+        for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?))).unwrap() {
+            let (request, outcome, cleanup, payload) = row.unwrap();
+            for metadata in [&request, &outcome, &cleanup] {
+                assert!(!metadata.contains("private-web-"), "credential leaked into operation history");
+            }
+            if serde_json::from_str::<Value>(&outcome).unwrap()["kind"] == "returned" {
+                let payload = payload.expect("returned operation has its original content");
+                assert!(!payload.windows(b"private-web-".len()).any(|window| window == b"private-web-"), "credential leaked into original operation result");
+            }
         }
         }
 
-        drop(execution_scope);
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -360,8 +450,11 @@ async fn native_web_selected_model_search_crosses_the_actual_responses_request()
         f.drained().await;
         let page = f.query("history", json!({"sessionId":session,"position":{"kind":"tail"}})).await.unwrap();
         assert!(page.to_string().contains("Selected model search answer"), "{page}");
-        assert!(!service_tools::facts(&f, &session).await.iter().any(|fact|matches!(fact, Fact::ToolDispatched { name, .. } if name == "Http" || name == "WebSearch")));
-        assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        let run = f.latest_run(&session).await.run;
+        let view = f.owner.durable.frontier(run).await.unwrap();
+        assert!(!view.tools.values().any(|tool| tool.admitted && matches!(tool.call.name.as_str(), "Http" | "WebSearch")), "provider-native search must not dispatch a local Web tool");
+        assert!(tokio::time::timeout(Duration::from_millis(50), server.accept()).await.is_err(), "provider search must not replay the model request");
+        assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

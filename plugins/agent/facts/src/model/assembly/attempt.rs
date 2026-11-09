@@ -20,7 +20,7 @@
 use super::{OptionsPatch, PartSlot, StepBuilder, StepState, invalid, merged_options};
 use crate::{
     context::ModelPurpose,
-    event::Invocation,
+    durable::ExecutionIdentity,
     model::{
         ModelEvent, ModelFinishReason, ModelPart, ModelUsage, TextKind, body::TextBody, recorded::*,
     },
@@ -32,8 +32,9 @@ use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AttemptBinding {
-    pub invocation: Invocation,
-    pub step_id: String,
+    pub execution: ExecutionIdentity,
+    pub step_id: crate::durable::StepId,
+    pub attempt_id: crate::durable::ModelAttemptId,
     pub purpose: ModelPurpose,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,7 +290,7 @@ impl AttemptWriter {
         if binding.purpose == ModelPurpose::Summary && item_acceptance {
             return Err(invalid("item acceptance is only valid for main requests"));
         }
-        let builder = StepBuilder::for_step(&binding.step_id)?;
+        let builder = StepBuilder::for_step(binding.step_id)?;
         Ok(Self {
             binding,
             item_acceptance,
@@ -384,8 +385,8 @@ impl AttemptWriter {
             if self.identities.len() == index {
                 let message_id = if let Some(id) = call {
                     tool_use_id(
-                        &self.binding.invocation.invocation_id,
-                        &format!("{}:{id}", self.binding.step_id),
+                        self.binding.execution.run_id,
+                        &format!("{}:{id}", self.binding.attempt_id),
                     )
                 } else {
                     crate::event::RuntimeEvent::new_id()
@@ -470,8 +471,8 @@ impl AttemptWriter {
                 Some(ToolInputView {
                     id: id.clone(),
                     message_id: tool_use_id(
-                        &self.binding.invocation.invocation_id,
-                        &format!("{}:{id}", self.binding.step_id),
+                        self.binding.execution.run_id,
+                        &format!("{}:{id}", self.binding.attempt_id),
                     ),
                     started_at: *started_at,
                     name: input.name.clone(),
@@ -637,18 +638,19 @@ mod tests {
     fn writer(purpose: ModelPurpose, streaming: bool) -> AttemptWriter {
         AttemptWriter::new(
             AttemptBinding {
-                invocation: Invocation {
+                execution: ExecutionIdentity {
                     session_id: "session".into(),
                     turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
+                    run_id: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
                 },
-                step_id: if purpose == ModelPurpose::Main {
-                    "main"
-                } else {
-                    "summary"
-                }
-                .into(),
+                step_id: crate::durable::StepId::try_from(uuid::Uuid::from_u128(
+                    if purpose == ModelPurpose::Main { 2 } else { 4 },
+                ))
+                .unwrap(),
+                attempt_id: crate::durable::ModelAttemptId::try_from(uuid::Uuid::from_u128(
+                    if purpose == ModelPurpose::Main { 3 } else { 5 },
+                ))
+                .unwrap(),
                 purpose,
             },
             streaming,

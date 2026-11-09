@@ -17,15 +17,17 @@
  * under the License.
  */
 
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
+use futures_util::future::BoxFuture;
+use maka_host_runtime::application::{
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeOwner, NativeRetirement,
+};
+use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
 
 pub async fn tool(socket: &mut TcpStream, name: &str, input: Value) {
     write_delta(
@@ -49,19 +51,57 @@ pub struct AnswerEffect {
     pub release: Arc<Notify>,
     pub count: Arc<AtomicUsize>,
 }
-impl ToolExecutor for AnswerEffect {
-    fn names(&self) -> Vec<String> {
-        vec!["slow".into()]
+impl AnswerEffect {
+    pub fn contract() -> Contract {
+        Contract {
+            name: "fixture.Answer".into(),
+            version: 1,
+            transport: Transport::Remote,
+            interface: Interface::Service {
+                methods: std::collections::BTreeMap::from([(
+                    "slow".into(),
+                    Method {
+                        mode: MethodMode::Mutation,
+                        input: json!({"type":"object"}).into(),
+                        output: json!({"type":"object"}).into(),
+                        progress: None,
+                        resources: std::collections::BTreeMap::new(),
+                    },
+                )]),
+            },
+        }
     }
-    fn invoke(&self, _: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+}
+impl Handler for AnswerEffect {
+    fn call(
+        &self,
+        method: String,
+        input: Value,
+        context: Context,
+    ) -> BoxFuture<'static, HandlerResult> {
         let effect = self.clone();
         Box::pin(async move {
+            if method != "slow" {
+                return Err(HandlerError::from("unknown Answer method"));
+            }
+            assert!(
+                context.operation().is_some(),
+                "the real Host mutation must precede its effect"
+            );
             effect.count.fetch_add(1, Ordering::SeqCst);
             effect.entered.notify_one();
             tokio::select! {
-                _=effect.release.notified()=>Ok(input),
-                _=cancellation.cancelled()=>Err(maka_agent_facts::tools::ToolError::Failed("answer was cancelled".into())),
+                _=effect.release.notified()=>Ok(HandlerValue::Json(input)),
+                _=context.scope().cancellation.cancelled()=>Err(HandlerError::from("answer was cancelled")),
             }
         })
+    }
+}
+impl NativeOwner for AnswerEffect {
+    fn prepare_retirement(&self) -> Option<Box<dyn NativeRetirement>> {
+        Some(Box::new(()))
+    }
+    fn close(&self) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
 }

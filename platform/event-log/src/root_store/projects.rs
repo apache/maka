@@ -28,7 +28,7 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const MAX: u64 = maka_agent_facts::interaction::MAX_SAFE_INTEGER;
+const MAX: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy)]
 struct BindingAdvance {
@@ -156,12 +156,13 @@ impl RootStore {
         &self,
         id: &str,
         owner_scope: &str,
+        fence: &WorkspaceFence,
         registration: ProjectRegistration,
         now: u64,
         selected_workspace: Value,
     ) -> Result<ProjectRelink, StoreError> {
         let (control, guard) = self
-            .prepare_relink(id, owner_scope, &registration, None)
+            .prepare_relink(id, owner_scope, &registration, None, fence)
             .await?;
         control
             .relink_project_if(guard, registration, now, selected_workspace)
@@ -174,6 +175,7 @@ impl RootStore {
     pub async fn relink_project_if(
         &self,
         guard: ProjectRelinkGuard,
+        fence: &WorkspaceFence,
         registration: ProjectRegistration,
         now: u64,
         selected_workspace: Value,
@@ -184,6 +186,7 @@ impl RootStore {
                 &guard.owner_scope,
                 &registration,
                 Some(&guard),
+                fence,
             )
             .await?;
         control
@@ -204,11 +207,13 @@ impl RootStore {
         owner_scope: &str,
         registration: &ProjectRegistration,
         expected: Option<&ProjectRelinkGuard>,
+        fence: &WorkspaceFence,
     ) -> Result<(EventLog, ProjectRelinkGuard), StoreError> {
         if owner_scope.is_empty() {
             return Err(invalid("invalid project owner scope"));
         }
-        let control = self.project_writer().await?;
+        fence.validate_owner(&self.log.owned_root()?)?;
+        let control = self.project_writer().await?.scoped(Arc::new(fence.clone()));
         let source = control
             .get_project(id)
             .await?

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::event::Fact;
+use maka_agent_facts::durable::{Fact, RunId, Terminal};
 
 #[tokio::test]
 async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
@@ -34,6 +34,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         assert_eq!(prompts["defaultCompactionPrompt"], "GLOBAL COMPACTION");
         let other = f.create("Independent compaction prompt").await;
         let sending = f.mutation(2,"send",json!({"sessionId":session,"message":"original-needle-429","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
+        let sending_run = f.delivered_run(&sending).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         let before = f.query("compactionPrompt", json!({"sessionId":session})).await.unwrap();
@@ -44,7 +45,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         let conflict = f.mutation(2,"setCompactionPrompt",json!({"sessionId":session,"expectedRevision":before["revision"],"prompt":"STALE COMPACTION"}),Uuid::new_v4()).await.unwrap();
         assert_eq!(conflict, json!({"kind":"revision_conflict","expected":before["revision"],"actual":prompts["revision"]}));
         assert_eq!(f.query("compactionPrompt",json!({"sessionId":session})).await.unwrap(), prompts);
-        assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["run"]["invocationId"], sending["invocationId"]);
+        assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["run"]["runId"], serde_json::to_value(sending_run).unwrap());
         let independent = f.query("compactionPrompt",json!({"sessionId":other})).await.unwrap();
         assert_eq!(independent["prompt"], Value::Null);
         assert_eq!(independent["compactionPrompt"], "GLOBAL COMPACTION");
@@ -66,17 +67,26 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         assert!(sent.to_string().contains("ONE SHOT COMPACTION"), "{sent}");
         assert!(!sent.to_string().contains("SESSION COMPACTION"));
         assert!(!sent.to_string().contains("GLOBAL COMPACTION"));
-        let compacting = f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].clone();
-        let boundary = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap();
-        assert_eq!(compacting["id"], boundary.opening_event_id);
+        let observing = f.query("observe",json!({"sessionId":session})).await.unwrap();
+        let compacting = observing["compacting"].clone();
+        let history = f.history(&session);
+        let cut = history.capture_at(observing["through"].as_u64().unwrap()).await.unwrap();
+        let boundary = history.latest(&cut).await.unwrap().unwrap();
+        let opening: contract::Execution = serde_json::from_value(started["execution"].clone()).unwrap();
+        assert_eq!(opening.run_id, boundary.run);
+        assert_eq!(opening.session_id, boundary.spec.session_id);
+        assert_eq!(opening.turn_id, boundary.spec.turn_id);
+        assert_eq!(compacting["id"], boundary.admission.id.to_string());
+        assert_eq!(compacting["startedAt"], boundary.admission.at.0);
         assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"], compacting);
         let busy = f.mutation(2,"compact",input.clone(),Uuid::new_v4()).await.unwrap();
         assert_eq!(busy, json!({"kind":"rejected","reason":"busy"}));
         response_with_text(&mut socket, "A deliberately short summary without the original unique token.").await;
         f.drained().await;
         assert!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].is_null());
-        let facts = service_tools::facts(&f,&session).await;
-        assert!(facts.iter().any(|f| matches!(f, Fact::ContextCheckpointRecorded { .. })), "{facts:?}");
+        let facts = f.recorded_facts(&session).await;
+        assert!(facts.iter().any(|record| record.run == boundary.run
+            && matches!(&record.fact, Fact::ContextCompacted { .. })), "{facts:?}");
         assert_eq!(f.mutation(2,"compact",input.clone(),operation).await.unwrap(), started);
         let prompts = f.query("compactionPrompt",json!({"sessionId":session})).await.unwrap();
         assert_eq!(prompts["prompt"], "  SESSION COMPACTION  ");
@@ -97,10 +107,10 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         assert!(sent.to_string().contains("  SESSION COMPACTION  "), "{sent}");
         assert!(!sent.to_string().contains("ONE SHOT COMPACTION"));
         assert!(!sent.to_string().contains("GLOBAL COMPACTION"));
-        assert_eq!(f.mutation(2,"stop",json!({"sessionId":session,"invocationId":stopped["execution"]["invocationId"]}),Uuid::new_v4()).await.unwrap()["requested"],true);
+        assert_eq!(f.mutation(2,"stop",json!({"sessionId":session,"runId":stopped["execution"]["runId"]}),Uuid::new_v4()).await.unwrap()["requested"],true);
         f.drained().await;
-        let execution = f.query("execution",json!({"sessionId":session,"invocationId":stopped["execution"]["invocationId"]})).await.unwrap();
-        assert_eq!(execution["execution"]["state"],"cancelled");
+        let execution = f.query("execution",json!({"sessionId":session,"runId":stopped["execution"]["runId"]})).await.unwrap();
+        assert_eq!(execution["execution"]["state"]["kind"],"cancelled");
         assert!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].is_null());
         let prompts = f.query("compactionPrompt",json!({"sessionId":session})).await.unwrap();
         let empty = f.mutation(2,"setCompactionPrompt",json!({"sessionId":session,"expectedRevision":prompts["revision"],"prompt":""}),Uuid::new_v4()).await.unwrap();
@@ -121,13 +131,14 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         let body = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         f.drained().await;
-        let execution = f.query("execution",json!({"sessionId":session,"invocationId":failed["execution"]["invocationId"]})).await.unwrap();
-        assert_eq!(execution["execution"]["state"],"failed");
-        assert!(service_tools::facts(&f,&session).await.iter().any(|fact| matches!(fact,
-            Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::ContextCompactFinished {
-                outcome: maka_agent_facts::context::CompactOutcome::Failed { .. } } })));
-        assert!(matches!(f.owner.session(&session).await.unwrap().execution.unwrap().state,
-            maka_event_log::sessions::SessionExecutionState::Ended { status: maka_agent_facts::event::TerminalStatus::Failed, .. }));
+        let execution = f.query("execution",json!({"sessionId":session,"runId":failed["execution"]["runId"]})).await.unwrap();
+        assert_eq!(execution["execution"]["state"]["kind"],"failed");
+        let failed_run: RunId = serde_json::from_value(failed["execution"]["runId"].clone()).unwrap();
+        assert!(f.recorded_facts(&session).await.iter().any(|record| record.run == failed_run
+            && matches!(&record.fact, Fact::RunTerminated {terminal: Terminal::Failed, ..})));
+        let latest = f.latest_run(&session).await;
+        assert_eq!(latest.run, failed_run);
+        assert_eq!(f.owner.durable.frontier(latest.run).await.unwrap().terminal, Some(Terminal::Failed));
         f.app.shutdown().await.unwrap();
     }).await.unwrap();
 }

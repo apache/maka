@@ -20,12 +20,16 @@
 //! Explicit native process service; request data never supplies launch authority.
 use futures_util::future::BoxFuture;
 use maka_agent_api::session::ResolvedConfiguration;
+use maka_agent_authority::computer::{NativeCallAccess, NativeCallContext};
 use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
 use maka_config::ConfigurationStore;
 use maka_event_log::RootStore;
 use maka_host_runtime::{
-    application::{Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry},
+    application::{
+        Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+        NativeContext, NativeOwner, NativeRegistry,
+    },
     shell::{ShellError, ShellResources, request::Execute},
 };
 use maka_sandbox::{Network, Sandbox, filesystem::Policy};
@@ -185,7 +189,6 @@ impl Processes {
                 &persistence.source().state_domain,
                 persistence.source().deployment,
                 instance,
-                matches!(settings.session_kind, SessionKind::Workhub),
             )
         });
         let drain = CancellationToken::new();
@@ -217,35 +220,23 @@ impl Handler for Service {
         name: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
-        Box::pin(async move {
+        let result = async move {
             if !matches!(
                 name.as_str(),
                 "execute" | "read" | "health" | "writeStdin" | "stop"
             ) {
                 return Err("workspace_process_method_unavailable".into());
             }
-            let invocation = context
-                .scope()
-                .identity
-                .agent()
-                .ok_or("workspace_processes_require_agent")?
-                .clone();
-            let operation_id = context
-                .scope()
-                .identity
-                .operation_id()
-                .ok_or("workspace_processes_require_tool")?
-                .into();
             if name != "read" && context.operation().is_none() {
                 return Err("workspace_process_mutation_required".into());
             }
-            let tool = ToolCallContext {
-                invocation,
-                operation_id,
-                execution: context.scope().execution().cloned(),
-            };
+            let capsule = owner
+                .native_call(&context, name != "read")
+                .await
+                .map_err(|error| error.to_string())?;
+            let access = capsule.access();
             let mut ticket = context
                 .scope()
                 .resources
@@ -253,10 +244,16 @@ impl Handler for Service {
                 .map_err(|e| e.to_string())?;
             ticket.start();
             let result = if name == "health" {
-                owner.health(&context, input, &tool).await
+                owner.health(&context, input, access).await
             } else {
                 owner
-                    .call(&name, input, &tool, &context.scope().cancellation)
+                    .call(
+                        &name,
+                        input,
+                        access,
+                        context.scope().sandbox_floor(),
+                        &context.scope().cancellation,
+                    )
                     .await
             };
             let cleanup = match &result {
@@ -275,6 +272,10 @@ impl Handler for Service {
                 Err(error) => return Err(error.to_string()),
             };
             serde_json::to_value(result).map_err(|_| "workspace_process_result_unavailable".into())
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }
@@ -312,31 +313,77 @@ impl NativeOwner for Service {
     }
 }
 impl Processes {
+    async fn native_call(
+        &self,
+        context: &Context,
+        mutation: bool,
+    ) -> Result<Arc<NativeCallContext>, ToolError> {
+        let capsule = context
+            .native_context::<NativeCallContext>()
+            .ok_or_else(|| {
+                failed("Process service requires its original native call capability")
+            })?;
+        let access = capsule.access();
+        let tool = access.call();
+        let custody = context
+            .work_custody()
+            .ok_or_else(|| failed("Process service requires original Root work custody"))?;
+        self.store
+            .session_for_work(custody.as_ref(), &tool.execution.session_id)
+            .map_err(persistence)?;
+        if context.scope().identity.agent() != Some(&tool.execution)
+            || tool
+                .custody
+                .as_ref()
+                .is_none_or(|original| !Arc::ptr_eq(original, custody))
+        {
+            return Err(failed("Process capability belongs to another actual call"));
+        }
+        if mutation {
+            access.bind_original(context).await?;
+        } else {
+            access.current().await?;
+        }
+        Ok(capsule)
+    }
+    fn work_store(
+        &self,
+        tool: &ToolCallContext,
+    ) -> Result<maka_event_log::SessionStore, ToolError> {
+        self.store
+            .session_for_work(
+                tool.custody
+                    .as_ref()
+                    .ok_or_else(|| failed("Process work custody is missing"))?
+                    .as_ref(),
+                &tool.execution.session_id,
+            )
+            .map_err(persistence)
+    }
     async fn call(
         &self,
         name: &str,
         input: Value,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
+        floor: &Sandbox,
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
         cancelled(cancellation)?;
-        let configuration = maka_agent_authority::permissions::live(
-            &maka_agent_authority::permissions::execution(
-                &self.store,
-                &tool.invocation,
-                tool.execution.as_deref(),
-            )?,
-            &tool.invocation,
-        )
-        .await?;
+        let configuration = access.current().await?;
         if name == "execute" {
             if self.drain.is_cancelled() {
                 return Err(failed("Process owner is draining"));
             }
-            self.execute(Execute::parse(input)?, tool, configuration, cancellation)
-                .await
+            self.execute(
+                Execute::parse(input)?,
+                access,
+                configuration,
+                floor,
+                cancellation,
+            )
+            .await
         } else {
-            self.control(name, input, tool, cancellation).await
+            self.control(name, input, access, floor, cancellation).await
         }
     }
 }

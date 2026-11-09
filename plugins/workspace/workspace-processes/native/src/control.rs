@@ -18,11 +18,11 @@
  */
 
 use super::*;
-use maka_agent_facts::shell_run::ShellPatch;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::ShellVisibility;
-use maka_agent_facts::shell_run::{ShellObservation, ShellRun};
 use maka_host_runtime::shell::{ControlErrorKind, request::parse_ref, stdin};
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
+use maka_plugin_core::shell_run::{ShellObservation, ShellRun};
 use serde_json::json;
 
 impl Processes {
@@ -31,7 +31,7 @@ impl Processes {
         tool: &ToolCallContext,
         id: &str,
     ) -> Result<ShellObservation, ToolError> {
-        let session = &tool.invocation.session_id;
+        let session = &tool.execution.session_id;
         if let Some(Ok(live)) = self
             .resources
             .get(session, id)
@@ -42,18 +42,15 @@ impl Processes {
         {
             return Ok((*live).clone());
         }
-        let record = maka_agent_authority::permissions::execution(
-            &self.store,
-            &tool.invocation,
-            tool.execution.as_deref(),
-        )?
-        .read_shell_run(session, id)
-        .await
-        .map_err(persistence)?
-        .filter(|record| {
-            record.visibility == ShellVisibility::Model && record.id.starts_with(&self.prefix)
-        })
-        .ok_or_else(|| failed("Process resource not found in this Session and provider"))?;
+        let record = self
+            .work_store(tool)?
+            .read_shell_run(session, id)
+            .await
+            .map_err(persistence)?
+            .filter(|record| {
+                record.visibility == ShellVisibility::Model && record.id.starts_with(&self.prefix)
+            })
+            .ok_or_else(|| failed("Process resource not found in this Session and provider"))?;
         if let Some(update) = self
             .resources
             .get(session, id)
@@ -77,21 +74,17 @@ impl Processes {
             }
         ) {
             record.record = Arc::new(
-                maka_agent_authority::permissions::execution(
-                    &self.store,
-                    &tool.invocation,
-                    tool.execution.as_deref(),
-                )?
-                .patch_shell_run(
-                    &record.session_id,
-                    &record.id,
-                    ShellPatch {
-                        observed_at: Some(maka_agent_authority::now()),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(persistence)?,
+                self.work_store(tool)?
+                    .patch_shell_run(
+                        &record.session_id,
+                        &record.id,
+                        ShellPatch {
+                            observed_at: Some(maka_agent_authority::now()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(persistence)?,
             );
             record.preview = None;
         }
@@ -107,13 +100,15 @@ impl Processes {
         &self,
         name: &str,
         value: Value,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
+        floor: &Sandbox,
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
-        let session = &tool.invocation.session_id;
+        let tool = access.call();
+        let session = &tool.execution.session_id;
         if name == "writeStdin" {
             return self
-                .write(stdin::Input::parse(value)?, tool, cancellation)
+                .write(stdin::Input::parse(value)?, access, floor, cancellation)
                 .await;
         }
         let input: Reference = serde_json::from_value(value).map_err(failed)?;
@@ -147,10 +142,12 @@ impl Processes {
     async fn write(
         &self,
         input: stdin::Input,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
+        floor: &Sandbox,
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
-        let session = &tool.invocation.session_id;
+        let tool = access.call();
+        let session = &tool.execution.session_id;
         let id = parse_ref(&input.reference).expect("validated ref");
         let mut record = self.read_model(tool, id).await?;
         if !record.output.is_pty() {
@@ -176,15 +173,15 @@ impl Processes {
                 }) {
                     return Err(failed("PTY is controlled by a connected user"));
                 }
-                let current = maka_agent_authority::permissions::live(
-                    &maka_agent_authority::permissions::execution(
-                        &self.store,
-                        &tool.invocation,
-                        tool.execution.as_deref(),
-                    )?,
-                    &tool.invocation,
-                )
-                .await?;
+                let current = access.current().await?;
+                if !floor
+                    .contains(&record.permissions.sandbox)
+                    .map_err(failed)?
+                {
+                    return Err(failed(
+                        "PTY sandbox lacks the current private namespace restrictions; start a new terminal",
+                    ));
+                }
                 if current.permission_basis() != record.permissions.basis {
                     return Err(failed(
                         "PTY launch permissions no longer match this Session; start a new terminal",
@@ -250,20 +247,19 @@ pub(super) fn prefer_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::shell_run::{ShellOutcome, ShellOutput, ShellPermissions};
+    use maka_plugin_core::shell_run::{ShellOutcome, ShellOutput, ShellPermissions};
 
     fn running() -> ShellRun {
         ShellRun {
             id: "resource".into(),
             session_id: "session".into(),
-            source_run_id: None,
-            source_turn_id: "turn".into(),
-            source_tool_call_id: "tool".into(),
+            source_work_id: None,
+            correlation: json!({"turnId":"turn","toolCallId":"tool"}),
             visibility: ShellVisibility::Model,
             permissions: ShellPermissions {
-                basis: maka_agent_facts::workspace::PermissionBasis {
+                basis: maka_sandbox::workspace::PermissionBasis {
                     boundary_revision: 0,
-                    binding: maka_agent_facts::workspace::BindingStamp {
+                    binding: maka_sandbox::workspace::BindingStamp {
                         id: uuid::Uuid::from_u128(1),
                         permission_epoch: 0,
                     },

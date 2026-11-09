@@ -18,12 +18,12 @@
  */
 
 use maka_agent_api::contract::{Directories, Directory, DirectoryPage, Workspace};
-use maka_agent_facts::execution::DirectoryIdentity;
 use maka_fs_tools::{
     directory,
     workspace::{self, directory::PublishedDirectory},
 };
 use maka_host_runtime::DirectoryRootSpec;
+use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -367,13 +367,22 @@ pub async fn initialize(
     }))
 }
 pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> Result<(), String> {
+    open_workspace(roots, selected, managed).await.map(drop)
+}
+
+pub async fn open_workspace(
+    roots: &[Root],
+    selected: &Workspace,
+    managed: &Path,
+) -> Result<cap_std::fs::Dir, String> {
     let roots = roots.to_vec();
     let selected = selected.clone();
     let managed = managed.to_owned();
     tokio::task::spawn_blocking(move || {
-        let (path, observed) = directory::capture(Path::new(&selected.path))
+        let path = Path::new(&selected.path)
+            .canonicalize()
             .map_err(|_| "agent_workspace_unavailable")?;
-        if host_path(&path)? != selected.path || observed != selected.directory_identity {
+        if host_path(&path)? != selected.path {
             return Err("agent_workspace_unavailable".into());
         }
         let authorized = if let Some(binding) = &selected.worktree {
@@ -398,15 +407,21 @@ pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> R
             .ok_or("agent_workspace_unavailable")?;
         let directory = directory::open(&path, &selected.directory_identity)
             .map_err(|_| "agent_workspace_unavailable")?;
-        if workspace::read_directory_identity(path.clone(), directory)
-            .map_err(|_| "agent_workspace_unavailable")?
+        if workspace::read_directory_identity(
+            path.clone(),
+            directory
+                .try_clone()
+                .map_err(|_| "agent_workspace_unavailable")?,
+        )
+        .map_err(|_| "agent_workspace_unavailable")?
             != selected.identity
         {
             return Err("agent_workspace_unavailable".into());
         }
         root.directory
             .validate(authorized)
-            .map_err(|_| "agent_workspace_unavailable".into())
+            .map_err(|_| "agent_workspace_unavailable")?;
+        Ok(directory)
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?
@@ -419,7 +434,9 @@ pub async fn selected(
     home: Option<&Path>,
     managed: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, managed, true).await
+    resolve(roots, path, home, managed, true)
+        .await
+        .map(|directory| directory.map(|(located, _)| located))
 }
 /// A published directory as it is, marker or not; `excluded` and below is
 /// not published.
@@ -429,7 +446,28 @@ pub async fn observed(
     home: Option<&Path>,
     excluded: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, excluded, false).await
+    resolve(roots, path, home, excluded, false)
+        .await
+        .map(|directory| directory.map(|(located, _)| located))
+}
+pub async fn open_directory(
+    roots: &[Root],
+    selected: &Located,
+    excluded: &Path,
+) -> Result<cap_std::fs::Dir, String> {
+    let (current, directory) = resolve(
+        roots.to_vec(),
+        &selected.path,
+        None,
+        excluded.to_owned(),
+        false,
+    )
+    .await?
+    .ok_or("agent_directory_unavailable")?;
+    if current.path != selected.path || current.identity != selected.identity {
+        return Err("agent_directory_unavailable".into());
+    }
+    Ok(directory)
 }
 async fn resolve(
     roots: Vec<Root>,
@@ -437,7 +475,7 @@ async fn resolve(
     home: Option<&Path>,
     excluded: PathBuf,
     workspace_marker: bool,
-) -> Result<Option<Located>, String> {
+) -> Result<Option<(Located, cap_std::fs::Dir)>, String> {
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
     tokio::task::spawn_blocking(move || {
@@ -445,16 +483,17 @@ async fn resolve(
         if path.starts_with(&excluded) {
             return None;
         }
-        let (_, located) = find(&roots, &path)?;
+        let (root, located) = find(&roots, &path)?;
         let directory = directory::open(&path, &located.identity).ok()?;
-        if !workspace_marker {
-            return Some(located);
+        if workspace_marker {
+            match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
+            }
         }
-        match workspace::read_directory_identity(path, directory) {
-            Ok(_) => Some(located),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(located),
-            Err(_) => None,
-        }
+        root.directory.validate(&path).ok()?;
+        Some((located, directory))
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())

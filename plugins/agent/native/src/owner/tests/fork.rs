@@ -79,13 +79,8 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         assert_eq!(std::fs::read_to_string(f.workspace.join("fork-effect.txt")).unwrap(), "original tool effect\n");
         response_with_text(&mut socket, "Turn A completed answer").await;
         f.drained().await;
-        let turn_a = f.session(&source).await.invocation_boundary(&source, first["invocationId"].as_str().unwrap())
-            .await
-            .unwrap()
-            .unwrap()
-            .0
-            .invocation
-            .turn_id;
+        let execution_a=f.execution(&first).await;
+        let turn_a=execution_a.turn_id.clone();
 
         // A repeated original write would overwrite this independent later edit.
         std::fs::write(f.workspace.join("fork-effect.txt"), "later external edit\n").unwrap();
@@ -110,7 +105,9 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         let mut end = input.clone();
         end["position"] = json!({"kind":"end"});
         assert_eq!(f.mutation(2, "fork", end, Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"history_unavailable"}));
-        let forked = f.mutation(2, "fork", input, Uuid::new_v4()).await.unwrap();
+        let fork_operation=Uuid::new_v4();
+        let forked = f.mutation(2, "fork", input.clone(), fork_operation).await.unwrap();
+        assert_eq!(f.mutation(2,"fork",input,fork_operation).await.unwrap(),forked,"the original Returned must not copy or dispatch again");
         assert_eq!(forked["kind"], "forked");
         let target = forked["session"]["id"].as_str().unwrap();
         assert_ne!(target, source);
@@ -120,6 +117,28 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         assert_eq!(forked["session"]["boundaryRevision"], 0);
         assert_eq!(forked["session"]["activity"], "idle");
         assert_eq!(f.query("observe", json!({"sessionId":target})).await.unwrap()["run"], Value::Null);
+        let committed=f.owner.canonical_catalog().unwrap().record(target).await.unwrap().unwrap();
+        assert_eq!(committed.control_revision,1);
+        assert_eq!(serde_json::to_value(crate::service::summary(&f.owner,committed).unwrap()).unwrap(),forked["session"],"the returned planned source and original lineage must equal the committed T2 record");
+
+        // The inherited original turn is selected by its actual qualified source row.
+        let history=f.history(target);
+        let cut=history.capture().await.unwrap();
+        let tree=maka_agent_state::session_history::source_tree::SourceTree::live(&history,&cut).await.unwrap();
+        let address=tree.positions(None,false,false,256).await.unwrap().into_iter().find(|row|matches!(row.address,maka_agent_facts::history::HistoryRowAddress::Snapshot {..})).expect("inherited Turn A must have actual source rows").address;
+        let position=json!({"kind":"through_source_turn","position":address});
+        let mut foreign=address.clone();
+        let maka_agent_facts::history::HistoryRowAddress::Snapshot {path,..}=&mut foreign else {unreachable!()};
+        path.push(execution_a.run_id);
+        assert_eq!(f.mutation(2,"fork",json!({"sessionId":target,"expectedRevision":forked["session"]["revision"],"position":{"kind":"through_source_turn","position":foreign},"title":"Invalid source path","labels":[]}),Uuid::new_v4()).await.unwrap(),json!({"kind":"rejected","reason":"history_unavailable"}));
+        let nested=f.mutation(2,"fork",json!({"sessionId":target,"expectedRevision":forked["session"]["revision"],"position":position,"title":"Nested independent branch","labels":[]}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(nested["kind"],"forked","fork-of-fork must copy the selected real source, not return unavailable");
+        assert_eq!(nested["session"]["branch"],json!({"sessionId":target,"position":position}));
+        let target=nested["session"]["id"].as_str().unwrap();
+        let history=f.history(target);
+        let cut=history.capture().await.unwrap();
+        let marker=f.latest_run(target).await;
+        let inherited=history.snapshot(&cut,marker.run).await.unwrap();
         assert_eq!(std::fs::read_to_string(f.workspace.join("fork-effect.txt")).unwrap(), "later external edit\n");
 
         assert_eq!(f.mutation(2, "send", json!({"sessionId":target,"message":"New target input","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap()["kind"], "started");
@@ -139,8 +158,11 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         let retained_id = read_argument["path"].as_str().unwrap()
             .strip_prefix("maka://runtime/attachments/")
             .expect("inherited attachment must name a Session resource");
-        assert_eq!(f.session(target).await.read_artifact_chunk(target, retained_id, 0, 1024).await.unwrap().unwrap().bytes,
-            b"retained Turn A attachment\n");
+        let retained=inherited.with_artifact(f.owner.run_owner(),source.clone(),Some(execution_a.run_id),retained_id.into(),|_,reader| {
+            let mut bytes=Vec::new();reader.read_to_end(&mut bytes)?;Ok(bytes)
+        }).await.unwrap().expect("selected inherited input must retain its actual source media");
+        assert_eq!(retained,b"retained Turn A attachment\n");
+        assert!(inherited.artifact(f.owner.run_owner(),target.into(),None,retained_id.into()).await.unwrap().is_none(),"an original artifact ID is not a target Session registration or read grant");
         assert!(!messages.contains("Turn B: active tail must stay out"), "{messages}");
         let historical_tool: Value = serde_json::from_str(
             prompt["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap()["content"].as_str().unwrap(),
@@ -222,12 +244,12 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         f.store.create_plugin_session(
             &maka_event_log::sessions::PluginSession {
                 session_id: managed.clone(),
-                creator: maka_capabilities::storage::Namespace::new("fork.fixture", maka_plugin_core::scope::Scope::Profile).unwrap(),
+                creator: maka_plugin_core::storage::Namespace::new("fork.fixture", maka_plugin_core::scope::Scope::Profile).unwrap(),
                 fingerprint: "managed-fork".into(),
                 managed: true,
                 authority_session_id: None,
             },
-            &f.session(&source).await.get_session::<StoredSessionConfiguration>(&source).await.unwrap().unwrap().configuration,
+            &f.session(&source).await.get::<StoredSessionConfiguration>().await.unwrap().unwrap().configuration,
             now(),
         ).await.unwrap();
         let revision = f.owner.session(&managed).await.unwrap().revision;

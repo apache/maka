@@ -33,7 +33,11 @@ async fn stored_source_and_lease_survive_abandoned_query_resources_and_native_cl
         };
         let root = dir.path().join("root");
         let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-        let store = Arc::new(RootStore::open(owner.clone()).await.unwrap());
+        let store = Arc::new(
+            RootStore::open(owner.clone(), maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
         drop(owner);
         let provider = native_package();
         let consumer = consumer();
@@ -164,7 +168,9 @@ async fn stored_source_and_lease_survive_abandoned_query_resources_and_native_cl
                 Err(error) => panic!("{error}"),
             }
         };
-        let store = RootStore::open(Arc::new(reopened)).await.unwrap();
+        let store = RootStore::open(Arc::new(reopened), maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         let loaded = store.load_application(deployment).await.unwrap().unwrap();
         let (loaded_source, _, _, _) = loaded.into_parts();
         assert_eq!(loaded_source.reference.state_domain, source.state_domain);

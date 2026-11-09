@@ -204,7 +204,8 @@ jobs:
       - name: Execute the produced test partition
         env:
           MAKA_CI_FILTER: ${{ needs.root-build.outputs.filter }}
-        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -E "$MAKA_CI_FILTER"
+          MAKA_CI_HELPERS: ${{ toJSON(matrix.helpers) }}
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' "$MAKA_CI_HELPERS" -E "$MAKA_CI_FILTER"
 
   desktop-build:
     needs: plan
@@ -275,7 +276,8 @@ jobs:
       - name: Execute the produced test partition
         env:
           MAKA_CI_FILTER: ${{ needs.desktop-build.outputs.filter }}
-        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -j 1 -E "$MAKA_CI_FILTER"
+          MAKA_CI_HELPERS: ${{ toJSON(matrix.helpers) }}
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' "$MAKA_CI_HELPERS" -j 1 -E "$MAKA_CI_FILTER"
 
   suites:
     needs: plan

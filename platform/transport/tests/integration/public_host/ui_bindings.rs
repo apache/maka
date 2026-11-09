@@ -18,7 +18,9 @@
  */
 
 use super::*;
-use maka_host_runtime::application::{Context, Handler, NativeActivation, NativeOwner, backend};
+use maka_host_runtime::application::{
+    Context, Handler, HandlerResult, HandlerValue, NativeActivation, NativeOwner, backend,
+};
 use maka_plugin_core::{
     composition::{Configuration, PackageUse, Target},
     contract::{Availability, Cardinality, Export, Import, Interface, MethodMode},
@@ -81,7 +83,7 @@ impl Handler for Counter {
         method: String,
         input: Value,
         context: Context,
-    ) -> futures_util::future::BoxFuture<'static, Result<Value, String>> {
+    ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         let counter = self.0.clone();
         Box::pin(async move {
             if input == json!({"reject":true}) {
@@ -94,9 +96,9 @@ impl Handler for Counter {
             };
             if method == "watch" {
                 context.emit(json!({"effects":value})).await?;
-                Ok(Value::Null)
+                Ok(HandlerValue::Json(Value::Null))
             } else {
-                Ok(json!({"effects":value}))
+                Ok(HandlerValue::Json(json!({"effects":value})))
             }
         })
     }
@@ -134,7 +136,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let root = directory.path().join("root");
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let (mut input, mut packages) = support::host();
         let mut contract = support::business();
         let Interface::Service { methods } = &mut contract.interface else { unreachable!() };
@@ -215,7 +217,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         mutation.start().await.unwrap();
         assert!(matches!(mutation.receive().await.unwrap(),Reply::Prepared { .. }));
         let reference=mutation.reference().unwrap().clone();
-        assert!(matches!(mutation.confirm().await.unwrap(),Reply::Mutation {reply,cleanup:Ok(())} if matches!(reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1}))));
+        assert!(matches!(mutation.confirm(serde_json::Value::Null).await.unwrap(),Reply::Mutation {reply,cleanup:Ok(())} if matches!(reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } },cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1}))));
         let intent=store.application_intent(deployment,support::identity(23),reference.operation).await.unwrap().unwrap();
         assert_eq!(intent.caller,source);
         let mut subscription=bound.call("counter","watch".into(),Value::Null,Default::default()).await.unwrap();
@@ -234,7 +236,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         original.start().await.unwrap();
         assert!(matches!(original.receive().await.unwrap(),Reply::Prepared { .. }));
         let original_reference=original.reference().unwrap().clone();
-        assert!(matches!(original.confirm().await.unwrap(),Reply::Mutation {reply,cleanup:Ok(())} if matches!(reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1}))));
+        assert!(matches!(original.confirm(serde_json::Value::Null).await.unwrap(),Reply::Mutation {reply,cleanup:Ok(())} if matches!(reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } },cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1}))));
         domains.domains.lock().unwrap()[0].send_replace(true);
         let mut retired=fault_bound.call("business","read".into(),Value::Null,Default::default()).await.unwrap();
         retired.start().await.unwrap();
@@ -256,7 +258,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         assert_eq!(read(&recovered_bound,"business","read",Value::Null).await,json!({"effects":0}));
         parent.refresh().await.unwrap();
         let original_receipt:maka_plugin_core::operation::OperationReply=serde_json::from_value(read(&parent,"receipts","read",serde_json::to_value(&original_reference).unwrap()).await).unwrap();
-        assert!(matches!(original_receipt.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1})));
+        assert!(matches!(original_receipt.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } },cleanup:OperationCleanup::Confirmed} if value == &json!({"effects":1})));
         assert_eq!(original_receipt.reference,original_reference);
 
         input.instances.get_mut("ui").unwrap().bindings.insert("counter".into(),vec![Target::Instance {path:vec!["counter-b".into()],export:"Counter".into()}]);
@@ -265,7 +267,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         assert_eq!(read(&rebound,"counter","read",Value::Null).await,json!({"effects":100}));
         let receipt: maka_plugin_core::operation::OperationReply = serde_json::from_value(read(&parent,"receipts","read",serde_json::to_value(&reference).unwrap()).await).unwrap();
         assert_eq!(receipt.reference,reference);
-        assert!(matches!(receipt.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value}, ..} if value == &json!({"effects":1})));
+        assert!(matches!(receipt.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } }, ..} if value == &json!({"effects":1})));
         assert_eq!(first.load(Ordering::SeqCst),1);
         fault_bound.close().await.unwrap();
         recovered_bound.close().await.unwrap();

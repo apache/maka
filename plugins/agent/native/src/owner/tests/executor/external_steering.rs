@@ -18,7 +18,7 @@
  */
 
 use super::super::attachments::upload;
-use super::external_support::{input_runtime, packet, record, release, setup, with_tools};
+use super::external_support::{input_runtime, native_task, packet, release, setup, with_tools};
 use super::*;
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -47,11 +47,18 @@ async fn native_external_steering_delivers_inside_the_original_invocation_and_ke
             let received = packet(&mut control, "steered").await;
             assert_eq!(received["pid"], opened["pid"], "additional input belongs to the original live process");
             assert_eq!(received["request"]["message"], "改为只报告结论");
-            let path = std::path::PathBuf::from(received["request"]["images"][0]["path"].as_str().unwrap());
+            let image=&received["request"]["images"][0];
+            let path=if runtime=="claude" {
+                use base64::Engine as _;assert_eq!(base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap()).unwrap(),bytes);assert_eq!(image["mediaType"],"image/png");
+                let task=native_task(&f,&session).await;let mut paths=Vec::new();for entry in std::fs::read_dir(task.resource.resource_ref.join("inputs")).unwrap() {let path=entry.unwrap().path();if path.is_dir() {for entry in std::fs::read_dir(path).unwrap() {let path=entry.unwrap().path();if path.extension().is_some_and(|e|e=="png") {paths.push(path);}}}}assert_eq!(paths.len(),1);paths.remove(0)
+            } else {std::path::PathBuf::from(image["path"].as_str().unwrap())};
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             assert_eq!(f.mutation(2, "send", correction, operation).await.unwrap(), accepted, "receipt recovery must not submit input again");
-            let proof = f.session(&session).await.steering_message(&session, accepted["messageId"].as_str().unwrap()).await.unwrap().unwrap();
-            assert_eq!(proof.event.invocation.invocation_id, original["invocationId"]);
+            let task=native_task(&f,&session).await;let steering=task.state.steering.as_ref().unwrap();assert!(steering.admitted);
+            let blob=f.owner.durable.content(task.execution.run_id,steering.descriptor.clone()).await.unwrap();let proof:maka_agent_state::external_steering::ExternalSteeringSpec=serde_json::from_slice(&blob).unwrap();
+            assert_eq!(serde_json::to_value(proof.execution.run_id).unwrap(),original["runId"]);assert_eq!(proof.key.task,task.state.task);
+            let mut attributed=false;for source in proof.sources {let bytes=f.owner.durable.content(task.execution.run_id,source.source).await.unwrap();let message:maka_agent_facts::message::RootSourceMessage=serde_json::from_slice(&bytes).unwrap();attributed|=serde_json::to_value(message.message.message_id).unwrap()==accepted["messageId"];}
+            assert!(attributed,"original Root message identity must be retained in the admitted steering descriptor");
             assert!(listener.accept().now_or_never().is_none(), "steering cannot spawn a replacement invocation");
             release(&mut control).await;
             packet(&mut control, "output").await;
@@ -67,9 +74,9 @@ async fn native_external_steering_delivers_inside_the_original_invocation_and_ke
             assert_eq!(super::external_support::assistant_texts(&f, &session).await, all_text);
             assert_eq!(final_work["answer"]["text"], expected);
             let delivered = f.query("work", json!({"sessionId":session,"target":{"kind":"message","messageId":accepted["messageId"]}})).await.unwrap();
-            assert_eq!(delivered["execution"]["invocationId"], original["invocationId"]);
+            assert_eq!(delivered["execution"]["runId"], original["runId"]);
             assert_eq!(delivered["execution"]["state"], "completed");
-            assert!(!path.parent().unwrap().exists(), "settled native execution releases additional uploads");
+            assert!(path.parent().unwrap().exists(), "additional uploads stay in the old private namespace until independently proven GC");assert_eq!(native_task(&f,&session).await.state.cleanup,maka_plugin_core::operation::OperationCleanup::Confirmed,"original Root resources are settled independently");
             assert!(listener.accept().now_or_never().is_none());
         }
         f.app.shutdown().await.unwrap();
@@ -91,11 +98,11 @@ async fn native_external_steering_wrong_turn_ack_cannot_complete_or_replay_the_i
         packet(&mut control, "steered").await;
         f.drained().await;
         let result = work(&f, &session, &original).await;
-        assert_eq!(result["execution"]["state"], "failed", "{result}");
+        assert_eq!(result["execution"]["state"], "blocked", "{result}");
         assert_eq!(f.mutation(2, "send", request, operation).await.unwrap(), accepted);
         let delivered = f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":accepted["messageId"]}})).await.unwrap();
-        assert_eq!(delivered["execution"]["invocationId"], original["invocationId"]);
-        assert_eq!(delivered["execution"]["state"], "failed");
+        assert_eq!(delivered["execution"]["runId"], original["runId"]);
+        assert_eq!(delivered["execution"]["state"], "blocked");
         assert!(listener.accept().now_or_never().is_none(), "uncertain input must never be replayed");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -116,9 +123,9 @@ async fn native_external_steering_native_completion_before_rejection_settles_wit
         f.drained().await;
         let result = work(&f, &session, &original).await;
         assert_eq!(result["execution"]["state"], "failed", "the rejected input must not be reported as consumed: {result}");
-        assert!(record(&f, &session).await["running"].is_null(), "the already observed native terminal must not be awaited twice or quarantined");
+        assert!(native_task(&f, &session).await.state.closed.is_some(), "the already observed native terminal must not be awaited twice or quarantined");
         let delivery = f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":accepted["messageId"]}})).await.unwrap();
-        assert_eq!(delivery["execution"]["invocationId"], original["invocationId"]);
+        assert_eq!(delivery["execution"]["runId"], original["runId"]);
         assert_eq!(delivery["execution"]["state"], "failed");
         assert!(listener.accept().now_or_never().is_none(), "definite rejection cannot replay claimed input");
         f.app.shutdown().await.unwrap();
@@ -157,10 +164,10 @@ async fn native_external_steering_closes_obsolete_host_question_without_answerin
         plan.push(b'\n');
         control.get_mut().write_all(&plan).await.unwrap();
         packet(&mut control, "responsive").await;
-        let store = f.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = f.owner.durable.interactions();
+        let mut commits = store.subscribe().unwrap();
         let question = loop {
-            let pending = store.pending_interactions(&session).await.unwrap();
+            let pending = store.pending(&session).await.unwrap().records;
             if let Some(question) = pending.into_iter().find(|entry| {
                 matches!(
                     entry.request,
@@ -198,7 +205,7 @@ async fn native_external_steering_closes_obsolete_host_question_without_answerin
             }
         }
         let closed = store
-            .interaction(&question.request_id)
+            .read(&session, &question.request_id)
             .await
             .unwrap()
             .unwrap();
@@ -237,15 +244,16 @@ async fn native_external_steering_closes_obsolete_host_question_without_answerin
 
 #[cfg(unix)]
 #[tokio::test]
-async fn native_external_agy_defaults_to_interrupt_resume_after_original_physical_settlement() {
-    use super::external_support::record_runtime;
+async fn native_external_agy_interrupt_starts_fresh_context_only_after_original_physical_settlement()
+ {
+    use super::external_support::native_task;
     tokio::time::timeout(Duration::from_secs(60), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("agy default interruption").await;
         let first = f.mutation(2,"send",input_runtime(&session,"antigravity","soft-interrupt"),Uuid::new_v4()).await.unwrap();
         let mut original = BufReader::new(listener.accept().await.unwrap().0);
         packet(&mut original,"opened").await;
-        let native = record_runtime(&f,&session,"antigravity").await["nativeSession"].clone();
+        let native = native_task(&f,&session).await;
         release(&mut original).await;
         packet(&mut original,"output").await;
         let operation = Uuid::new_v4();
@@ -257,12 +265,12 @@ async fn native_external_agy_defaults_to_interrupt_resume_after_original_physica
         assert!(listener.accept().now_or_never().is_none());
         release(&mut original).await;
         packet(&mut original,"terminal").await;
-        assert_eq!(record_runtime(&f,&session,"antigravity").await["running"],first["invocationId"]);
+        let current=native_task(&f,&session).await;assert_eq!(current.state.task,native.state.task);assert_ne!(current.state.cleanup,maka_plugin_core::operation::OperationCleanup::Confirmed,"native terminal alone is not private closure");
         assert!(listener.accept().now_or_never().is_none(),"native terminal alone cannot start the successor");
         release(&mut original).await;
         let mut resumed = BufReader::new(listener.accept().await.unwrap().0);
         let opened = packet(&mut resumed,"opened").await;
-        assert_eq!(opened["request"]["resume"],native);
+        assert!(opened["request"].get("resume").is_none());let successor=native_task(&f,&session).await;assert_ne!(successor.state.task,native.state.task);assert_ne!(successor.resource.resource_ref,native.resource.resource_ref);assert!(opened["request"]["canonicalHistory"]["text"].as_str().unwrap().contains("soft-interrupt"));
         assert!(opened["request"]["message"].as_str().unwrap().contains("Only the correction."));
         assert_eq!(work(&f,&session,&first).await["execution"]["state"],"cancelled");
         release(&mut resumed).await;
@@ -273,8 +281,8 @@ async fn native_external_agy_defaults_to_interrupt_resume_after_original_physica
         f.drained().await;
         let result=f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":next["messageId"]}})).await.unwrap();
         assert_eq!(result["execution"]["state"],"completed","{result}");
-        assert_ne!(result["execution"]["invocationId"],first["invocationId"]);
-        assert_eq!(record_runtime(&f,&session,"antigravity").await["nativeSession"],native);
+        assert_ne!(result["execution"]["runId"],first["runId"]);
+        let previous=f.owner.durable.frontier(native.execution.run_id).await.unwrap().external.unwrap();assert_eq!(previous.binding,native.state.binding,"fresh task may not replace original native binding");
         assert!(listener.accept().now_or_never().is_none(),"original receipt cannot replay a correction");
         f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
     }).await.unwrap();
@@ -308,7 +316,7 @@ async fn native_external_agy_explicit_queue_does_not_interrupt_the_active_turn()
 #[cfg(unix)]
 #[tokio::test]
 async fn native_external_agy_unacknowledged_interrupt_cannot_resume_or_clear_its_fence() {
-    use super::external_support::record_runtime;
+    use super::external_support::native_task;
     tokio::time::timeout(Duration::from_secs(60), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("agy unconfirmed native interruption").await;
@@ -338,14 +346,20 @@ async fn native_external_agy_unacknowledged_interrupt_cannot_resume_or_clear_its
         packet(&mut control, "terminal").await;
         release(&mut control).await;
         f.drained().await;
+        let task = native_task(&f, &session).await;
         assert_eq!(
-            record_runtime(&f, &session, "antigravity").await["running"],
-            first["invocationId"]
+            serde_json::to_value(task.execution.run_id).unwrap(),
+            first["runId"]
+        );
+        assert!(
+            task.state.closed.is_none(),
+            "unknown interrupt cannot manufacture native terminal"
         );
         assert!(listener.accept().now_or_never().is_none());
-        assert_ne!(
+        assert_eq!(
             work(&f, &session, &first).await["execution"]["state"],
-            "completed"
+            "blocked",
+            "unknown interruption is not a definite native failure or success"
         );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();

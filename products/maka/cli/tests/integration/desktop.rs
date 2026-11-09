@@ -115,7 +115,10 @@ async fn saved(root: &Path) -> (uuid::Uuid, serde_json::Value, Option<Vec<u8>>) 
             Err(error) => panic!("Host Root did not reopen: {error}"),
         }
     };
-    let store = maka_transport::open_store(Arc::new(owner)).await.unwrap();
+    let store =
+        maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())
+            .await
+            .unwrap();
     let launch = store.application_launch().await.unwrap().unwrap();
     store.drain().await;
     (launch.deployment, launch.configuration, launch.pending)

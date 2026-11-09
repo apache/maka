@@ -103,9 +103,13 @@ impl ToolExecutor for Bridge {
                 .await
                 .invoke(
                     serde_json::from_value(input).unwrap(),
-                    &InvocationContext::new("dialogs-fixture", turn)
-                        .with_browser_authorization(authority)
-                        .with_browser_host_effects(effects),
+                    &InvocationContext::new(
+                        "dialogs-fixture",
+                        turn,
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    )
+                    .with_browser_authorization(authority)
+                    .with_browser_host_effects(effects),
                     &cancellation,
                     Language::En,
                 )
@@ -1002,9 +1006,13 @@ async fn dialog_getter_and_handler_require_site_authority_without_changing_the_p
     let repl = new_repl();
     bind(&repl, bridge.clone(), &browser.target).await;
     browser.effects.join().await;
-    let allowed = InvocationContext::new("dialogs-fixture", "authority")
-        .with_browser_authorization(bridge.authority.clone())
-        .with_browser_host_effects(browser.effects.clone());
+    let allowed = InvocationContext::new(
+        "dialogs-fixture",
+        "authority",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    )
+    .with_browser_authorization(bridge.authority.clone())
+    .with_browser_host_effects(browser.effects.clone());
     let bound=native_command(&session,json!({"method":"browserTab","browserId":"fixture","reference":{"kind":"existing","id":browser.target}}),&allowed).await.unwrap();
     browser
         .schedule(
@@ -1028,15 +1036,22 @@ async fn dialog_getter_and_handler_require_site_authority_without_changing_the_p
     let admissions = browser.effects.admissions.load(Ordering::SeqCst);
     for (context, expected) in [
         (
-            InvocationContext::new("dialogs-fixture", "authority"),
+            InvocationContext::new(
+                "dialogs-fixture",
+                "authority",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             "requires Host authorization",
         ),
         (
-            InvocationContext::new("dialogs-fixture", "authority").with_browser_authorization(
-                Arc::new(SiteAuthority {
-                    origins: Vec::new(),
-                }),
-            ),
+            InvocationContext::new(
+                "dialogs-fixture",
+                "authority",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_browser_authorization(Arc::new(SiteAuthority {
+                origins: Vec::new(),
+            })),
             "dialog fixture site denied",
         ),
     ] {
@@ -1195,14 +1210,19 @@ async fn child_dialog_ax_controls_and_epoch_rebinding_keep_exact_identity() {
 
     let bound = session.lock().await.invoke(
         serde_json::from_value(json!({"method":"browserTab","browserId":"fixture","reference":{"kind":"existing","id":browser.target}})).unwrap(),
-        &InvocationContext::new("dialogs-fixture", "ax-turn"),
+        &InvocationContext::new("dialogs-fixture", "ax-turn", maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap()),
         &CancellationToken::new(),
         Language::En,
     ).await.unwrap();
     session
         .lock()
         .await
-        .finish_turn("dialogs-fixture", "ax-turn", Language::En)
+        .finish_turn(
+            "dialogs-fixture",
+            "ax-turn",
+            &maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
         .await
         .unwrap();
     let next_turn = browser.bridge(session.clone(), "after-turn");
@@ -1222,9 +1242,13 @@ async fn child_dialog_ax_controls_and_epoch_rebinding_keep_exact_identity() {
     assert_eq!(browser.result("after-turn").await, true);
 
     let before_reset = browser.bridge(session.clone(), "after-turn");
-    let before_context = InvocationContext::new("dialogs-fixture", "after-turn")
-        .with_browser_authorization(before_reset.authority.clone())
-        .with_browser_host_effects(browser.effects.clone());
+    let before_context = InvocationContext::new(
+        "dialogs-fixture",
+        "after-turn",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    )
+    .with_browser_authorization(before_reset.authority.clone())
+    .with_browser_host_effects(browser.effects.clone());
     browser
         .schedule(
             "root",
@@ -1264,8 +1288,12 @@ async fn child_dialog_ax_controls_and_epoch_rebinding_keep_exact_identity() {
         .invoke(
             serde_json::from_value(json!({"method":"getJsDialog","handle":bound["handle"]}))
                 .unwrap(),
-            &InvocationContext::new("dialogs-fixture", "after-reset")
-                .with_browser_authorization(after_reset.authority.clone()),
+            &InvocationContext::new(
+                "dialogs-fixture",
+                "after-reset",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_browser_authorization(after_reset.authority.clone()),
             &CancellationToken::new(),
             Language::En,
         )
@@ -1279,9 +1307,13 @@ async fn child_dialog_ax_controls_and_epoch_rebinding_keep_exact_identity() {
         .await;
     browser.opened("root", "prompt", "after reset").await;
     dialog(&replacement_repl, after_reset.clone(), "prompt").await;
-    let after_context = InvocationContext::new("dialogs-fixture", "after-reset")
-        .with_browser_authorization(after_reset.authority.clone())
-        .with_browser_host_effects(browser.effects.clone());
+    let after_context = InvocationContext::new(
+        "dialogs-fixture",
+        "after-reset",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    )
+    .with_browser_authorization(after_reset.authority.clone())
+    .with_browser_host_effects(browser.effects.clone());
     let fresh_bound=native_command(&reset,json!({"method":"browserTab","browserId":"fixture","reference":{"kind":"existing","id":browser.target}}),&after_context).await.unwrap();
     assert_ne!(fresh_bound["handle"], bound["handle"]);
     let fresh_dialog = native_command(

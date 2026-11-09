@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::{
+use maka_plugin_core::{
     shell_run::ShellOutput,
     terminal::display::{Buffer, Part, Row, RowPart},
 };
@@ -171,7 +171,7 @@ fn fragments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::terminal::{
+    use maka_plugin_core::terminal::{
         TerminalSize,
         display::{Assembly, Color, Display, Run, Style},
     };

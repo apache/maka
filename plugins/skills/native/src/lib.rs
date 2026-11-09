@@ -31,7 +31,8 @@ use futures_util::future::BoxFuture;
 use maka_capabilities::call::Scope;
 use maka_capabilities::filesystem::ReadRoot;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeContext,
+    NativeOwner, NativeRegistry,
 };
 use maka_sandbox::filesystem::{Access, Policy, Rule};
 use serde::Serialize;
@@ -454,9 +455,31 @@ impl Handler for Library {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let library = self.clone();
-        Box::pin(async move {
+        if method == "setPreference" {
+            return Box::pin(async move {
+                let input: SetPreference = serde_json::from_value(input)
+                    .map_err(|_| HandlerError::from("skills_preference_invalid"))?;
+                context
+                    .operation()
+                    .ok_or("skills_mutation_required")
+                    .map_err(HandlerError::from)?;
+                if !library.preferences_writable {
+                    return encode(PreferenceResult::Rejected {
+                        reason: "read_only_preferences".into(),
+                    })
+                    .map(HandlerValue::Json)
+                    .map_err(HandlerError::from);
+                }
+                let change = library
+                    .preferences
+                    .set(input, context.scope())
+                    .map_err(HandlerError::from)?;
+                context.complete_result(change).map_err(HandlerError::from)
+            });
+        }
+        let result = async move {
             match method.as_str() {
                 "prepare" | "search" | "load" => {
                     library.model(&method, input, context.scope()).await
@@ -478,18 +501,6 @@ impl Handler for Library {
                         .for_workspace(input.workspace.clone(), context.scope())
                         .await?;
                     encode(library.snapshot(context.scope()).await?.read(input)?)
-                }
-                "setPreference" => {
-                    let input =
-                        serde_json::from_value(input).map_err(|_| "skills_preference_invalid")?;
-                    context.operation().ok_or("skills_mutation_required")?;
-                    let input: SetPreference = input;
-                    if !library.preferences_writable {
-                        return encode(PreferenceResult::Rejected {
-                            reason: "read_only_preferences".into(),
-                        });
-                    }
-                    encode(library.preferences.set(input, context.scope()).await?)
                 }
                 "discoverSource" | "install" | "update" | "delete" => {
                     if context.scope().identity.agent().is_some() {
@@ -531,6 +542,10 @@ impl Handler for Library {
                 }
                 _ => Err("skills_method_unavailable".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

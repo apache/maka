@@ -23,16 +23,19 @@ use std::path::Path;
 pub(super) async fn preferences(path: &Path) -> preferences::Store {
     preferences::Store::new(
         Arc::new(
-            maka_event_log::RootStore::open(Arc::new(
-                maka_event_log::root::RootOwner::create(
-                    &path.join(format!("preferences-{}", uuid::Uuid::new_v4())),
-                    &maka_event_log::root::RootNamespaces {
-                        ownership: path.join("owners"),
-                        control: path.join("control"),
-                    },
-                )
-                .unwrap(),
-            ))
+            maka_event_log::RootStore::open(
+                Arc::new(
+                    maka_event_log::root::RootOwner::create(
+                        &path.join(format!("preferences-{}", uuid::Uuid::new_v4())),
+                        &maka_event_log::root::RootNamespaces {
+                            ownership: path.join("owners"),
+                            control: path.join("control"),
+                        },
+                    )
+                    .unwrap(),
+                ),
+                maka_event_log::ROOT_MIGRATIONS,
+            )
             .await
             .unwrap(),
         ),
@@ -308,7 +311,11 @@ async fn execution_basis_preserves_real_captures_and_rejects_replaced_skill_dire
         )
         .unwrap(),
     );
-    let store = Arc::new(RootStore::open(root.clone()).await.unwrap());
+    let store = Arc::new(
+        RootStore::open(root.clone(), maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     for name in ["home", "projects", "custom"] {
         std::fs::create_dir(path.join(name)).unwrap();
     }

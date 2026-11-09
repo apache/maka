@@ -81,8 +81,8 @@ mod tests {
             GrantCapability, GrantScope, GrantTarget, InteractionAnswer, InteractionOutcome,
             InteractionRecord, InteractionRequest, MAX_SAFE_INTEGER, SessionGrant,
         },
-        workspace::{BindingStamp, PermissionBasis},
     };
+    use maka_sandbox::workspace::{BindingStamp, PermissionBasis};
     use serde::Deserialize;
     use serde_json::value::RawValue;
     use std::collections::BTreeMap;
@@ -144,9 +144,11 @@ mod tests {
         assert_eq!(decoded, outcome);
         assert!(answer.matches_outcome(&decoded));
         let record = InteractionRecord {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
+            execution: crate::durable::ExecutionIdentity {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+            },
             request_id: "form".into(),
             created_at: MAX_SAFE_INTEGER,
             request: InteractionRequest::Form {

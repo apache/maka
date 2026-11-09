@@ -20,20 +20,14 @@
 import type {
   ModelSelection,
   AgentSend,
-  AgentResume,
-  WorkHubResolve,
-  WorkHubCoordinator,
-  WorkHubTask,
-  WorkHubControl,
-  WorkHubControlRead,
-  WorkHubConfiguration,
+  AgentContinueRun,
+  AgentContinuationResult,
   AgentFileListRead,
   AgentFileWatch,
   AgentFilePage,
   AgentFileChange,
   WorkspacePath,
   AgentWorkRead,
-  AgentExecutionResult,
   AgentHistoryPage,
   AgentSessionPage,
   AgentList,
@@ -106,6 +100,7 @@ const mutation = {
   method: 'echo',
   input: null,
   operationId: '00000000-0000-4000-8000-000000000001',
+  recovery: { version: 1, locator: 'original-opaque-request' },
   attachments: {},
 } satisfies HostRequest;
 const incompleteMutation = {
@@ -114,6 +109,7 @@ const incompleteMutation = {
   provider: 0,
   method: 'echo',
   input: null,
+  recovery: { version: 1, locator: 'original-opaque-request' },
   attachments: {},
 } as const;
 // @ts-expect-error An explicit durable operation identity is required.
@@ -124,16 +120,23 @@ const fabricatedMutation = {
   capture: '00000000-0000-4000-8000-000000000001',
   attachments: { text: 'text' },
 } satisfies HostRequest;
-void [mutation, missingOperation, fabricatedMutation];
+const { recovery: originalRecovery, ...withoutRecovery } = mutation;
+// @ts-expect-error Original recovery data is required before mutation admission.
+const missingRecovery: HostRequest = withoutRecovery;
+void [mutation, missingOperation, fabricatedMutation, originalRecovery, missingRecovery];
 
 async function durableReceipt(context: RequestContext) {
   const reply = await context.invoke(mutation);
   const operation: string = reply.reference.operation;
   // @ts-expect-error Acceptance never proves that the journal has a result.
   const prematureOutcome = reply.receipt.outcome;
-  if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'returned') {
+  if (
+    reply.receipt.kind === 'recorded' &&
+    reply.receipt.outcome.kind === 'returned' &&
+    reply.receipt.outcome.result.kind === 'success'
+  ) {
     // @ts-expect-error Business output must still be checked against its contract.
-    const text: string = reply.receipt.outcome.value;
+    const text: string = reply.receipt.outcome.result.value;
     void text;
   }
   const recovered = await context.invoke({ operation: 'recover', reference: reply.reference });
@@ -176,16 +179,16 @@ const explicitSend: AgentSend = {
   message: 'Hello',
   backend: { kind: 'model', ...selectedModel, thinkingLevel: null },
 };
-const resumeOriginal: AgentResume = {
+const continueOriginal: AgentContinueRun = {
   sessionId: 'conversation',
-  sourceInvocationId: 'original-invocation',
+  sourceRunId: '00000000-0000-4000-8000-000000000001',
   sourceHighWater: 12,
   model: selectedModel,
 };
-function resumeReceipt(value: AgentExecutionResult) {
-  return value.kind === 'found' ? value.execution.invocationId : null;
+function continuationReceipt(value: AgentContinuationResult) {
+  return value.kind === 'started' ? value.execution.runId : null;
 }
-void [resumeOriginal, resumeReceipt];
+void [continueOriginal, continuationReceipt];
 const clearDefault: SetDefaultConnectionTargetInput = { expectedCatalogRevision: 5, target: null };
 // @ts-expect-error Absence is not an explicit clear.
 const missingDefault: SetDefaultConnectionTargetInput = { expectedCatalogRevision: 5 };
@@ -317,7 +320,15 @@ const historyWindow = {
   through: 16,
   chunks: [],
   before: null,
-  after: { position: { sourceSequence: 16, itemIndex: 0 }, offset: 0 },
+  after: {
+    position: {
+      kind: 'live',
+      sequence: 16,
+      fact: '00000000-0000-4000-8000-000000000001',
+      itemIndex: 0,
+    },
+    offset: 0,
+  },
 } satisfies AgentHistoryPage;
 // @ts-expect-error Missing boundaries are not end-of-history receipts.
 const missingHistoryBoundary: AgentHistoryPage = {
@@ -329,11 +340,24 @@ const missingHistoryBoundary: AgentHistoryPage = {
 const removedHistoryPosition = {
   // @ts-expect-error The removed one-way cursor position is not an alias.
   kind: 'cursor',
-  cursor: { position: { sourceSequence: 16, itemIndex: 0 }, offset: 0 },
+  cursor: {
+    position: {
+      kind: 'live',
+      sequence: 16,
+      fact: '00000000-0000-4000-8000-000000000001',
+      itemIndex: 0,
+    },
+    offset: 0,
+  },
 } satisfies HistoryPosition;
 const exactHistoryRow = {
   kind: 'row',
-  position: { sourceSequence: 16, itemIndex: 2 },
+  position: {
+    kind: 'live',
+    sequence: 16,
+    fact: '00000000-0000-4000-8000-000000000001',
+    itemIndex: 2,
+  },
   field: 'thinking',
 } satisfies HistoryPosition;
 void [historyWindow, missingHistoryBoundary, removedHistoryPosition, exactHistoryRow];
@@ -381,41 +405,16 @@ void [
   unfencedSessionPage,
 ];
 
-const resolveCoordinator: WorkHubResolve = { workspace: '~/projects/hub' };
-function coordinatorSession(value: WorkHubCoordinator): string | null {
-  return value.kind === 'ready' ? value.session.id : null;
-}
-void resolveCoordinator;
-void coordinatorSession;
-
 const messageWork: AgentWorkRead = {
   sessionId: 'worker-session',
   target: { kind: 'message', messageId: 'original-message' },
 };
-function taskExecution(task: WorkHubTask): string | null {
-  const status = task.status;
-  if (status.kind === 'started' && status.progress?.kind === 'delivered')
-    return status.progress.execution.invocationId;
-  if (status.kind === 'queued' && status.progress?.kind === 'delivered')
-    return status.progress.shared ? null : status.progress.execution.invocationId;
-  return null;
-}
-function coordinatorWorkers(configuration: WorkHubConfiguration): string[] {
-  return configuration.workers;
-}
 const answerPage: AgentWorkRead = {
   sessionId: 'worker-session',
-  target: { kind: 'invocation', invocationId: 'original-invocation' },
-  cursor: { invocationId: 'answer-invocation', offset: 768 },
+  target: { kind: 'run', runId: '00000000-0000-4000-8000-000000000001' },
+  cursor: { runId: '00000000-0000-4000-8000-000000000001', offset: 768 },
 };
-const originalControl: WorkHubControlRead = { controlId: `wc_${'0'.repeat(64)}` };
-function controlStopped(control: WorkHubControl): boolean | null {
-  const status = control.status;
-  return status.kind === 'returned' && status.outcome.kind === 'stop'
-    ? status.outcome.result.requested
-    : null;
-}
-void [messageWork, answerPage, originalControl, controlStopped, taskExecution, coordinatorWorkers];
+void [messageWork, answerPage];
 
 // Workspace file browsing uses Session authority and exact relative path bytes.
 const workspaceRootFiles = {

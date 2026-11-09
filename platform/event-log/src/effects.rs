@@ -17,12 +17,11 @@
  * under the License.
  */
 
-//! One-shot Host resource facts outside an Agent invocation. Only the Host
-//! adapter writes these records; plugin business state uses separate storage.
+//! One-shot Host resource facts. Only the Host adapter writes these records;
+//! caller correlation is opaque and plugin business state lives with its owner.
 
 use crate::{EventLog, StoreError};
-use maka_capabilities::call::Identity;
-use maka_capabilities::storage::Namespace;
+use maka_plugin_core::storage::Namespace;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,31 +87,31 @@ pub enum Operation {
     BrowserLeaseChild {
         browser_id: String,
         generation: String,
-        opener_subject: maka_capabilities::computer::BrowserLeaseSubject,
+        opener_subject: maka_plugin_core::computer::BrowserLeaseSubject,
         opener_tab_id: u64,
         url: String,
     },
     Http {
-        method: maka_capabilities::http::Method,
+        method: maka_plugin_core::http::Method,
         url: String,
         /// Source-declared length; digest and byte count are upload observations
         /// recorded in the outcome, never a preflight full-body materialization.
         body_length: Option<u64>,
     },
     Notification {
-        input: maka_capabilities::client_capability::Notification,
-        provider: maka_agent_facts::capability::Identity,
+        input: Value,
+        provider: Value,
         registration_id: String,
     },
-    File(maka_capabilities::filesystem::Operation),
+    File(Value),
     Model {
-        input: maka_agent_ports::llm::Generate,
-        model: maka_agent_facts::execution::ModelBinding,
-        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+        input: Value,
+        model: Value,
+        thinking_level: Option<Value>,
     },
     Client {
-        input: maka_capabilities::client_capability::Call,
-        provider: maka_agent_facts::capability::Identity,
+        input: Value,
+        provider: Value,
         registration_id: String,
         offer_id: String,
         tool_call_id: String,
@@ -121,9 +120,10 @@ pub enum Operation {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
-    pub source: Identity,
+    /// Opaque caller correlation; authorization is carried by the live adapter.
+    pub source: Value,
     pub owner: Owner,
-    pub boundary: maka_capabilities::authorization::Boundary,
+    pub boundary: maka_plugin_core::authorization::Boundary,
     pub operation: Operation,
 }
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -146,12 +146,7 @@ pub struct Record {
 impl EventLog {
     /// Caller may start the effect only after this durable admission succeeds.
     pub async fn begin_host_effect(&self, request: Request) -> Result<Uuid, StoreError> {
-        if matches!(request.source, Identity::Agent { .. }) {
-            return Err(invalid("Agent effects belong to their invocation journal"));
-        }
-        if matches!(request.source, Identity::BrowserLease { .. })
-            || matches!(request.operation, Operation::BrowserLeaseChild { .. })
-        {
+        if matches!(request.operation, Operation::BrowserLeaseChild { .. }) {
             let session = browser_lease_session(&request)?;
             if self.expected_session.as_deref() != Some(session) {
                 return Err(invalid(
@@ -167,7 +162,7 @@ impl EventLog {
         .map_err(|error| invalid(error.to_string()))?;
         let raw = serde_json::to_string(&request)?;
         let session = match &request.boundary {
-            maka_capabilities::authorization::Boundary::Session { boundary, .. } => {
+            maka_plugin_core::authorization::Boundary::Session { boundary, .. } => {
                 Some(boundary.session_id.clone())
             }
             _ => None,
@@ -194,7 +189,10 @@ impl EventLog {
                 if matches!(
                     mime_type.as_str(),
                     "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-                ) && &maka_agent_facts::artifact::content_digest(bytes) == digest => {}
+                ) && &format!(
+                    "sha256:{}",
+                    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(bytes))
+                ) == digest => {}
             (Outcome::Image { .. }, _) | (_, Some(_)) => {
                 return Err(invalid("invalid effect image payload"));
             }
@@ -251,24 +249,15 @@ impl EventLog {
 }
 pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreError> {
     let (
-        Identity::BrowserLease {
-            session_id,
-            turn_id,
-        },
         Owner::Native(owner),
-        maka_capabilities::authorization::Boundary::Session { boundary, .. },
+        maka_plugin_core::authorization::Boundary::Session { boundary, .. },
         Operation::BrowserLeaseChild {
             browser_id,
             generation,
             opener_subject,
             ..
         },
-    ) = (
-        &request.source,
-        &request.owner,
-        &request.boundary,
-        &request.operation,
-    )
+    ) = (&request.owner, &request.boundary, &request.operation)
     else {
         return Err(invalid(
             "browser lease effect requires native provenance and a Session boundary",
@@ -278,9 +267,7 @@ pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreErro
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
     owner.source.validate().map_err(invalid)?;
-    if session_id != &boundary.session_id
-        || turn_id.is_empty()
-        || owner.entry_id.is_empty()
+    if owner.entry_id.is_empty()
         || owner.epoch.is_nil()
         || browser_id.is_empty()
         || generation.is_empty()
@@ -290,7 +277,7 @@ pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreErro
             "browser lease effect identity does not match its captured source",
         ));
     }
-    Ok(session_id)
+    Ok(&boundary.session_id)
 }
 
 fn invalid(message: impl Into<String>) -> StoreError {

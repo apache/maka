@@ -232,17 +232,6 @@ fn reassign_bindings(
                     )?;
                     if relocation {
                         permission_changed = true;
-                        let current =
-                            crate::workspace_bindings::read::<Value>(connection, binding_id)?
-                                .ok_or_else(|| {
-                                    invalid("relocated workspace binding disappeared")
-                                })?;
-                        EventLog::close_computer_app_binding_in_transaction(
-                            connection,
-                            binding_id,
-                            current.permission_epoch,
-                            now,
-                        )?;
                     }
                     updated = updated
                         .checked_add(1)

@@ -17,10 +17,12 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 use super::{DurableToolProjection, ImageOutput, ProjectionPart};
 use crate::{
     capability::{CallResult, ContentBlock},
-    event::{Invocation, ProjectionArtifactWrite},
+    event::ProjectionArtifactWrite,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
@@ -31,7 +33,7 @@ pub(super) fn project(
     result: &CallResult,
     id: &str,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> Option<(DurableToolProjection, Vec<ProjectionArtifactWrite>)> {
     let mut parts = Vec::new();
     let mut artifacts = Vec::new();
@@ -40,13 +42,13 @@ pub(super) fn project(
             ContentBlock::Text { text } => parts.push(ProjectionPart::Text { text: text.clone() }),
             ContentBlock::Image { data, mime_type } => {
                 let (image, artifact) =
-                    image_artifact(data, mime_type, id, parts.len(), time, invocation)?;
+                    image_artifact(data, mime_type, id, parts.len(), time, execution)?;
                 parts.push(ProjectionPart::Artifact { image });
                 artifacts.push(artifact);
             }
             ContentBlock::Audio { data, mime_type } => {
                 let (part, artifact) =
-                    super::audio::project(data, mime_type, id, parts.len(), time, invocation)?;
+                    super::audio::project(data, mime_type, id, parts.len(), time, execution)?;
                 parts.push(part);
                 artifacts.extend(artifact);
             }
@@ -74,13 +76,13 @@ fn image_artifact(
     event_id: &str,
     part: usize,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> Option<(ImageOutput, ProjectionArtifactWrite)> {
     let bytes = STANDARD.decode(data).ok()?;
     if STANDARD.encode(&bytes) != data {
         return None;
     }
-    super::media::image_artifact(bytes, mime, event_id, part, time, invocation).ok()
+    super::media::image_artifact(bytes, mime, event_id, part, time, execution).ok()
 }
 
 #[cfg(test)]
@@ -90,11 +92,10 @@ mod tests {
 
     #[test]
     fn mixed_mcp_keeps_order_and_artifacts_have_stable_protected_identity() {
-        let invocation = Invocation {
+        let execution = ExecutionIdentity {
             session_id: "session".into(),
             turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
+            run_id: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         };
         let result = CallResult {
             content: vec![
@@ -113,7 +114,7 @@ mod tests {
             structured_content: Some(json!({"answer":42})),
         };
         let time = UNIX_EPOCH + std::time::Duration::from_millis(1234);
-        let (projection, artifacts) = project(&result, "event", time, &invocation).unwrap();
+        let (projection, artifacts) = project(&result, "event", time, &execution).unwrap();
         let DurableToolProjection::Content { parts } = &projection else {
             panic!()
         };
@@ -133,11 +134,11 @@ mod tests {
         assert!(!descriptor.source.user_deletable());
         assert_eq!(
             descriptor,
-            project(&result, "event", time, &invocation).unwrap().1[0].artifact()
+            project(&result, "event", time, &execution).unwrap().1[0].artifact()
         );
         assert_ne!(
             descriptor.id,
-            project(&result, "other", time, &invocation).unwrap().1[0]
+            project(&result, "other", time, &execution).unwrap().1[0]
                 .artifact()
                 .id
         );
@@ -150,18 +151,17 @@ mod tests {
 
     #[test]
     fn complete_resource_text_is_not_clipped() {
-        let invocation = Invocation {
+        let execution = ExecutionIdentity {
             session_id: "s".into(),
             turn_id: "t".into(),
-            run_id: "r".into(),
-            invocation_id: "i".into(),
+            run_id: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         };
         let text = "🦊".repeat(200_001);
         let result = CallResult {
             content: vec![ContentBlock::Text { text: text.clone() }],
             structured_content: None,
         };
-        let (projection, artifacts) = project(&result, "e", UNIX_EPOCH, &invocation).unwrap();
+        let (projection, artifacts) = project(&result, "e", UNIX_EPOCH, &execution).unwrap();
         assert_eq!(
             projection,
             DurableToolProjection::Content {

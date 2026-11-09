@@ -46,7 +46,7 @@ impl Prepared {
             ));
         }
         let executable = wide(dunce::simplified(&plan.executable))?;
-        let cwd = wide(dunce::simplified(&plan.cwd))?;
+        let cwd = wide(dunce::simplified(plan.cwd.captured()))?;
         let executable_arg = dunce::simplified(&plan.executable)
             .to_str()
             .map(|path| quote(&path.replace('/', "\\")))

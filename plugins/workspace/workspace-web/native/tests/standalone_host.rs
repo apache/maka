@@ -34,7 +34,7 @@ use maka_packages::Package;
 use maka_plugin_core::{
     composition::{Configuration, Input, InstanceId, Node, PackageUse, Target},
     contract::{Availability, Cardinality, Export, Import},
-    operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
+    operation::{OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt},
     package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::{Value, json};
@@ -243,7 +243,7 @@ async fn native_web_keeps_root_settings_receipts_and_agent_admission_without_an_
         let namespaces=RootNamespaces { ownership:dir.path().join("owners"), control:dir.path().join("control") };
         let path=dir.path().join("root");
         let root=Arc::new(RootOwner::create(&path,&namespaces).unwrap());
-        let store=Arc::new(RootStore::open(root).await.unwrap());
+        let store=Arc::new(RootStore::open(root, maka_event_log::ROOT_MIGRATIONS).await.unwrap());
         let web=package(true); let caller=package(false); let deployment=Uuid::new_v4();
         let source=store.commit_application(deployment,0,input(&web,&caller),vec![],vec![web,caller]).await.unwrap();
         let issuer=Issuer::default(); let app=open(store.clone(),deployment,&issuer).await;
@@ -251,7 +251,7 @@ async fn native_web_keeps_root_settings_receipts_and_agent_admission_without_an_
         assert!(app.client().start(binding(&app).await,"snapshot".into(),json!({}),scope(&issuer,false),Attachments::new().into()).await.is_err());
         let before=query(&app,&issuer,"snapshot").await;
         let saved=mutate(&app,&store,&issuer,"save",json!({"revision":before["revision"],"settings":{"enabled":true,"source":"model"}})).await;
-        let Receipt::Recorded { outcome:OperationOutcome::Returned { value }, cleanup:OperationCleanup::Confirmed } = saved.receipt else { panic!("save must settle on the original journal") };
+        let Receipt::Recorded { outcome:OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup:OperationCleanup::Confirmed } = saved.receipt else { panic!("save must settle on the original journal") };
         assert_eq!(value["kind"],"updated");
         let capture=query(&app,&issuer,"capture").await;
         assert_eq!(capture["available"],true);

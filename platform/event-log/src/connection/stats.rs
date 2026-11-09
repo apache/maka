@@ -131,11 +131,11 @@ impl OwnedConnection {
         self.require_open()?;
         if self.read_on_owner {
             let writer = self.run(|connection| observe(connection)).await?;
-            let readers = (0..self.reads.len() + 1).map(|_| None).collect();
+            let readers = (0..self.reads.len()).map(|_| None).collect();
             return Ok(ConnectionResourceStats { writer, readers });
         }
-        let mut pending = Vec::with_capacity(self.reads.len() + 1);
-        for jobs in self.reads.iter().chain(std::iter::once(&self.observations)) {
+        let mut pending = Vec::with_capacity(self.reads.len());
+        for jobs in &self.reads {
             let (reply, result) = oneshot::channel();
             jobs.send(ReadJob {
                 _slot: None,

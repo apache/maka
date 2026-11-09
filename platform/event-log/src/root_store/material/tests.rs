@@ -18,14 +18,18 @@
  */
 
 use super::super::*;
-use crate::sessions::{AbandonRevision, SessionCopy, SessionCopyResult, SessionRetirement};
-use futures_util::FutureExt;
-use maka_agent_facts::event::{
-    EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, LogScope, RuntimeEvent,
+use crate::{
+    plugins::storage::WritePluginData,
+    sessions::{SessionRemovalResult, SessionRetirement},
+    writeback::{Notification, Prepared, Statement},
 };
-use maka_agent_facts::session::{CopyPurpose, ForkPosition};
-use serde_json::{Value, json};
+use maka_plugin_core::{
+    scope::Scope,
+    storage::{Data, Mutation, Namespace, Record},
+};
+use serde_json::json;
 use std::{path::Path, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 fn owner(path: &Path) -> Arc<root::RootOwner> {
     Arc::new(
@@ -68,320 +72,224 @@ async fn block_update(
     (reached, release)
 }
 
-async fn turns(session: &SessionStore) {
-    // More than one collection batch, with enough material to free whole pages.
-    for index in 0..6 {
-        let content: maka_agent_facts::input::MessageInput = "private input".repeat(4096).into();
-        let source = maka_agent_facts::message::RootSourceMessage {
-            message: maka_agent_facts::input::DeliveredMessage {
-                origin: None,
-                message_id: format!("message-{index}"),
-                submitted_content_digest: content.content_digest().unwrap(),
-                content: content.clone(),
-            },
-            unprepared_content: content.clone(),
-            submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
-            disposition: maka_agent_facts::message::MessageDisposition::TurnStarted,
-            submitted_intent: None,
-        };
-        let invocation = Invocation {
-            session_id: session.id.to_string(),
-            turn_id: format!("turn-{index}"),
-            run_id: format!("run-{index}"),
-            invocation_id: format!("{}-invocation-{index}", session.id),
-        };
-        for fact in [
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    content,
-                    source_messages: vec![source],
-                    request_fingerprint: None,
-                },
-            },
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Completed,
-            },
-        ] {
-            session
-                .append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
-                .await
-                .unwrap();
-        }
+const KEYS: usize = 8;
+const BYTES_PER_VALUE: usize = 256 * 1024;
+
+fn namespace() -> Namespace {
+    Namespace::new("material-tests", Scope::Profile).unwrap()
+}
+fn replacements(expected: Option<u64>, data: Data) -> Vec<Mutation> {
+    (0..KEYS)
+        .map(|index| Mutation {
+            key: format!("material-{index}"),
+            expected_revision: expected,
+            data: data.clone(),
+        })
+        .collect()
+}
+async fn seed(log: &EventLog, namespace: &Namespace) {
+    log.plugin_data_batch(
+        namespace,
+        replacements(None, Data::Present(json!("x".repeat(BYTES_PER_VALUE)))),
+    )
+    .await
+    .unwrap();
+}
+
+// This test owner releases its own mutable metadata, not canonical domain evidence.
+struct ReleaseMetadata(WritePluginData);
+impl ReleaseMetadata {
+    fn new(namespace: &Namespace, expected: u64) -> Self {
+        let (_, statement) = WritePluginData::for_completion(
+            namespace,
+            replacements(Some(expected), Data::Present(json!("kept"))),
+        )
+        .unwrap();
+        Self(statement)
+    }
+}
+impl Statement for ReleaseMetadata {
+    type Value = Vec<Record>;
+    type Output = Vec<Record>;
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        let mut prepared = self.0.execute(connection)?;
+        prepared.notification = prepared
+            .notification
+            .combine(Notification::MATERIAL_RELEASED);
+        Ok(prepared)
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        value
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        WritePluginData::isolated_rejection(error)
     }
 }
 
-async fn copy(root: &RootStore, target: &str, purpose: CopyPurpose) -> SessionStore {
-    let source = root.session("source").await.unwrap();
-    assert!(matches!(
-        root.copy_session(
-            SessionCopy {
-                source_session_id: "source".into(),
-                target_session_id: target.into(),
-                expected_source_revision: source.get::<Value>().await.unwrap().unwrap().revision,
-                purpose,
-            },
-            &json!({}),
-            2,
-        )
-        .await
-        .unwrap(),
-        SessionCopyResult::Committed(_)
-    ));
-    root.session(target).await.unwrap()
-}
-
-async fn retire(root: &RootStore, session: &str) {
-    let revision = root
-        .session(session)
-        .await
-        .unwrap()
-        .get::<Value>()
-        .await
-        .unwrap()
-        .unwrap()
-        .revision;
-    root.begin_session_removal(session, revision).await.unwrap();
-    assert_eq!(
-        root.finish_session_retirement(session).await.unwrap(),
-        SessionRetirement::Removed
-    );
-}
-
-async fn material_state(log: &EventLog) -> (i64, i64, i64) {
+async fn material_state(log: &EventLog) -> (i64, i64) {
     log.connection
         .read(|db| {
-            let bodies = db.query_row(
-                "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
-                rusqlite::params![],
-                |row| row.get(0),
-            )?;
-            let free = db.query_row("PRAGMA freelist_count", rusqlite::params![], |row| {
-                row.get(0)
-            })?;
-            let pages = db.query_row("PRAGMA page_count", rusqlite::params![], |row| row.get(0))?;
-            Ok((bodies, free, pages))
+            let free = db.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+            let pages = db.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+            Ok((free, pages))
         })
         .await
         .unwrap()
 }
-
-async fn reclaimed(log: &EventLog) -> i64 {
+async fn reclaimed(log: &EventLog, pages_before: i64) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let (bodies, free, pages) = material_state(log).await;
-            if bodies == 0 && free == 0 {
-                return pages;
+            let (free, pages) = material_state(log).await;
+            if free == 0 && pages < pages_before {
+                return;
             }
-            // Vacuum changes page allocation without changing total_changes(),
-            // so commit hints alone cannot acknowledge physical reclamation.
+            // Vacuum does not change total_changes(); observe the physical level.
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("Root must automatically collect retired bodies and return free pages")
+    .expect("Root maintenance must return the released database pages");
+}
+async fn assert_replaced(log: &EventLog, namespace: &Namespace) {
+    for index in 0..KEYS {
+        let record = log
+            .plugin_data(namespace, &format!("material-{index}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, 2);
+        assert_eq!(record.data, Data::Present(json!("kept")));
+    }
 }
 
 #[tokio::test]
-async fn retirement_automatically_collects_after_the_last_archived_fork_is_removed() {
+async fn committed_release_returns_pages_after_a_rejected_metadata_cas() {
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(owner(directory.path())).await.unwrap();
-    let source = root
-        .create_session("source", "source", &json!({}), 1)
+    let root = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
-    turns(&source).await;
-    let log = source.owner().unwrap();
-    let fork = copy(
-        &root,
-        "fork",
-        CopyPurpose::Branch {
-            position: ForkPosition::End,
-            side_conversation: false,
-        },
-    )
-    .await;
-    let scope = LogScope::Session { id: "fork".into() };
-    let before = fork
-        .scoped_prefix(scope.clone(), 100, 10_000_000)
-        .await
-        .unwrap();
-    assert_eq!(before.events.len(), 12);
-    root.set_session_archived::<Value>("fork", true, 3)
-        .await
-        .unwrap();
-    let (_, _, pages_before) = material_state(&log).await;
-    retire(&root, "source").await;
-    let retained = fork.scoped_prefix(scope, 100, 10_000_000).await.unwrap();
-    assert_eq!(retained.digest, before.digest);
-    assert_eq!(retained.high_water, before.high_water);
-    assert_eq!(retained.events.len(), 12);
-    retire(&root, "fork").await;
-    let pages_after = reclaimed(&log).await;
-    assert!(
-        pages_after < pages_before,
-        "automatic vacuum must shrink the database"
-    );
-    let proof: (i64, i64) = log.connection.read(|db| {
-        Ok(db.query_row("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log", rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?)))?)
-    }).await.unwrap();
+    let namespace = namespace();
+    seed(&root.log, &namespace).await;
+    let (_, pages_before) = material_state(&root.log).await;
+    let writer = root.data_writer().unwrap();
+    let mut rejected = replacements(Some(1), Data::Present(json!("kept")));
+    rejected.last_mut().unwrap().expected_revision = Some(2);
+    let (_, rejected) = WritePluginData::for_completion(&namespace, rejected).unwrap();
+    assert!(matches!(
+        writer.write(ReleaseMetadata(rejected)).await,
+        Err(StoreError::RevisionConflict { .. })
+    ));
+    for index in 0..KEYS {
+        let retained = root
+            .plugin_data(&namespace, &format!("material-{index}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.revision, 1);
+        assert_eq!(
+            retained.data.value().unwrap().as_str().unwrap().len(),
+            BYTES_PER_VALUE
+        );
+    }
     assert_eq!(
-        proof,
-        (12, 12),
-        "retain identity and proof, without full private bodies"
+        writer
+            .write(ReleaseMetadata::new(&namespace, 1))
+            .await
+            .unwrap()
+            .len(),
+        KEYS
     );
+    reclaimed(&root.log, pages_before).await;
+    assert_replaced(&root.log, &namespace).await;
     root.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn abandoning_the_last_preparing_revision_wakes_ancestor_collection() {
+async fn cancelled_observer_cannot_lose_the_committed_material_release() {
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(owner(directory.path())).await.unwrap();
-    let source = root
-        .create_session("source", "source", &json!({}), 1)
+    let root = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
-    turns(&source).await;
-    let log = source.owner().unwrap();
-    let draft = copy(
-        &root,
-        "draft",
-        CopyPurpose::Revision {
-            turn_id: "turn-5".into(),
-        },
+    let namespace = namespace();
+    seed(&root.log, &namespace).await;
+    let (_, pages_before) = material_state(&root.log).await;
+    let statement = ReleaseMetadata::new(&namespace, 1);
+    let writer = root.data_writer().unwrap();
+    let mut releases = root.log.commits.subscribe_material_releases();
+    let (reached, release) = block_update(&root.log, "plugin_data").await;
+    let observer = tokio::spawn(async move { writer.write(statement).await });
+    tokio::time::timeout(Duration::from_secs(10), reached)
+        .await
+        .unwrap()
+        .unwrap();
+    observer.abort();
+    assert!(observer.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), releases.changed())
+        .await
+        .expect("committed release must outlive its cancelled observer")
+        .unwrap();
+    reclaimed(&root.log, pages_before).await;
+    assert_replaced(&root.log, &namespace).await;
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn opening_root_reclaims_existing_freelist_without_a_new_release() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = owner(directory.path());
+    let log = EventLog::for_root(owner.clone()).await.unwrap();
+    let namespace = namespace();
+    seed(&log, &namespace).await;
+    let (_, pages_before) = material_state(&log).await;
+    log.plugin_data_batch(
+        &namespace,
+        replacements(Some(1), Data::Present(json!("kept"))),
     )
-    .await;
-    retire(&root, "source").await;
+    .await
+    .unwrap();
     assert!(material_state(&log).await.0 > 0);
-    assert!(draft.get::<Value>().await.unwrap().is_some());
-    assert_eq!(
-        root.abandon_revision("draft").await.unwrap(),
-        AbandonRevision::Abandoned
-    );
-    reclaimed(&log).await;
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn ownership_released_during_a_pass_revisits_an_earlier_retained_source() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(owner(directory.path())).await.unwrap();
-    let source = root
-        .create_session("source", "source", &json!({}), 1)
-        .await
-        .unwrap();
-    turns(&source).await;
-    let log = source.owner().unwrap();
-    let draft = copy(
-        &root,
-        "draft",
-        CopyPurpose::Revision {
-            turn_id: "turn-5".into(),
-        },
-    )
-    .await;
-    retire(&root, "source").await;
-    let later_id = "z-later".to_owned();
-    let later = root
-        .create_session(&later_id, &later_id, &json!({}), 2)
-        .await
-        .unwrap();
-    turns(&later).await;
-    // Acquire exactly the Root abandonment operation's admission/binding pins
-    // before blocking SQL, so its real release job can be queued mid-pass.
-    let scoped = draft.exclusive_metadata(true).await.unwrap();
-    let (reached, release) = block_update(&log, "event_log").await;
-    retire(&root, &later_id).await;
-    tokio::time::timeout(Duration::from_secs(10), reached)
-        .await
-        .unwrap()
-        .unwrap();
-    // The pass has skipped source and is collecting the lexically later owner.
-    // Queue abandonment before its next batch, without any synthetic wakeup.
-    let mut abandonment = Box::pin(scoped.abandon_revision("draft"));
-    assert!(futures_util::poll!(&mut abandonment).is_pending());
-    release.send(()).unwrap();
-    assert_eq!(abandonment.await.unwrap(), AbandonRevision::Abandoned);
-    drop(scoped);
-    reclaimed(&log).await;
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn cancelled_retirement_observer_cannot_lose_the_committed_collection_wakeup() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = Arc::new(RootStore::open(owner(directory.path())).await.unwrap());
-    let source = root
-        .create_session("source", "source", &json!({}), 1)
-        .await
-        .unwrap();
-    turns(&source).await;
-    let log = source.owner().unwrap();
-    let revision = source.get::<Value>().await.unwrap().unwrap().revision;
-    root.begin_session_removal("source", revision)
-        .await
-        .unwrap();
-    let (reached, release) = block_update(&log, "session_retirements").await;
-    let caller = root.clone();
-    let retirement = tokio::spawn(async move { caller.finish_session_retirement("source").await });
-    tokio::time::timeout(Duration::from_secs(10), reached)
-        .await
-        .unwrap()
-        .unwrap();
-    retirement.abort();
-    assert!(retirement.await.unwrap_err().is_cancelled());
-    release.send(()).unwrap();
-    reclaimed(&log).await;
-    root.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_writes() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(owner(directory.path())).await.unwrap();
-    let source = root
-        .create_session("source", "source", &json!({}), 1)
-        .await
-        .unwrap();
-    turns(&source).await;
-    let log = source.owner().unwrap();
-    let (reached, release) = block_update(&log, "event_log").await;
-    retire(&root, "source").await;
-    tokio::time::timeout(Duration::from_secs(10), reached)
-        .await
-        .unwrap()
-        .unwrap();
-    let closed = root.lifecycle.as_ref().unwrap().receipt();
+    log.shutdown().await.unwrap();
     drop(log);
-    drop(root);
-    assert!(closed.clone().now_or_never().is_none());
-    let namespaces = root::RootNamespaces {
-        ownership: directory.path().join("ownership"),
-        control: directory.path().join("control"),
-    };
-    assert!(root::RootOwner::open(&directory.path().join("root"), &namespaces).is_err());
-    release.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(10), closed)
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    reclaimed(&root.log, pages_before).await;
+    assert_replaced(&root.log, &namespace).await;
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn forked_work_keeps_retirement_busy_until_the_last_physical_pin_is_released() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    let session = root
+        .create_session("source", "source", &json!({}), 1)
+        .await
+        .unwrap();
+    let (work, effects) = session
+        .work_scope(None)
         .await
         .unwrap()
-        .unwrap();
-    let inspect =
-        rusqlite::Connection::open(directory.path().join("root/runtime-rust.sqlite")).unwrap();
-    let remaining: i64 = inspect
-        .query_row(
-            "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(
-        remaining > 0 && remaining < 12,
-        "shutdown finishes the accepted batch but leaves work for recovery"
+        .accept(CancellationToken::new());
+    let custody = work.store().work_custody().unwrap();
+    let fork = root.fork_work(custody.as_ref(), "source").unwrap();
+    effects.settle().await.unwrap();
+    work.finish();
+    assert!(matches!(
+        root.begin_session_removal("source", 1).await.unwrap(),
+        SessionRemovalResult::Accepted(SessionRetirement::Removing)
+    ));
+    assert!(matches!(
+        root.finish_session_retirement("source").await,
+        Err(StoreError::SessionBusy)
+    ));
+    fork.finish();
+    assert_eq!(
+        root.finish_session_retirement("source").await.unwrap(),
+        SessionRetirement::Removed
     );
-    drop(inspect);
-    let restored =
-        Arc::new(root::RootOwner::open(&directory.path().join("root"), &namespaces).unwrap());
-    let reopened = RootStore::open(restored).await.unwrap();
-    reclaimed(&reopened.log).await;
-    reopened.close().await.unwrap();
+    root.close().await.unwrap();
 }

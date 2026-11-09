@@ -18,62 +18,52 @@
  */
 
 use super::*;
-
+use crate::{
+    root::{RootNamespaces, RootOwner},
+    root_store::RootStore,
+};
 use serde_json::json;
-
-async fn log() -> (tempfile::TempDir, EventLog) {
-    let directory = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&directory.path().join("state.sqlite"))
-        .await
-        .unwrap();
-    (directory, log)
-}
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn capability_t1_rejects_an_old_binding_even_when_numeric_boundary_matches() {
-    use maka_agent_facts::{
-        event::{CommitError, EventWrite, Fact, Invocation, RuntimeEvent},
-        input::InvocationInput,
-        interaction::{
-            Decision, GrantCapability, GrantScope, GrantTarget, InteractionOutcome,
-            InteractionRecord, InteractionRequest,
-        },
-        tool_call::ToolCallIdentity,
-    };
-    let (_directory, log) = log().await;
-    let first = log
-        .attach_workspace("owner_", &json!({"path":"/first"}))
-        .await
-        .unwrap();
-    let second = log
-        .attach_workspace("owner_", &json!({"path":"/second"}))
-        .await
-        .unwrap();
-    log.create_session(
-        "session",
-        "create",
-        &json!({"workspace":first,"boundary_revision":0}),
-        1,
+async fn work_scope_rejects_an_old_binding_even_when_numeric_boundary_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootStore::open(
+        Arc::new(
+            RootOwner::create(
+                &directory.path().join("root"),
+                &RootNamespaces {
+                    ownership: directory.path().join("owners"),
+                    control: directory.path().join("control"),
+                },
+            )
+            .unwrap(),
+        ),
+        crate::ROOT_MIGRATIONS,
     )
     .await
     .unwrap();
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
-    let event = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
-    log.append(&event(Fact::InvocationOpened {
-        configuration: None,
-        input: InvocationInput::Message {
-            content: "test".into(),
-            source_messages: vec![],
-            request_fingerprint: None,
-        },
-    }))
-    .await
-    .unwrap();
+    let first = root
+        .attach_workspace("owner_", &json!({"path":"/first"}))
+        .await
+        .unwrap();
+    let second = root
+        .attach_workspace("owner_", &json!({"path":"/second"}))
+        .await
+        .unwrap();
+    assert_ne!(first.id, second.id);
+    assert_eq!(first.permission_epoch_at_attach, 0);
+    assert_eq!(second.permission_epoch_at_attach, 0);
+    let session = root
+        .create_session(
+            "session",
+            "create",
+            &json!({"workspace":first,"boundary_revision":0}),
+            1,
+        )
+        .await
+        .unwrap();
     let old = PermissionBasis {
         boundary_revision: 0,
         binding: BindingStamp {
@@ -81,79 +71,26 @@ async fn capability_t1_rejects_an_old_binding_even_when_numeric_boundary_matches
             permission_epoch: 0,
         },
     };
-    let target = GrantTarget {
-        provider_id: "provider".into(),
-        contract_id: "contract".into(),
-        server_id: "browser".into(),
-        tool_name: "navigate".into(),
-        capability: GrantCapability::Browser,
-        scope: GrantScope::BrowserOrigin {
-            origin: "https://example.com".into(),
-        },
-    };
-    let request = |id: &str, basis| InteractionRecord {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        request_id: id.into(),
-        created_at: 2,
-        outcome: None,
-        request: InteractionRequest::ClientCapability {
-            tool_use_id: "tool".into(),
-            target: target.clone(),
-            basis: Some(basis),
-        },
-    };
-    log.establish_run_interaction(&invocation, &request("old", old))
-        .await
-        .unwrap();
-    log.commit_interaction_outcome(
-        "old",
-        InteractionOutcome::ClientCapabilityDecision {
-            decision: Decision::Allow,
-            committed_at: 3,
-        },
-    )
-    .await
-    .unwrap();
-    let current = log.get_session::<Value>("session").await.unwrap().unwrap();
-    log.update_session_metadata::<Value, _>("session", current.revision, move |configuration| {
-        configuration["workspace"] = serde_json::to_value(second)?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let dispatch = |id: &str| {
-        event(Fact::ToolDispatched {
-            presentation: None,
-            title: None,
-            operation_id: id.into(),
-            call: ToolCallIdentity::standalone(format!("{id}-call")),
-            name: "navigate".into(),
-            input: json!({}),
-        })
-    };
-    assert!(matches!(
-        log.append_capability_dispatch(
-            &[],
-            &dispatch("old-dispatch"),
-            std::slice::from_ref(&target),
-            &old
-        )
-        .await,
-        Err(CommitError::PermissionRevoked)
-    ));
-    assert!(
-        log.client_capability_grant("session", &target)
+    let scope = session.work_scope(Some(old)).await.unwrap();
+    let (lease, _effects) = scope.accept(CancellationToken::new());
+    let original = lease.store();
+    let custody = original.work_custody().unwrap();
+    assert_eq!(
+        root.session_for_work(custody.as_ref(), session.id())
+            .unwrap()
+            .get::<Value>()
             .await
             .unwrap()
-            .is_none()
+            .unwrap()
+            .configuration["workspace"]["id"],
+        json!(first.id),
     );
+    lease.finish();
     assert!(
-        log.establish_run_interaction(&invocation, &request("stale", old))
-            .await
+        root.session_for_work(custody.as_ref(), session.id())
             .is_err()
     );
+
     let new = PermissionBasis {
         binding: BindingStamp {
             id: second.id,
@@ -161,44 +98,51 @@ async fn capability_t1_rejects_an_old_binding_even_when_numeric_boundary_matches
         },
         ..old
     };
-    log.establish_run_interaction(&invocation, &request("new", new))
+    let current = session.get::<Value>().await.unwrap().unwrap();
+    session
+        .update_session_metadata(
+            session.id(),
+            current.revision,
+            move |configuration: &mut Value| {
+                configuration["workspace"] = serde_json::to_value(second)?;
+                Ok(())
+            },
+        )
         .await
         .unwrap();
-    log.commit_interaction_outcome(
-        "new",
-        InteractionOutcome::ClientCapabilityDecision {
-            decision: Decision::Allow,
-            committed_at: 4,
-        },
-    )
-    .await
-    .unwrap();
     assert!(matches!(
-        log.append_capability_dispatch(
-            &[],
-            &dispatch("still-old"),
-            std::slice::from_ref(&target),
-            &old
-        )
-        .await,
-        Err(CommitError::PermissionRevoked)
+        session.work_scope(Some(old)).await,
+        Err(StoreError::PermissionRevoked),
     ));
-    log.append_capability_dispatch(
-        &[],
-        &dispatch("new-dispatch"),
-        std::slice::from_ref(&target),
-        &new,
-    )
-    .await
-    .unwrap();
-    let facts = log.prefix(32, 65536).await.unwrap();
+    assert!(original.get::<Value>().await.is_err());
+    let scope = session.work_scope(Some(new)).await.unwrap();
+    let (lease, _effects) = scope.accept(CancellationToken::new());
+    let current = lease.store();
+    let current_custody = current.work_custody().unwrap();
+    let metadata = root
+        .session_for_work(current_custody.as_ref(), session.id())
+        .unwrap()
+        .get::<Value>()
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        facts
-            .events
-            .iter()
-            .filter(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
-            .count(),
-        1
+        metadata.configuration["workspace"]["id"],
+        json!(new.binding.id)
     );
-    log.close().await.unwrap();
+    assert_eq!(metadata.configuration["boundary_revision"], json!(0));
+    assert!(
+        root.data_writer_for_work(current_custody.as_ref(), session.id())
+            .is_ok()
+    );
+    assert!(matches!(
+        session.work_scope(Some(old)).await,
+        Err(StoreError::PermissionRevoked),
+    ));
+    lease.finish();
+    assert!(
+        root.session_for_work(current_custody.as_ref(), session.id())
+            .is_err()
+    );
+    root.close().await.unwrap();
 }

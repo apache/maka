@@ -173,8 +173,8 @@ pub struct BindingRequest {
     /// Frozen behavior identity for visibility decisions, never authority.
     pub behavior: Option<maka_agent_facts::execution::BehaviorId>,
     pub model: Option<maka_agent_facts::tools::ModelToolContext>,
-    pub invocation: maka_agent_facts::event::Invocation,
-    pub execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+    pub execution: maka_agent_facts::durable::ExecutionIdentity,
+    pub custody: Option<Arc<dyn maka_plugin_core::work::WorkCustody>>,
     pub cwd: String,
     /// This binding group's names, restricted by the Host's tool ceiling.
     pub tools: BTreeSet<String>,
@@ -187,7 +187,10 @@ pub struct BindingRequest {
 mod tests {
     use super::*;
     use crate::{ToolDefinition, ToolRegistration};
-    use maka_agent_facts::{event::Invocation, tool_call::ToolRejection};
+    use maka_agent_facts::{
+        durable::{ExecutionIdentity, RunId},
+        tool_call::ToolRejection,
+    };
     use serde_json::{Value, json};
     use std::{
         future::Future,
@@ -247,15 +250,14 @@ mod tests {
     }
     fn capture(catalog: &mut ToolCatalog, cwd: &str) {
         let request = BindingRequest {
-            execution: None,
             behavior: None,
             model: None,
-            invocation: Invocation {
+            execution: ExecutionIdentity {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
+                run_id: RunId::new(),
             },
+            custody: None,
             cwd: cwd.into(),
             tools: BTreeSet::new(),
             available_tools: Arc::default(),

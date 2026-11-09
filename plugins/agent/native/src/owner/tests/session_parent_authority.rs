@@ -18,9 +18,11 @@
  */
 
 use super::*;
-use maka_agent_facts::event::{Fact, ToolOutcome};
+use maka_agent_authority::permissions::Access as _;
+use maka_agent_facts::durable::{AuthorizationObligation, Fact};
 use maka_agent_facts::interaction::{
-    InteractionAnswer, InteractionOutcome, InteractionRecord, InteractionRequest, PermissionRequest,
+    InteractionAnswer, InteractionOutcome, InteractionRecord, InteractionRequest,
+    PermissionDecision, PermissionRequest, PermissionScope,
 };
 use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_host_runtime::application::ServiceTarget;
@@ -29,6 +31,7 @@ use maka_sandbox::{
     filesystem::{Access, Rule},
     grant,
 };
+use tokio::sync::oneshot;
 
 pub(super) async fn fixture(listener: &TcpListener) -> Fixture {
     Fixture::configured(
@@ -67,9 +70,13 @@ pub(super) async fn fixture(listener: &TcpListener) -> Fixture {
 }
 
 pub(super) async fn start(f: &Fixture, listener: &TcpListener, session: &str) -> TcpStream {
-    f.send(session).await.unwrap();
+    let queued = f.send(session).await.unwrap();
+    assert_eq!(queued["kind"], "queued");
+    let run = f.delivered_run(&queued).await;
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
+    let access = f.live_access(session).await;
+    assert_eq!(access.execution().run_id, run);
     socket
 }
 
@@ -133,37 +140,60 @@ pub(super) async fn establish_permissions(
     session: &str,
     id: &str,
     permissions: grant::Permissions,
-) -> InteractionRecord {
-    let store = f.session(session).await;
-    let projection = store
-        .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(session)
-        .await
-        .unwrap()
-        .unwrap();
-    let binding = projection
-        .session
-        .workspace_binding
-        .as_ref()
-        .unwrap()
-        .stamp();
-    let configuration = &projection.session.configuration;
-    let basis = maka_agent_facts::workspace::PermissionBasis {
-        boundary_revision: configuration
-            .workspace
-            .boundary_revision(configuration.boundary_revision, binding)
-            .unwrap(),
-        binding,
+    socket: &mut TcpStream,
+) -> (InteractionRecord, oneshot::Sender<()>) {
+    let access = f.live_access(session).await;
+    let (release, held) = oneshot::channel();
+    let (entered, entering) = oneshot::channel();
+    let stop = f.owner.stop.clone();
+    let pause = Box::pin(async move {
+        entered
+            .send(())
+            .expect("test observes the actual pre-T1 worker");
+        tokio::select! {
+            _ = stop.cancelled() => Ok(()),
+            result = held => result.map_err(|error| RunError::Internal(error.to_string())),
+        }
+    });
+    {
+        let mut preparation = f.owner.tool_preparation.lock().unwrap();
+        assert!(preparation.is_none());
+        *preparation = Some(pause);
+    }
+    let input = json!({"title":"Permission-bound child","labels":[],
+        "workspace":{"kind":"session","sessionId":session}});
+    service_tools::named_tool_response(socket, "SessionCreate", input.clone()).await;
+    entering.await.unwrap();
+    let view = access.fresh().await.unwrap();
+    let tool = view
+        .tools
+        .values()
+        .find(|tool| {
+            tool.call.name == "SessionCreate"
+                && tool.call.input.as_json() == Some(&input)
+                && !tool.admitted
+                && tool.accepted.is_none()
+                && tool.decision.is_none()
+        })
+        .expect("Finished model output has an actual unprepared tool");
+    let target = AuthorizationObligation::Tool {
+        tool: tool.key.clone(),
     };
-    let invocation = projection.root_turn.unwrap().invocation;
     let record = InteractionRecord {
-        session_id: session.into(),
-        turn_id: invocation.turn_id.clone(),
-        run_id: invocation.run_id.clone(),
+        execution: access.execution().clone(),
         request_id: id.into(),
-        created_at: 1,
+        created_at: now(),
         request: InteractionRequest::Permissions {
-            tool_use_id: Some("permission_tool".into()),
-            basis,
+            tool_use_id: Some(maka_agent_facts::tool_call::tool_use_id(
+                access.execution().run_id,
+                &maka_agent_state::fold::tool_key(&tool.key),
+            )),
+            target: target.clone(),
+            basis: access
+                .live_configuration()
+                .await
+                .unwrap()
+                .permission_basis(),
             request: PermissionRequest {
                 reason: "Write the requested result.".into(),
                 command: None,
@@ -172,27 +202,41 @@ pub(super) async fn establish_permissions(
         },
         outcome: None,
     };
-    assert!(
-        store
-            .establish_run_interaction(&invocation, &record)
+    let established = access.establish_for_target(&record, &target).await.unwrap();
+    assert_eq!(established, record);
+    assert_eq!(
+        f.query("observe", json!({"sessionId":session}))
             .await
-            .unwrap()
-            .matches
+            .unwrap()["session"]["activity"],
+        "waiting"
     );
-    record
+    (established, release)
+}
+
+pub(super) async fn resume_permission(
+    listener: &TcpListener,
+    socket: &mut TcpStream,
+    release: oneshot::Sender<()>,
+) {
+    release
+        .send(())
+        .expect("original pre-T1 worker is still held");
+    let (mut next, _) = listener.accept().await.unwrap();
+    request(&mut next).await;
+    *socket = next;
 }
 
 pub(super) fn allow(permissions: grant::Permissions) -> InteractionAnswer {
     InteractionAnswer::Permissions {
-        decision: grant::Decision::Allow {
+        decision: PermissionDecision::Allow {
             permissions,
-            scope: grant::Scope::Once,
+            scope: PermissionScope::Once,
         },
     }
 }
 
 pub(super) fn respond_input(record: &InteractionRecord, answer: &InteractionAnswer) -> Value {
-    json!({"sessionId":record.session_id, "requestId":record.request_id, "answer":answer})
+    json!({"sessionId":record.execution.session_id, "requestId":record.request_id, "answer":answer})
 }
 
 async fn assert_pending(f: &Fixture, record: &InteractionRecord) {
@@ -200,7 +244,7 @@ async fn assert_pending(f: &Fixture, record: &InteractionRecord) {
         f.query(
             "interaction",
             json!({
-                "sessionId":record.session_id,"requestId":record.request_id,
+                "sessionId":record.execution.session_id,"requestId":record.request_id,
             }),
         )
         .await
@@ -210,52 +254,57 @@ async fn assert_pending(f: &Fixture, record: &InteractionRecord) {
     assert_eq!(&current, record);
 }
 
-async fn settled_self_response(f: &Fixture, record: &InteractionRecord) -> Value {
-    let store = f.session(&record.session_id).await;
-    let mut commits = store.subscribe_commits().unwrap();
+async fn settled_response(f: &Fixture, session: &str, request_id: &str) -> Value {
+    let execution = f.live_access(session).await.execution().clone();
+    let mut commits = f.owner.durable.subscribe().unwrap();
     loop {
-        let facts = service_tools::facts(f, &record.session_id).await;
-        let operation = facts.iter().find_map(|fact| match fact {
-            Fact::ToolDispatched {
-                operation_id,
-                name,
-                input,
-                ..
-            } if name == "SessionRespond" && input["requestId"] == record.request_id => {
-                Some(operation_id)
-            }
-            _ => None,
+        commits.borrow_and_update();
+        let view = f.owner.durable.frontier(execution.run_id).await.unwrap();
+        let original = view.tools.values().find(|tool| {
+            tool.call.name == "SessionRespond"
+                && tool
+                    .call
+                    .input
+                    .as_json()
+                    .is_some_and(|input| input["requestId"] == request_id)
         });
-        if let Some(operation) = operation
-            && let Some(outcome) = facts.iter().find_map(|fact| match fact {
-                Fact::ToolSettled {
-                    operation_id,
-                    outcome,
-                } if operation_id == operation => Some(outcome),
-                _ => None,
-            })
-        {
-            let ToolOutcome::Succeeded {
-                model_projection: DurableToolProjection::Json { value },
-                ..
-            } = outcome
-            else {
-                panic!("self response must return a typed decision: {outcome:?}");
-            };
-            return value.clone();
+        if let Some(original) = original {
+            let items = f.history_items(session).await;
+            if let Some(item) = items.iter().find(|item| {
+                item.recorded.run == execution.run_id
+                    && matches!(&item.recorded.fact,
+                    Fact::HostToolResultRecorded { tool, .. } | Fact::LocalToolReturned { tool, .. }
+                        if tool == &original.key)
+            }) {
+                assert_eq!(items.iter().filter(|item| item.recorded.run == execution.run_id
+                    && matches!(&item.recorded.fact, Fact::ToolAdmitted { tool } if tool == &original.key)).count(), 1);
+                let returned = service_tools::tool_return(f, session, item).await;
+                assert!(
+                    !returned.body.is_error,
+                    "parent response must return a typed decision: {returned:?}"
+                );
+                let DurableToolProjection::Json { value } = returned.body.projection else {
+                    panic!("parent response must retain its original JSON projection")
+                };
+                return value;
+            }
         }
         commits.changed().await.unwrap();
     }
 }
 
 pub(super) async fn pending_escalation(f: &Fixture, parent: &str) -> InteractionRecord {
-    let store = f.session(parent).await;
-    let mut commits = store.subscribe_commits().unwrap();
+    let mut commits = f.owner.durable.subscribe().unwrap();
     loop {
-        if let Some(record) = store
-            .pending_interactions(parent)
+        commits.borrow_and_update();
+        if let Some(record) = f
+            .owner
+            .durable
+            .interactions()
+            .pending(parent)
             .await
             .unwrap()
+            .records
             .into_iter()
             .find(|record| matches!(record.request, InteractionRequest::SessionApproval { .. }))
         {
@@ -380,37 +429,58 @@ async fn model_parent_can_answer_only_direct_children_and_cannot_edit_permission
             network: Network::Denied,
         };
         let answer = InteractionAnswer::Permissions {
-            decision: grant::Decision::Allow { permissions: permissions.clone(), scope: grant::Scope::Turn },
+            decision: PermissionDecision::Allow { permissions: permissions.clone(), scope: PermissionScope::Run },
         };
-        let own = establish_permissions(&f, &parent, "self_request", permissions.clone()).await;
-        service_tools::named_tool_response(&mut parent_socket, "SessionRespond", respond_input(&own, &answer)).await;
-        let result = settled_self_response(&f, &own).await;
+        let (own, own_release) = establish_permissions(&f, &parent, "self_request", permissions.clone(), &mut parent_socket).await;
+        let access = f.live_access(&parent).await;
+        let mut caller = f.issuer.issue_with_work(Identity::Agent {
+            execution: access.execution().clone(), operation_id: None,
+        }, true, f.owner.stop.child_token(), access.custody().clone()).unwrap();
+        caller.restrict_sandbox(&access.spec().permission_ceiling.sandbox).unwrap();
+        drop(access);
+        let input = respond_input(&own, &answer);
+        let client = f.app.client();
+        let prepared = client.prepare_mutation(f.binding(2).await, "respond".into(), input.clone(),
+            caller, Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let reply = client.mutate_owned(prepared, input).await.unwrap().result().await;
+        let result = match reply.receipt {
+            Receipt::Recorded { outcome: OperationOutcome::Returned {
+                result: maka_plugin_core::operation::OperationResult::Success { value }
+            }, .. } => value,
+            other => panic!("self response must retain its original receipt: {other:?}"),
+        };
         assert_eq!(result, json!({"kind":"rejected","reason":"not_your_child"}));
         assert_pending(&f, &own).await;
-        // The synthetic caller request is independent of the denied tool. A
-        // human closes it before this run can publish its next model request.
         let closed = f.mutation(2, "respond", respond_input(&own, &InteractionAnswer::Permissions {
-            decision: grant::Decision::Deny,
+            decision: PermissionDecision::Deny,
         }), Uuid::new_v4()).await.unwrap();
         assert_eq!(closed["kind"], "recorded");
-        let (mut next, _) = listener.accept().await.unwrap();
-        request(&mut next).await;
-        parent_socket = next;
-        for (target, id) in [(&sibling, "sibling_request"), (&unrelated, "unrelated_request")] {
-            let record = establish_permissions(&f, target, id, permissions.clone()).await;
+        resume_permission(&listener, &mut parent_socket, own_release).await;
+        for (target, id, socket) in [
+            (&sibling, "sibling_request", &mut sibling_socket),
+            (&unrelated, "unrelated_request", &mut unrelated_socket),
+        ] {
+            let (record, release) = establish_permissions(&f, target, id, permissions.clone(), socket).await;
             let result = tool(&listener, &mut parent_socket, "SessionRespond",
                 respond_input(&record, &answer)).await;
             assert_eq!(serde_json::from_str::<Value>(&result).unwrap(),
                 json!({"kind":"rejected","reason":"not_your_child"}));
             assert_pending(&f, &record).await;
+            let closed = f.mutation(2, "respond", respond_input(&record, &InteractionAnswer::Permissions {
+                decision: PermissionDecision::Deny,
+            }), Uuid::new_v4()).await.unwrap();
+            assert_eq!(closed["kind"], "recorded");
+            resume_permission(&listener, socket, release).await;
         }
-        let record = establish_permissions(&f, &child, "child_request", permissions).await;
+        let (record, release) = establish_permissions(&f, &child, "child_request", permissions, &mut child_socket).await;
         let result = tool(&listener, &mut parent_socket, "SessionRespond",
             respond_input(&record, &answer)).await;
         let result: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["kind"], "recorded");
         assert_eq!(result["record"]["outcome"]["decision"],
             serde_json::to_value(&answer).unwrap()["decision"]);
+        assert_eq!(settled_response(&f, &parent, &record.request_id).await, result);
+        resume_permission(&listener, &mut child_socket, release).await;
         for target in [&parent, &child] {
             let before = observe(&f, target).await;
             let result = tool(&listener, &mut parent_socket, "SessionUpdate", json!({
@@ -460,7 +530,9 @@ async fn model_child_out_of_scope_answer_waits_for_human_not_grandparent() {
             filesystem: vec![Rule::exact(outside.join("result"), Access::Write)],
             network: Network::Denied,
         });
-        let record = establish_permissions(&f, &child, "outside_request", requested).await;
+        let (record, release) =
+            establish_permissions(&f, &child, "outside_request", requested, &mut child_socket)
+                .await;
         service_tools::named_tool_response(
             &mut parent_socket,
             "SessionRespond",
@@ -529,9 +601,10 @@ async fn model_child_out_of_scope_answer_waits_for_human_not_grandparent() {
         let returned: Value = serde_json::from_str(returned).unwrap();
         assert_eq!(returned["kind"], "recorded");
         let completed = f
-            .session(&child)
-            .await
-            .interaction(&record.request_id)
+            .owner
+            .durable
+            .interactions()
+            .read(&child, &record.request_id)
             .await
             .unwrap()
             .unwrap();
@@ -543,6 +616,7 @@ async fn model_child_out_of_scope_answer_waits_for_human_not_grandparent() {
             unreachable!()
         };
         assert_eq!(decision, expected);
+        resume_permission(&listener, &mut child_socket, release).await;
         for socket in [&mut grandparent_socket, &mut resumed, &mut child_socket] {
             response(socket).await;
         }
@@ -651,8 +725,11 @@ async fn model_queue_edits_can_only_change_messages_authored_by_the_calling_sess
         let owned = revised["entries"].as_array().unwrap().iter()
             .find(|entry| entry["messageId"] == sent["messageId"]).unwrap();
         assert_eq!(owned["preview"], "My revised message");
-        assert_eq!(owned["origin"]["invocation"]["session_id"], child);
-        let parent_invocation = f.query("observe", json!({"sessionId":parent})).await.unwrap()["run"]["invocationId"].clone();
+        let origin: maka_agent_facts::message::MessageOrigin = serde_json::from_value(owned["origin"].clone()).unwrap();
+        assert_eq!(origin, maka_agent_facts::message::MessageOrigin::Session {
+            execution: f.live_access(child).await.execution().clone(),
+        });
+        let parent_run = f.live_access(&parent).await.execution().run_id;
         let from_parent = tool(&listener, &mut parent_socket, "SessionSend", json!({
             "sessionId":child,"message":"Parent-authored instruction","delivery":"queue","backend":backend,
         })).await;
@@ -670,7 +747,7 @@ async fn model_queue_edits_can_only_change_messages_authored_by_the_calling_sess
             "edit":{"kind":"retract","messageId":from_parent["messageId"]},
         })).await;
         assert_eq!(serde_json::from_str::<Value>(&result).unwrap()["kind"], "committed");
-        let stopped = f.mutation(2, "stop", json!({"sessionId":parent,"invocationId":parent_invocation}), Uuid::new_v4()).await.unwrap();
+        let stopped = f.mutation(2, "stop", json!({"sessionId":parent,"runId":parent_run}), Uuid::new_v4()).await.unwrap();
         assert_eq!(stopped["requested"], true);
         drop(parent_socket);
         response(&mut child_socket).await;

@@ -105,7 +105,10 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
             [upload.id()]
         );
         let Some(Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             ..
         }) = &originals[0].receipt
         else {

@@ -66,7 +66,7 @@ fn elicitation(
         return Err("ACP client does not support form elicitation".into());
     }
     Ok(Callback::Elicitation(Form {
-        session: snapshot.session_id.clone(),
+        session: snapshot.execution.session_id.clone(),
         tool_id: tool_use_id.into(),
         message: message.into(),
         schema,
@@ -143,7 +143,6 @@ fn form_value(value: Value) -> Result<FormValue, crate::Error> {
         _ => return Err("Unsupported ACP form value".into()),
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::super::tests::{Callback, request, snapshot};

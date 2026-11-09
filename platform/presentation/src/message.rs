@@ -18,7 +18,8 @@
  */
 
 use maka_agent_facts::attachment::AttachmentRef;
-use maka_agent_facts::event::InvocationOutcome;
+use maka_agent_facts::durable::{AgentStepLink, ModelAttemptId, RunId, StepId};
+use maka_agent_facts::event::RunOutcome;
 use maka_agent_facts::input::DirectoryReference;
 use maka_agent_facts::input::InlineReference;
 use maka_agent_facts::input::QuoteRef;
@@ -45,36 +46,100 @@ pub(crate) fn capture_time(
 impl ToolMetadata {
     pub(crate) fn from_origin(
         origin: &ToolOrigin,
-        invocation: &str,
+        run: RunId,
     ) -> Result<Self, crate::ProjectionError> {
         match origin {
+            ToolOrigin::Provider { link } if link.run != run => Err(
+                crate::ProjectionError::Invalid("tool origin belongs to another Run"),
+            ),
             ToolOrigin::Provider { .. } => Ok(Self::Provider {
                 model_visibility: Visible::Visible,
             }),
             ToolOrigin::CodeMode {
+                cell,
+                owner,
                 parent_operation_id,
                 ..
+            } => {
+                match owner {
+                    maka_agent_facts::cells::CellOwner::Agent { link, .. } if link.run == run => {}
+                    _ => {
+                        return Err(crate::ProjectionError::Invalid(
+                            "cell origin does not belong to this Agent Run",
+                        ));
+                    }
+                }
+                Ok(Self::CodeMode {
+                    cell: *cell,
+                    owner: owner.clone(),
+                    model_visibility: Hidden::Hidden,
+                    parent_tool_call_id: tool_message_id(run, parent_operation_id),
+                    parent_operation_id: parent_operation_id.clone(),
+                })
             }
-            | ToolOrigin::CodeCell {
+            ToolOrigin::CodeCell {
+                cell,
+                owner,
                 parent_operation_id,
                 ..
-            } => Ok(Self::CodeMode {
+            } => {
+                match owner {
+                    maka_agent_facts::cells::CellOwner::Agent { link, .. } if link.run == run => {}
+                    _ => {
+                        return Err(crate::ProjectionError::Invalid(
+                            "cell origin does not belong to this Agent Run",
+                        ));
+                    }
+                }
+                Ok(Self::CodeCell {
+                    cell: *cell,
+                    owner: owner.clone(),
+                    model_visibility: Hidden::Hidden,
+                    parent_tool_call_id: tool_message_id(run, parent_operation_id),
+                    parent_operation_id: parent_operation_id.clone(),
+                })
+            }
+            ToolOrigin::External {
+                task,
+                operation,
+                package_id,
+                entry_id,
+                activation,
+            } => Ok(Self::External {
+                task: *task,
+                operation: *operation,
+                package_id: package_id.clone(),
+                entry_id: entry_id.clone(),
+                activation: activation.clone(),
                 model_visibility: Hidden::Hidden,
-                parent_tool_call_id: tool_message_id(invocation, parent_operation_id),
-                parent_operation_id: parent_operation_id.clone(),
             }),
             ToolOrigin::HostSdk { parent, .. } => Ok(Self::HostSdk {
                 model_visibility: Hidden::Hidden,
                 parent_tool_call_id: parent
                     .as_ref()
-                    .map(|parent| tool_message_id(invocation, parent.operation_id())),
+                    .map(|parent| tool_message_id(run, parent.operation_id())),
                 parent_operation_id: parent
                     .as_ref()
                     .map(|parent| parent.operation_id().to_owned()),
             }),
-            ToolOrigin::Standalone => Err(crate::ProjectionError::Unsupported(
-                "standalone tool presentation",
-            )),
+            ToolOrigin::Standalone => Ok(Self::Standalone {
+                model_visibility: Hidden::Hidden,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelIdentity {
+    pub step_id: StepId,
+    pub attempt_id: ModelAttemptId,
+}
+impl From<AgentStepLink> for ModelIdentity {
+    fn from(link: AgentStepLink) -> Self {
+        Self {
+            step_id: link.step,
+            attempt_id: link.attempt,
         }
     }
 }
@@ -84,6 +149,9 @@ impl ToolMetadata {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
+    pub run_id: RunId,
+    #[serde(flatten)]
+    pub model: Option<ModelIdentity>,
     pub id: String,
     pub turn_id: String,
     pub ts: u64,
@@ -151,7 +219,7 @@ pub enum Content {
         tool_name: String,
         args: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
-        step_id: Option<String>,
+        anchor_message_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         provider_options: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,9 +250,21 @@ pub enum Content {
         #[serde(flatten)]
         metadata: ToolMetadata,
     },
-    TurnState {
+    ToolOperationObserved {
+        tool_use_id: String,
+        observation: Box<maka_plugin_core::operation::OperationReply>,
+    },
+    ToolNotification {
+        tool_use_id: String,
+        text: String,
+        model_text: String,
+    },
+    ToolYielded {
+        tool_use_id: String,
+    },
+    RunState {
         #[serde(flatten)]
-        state: TurnState,
+        state: RunState,
     },
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -296,7 +376,9 @@ pub(crate) fn message(
 ) -> Message {
     Message {
         id,
-        turn_id: event.invocation.turn_id.clone(),
+        run_id: event.execution.run_id,
+        model: None,
+        turn_id: event.execution.turn_id.clone(),
         ts,
         content,
     }
@@ -308,6 +390,24 @@ pub(crate) fn message(
     rename_all_fields = "camelCase"
 )]
 pub enum ToolMetadata {
+    External {
+        task: maka_agent_facts::durable::ExternalTaskId,
+        operation: uuid::Uuid,
+        package_id: String,
+        entry_id: String,
+        activation: String,
+        model_visibility: Hidden,
+    },
+    Standalone {
+        model_visibility: Hidden,
+    },
+    CodeCell {
+        cell: maka_agent_facts::cells::CellId,
+        owner: maka_agent_facts::cells::CellOwner,
+        model_visibility: Hidden,
+        parent_tool_call_id: String,
+        parent_operation_id: String,
+    },
     Imported {
         model_visibility: Hidden,
     },
@@ -322,6 +422,8 @@ pub enum ToolMetadata {
         model_visibility: Visible,
     },
     CodeMode {
+        cell: maka_agent_facts::cells::CellId,
+        owner: maka_agent_facts::cells::CellOwner,
         model_visibility: Hidden,
         parent_tool_call_id: String,
         parent_operation_id: String,
@@ -361,7 +463,7 @@ pub struct Thinking {
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
-pub enum TurnState {
+pub enum RunState {
     Running,
     Completed,
     Failed {
@@ -374,14 +476,11 @@ pub enum TurnState {
         aborted_at: u64,
     },
 }
-impl TurnState {
-    pub(crate) fn from_outcome(outcome: &InvocationOutcome, timestamp: u64) -> Option<Self> {
+impl RunState {
+    pub(crate) fn from_outcome(outcome: &RunOutcome, timestamp: u64) -> Option<Self> {
         Some(match outcome {
-            InvocationOutcome::HandoffPaused { .. } => return None,
-            InvocationOutcome::Completed | InvocationOutcome::ContextCompactFinished { .. } => {
-                Self::Completed
-            }
-            InvocationOutcome::Failed { class, message, .. } => Self::Failed {
+            RunOutcome::Completed | RunOutcome::ContextCompactFinished { .. } => Self::Completed,
+            RunOutcome::Failed { class, message, .. } => Self::Failed {
                 error_class: class.clone(),
                 failure_message: message.as_ref().map(|text| {
                     let mut end = text.len().min(256);
@@ -391,7 +490,7 @@ impl TurnState {
                     text[..end].to_owned()
                 }),
             },
-            InvocationOutcome::Cancelled { source } => Self::Aborted {
+            RunOutcome::Cancelled { source } => Self::Aborted {
                 abort_source: source.clone(),
                 aborted_at: timestamp,
             },

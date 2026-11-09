@@ -17,67 +17,49 @@
  * under the License.
  */
 
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::input::InvocationInput;
-use maka_event_log::{EventLog, StoreError, sessions::SessionMutation};
+use maka_event_log::{
+    ROOT_MIGRATIONS, RootStore, StoreError,
+    root::{RootNamespaces, RootOwner},
+    sessions::SessionMutation,
+};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_execution() {
+async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_original_work() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("events.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    log.create_session(
-        "session",
-        "original-create",
-        &json!({"name":"initial","flag":false}),
-        10,
-    )
-    .await
-    .unwrap();
-    let control_only = log.prefix(0, 0).await.unwrap();
-    assert_eq!(control_only.high_water, 0);
-    assert_eq!(
-        control_only.digest,
-        "sha256:f6f90ff5712679004ad38b9782378b8e9fe7deac69e8cee5b14b069f80e4834d"
-    );
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
+    let path = temp.path().join("root");
+    let namespaces = RootNamespaces {
+        ownership: temp.path().join("owners"),
+        control: temp.path().join("control"),
     };
-    log.append(
-        &EventWrite::plain(
-            (RuntimeEvent::new(
-                invocation,
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        source_messages: Vec::new(),
-                        content: "active".into(),
-                        request_fingerprint: None,
-                    },
-                },
-            ))
-            .clone(),
+    let owner = RootOwner::create(&path, &namespaces).unwrap();
+    let log = RootStore::open(Arc::new(owner), ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    let session = log
+        .create_session(
+            "session",
+            "original-create",
+            &json!({"name":"initial","flag":false}),
+            10,
         )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let events = log.prefix(32, 65536).await.unwrap();
-    // Invocation opening advances the public Session revision as well.
+        .await
+        .unwrap();
+    let (work, effects) = session
+        .work_scope(None)
+        .await
+        .unwrap()
+        .accept(CancellationToken::new());
+    let original = work.store();
     assert_eq!(
         log.get_session::<Value>("session")
             .await
             .unwrap()
             .unwrap()
             .revision,
-        2
+        1
     );
     let initial_catalog = log
         .list_sessions::<Value>(None, None, 32)
@@ -85,7 +67,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
         .unwrap()
         .revision;
     let result = log
-        .update_session_metadata("session", 2, |value: &mut Value| {
+        .update_session_metadata("session", 1, |value: &mut Value| {
             value["name"] = json!("renamed");
             value["flag"] = json!(true);
             Ok(())
@@ -95,7 +77,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
     let SessionMutation::Committed(updated) = result else {
         panic!("expected committed update");
     };
-    assert_eq!(updated.revision, 3);
+    assert_eq!(updated.revision, 2);
     assert_eq!((updated.created_at, updated.updated_at), (10, 10));
     assert_eq!(updated.configuration, json!({"name":"renamed","flag":true}));
     let changed_catalog = log
@@ -105,7 +87,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
         .revision;
     assert_ne!(initial_catalog, changed_catalog);
     let result = log
-        .update_session_metadata::<Value, _>("session", 2, |_| {
+        .update_session_metadata::<Value, _>("session", 1, |_| {
             panic!("CAS must precede policy/no-op")
         })
         .await
@@ -113,12 +95,12 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
     assert!(matches!(
         result,
         SessionMutation::RevisionConflict {
-            expected: 2,
-            actual: 3
+            expected: 1,
+            actual: 2
         }
     ));
     let SessionMutation::Committed(unchanged) = log
-        .update_session_metadata("session", 3, move |value: &mut Value| {
+        .update_session_metadata("session", 2, move |value: &mut Value| {
             value["name"] = json!("renamed");
             Ok(())
         })
@@ -129,7 +111,7 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
     };
     assert_eq!(unchanged, updated);
     let error = log
-        .update_session_metadata("session", 3, move |value: &mut Value| {
+        .update_session_metadata("session", 2, move |value: &mut Value| {
             value["name"] = json!("x".repeat(65536));
             Err(StoreError::InvalidTransition("policy refused".into()))
         })
@@ -147,11 +129,18 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
         log.get_session::<Value>("session").await.unwrap()
     );
     assert_eq!(
-        serde_json::to_vec(&events).unwrap(),
-        serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap()
+        original.get::<Value>().await.unwrap(),
+        Some((*updated).clone())
     );
+    drop(original);
+    effects.settle().await.unwrap();
+    work.finish();
+    drop(session);
     log.close().await.unwrap();
-    let log = EventLog::open(&path).await.unwrap();
+    let owner = RootOwner::open_existing(&path, &namespaces).unwrap();
+    let log = RootStore::open(Arc::new(owner), ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     assert_eq!(
         Some(*updated),
         log.probe_session_create::<Value>("session", "original-create")
@@ -165,13 +154,10 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
             .unwrap()
             .revision
     );
-    assert_eq!(
-        serde_json::to_vec(&events).unwrap(),
-        serde_json::to_vec(&log.prefix(32, 65536).await.unwrap()).unwrap()
-    );
     assert!(matches!(
         log.update_session_metadata::<Value, _>("missing", 1, |_| Ok(()))
             .await,
         Err(StoreError::SessionNotFound)
     ));
+    log.close().await.unwrap();
 }

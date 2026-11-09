@@ -232,7 +232,13 @@ impl SessionOwner {
         Ok(cursor.clone())
     }
 
-    pub async fn finish_turn(&self, turn: &str, language: Language) -> Result<(), ToolError> {
+    pub async fn finish_turn(
+        &self,
+        session: &str,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+        language: Language,
+    ) -> Result<(), ToolError> {
         let registered = self.state.lock().unwrap().remote_registered;
         let mut failures = Vec::new();
         if registered {
@@ -242,7 +248,9 @@ impl SessionOwner {
                     .invoke(
                         worker::Request::FinishOwnerTurn {
                             owner: self.remote_id.to_string(),
+                            session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -261,7 +269,7 @@ impl SessionOwner {
         #[cfg(feature = "native-desktop")]
         if let Err(error) =
             crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
-                .finish_turn(turn, &self.cursor(), language)
+                .finish_turn(turn, execution, &self.cursor(), language)
                 .await
         {
             failures.push(error.to_string());
@@ -368,7 +376,10 @@ enum Backend {
     Local(Box<session::Session>),
     Windows {
         browsers: Vec<BrowserConnection>,
-        audio: Option<worker::AudioObservation>,
+        audio: Option<(
+            (String, String, crate::ExecutionCorrelation),
+            worker::AudioObservation,
+        )>,
     },
 }
 impl Session {
@@ -591,6 +602,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().to_owned(),
                     turn: invocation.turn().to_owned(),
+                    execution: invocation.execution_correlation().clone(),
                     operation_id: operation_id.to_owned(),
                     browsers: browsers.clone(),
                     request,
@@ -641,6 +653,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().into(),
                     turn: invocation.turn().into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -705,6 +718,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -717,11 +731,19 @@ impl Session {
                     .invoke_browser(request, invocation, cancellation.clone())
                     .await?;
                 if start_audio {
-                    *audio = Some(reply.audio.ok_or_else(|| {
-                        ToolError::CleanupUnconfirmed(
-                            "Windows audio startup reply lost its bound capture observation".into(),
-                        )
-                    })?);
+                    *audio = Some((
+                        (
+                            session.to_owned(),
+                            turn.to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        reply.audio.ok_or_else(|| {
+                            ToolError::CleanupUnconfirmed(
+                                "Windows audio startup reply lost its bound capture observation"
+                                    .into(),
+                            )
+                        })?,
+                    ));
                 } else if stop_audio {
                     *audio = None;
                 }
@@ -770,7 +792,7 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.wait_audio_finished(),
             Some(Backend::Windows { audio, .. }) => {
-                let audio = audio.clone();
+                let audio = audio.as_ref().map(|(_, observation)| observation.clone());
                 Box::pin(async move {
                     let mut audio =
                         audio.ok_or_else(|| failed("Computer audio recording is not active"))?;
@@ -795,11 +817,14 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         match &mut self.backend {
             #[cfg(feature = "native-desktop")]
-            Some(Backend::Local(local)) => local.finish_turn(session, turn, language).await,
+            Some(Backend::Local(local)) => {
+                local.finish_turn(session, turn, execution, language).await
+            }
             Some(Backend::Windows { audio, .. }) => {
                 if self
                     .owner
@@ -830,6 +855,7 @@ impl Session {
                             epoch: self.native_epoch.to_string(),
                             session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -837,7 +863,11 @@ impl Session {
                     )
                     .await
                     .map_err(unconfirmed_remote_cleanup)?;
-                *audio = None;
+                if audio.as_ref().is_some_and(|(source, _)| {
+                    source.0 == session && source.1 == turn && &source.2 == execution
+                }) {
+                    *audio = None;
+                }
                 Ok(())
             }
             _ => Ok(()),

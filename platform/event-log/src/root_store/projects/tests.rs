@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::workspace::BindingRef;
+use maka_sandbox::workspace::BindingRef;
 use serde_json::json;
 
 async fn fixture() -> (tempfile::TempDir, RootStore) {
@@ -34,8 +34,17 @@ async fn fixture() -> (tempfile::TempDir, RootStore) {
         )
         .unwrap(),
     );
-    let store = RootStore::open(owner).await.unwrap();
+    let store = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     (directory, store)
+}
+async fn workspace(store: &RootStore, path: &std::path::Path) -> RootWorkspace {
+    std::fs::create_dir_all(path).unwrap();
+    store
+        .workspace(cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap())
+        .await
+        .unwrap()
 }
 fn registration(identity: &str, path: &str) -> ProjectRegistration {
     ProjectRegistration {
@@ -86,12 +95,16 @@ async fn raw(session: &SessionStore) -> (i64, String) {
 
 #[tokio::test]
 async fn relink_updates_control_and_effective_cas_across_sessions_without_rewriting_sessions() {
-    let (_directory, store) = fixture().await;
+    let (directory, store) = fixture().await;
+    let old = directory.path().join("old").to_str().unwrap().to_owned();
+    let new = directory.path().join("new").to_str().unwrap().to_owned();
+    let source_workspace = workspace(&store, std::path::Path::new(&old)).await;
+    let target_workspace = workspace(&store, std::path::Path::new(&new)).await;
     let source = store
-        .register_project(registration("source", "/old"), true, 1)
+        .register_project(registration("source", &old), true, 1)
         .await
         .unwrap();
-    let binding = attach(&store, &source, "/old").await;
+    let binding = attach(&store, &source, &old).await;
     let first = create(&store, "one", binding).await;
     let second_id = "other".to_owned();
     let second = create(&store, &second_id, binding).await;
@@ -103,24 +116,30 @@ async fn relink_updates_control_and_effective_cas_across_sessions_without_rewrit
     .unwrap();
     let raw_first = raw(&first).await;
     let raw_second = raw(&second).await;
+    let fence = store
+        .fence_workspaces(&[source_workspace, target_workspace])
+        .await
+        .unwrap();
     store
         .relink_project(
             &source.id,
             "owner",
-            registration("new", "/new"),
+            &fence,
+            registration("new", &new),
             2,
-            json!({"path":"/new","identity":"new"}),
+            json!({"path":new,"identity":"new"}),
         )
         .await
         .unwrap();
+    drop(fence);
     assert_eq!(raw(&first).await, raw_first);
     assert_eq!(raw(&second).await, raw_second);
     for session in [&first, &second] {
         let after = session.get::<Value>().await.unwrap().unwrap();
         assert_eq!(after.revision, before.revision + 1);
-        assert_eq!(after.workspace_binding.unwrap().workspace["path"], "/new");
+        assert_eq!(after.workspace_binding.unwrap().workspace["path"], new);
         assert!(matches!(
-            session.execution_scope(Some(basis)).await,
+            session.work_scope(Some(basis)).await,
             Err(StoreError::PermissionRevoked)
         ));
     }
@@ -136,55 +155,72 @@ async fn relink_updates_control_and_effective_cas_across_sessions_without_rewrit
 
 #[tokio::test]
 async fn source_execution_blocks_relink_but_unrelated_execution_does_not() {
-    let (_directory, store) = fixture().await;
+    let (directory, store) = fixture().await;
+    let old = directory.path().join("old").to_str().unwrap().to_owned();
+    let new = directory.path().join("new").to_str().unwrap().to_owned();
+    let source_workspace = workspace(&store, std::path::Path::new(&old)).await;
+    let target_workspace = workspace(&store, std::path::Path::new(&new)).await;
     let source = store
-        .register_project(registration("source", "/old"), true, 1)
+        .register_project(registration("source", &old), true, 1)
         .await
         .unwrap();
+    let other_path = directory.path().join("other");
+    let other_workspace = workspace(&store, &other_path).await;
+    let other_path = other_path.to_str().unwrap();
     let other = store
-        .register_project(registration("other", "/other"), true, 1)
+        .register_project(registration("other", other_path), true, 1)
         .await
         .unwrap();
-    let session = create(&store, "one", attach(&store, &source, "/old").await).await;
-    let unrelated = create(&store, "other", attach(&store, &other, "/other").await).await;
+    let session = create(&store, "one", attach(&store, &source, &old).await).await;
+    let unrelated = create(&store, "other", attach(&store, &other, other_path).await).await;
     let record = session.get::<Value>().await.unwrap().unwrap();
     let basis = crate::workspace_bindings::effective_boundary(
         &record.configuration,
         record.workspace_binding.as_ref().unwrap(),
     )
     .unwrap();
-    let active = session.execution_scope(Some(basis)).await.unwrap();
+    let (active, effects) = session
+        .work_scope_in(Some(basis), &source_workspace)
+        .await
+        .unwrap()
+        .accept(tokio_util::sync::CancellationToken::new());
     assert!(matches!(
         store
-            .relink_project(
-                &source.id,
-                "owner",
-                registration("new", "/new"),
-                2,
-                json!({"path":"/new"})
-            )
+            .fence_workspaces(&[source_workspace.clone(), target_workspace.clone()])
             .await,
         Err(StoreError::SessionBusy)
     ));
-    drop(active);
+    effects.settle().await.unwrap();
+    active.finish();
     let record = unrelated.get::<Value>().await.unwrap().unwrap();
     let basis = crate::workspace_bindings::effective_boundary(
         &record.configuration,
         record.workspace_binding.as_ref().unwrap(),
     )
     .unwrap();
-    let unrelated_active = unrelated.execution_scope(Some(basis)).await.unwrap();
+    let (unrelated_active, unrelated_effects) = unrelated
+        .work_scope_in(Some(basis), &other_workspace)
+        .await
+        .unwrap()
+        .accept(tokio_util::sync::CancellationToken::new());
+    let fence = store
+        .fence_workspaces(&[source_workspace, target_workspace])
+        .await
+        .unwrap();
     store
         .relink_project(
             &source.id,
             "owner",
-            registration("new", "/new"),
+            &fence,
+            registration("new", &new),
             2,
-            json!({"path":"/new"}),
+            json!({"path":new}),
         )
         .await
         .unwrap();
-    drop(unrelated_active);
+    drop(fence);
+    unrelated_effects.settle().await.unwrap();
+    unrelated_active.finish();
     store.close().await.unwrap();
 }
 
@@ -192,15 +228,21 @@ async fn source_execution_blocks_relink_but_unrelated_execution_does_not() {
 async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_cleanup() {
     use std::task::Poll;
     use tokio::sync::oneshot;
-    let (_directory, store) = fixture().await;
+    let (directory, store) = fixture().await;
+    let old = directory.path().join("old").to_str().unwrap().to_owned();
+    let new = directory.path().join("new").to_str().unwrap().to_owned();
+    let source_workspace = workspace(&store, std::path::Path::new(&old)).await;
+    let target_workspace = workspace(&store, std::path::Path::new(&new)).await;
     let source = store
-        .register_project(registration("source", "/old"), true, 1)
+        .register_project(registration("source", &old), true, 1)
         .await
         .unwrap();
-    let binding = attach(&store, &source, "/old").await;
-    let registration = registration("new", "/new");
+    let binding = attach(&store, &source, &old).await;
+    let registration = registration("new", &new);
+    let workspaces = [source_workspace, target_workspace];
+    let fence = store.fence_workspaces(&workspaces).await.unwrap();
     let (control, guard) = store
-        .prepare_relink(&source.id, "owner", &registration, None)
+        .prepare_relink(&source.id, "owner", &registration, None, &fence)
         .await
         .unwrap();
     let (entered, started) = oneshot::channel();
@@ -219,7 +261,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
     });
     started.await.unwrap();
     let mut operation =
-        Box::pin(control.relink_project_if(guard, registration, 2, json!({"path":"/new"})));
+        Box::pin(control.relink_project_if(guard, registration, 2, json!({"path":new})));
     std::future::poll_fn(|cx| {
         assert!(operation.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -227,6 +269,11 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
     .await;
     drop(operation);
     drop(control);
+    drop(fence);
+    assert!(matches!(
+        store.fence_workspaces(&workspaces).await,
+        Err(StoreError::SessionBusy)
+    ));
     assert!(store.project_mutations.try_lock().is_err());
     assert!(
         store
@@ -240,6 +287,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
     // This queued barrier completes only after the cancelled commit's job exits.
     store.log.connection.run(|_| Ok(())).await.unwrap();
     assert!(store.project_mutations.try_lock().is_ok());
+    drop(store.fence_workspaces(&workspaces).await.unwrap());
     assert!(
         store
             .gates
@@ -254,7 +302,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
             .unwrap()
             .unwrap()
             .workspace["path"],
-        "/new"
+        new
     );
     store.close().await.unwrap();
 }

@@ -25,7 +25,7 @@ use maka_event_log::{
 };
 use maka_host_runtime::{
     application::{
-        Context, Handler, NativeActivation, NativeRegistry,
+        Context, Handler, HandlerError, HandlerResult, NativeActivation, NativeRegistry,
         host::{Configuration, Host},
         transport::{Grant, HostEndpoint},
     },
@@ -35,7 +35,7 @@ use maka_packages::Package;
 use maka_plugin_core::{
     composition::InstanceId,
     contract::Contract,
-    operation::{OperationCleanup, OperationOutcome, Receipt},
+    operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
     runtime::Published,
 };
 use serde_json::json;
@@ -73,7 +73,7 @@ impl Handler for CounterHandler {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
         Box::pin(async move {
             match method.as_str() {
@@ -81,9 +81,9 @@ impl Handler for CounterHandler {
                 "read" if input["holdUntilCancelled"] == true => {
                     owner.started.notify_one();
                     context.scope().cancellation.cancelled().await;
-                    Ok(Value::Null)
+                    Ok(Value::Null.into())
                 }
-                "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)})),
+                "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)}).into()),
                 "queueMessage" => {
                     let deliveries = owner.deliveries.lock().unwrap();
                     match deliveries
@@ -91,10 +91,10 @@ impl Handler for CounterHandler {
                         .map(String::as_str)
                     {
                         Some("ready") => Ok(
-                            json!({"kind":"ready","revision":1,"message":"queued","hasAttachments":false}),
+                            json!({"kind":"ready","revision":1,"message":"queued","hasAttachments":false}).into(),
                         ),
                         reason => {
-                            Ok(json!({"kind":"missing","reason":reason.unwrap_or("unknown")}))
+                            Ok(json!({"kind":"missing","reason":reason.unwrap_or("unknown")}).into())
                         }
                     }
                 }
@@ -111,7 +111,8 @@ impl Handler for CounterHandler {
                     Ok(json!({"kind":"uploaded","attachment":{
                         "sessionId":input["sessionId"],"id":"original-upload",
                         "name":input["name"],"bytes":input["bytes"],"mimeType":"text/plain"
-                    }}))
+                    }})
+                    .into())
                 }
                 "send"
                 | "selectBackend"
@@ -137,12 +138,12 @@ impl Handler for CounterHandler {
                     }
                     if input.get("message").and_then(Value::as_str) == Some("reject") {
                         return Ok(
-                            json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"skills_unavailable"}),
+                            json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"skills_unavailable"}).into(),
                         );
                     }
                     if input["expectedInvocationId"] == "stopped" {
                         return Ok(
-                            json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"turn_stopped"}),
+                            json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"turn_stopped"}).into(),
                         );
                     }
                     if input["delivery"] == "queue" {
@@ -156,37 +157,42 @@ impl Handler for CounterHandler {
                             .unwrap()
                             .insert(id.clone(), "ready".into());
                         return Ok(
-                            json!({"kind":"queued","sessionId":input["sessionId"],"messageId":id,"revision":1}),
+                            json!({"kind":"queued","sessionId":input["sessionId"],"messageId":id,"revision":1}).into(),
                         );
                     }
                     let value = owner.effects.fetch_add(1, Ordering::SeqCst) + 1;
                     if input["progress"] == true {
                         context
                             .emit(json!({"url":"https://auth.openai.com/codex/device","userCode":"ABCD-EFGH"}))
-                            .await?;
+                            .await
+                            .map_err(|diagnostic| HandlerError::Unknown { diagnostic })?;
                     }
                     owner.started.notify_one();
                     if owner.blocked.load(Ordering::SeqCst) {
                         owner.release.notified().await;
                     }
                     if input["cleanupFailure"] == true {
-                        let mut ticket = context.scope().resources.reserve().map_err(error)?;
+                        let mut ticket = context.scope().resources.reserve().map_err(|cause| {
+                            HandlerError::Unknown {
+                                diagnostic: error(cause),
+                            }
+                        })?;
                         ticket.start();
                         ticket.complete(Err("counter cleanup failure".into()));
                     }
                     if input["progress"] == true {
-                        Ok(json!({"kind":"saved"}))
+                        Ok(json!({"kind":"saved"}).into())
                     } else if input.get("message").is_some() {
                         Ok(
-                            json!({"kind":"started","sessionId":input["sessionId"],"messageId":format!("message-{value}"),"invocationId":format!("invocation-{value}")}),
+                            json!({"kind":"started","sessionId":input["sessionId"],"messageId":format!("message-{value}"),"invocationId":format!("invocation-{value}")}).into(),
                         )
                     } else {
-                        Ok(json!({"sent":value}))
+                        Ok(json!({"sent":value}).into())
                     }
                 }
                 "watch" => {
                     if input["once"] == true {
-                        return Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)}));
+                        return Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)}).into());
                     }
                     context
                         .emit(json!({"sent":owner.effects.load(Ordering::SeqCst)}))
@@ -197,7 +203,7 @@ impl Handler for CounterHandler {
                         owner.started.notify_one();
                         owner.release.notified().await;
                     }
-                    Ok(json!({"closed":true}))
+                    Ok(json!({"closed":true}).into())
                 }
                 _ => Err("unknown counter method".into()),
             }
@@ -225,7 +231,11 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(RootStore::open(root).await.unwrap());
+        let store = Arc::new(
+            RootStore::open(root, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
         let mut contract: Contract = serde_json::from_value(json!({
             "name":"test.Counter","version":1,"transport":"remote","interface":{"kind":"service","methods":{
                 "read":{"mode":"query","input":{},"output":{},"resources":{}},
@@ -635,7 +645,7 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         fixture.counter.release.notify_one();
         loop {
             let reply = client.recover(id).await.unwrap();
-            if let Receipt::Recorded {outcome:OperationOutcome::Returned {value},cleanup:OperationCleanup::Confirmed} = reply.receipt {
+            if let Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { value } },cleanup:OperationCleanup::Confirmed} = reply.receipt {
                 assert_eq!(value,json!({"sent":1}));break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -650,7 +660,7 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         let recovered = restarted.recover(id).await.unwrap();
         assert_eq!(recovered.reference,original.reference.unwrap());
         assert_eq!(restarted.operation_for_control(id).await.unwrap().id,id);
-        assert!(matches!(recovered.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},..} if value==&json!({"sent":1})));
+        assert!(matches!(recovered.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } },..} if value==&json!({"sent":1})));
         assert_eq!(restarted.query("agent","read",Value::Null).await.unwrap(),json!({"sent":1}));
         assert!(restarted.mutation(id,"agent","send",Value::Null,Attachments::new(),None,Value::Null).await.is_err());
         assert!(!serde_json::to_string(&restarted.operation(id).await.unwrap()).unwrap().contains("private draft text"));

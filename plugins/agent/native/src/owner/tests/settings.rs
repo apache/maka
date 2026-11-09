@@ -70,7 +70,10 @@ async fn mutate(
 ) -> (Value, RecoveryRef) {
     let reply = mutate_reply(fixture, method, input, secret).await;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = reply.receipt
     else {
@@ -97,26 +100,15 @@ async fn mutate_reply(
         .prepare_mutation(
             binding(fixture).await,
             method.into(),
-            input,
+            input.clone(),
             scope(&fixture.issuer, true),
             Uuid::new_v4(),
             attachments.into(),
         )
         .await
         .unwrap();
-    let reference = prepared.reference().clone();
-    let recorded = fixture
-        .store
-        .record_application_intent(
-            reference.source.clone(),
-            prepared.consumer().instance().clone(),
-            reference.clone(),
-            serde_json::Value::Null,
-        )
-        .await
-        .unwrap();
     client
-        .mutate(prepared, recorded)
+        .mutate_owned(prepared, input)
         .await
         .unwrap()
         .result()
@@ -151,14 +143,14 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         }), None).await;
         assert_eq!(saved["kind"], "committed");
         let observation = fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap();
-        assert_eq!(observation.outcome, OperationOutcome::Returned { value: saved.clone() });
+        assert_eq!(observation.outcome, OperationOutcome::Returned { result: OperationResult::Success { value: saved.clone() } });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":initial["revision"],
             "mutation":{"kind":"workspace_instructions","enabled":false}
         }), None).await;
         assert_eq!(stale["kind"], "revision_conflict");
         let session = fixture.create("Assistant policy").await;
-        assert_eq!(fixture.send(&session).await.unwrap()["kind"], "started");
+        assert_eq!(fixture.send(&session).await.unwrap()["kind"], "queued");
         let (mut first, _) = listener.accept().await.unwrap();
         let system = |sent: &Value| sent["messages"].as_array().unwrap().iter()
             .filter(|message| message["role"] == "system")
@@ -183,7 +175,7 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         assert_eq!(system(&request(&mut second).await), original, "queued work uses its persisted acceptance basis");
         response(&mut second).await;
         fixture.drained().await;
-        assert_eq!(fixture.send(&session).await.unwrap()["kind"], "started");
+        assert_eq!(fixture.send(&session).await.unwrap()["kind"], "queued");
         let (mut third, _) = listener.accept().await.unwrap();
         let current = system(&request(&mut third).await);
         assert!(!current.contains("FIRST TONE"));
@@ -200,7 +192,7 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shell"]["titles"], false);
         assert!(!fixture.config.runtime_policy().await.unwrap().policy.shell.titles);
         assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
-            OperationOutcome::Returned { value: disabled });
+            OperationOutcome::Returned { result: OperationResult::Success { value: disabled } });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
             "mutation":{"kind":"shell","value":{"preference":"auto","executable":"","titles":true}}
@@ -287,7 +279,7 @@ async fn host_proxy_settings_route_model_requests_and_keep_atomic_credential_rec
         assert!(!current.to_string().contains("private-proxy-password"));
         assert_eq!(fixture.config.network_configuration().await.unwrap().password.as_deref(), Some("private-proxy-password"));
         assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
-            OperationOutcome::Returned { value: saved.clone() });
+            OperationOutcome::Returned { result: OperationResult::Success { value: saved.clone() } });
         let (stale, _) = mutate(&fixture, "updateNetwork", update, Some("different-password")).await;
         assert_eq!(stale["result"]["kind"], "revision_conflict");
         let session = fixture.create("Proxy route").await;
@@ -314,7 +306,7 @@ async fn host_proxy_settings_route_model_requests_and_keep_atomic_credential_rec
         let (stale, _) = mutate(&fixture, "updateNetwork", stale_credential, None).await;
         assert_eq!(stale["result"]["kind"], "credential_stale");
         let observation = fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap();
-        assert_eq!(observation.outcome, OperationOutcome::Returned { value: saved });
+        assert_eq!(observation.outcome, OperationOutcome::Returned { result: OperationResult::Success { value: saved } });
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
@@ -399,7 +391,7 @@ async fn global_instruction_api_and_admission_share_one_selected_file() {
         let operation = Uuid::new_v4();
         let saved = f.mutation(2,"updateGlobalInstructions",input.clone(),operation).await.unwrap();
         assert_eq!(saved["kind"],"saved");
-        assert_eq!(f.send(&session).await.unwrap()["kind"],"started");
+        assert_eq!(f.send(&session).await.unwrap()["kind"],"queued");
         let (mut socket,_) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
         let system = sent["messages"].as_array().unwrap().iter().filter(|m|m["role"]=="system")
@@ -441,7 +433,7 @@ async fn global_instruction_api_and_admission_share_one_selected_file() {
         let content = updated["content"].as_str().unwrap();
         assert!(content.as_bytes() == edited.as_bytes(),
             "complete saved read differs: got {} bytes, expected {}", content.len(), edited.len());
-        assert_eq!(f.send(&session).await.unwrap()["kind"], "started");
+        assert_eq!(f.send(&session).await.unwrap()["kind"], "queued");
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
         response(&mut socket).await;

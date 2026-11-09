@@ -92,6 +92,7 @@ pub(super) struct TabIdentity {
 pub(super) struct Creator {
     pub(super) owner: uuid::Uuid,
     pub(super) turn: String,
+    pub(super) execution: crate::ExecutionCorrelation,
     pub(super) provider: Provider,
     pub(super) generation: String,
 }
@@ -106,6 +107,7 @@ pub(super) enum TabMark {
 pub(super) struct MarkAttempt {
     turn: String,
     operation: String,
+    execution: crate::ExecutionCorrelation,
     epoch: crate::desktop::NativeEpochId,
     requested: TabMark,
     previous: Option<TabMark>,
@@ -122,11 +124,12 @@ impl MarkAttempt {
     }
     pub(super) fn matches(
         &self,
-        operation: &cua_driver_core::browser::ExtensionHostOperation,
+        operation: &super::extension::BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
     ) -> bool {
         self.operation == operation.operation_id
             && self.turn == operation.turn_id
+            && self.execution == operation.execution
             && self.epoch == epoch
     }
 }
@@ -263,6 +266,7 @@ impl Host {
         tab: &TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
         self.known(&tab.browser)?;
         if let Some(lease) = self.tabs.get_mut(tab) {
@@ -286,6 +290,7 @@ impl Host {
             // creation receipt. Selecting metadata cannot move that obligation.
             if lease.extension.is_none() {
                 lease.creator.turn = turn.to_owned();
+                lease.creator.execution = execution.clone();
             }
         }
         Ok(())
@@ -307,11 +312,12 @@ impl Host {
         identity: TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         provider: Provider,
         generation: String,
         input: std::sync::Arc<super::owned_input::Resource>,
     ) -> Result<(), ToolError> {
-        self.use_tab(&identity, owner, turn)?;
+        self.use_tab(&identity, owner, turn, execution)?;
         match self.tabs.entry(identity) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 entry.get_mut().input = Some(input);
@@ -332,6 +338,7 @@ impl Host {
                     creator: Creator {
                         owner,
                         turn: turn.to_owned(),
+                        execution: execution.clone(),
                         provider,
                         generation,
                     },
@@ -350,6 +357,7 @@ impl Host {
         &self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
         epoch: Option<crate::desktop::NativeEpochId>,
     ) -> Result<(), ToolError> {
         for lease in self
@@ -358,7 +366,7 @@ impl Host {
             .filter(|lease| lease.creator.owner == owner)
         {
             if let Some(input) = &lease.input
-                && input.belongs(turn, epoch)
+                && input.belongs(turn, execution, epoch)
             {
                 input.check_settled()?;
             }
@@ -371,6 +379,7 @@ impl Host {
         identity: TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         provider: impl Into<Provider>,
         generation: String,
     ) -> Result<(), ToolError> {
@@ -386,6 +395,7 @@ impl Host {
                     creator: Creator {
                         owner,
                         turn: turn.to_owned(),
+                        execution: execution.clone(),
                         provider,
                         generation,
                     },
@@ -408,6 +418,7 @@ impl Host {
         identity: &TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<&mut Lease, ToolError> {
         self.known(&identity.browser)?;
         let lease = self
@@ -417,7 +428,7 @@ impl Host {
         if lease.creator.owner != owner {
             return Err(failed("tab_owned_by_another_session"));
         }
-        if lease.creator.turn != turn {
+        if lease.creator.turn != turn || &lease.creator.execution != execution {
             return Err(failed("tab mark belongs to a different active turn"));
         }
         if !matches!(lease.disposition, Disposition::Live) {
@@ -432,18 +443,19 @@ impl Host {
         &mut self,
         identity: &TabIdentity,
         owner: uuid::Uuid,
-        operation: &cua_driver_core::browser::ExtensionHostOperation,
+        operation: &super::extension::BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
         requested: TabMark,
     ) -> Result<MarkAttempt, ToolError> {
         if operation.operation_id.is_empty() || operation.turn_id.is_empty() {
             return Err(failed("tab mark requires the exact current Host operation"));
         }
-        let lease = self.mark_lease(identity, owner, &operation.turn_id)?;
+        let lease = self.mark_lease(identity, owner, &operation.turn_id, &operation.execution)?;
         let previous = lease.retention.mark()?;
         let attempt = MarkAttempt {
             turn: operation.turn_id.clone(),
             operation: operation.operation_id.clone(),
+            execution: operation.execution.clone(),
             epoch,
             requested,
             previous,
@@ -471,7 +483,7 @@ impl Host {
         attempt: &MarkAttempt,
         outcome: Result<(), MarkFailure>,
     ) -> Result<(), ToolError> {
-        let lease = self.mark_lease(identity, owner, &attempt.turn)?;
+        let lease = self.mark_lease(identity, owner, &attempt.turn, &attempt.execution)?;
         let current = match &lease.retention {
             Retention::Pending(current)
             | Retention::Unknown {
@@ -501,8 +513,9 @@ impl Host {
         identity: &TabIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
-        self.use_tab(identity, owner, turn)?;
+        self.use_tab(identity, owner, turn, execution)?;
         if let Some(lease) = self.tabs.get_mut(identity) {
             lease.disposition = Disposition::Closing;
         }
@@ -514,6 +527,7 @@ impl Host {
         identity: BrowserIdentity,
         owner: uuid::Uuid,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         provider: impl Into<Provider>,
         generation: String,
     ) {
@@ -524,6 +538,7 @@ impl Host {
                 creator: Creator {
                     owner,
                     turn: turn.to_owned(),
+                    execution: execution.clone(),
                     provider,
                     generation,
                 },
@@ -536,9 +551,12 @@ impl Host {
         &self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) -> Result<(), ToolError> {
         for lease in self.tabs.values().filter(|lease| {
-            lease.creator.owner == owner && turn.is_none_or(|turn| lease.creator.turn == turn)
+            lease.creator.owner == owner
+                && turn.is_none_or(|turn| lease.creator.turn == turn)
+                && execution.is_none_or(|execution| &lease.creator.execution == execution)
         }) {
             if !matches!(lease.retention, Retention::Handoff) {
                 lease.retention.mark()?;
@@ -551,14 +569,17 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
-        self.check_owned_inputs(owner, turn, None)?;
+        self.check_owned_inputs(owner, turn, execution, None)?;
         if turn.is_some() {
-            self.check_mark_settlement(owner, turn)?;
+            self.check_mark_settlement(owner, turn, execution)?;
         }
-        let extension_finished = self.finish_extension(owner, turn, None).await?;
+        let extension_finished = self.finish_extension(owner, turn, execution, None).await?;
         let belongs = |creator: &Creator| {
-            creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)
+            creator.owner == owner
+                && turn.is_none_or(|turn| creator.turn == turn)
+                && execution.is_none_or(|execution| &creator.execution == execution)
         };
         let uncertain: Vec<_> = self
             .uncertain_creations
@@ -689,6 +710,7 @@ mod tests {
             browser.clone(),
             first,
             "first",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             provider.clone(),
             generation.into(),
         );
@@ -696,6 +718,7 @@ mod tests {
             browser.clone(),
             second,
             "second",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             provider,
             generation.into(),
         );

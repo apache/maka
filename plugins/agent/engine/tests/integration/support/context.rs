@@ -18,55 +18,11 @@
  */
 
 use super::http;
-use super::invocation;
 pub use http::read_request;
-use maka_agent_engine::{Engine, RunInput, RunWork};
-use maka_agent_facts::execution::ModelBinding;
-use maka_code_runtime::CellLimits;
-use maka_model::ModelExecutor;
-use maka_tools::CodeExecutor;
 use serde_json::json;
-use std::time::Duration;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const SUMMARY: &str = "## Goal\nContinue the durable task.\n## Progress\n### Done\n- Saved the original work.\n## Next Steps\n1. Verify checkpoint replay.\n## Critical Context\n- summary-marker in src/event.rs.";
-pub fn engine() -> Engine {
-    Engine::new(
-        ModelExecutor::new(Duration::from_secs(10)).unwrap(),
-        CodeExecutor::new(CellLimits::default()).unwrap(),
-    )
-    .unwrap()
-}
-pub fn input(base: &str, id: &str, compact: bool) -> RunInput {
-    let mut input = invocation::input(
-        base,
-        id,
-        if compact {
-            RunWork::ContextCompact
-        } else {
-            RunWork::Message {
-                source_messages: Vec::new(),
-                message: format!("question-{id}").into(),
-                tools: Default::default(),
-            }
-        },
-    );
-    input.configuration.model = Some(ModelBinding {
-        connection_id: "connection".into(),
-        connection_slug: "fixture".into(),
-        model: "test".into(),
-    });
-    input.request_fingerprint = Some(format!(
-        "{}:{id}",
-        if compact {
-            "context.compact"
-        } else {
-            "turn.start"
-        }
-    ));
-    input
-}
-
 pub async fn respond(socket: &mut TcpStream, text: &str, reason: &str) {
     respond_with_usage(
         socket,

@@ -20,6 +20,7 @@
 use super::*;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
+use maka_agent_ports::execution::Interactions as _;
 
 pub(super) async fn question_response(socket: &mut TcpStream) {
     let input = json!({"questions":[
@@ -34,14 +35,15 @@ pub(super) async fn question_response(socket: &mut TcpStream) {
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 async fn pending(fixture: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = fixture.session(session).await.subscribe_commits().unwrap();
+    let interactions = fixture.owner.durable.interactions();
+    let mut commits = interactions.subscribe().unwrap();
     loop {
-        if let Some(record) = fixture
-            .session(session)
-            .await
-            .pending_interactions(session)
+        commits.borrow_and_update();
+        if let Some(record) = interactions
+            .pending(session)
             .await
             .unwrap()
+            .records
             .into_iter()
             .next()
         {
@@ -55,141 +57,106 @@ async fn pending(fixture: &Fixture, session: &str) -> InteractionRecord {
 async fn native_browser_consent_accepts_original_producer_and_rejects_foreign_provider() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::new(
+        let fixture = Fixture::with_services(
             &format!("http://{}/v1", listener.local_addr().unwrap()),
             None,
-        )
-        .await;
+            None,
+            Some(service_tools::Setup::browser_consent()),
+        ).await;
         let session = fixture.create("Browser producer consent").await;
-        let started = fixture.send(&session).await.unwrap();
-        let (mut held, _) = listener.accept().await.unwrap();
-        request(&mut held).await;
-        let store = fixture.session(&session).await;
-        let projection = store
-            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(&session)
-            .await
-            .unwrap()
-            .unwrap();
-        let binding = projection
-            .session
-            .workspace_binding
-            .as_ref()
-            .unwrap()
-            .stamp();
-        let configuration = &projection.session.configuration;
-        let basis = maka_agent_facts::workspace::PermissionBasis {
-            boundary_revision: configuration
-                .workspace
-                .boundary_revision(configuration.boundary_revision, binding)
-                .unwrap(),
-            binding,
+        let queued = fixture.send(&session).await.unwrap();
+        let run = fixture.delivered_run(&queued).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert!(sent["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "Navigate"));
+        service_tools::named_tool_response(&mut socket, "Navigate", json!({"url":"https://example.com"})).await;
+        drop(socket);
+
+        let store = fixture.owner.durable.interactions();
+        let mut commits = store.subscribe().unwrap();
+        let records = loop {
+            commits.borrow_and_update();
+            let records = store.pending(&session).await.unwrap().records;
+            assert!(records.len() <= 6);
+            if records.len() == 6 { break records; }
+            commits.changed().await.unwrap();
         };
-        let invocation = projection.root_turn.unwrap().invocation;
+        let view = fixture.owner.durable.frontier(run).await.unwrap();
+        let tool = view.tools.values().find(|tool| tool.call.name == "Navigate").expect("actual Finished Navigate call");
+        assert!(tool.admitted && tool.accepted.is_none());
+        let key = maka_agent_state::fold::tool_key(&tool.key);
+        let tool_use_id = maka_agent_facts::tool_call::tool_use_id(run, &key);
+        let binding = store.binding(&session, &records[0].request_id).await.unwrap().unwrap();
+        let maka_agent_state::interactions::ApprovalPhase::Host { original } = binding.phase else {
+            panic!("browser consent must be bound to the original admitted Host operation")
+        };
+        assert_eq!(original.method, "navigate");
         let observed: Result<(), String> = async {
             for (name, capability) in [
-                (
-                    "page",
-                    maka_agent_facts::interaction::GrantCapability::Browser,
-                ),
-                (
-                    "download",
-                    maka_agent_facts::interaction::GrantCapability::BrowserDownload,
-                ),
-                (
-                    "upload",
-                    maka_agent_facts::interaction::GrantCapability::BrowserUpload,
-                ),
+                ("page", maka_agent_facts::interaction::GrantCapability::Browser),
+                ("download", maka_agent_facts::interaction::GrantCapability::BrowserDownload),
+                ("upload", maka_agent_facts::interaction::GrantCapability::BrowserUpload),
             ] {
-                for (id, original) in [("browser_original", true), ("browser_foreign", false)] {
-                    let id = format!("{name}_{id}");
-                    let mut target = maka_workspace_api::computer::target();
-                    target.capability = capability;
-                    target.scope = maka_agent_facts::interaction::GrantScope::BrowserOrigin {
-                        origin: "https://example.com".into(),
+                for (suffix, supported) in [("original", true), ("foreign", false)] {
+                    let id = format!("{tool_use_id}:{name}_browser_{suffix}");
+                    let record = records.iter().find(|record| record.request_id == id).ok_or("original browser request missing")?;
+                    assert_eq!(record.execution.session_id, session);
+                    assert_eq!(record.execution.run_id, run);
+                    let maka_agent_facts::interaction::InteractionRequest::ClientCapability { tool_use_id: actual_tool, target, basis } = &record.request else {
+                        return Err("original browser request changed kind".into());
                     };
-                    if !original {
-                        target.provider_id = "foreign_browser_provider".into();
-                    }
-                    let record = InteractionRecord {
-                        session_id: session.clone(),
-                        turn_id: invocation.turn_id.clone(),
-                        run_id: invocation.run_id.clone(),
-                        request_id: id.clone(),
-                        created_at: 1,
-                        outcome: None,
-                        request:
-                            maka_agent_facts::interaction::InteractionRequest::ClientCapability {
-                                tool_use_id: "browser_tool".into(),
-                                target: target.clone(),
-                                basis: Some(basis),
-                            },
-                    };
-                    store
-                        .establish_run_interaction(&invocation, &record)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let result = fixture
-                        .mutation(
-                            2,
-                            "respond",
-                            json!({"sessionId":session,"requestId":id,
-                    "answer":{"kind":"client_capability","decision":"allow"}}),
-                            Uuid::new_v4(),
-                        )
-                        .await?;
-                    let grant = store
-                        .client_capability_grant(&session, &target)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    if original {
+                    assert_eq!(actual_tool, &tool_use_id);
+                    assert!(basis.is_some());
+                    assert_eq!(target.capability, capability);
+                    assert_eq!(target.scope, maka_agent_facts::interaction::GrantScope::BrowserOrigin { origin: "https://example.com".into() });
+                    assert_eq!(target.provider_id, if supported { maka_workspace_api::computer::target().provider_id } else { "foreign_browser_provider".into() });
+                    let binding = store.binding(&session, &id).await.map_err(|error| error.to_string())?.ok_or("original approval binding missing")?;
+                    assert_eq!(binding.target, maka_agent_facts::durable::AuthorizationObligation::Tool { tool: tool.key.clone() });
+                    assert_eq!(binding.phase, maka_agent_state::interactions::ApprovalPhase::Host { original: original.clone() });
+                    let result = fixture.mutation(
+                        2, "respond",
+                        json!({"sessionId":session,"requestId":id,"answer":{"kind":"client_capability","decision":"allow"}}),
+                        Uuid::new_v4(),
+                    ).await?;
+                    let grant = store.client_capability_grant(&session, target).await.map_err(|error| error.to_string())?;
+                    if supported {
                         if result["kind"] != "recorded"
                             || result["record"]["outcome"]["decision"] != "allow"
-                            || grant.as_ref().map(|grant| &grant.target) != Some(&target)
+                            || grant.as_ref().map(|grant| &grant.target) != Some(target)
                         {
-                            return Err(format!(
-                                "original browser producer was not granted: {result}"
-                            ));
+                            return Err(format!("original browser producer was not granted: {result}"));
                         }
                     } else {
-                        if result != json!({"kind":"rejected","reason":"unsupported"})
-                            || grant.is_some()
-                        {
-                            return Err(format!(
-                                "foreign browser producer acquired authority: {result}"
-                            ));
+                        if result != json!({"kind":"rejected","reason":"unsupported"}) || grant.is_some() {
+                            return Err(format!("foreign browser producer acquired authority: {result}"));
                         }
-                        if store
-                            .interaction(&id)
-                            .await
-                            .map_err(|error| error.to_string())?
-                            .ok_or("foreign request disappeared")?
-                            .outcome
-                            .is_some()
-                        {
+                        if store.read(&session, &id).await.map_err(|error| error.to_string())?.ok_or("foreign request disappeared")?.outcome.is_some() {
                             return Err("unsupported producer was answered".into());
                         }
                     }
                 }
             }
+            let held = fixture.owner.durable.frontier(run).await.map_err(|error| error.to_string())?;
+            assert!(held.tools[&key].accepted.is_none(), "all negative assertions finish while the original Host call is still held");
             Ok(())
-        }
-        .await;
-        fixture
-            .mutation(
-                2,
-                "stop",
-                json!({"sessionId":session,"invocationId":started["invocationId"]}),
-                Uuid::new_v4(),
-            )
-            .await
-            .unwrap();
+        }.await;
+        fixture.mutation(2, "stop", json!({"sessionId":session,"runId":run}), Uuid::new_v4()).await.unwrap();
         fixture.drained().await;
+        assert!(store.pending(&session).await.unwrap().records.is_empty());
+        let recorded = fixture.history_items(&session).await;
+        assert_eq!(recorded.iter().filter(|item| item.recorded.run == run && matches!(
+            &item.recorded.fact, maka_agent_facts::durable::Fact::ToolAdmitted { tool: key } if key == &tool.key
+        )).count(), 1);
+        assert_eq!(recorded.iter().filter(|item| item.recorded.run == run && matches!(
+            &item.recorded.fact, maka_agent_facts::durable::Fact::HostToolResultRecorded { tool: key, reference, .. } if key == &tool.key && reference == &original
+        )).count(), 1);
+        let settled = fixture.store.operation(&original).unwrap().operation_observation().await.unwrap().expect("original browser SDK receipt");
+        assert!(matches!(settled.outcome, OperationOutcome::Returned { result: maka_plugin_core::operation::OperationResult::Failure { .. } }), "the consent-only fixture must not claim navigation succeeded");
+        assert_eq!(settled.cleanup, maka_plugin_core::operation::OperationCleanup::Confirmed);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
         observed.unwrap();
-    })
-    .await
-    .expect("native browser producer consent fixture timed out");
+    }).await.expect("native browser producer consent fixture timed out");
 }
 
 #[tokio::test]
@@ -202,24 +169,16 @@ async fn native_system_permission_is_listed_cancellable_and_producer_granted() {
         )
         .await;
         let session = fixture.create("System permission").await;
-        let started = fixture.send(&session).await.unwrap();
+        let queued = fixture.send(&session).await.unwrap();
+        fixture.delivered_run(&queued).await;
         let (mut held, _) = listener.accept().await.unwrap();
         request(&mut held).await;
-        let store = fixture.session(&session).await;
-        let invocation = store
-            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(&session)
-            .await
-            .unwrap()
-            .unwrap()
-            .root_turn
-            .unwrap()
-            .invocation;
+        let store = fixture.owner.durable.interactions();
+        let access = fixture.live_access(&session).await;
         let observed: Result<(), String> = async {
             for id in ["system_cancelled", "system_granted"] {
                 let record = InteractionRecord {
-                    session_id: session.clone(),
-                    turn_id: invocation.turn_id.clone(),
-                    run_id: invocation.run_id.clone(),
+                    execution: access.execution().clone(),
                     request_id: id.into(),
                     created_at: 1,
                     outcome: None,
@@ -233,10 +192,7 @@ async fn native_system_permission_is_listed_cancellable_and_producer_granted() {
                         application_location: None,
                     },
                 };
-                store
-                    .establish_run_interaction(&invocation, &record)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                access.establish(&record).await?;
             }
             let listed = fixture
                 .query("pendingInteractions", json!({"sessionId":session}))
@@ -277,26 +233,28 @@ async fn native_system_permission_is_listed_cancellable_and_producer_granted() {
                 ));
             }
             let granted = store
-                .commit_interaction_outcome(
+                .commit_outcome(
+                    &session,
                     "system_granted",
                     InteractionOutcome::SystemPermissionGranted { committed_at: 2 },
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            if !granted.matches
-                || granted.record.outcome
-                    != Some(InteractionOutcome::SystemPermissionGranted { committed_at: 2 })
+            if granted.outcome
+                != Some(InteractionOutcome::SystemPermissionGranted { committed_at: 2 })
             {
                 return Err("producer grant was not committed".into());
             }
             Ok(())
         }
         .await;
+        let run = access.execution().run_id;
+        drop(access);
         fixture
             .mutation(
                 2,
                 "stop",
-                json!({"sessionId":session,"invocationId":started["invocationId"]}),
+                json!({"sessionId":session,"runId":run}),
                 Uuid::new_v4(),
             )
             .await
@@ -361,7 +319,7 @@ async fn native_question_roundtrip_is_bound_owned_and_first_wins() {
         assert!(!message.to_string().contains("journal_v1"));
         response(&mut next).await;
         fixture.drained().await;
-        assert!(matches!(fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::QuestionAnswer { .. })));
+        assert!(matches!(fixture.owner.durable.interactions().read(&record.execution.session_id, &record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::QuestionAnswer { .. })));
         fixture.app.shutdown().await.unwrap(); fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -400,7 +358,7 @@ async fn native_form_validates_original_fields_and_commits_before_resuming() {
         for values in [json!({}),json!({"note":"","count":2,"confirm":false,"format":"brief"}),json!({"note":"valid","count":1.5,"confirm":false,"format":"brief"}),json!({"note":"valid","count":2,"confirm":"false","format":"brief"}),json!({"note":"valid","count":2,"confirm":false,"format":"unknown"}),json!({"note":"valid","count":2,"confirm":false,"format":"brief","unknown":true})] {
             let rejected = fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":"accept","values":values}}),Uuid::new_v4()).await.unwrap();
             assert_eq!(rejected["reason"],"invalid_answer");
-            assert!(fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
+            assert!(fixture.owner.durable.interactions().read(&record.execution.session_id, &record.request_id).await.unwrap().unwrap().outcome.is_none());
         }
         let duplicate = fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":"accept","values":{"extras":["a","a"]}}}),Uuid::new_v4()).await;
         assert_eq!(duplicate.unwrap_err(), "agent_input_invalid");
@@ -442,11 +400,12 @@ async fn form_closure(action: &str) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fixture = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(service_tools::Setup::forms())).await;
         let session = fixture.create("Form closure").await;
-        let started = fixture.send(&session).await.unwrap();
+        let queued = fixture.send(&session).await.unwrap();
+        fixture.delivered_run(&queued).await;
         let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await; form_response(&mut socket).await;
         let record = pending(&fixture, &session).await;
         if action == "stop" {
-            fixture.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
+            fixture.mutation(2,"stop",json!({"sessionId":session,"runId":record.execution.run_id}),Uuid::new_v4()).await.unwrap();
         } else {
             fixture.mutation(2,"respond",json!({"sessionId":session,"requestId":record.request_id,"answer":{"kind":"form","action":action}}),Uuid::new_v4()).await.unwrap();
             let (mut next, _) = listener.accept().await.unwrap();
@@ -456,9 +415,9 @@ async fn form_closure(action: &str) {
             response(&mut next).await;
         }
         fixture.drained().await;
-        let stored = fixture.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap();
+        let stored = fixture.owner.durable.interactions().read(&record.execution.session_id, &record.request_id).await.unwrap().unwrap();
         if action == "stop" { assert!(matches!(stored.outcome,Some(InteractionOutcome::Closure{..}))); }
-        assert!(fixture.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+        assert!(fixture.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
         fixture.app.shutdown().await.unwrap();fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

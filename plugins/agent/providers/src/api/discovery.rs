@@ -189,7 +189,7 @@ impl InventoryClient {
             &self.context,
             http::Request {
                 url: url.into(),
-                method: http::Method::Get,
+                method: maka_plugin_core::http::Method::Get,
                 headers: self.headers.clone().into_iter().collect(),
                 body: Default::default(),
             },

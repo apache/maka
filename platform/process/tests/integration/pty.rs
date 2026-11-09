@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::pty::{self, PtyIo};
 use std::time::Duration;
 

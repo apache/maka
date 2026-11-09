@@ -66,6 +66,18 @@ impl Conversation {
         self.state.lock().unwrap().phase()
     }
 
+    /// Release the bound session owner after admission has stopped. This is
+    /// not an EOF observation; existing execution leases remain responsible
+    /// for their original I/O and cleanup receipts.
+    pub fn retire(&self) {
+        let bound = {
+            let mut state = self.state.lock().unwrap();
+            state.phase = state.phase();
+            state.bound.take()
+        };
+        drop(bound);
+    }
+
     pub fn try_switch_fallback_transport(&self) -> bool {
         self.state
             .lock()
@@ -73,6 +85,15 @@ impl Conversation {
             .bound
             .as_ref()
             .is_some_and(|bound| bound.session.try_switch_fallback_transport())
+    }
+
+    pub fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        self.state.lock().unwrap().bound.as_ref().map_or(
+            maka_agent_facts::model::retry_transport::FallbackAvailability::Unavailable,
+            |bound| bound.session.fallback_availability(),
+        )
     }
 
     pub(crate) async fn session(

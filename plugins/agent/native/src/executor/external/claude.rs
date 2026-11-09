@@ -17,900 +17,602 @@
  * under the License.
  */
 
-//! The interactive PTY owns execution; append-only JSONL supplies correlated observations.
+//! The original CLI's stream-json stdout is the only business-terminal source.
 use super::*;
-mod input;
-
-#[derive(Clone, Copy)]
-enum Start {
-    Unspawned,
-    Interactive,
-    Submitted,
-}
 use maka_agent_facts::executor::Output;
-use std::{path::Path, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use runtime::Pipe;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "interactive execution retains all invocation resources until settlement"
+    reason = "one original private CLI owns its protocol and observation ports"
 )]
 pub(super) async fn execute(
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     steering: &mut steering::Steering,
+    owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
-    let provisional = journal.native_session().is_none();
-    let mut start = Start::Unspawned;
-    let result = prepare(
-        config,
-        cwd,
-        request,
-        storage,
-        journal,
-        output,
-        bridge.clone(),
-        cancellation,
-        steering,
-        &mut start,
-    )
-    .await;
-    // Preparation can fail before a PTY exists; credentials are still revoked.
-    let closed = bridge.close().await;
-    if matches!(result, Err(Error::CleanupUnconfirmed)) {
-        return result;
-    }
-    closed?;
-    settle_preparation(storage, journal, provisional, start, result).await
-}
-async fn settle_preparation(
-    storage: &Storage,
-    journal: &mut journal::Journal,
-    provisional: bool,
-    start: Start,
-    result: Result<Outcome, Error>,
-) -> Result<Outcome, Error> {
-    if !matches!(start, Start::Submitted)
-        && let Err(error) = &result
-    {
-        match error {
-            Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_) => return result,
-            _ => {}
-        }
-        if provisional {
-            journal.revoke_unsubmitted(storage).await?;
-        }
-        if !matches!(error, Error::Cancelled) {
-            return Ok(Outcome::Failed {
-                message: error.to_string(),
-                code: Some("native_preparation_failed".into()),
-                recoverable: false,
-            });
-        }
-    }
-    result
-}
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one PTY invocation owns its native identity and transcript cursor"
-)]
-async fn prepare(
-    config: &NativeCommand,
-    cwd: &str,
-    request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
-    output: Arc<dyn OutputSink>,
-    bridge: Arc<mcp::Bridge>,
-    cancellation: CancellationToken,
-    steering: &mut steering::Steering,
-    start: &mut Start,
-) -> Result<Outcome, Error> {
-    let images = request
-        .get("images")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let resume = journal.native_session().map(str::to_owned);
-    let session = resume.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-    Uuid::parse_str(&session)
-        .map_err(|_| Error::Invalid("Claude native session ID must be a UUID".into()))?;
-    let cwd = tokio::fs::canonicalize(cwd)
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    let cwd = dunce::simplified(&cwd).to_owned();
-    let transcript = transcript(config, &cwd, &session)?;
-    let mut cursor = Cursor::fence(transcript, resume.is_some()).await?;
-    // Commit the caller-selected UUID before native startup and any interactive submission.
-    journal.opened(storage, session.clone()).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    let directory = bridge.directory();
-    let mcp_config = directory.join("mcp.json");
-    let pending_config = directory.join("mcp.next");
+    let session = Uuid::new_v4().to_string();
+    let input = Uuid::new_v4().to_string();
+    let path = bridge.directory().join("mcp.json");
     tokio::fs::write(
-        &pending_config,
-        serde_json::to_vec(&bridge.claude()).expect("MCP config is JSON"),
+        &path,
+        serde_json::to_vec(&bridge.claude()).expect("MCP configuration is JSON"),
     )
     .await
-    .map_err(|e| Error::Provider(e.to_string()))?;
-    tokio::fs::rename(&pending_config, &mcp_config)
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    let mut plan = runtime::command(
-        config,
-        cwd.to_str()
-            .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?,
-    )
-    .await?;
-    plan.arg("--dangerously-skip-permissions")
-        .arg("--ax-screen-reader")
-        .arg(if resume.is_some() {
-            "--resume"
-        } else {
-            "--session-id"
-        })
-        .arg(&session)
-        .arg("--mcp-config")
-        .arg(&mcp_config);
+    .map_err(|e| Error::Provider(format!("Claude MCP configuration failed: {e}")))?;
+    let mut command = runtime::command(config, cwd).await?;
+    command.args([
+        "--print",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--replay-user-messages",
+        "--dangerously-skip-permissions",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--session-id",
+        &session,
+        "--mcp-config",
+    ]);
+    command.arg(&path);
     if let Some(model) = request
         .get("model")
         .and_then(Value::as_str)
         .filter(|model| *model != "default")
     {
-        plan.arg("--model").arg(model);
+        command.arg("--model").arg(model);
     }
     if let Some(effort) = request.get("effort").and_then(Value::as_str) {
-        plan.arg("--effort").arg(effort);
+        command.arg("--effort").arg(effort);
     }
-    let prompt = input::text(runtime::string(request, "/message")?);
-    let (mut child, io) = maka_process::pty::spawn(
-        plan,
-        maka_agent_facts::terminal::TerminalSize::new(120, 40).expect("fixed native terminal size"),
+    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
+        command.arg("--append-system-prompt").arg(instructions);
+    }
+    journal.opened(session.clone())?;
+    let observation = journal.observation();
+    runtime::task_pipe(
+        owner,
+        observation,
+        command,
+        runtime::Transport::JsonLines,
+        Some(bridge.clone()),
+        cancellation,
+        Protocol {
+            request,
+            session,
+            input,
+            journal,
+            output,
+            bridge,
+            steering,
+        },
     )
     .await
-    .map_err(runtime::process_error)?;
-    *start = Start::Interactive;
-    let exited = CancellationToken::new();
-    let settle = CancellationToken::new();
-    let lifecycle = async {
-        let result = async {
-        let status = tokio::select! { status = child.wait() => status, () = settle.cancelled() => {
-            child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
-            tokio::time::timeout(Duration::from_secs(4), child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?
-        }};
-        status.map_err(|_| Error::CleanupUnconfirmed)?;
-        child.close().await.map_err(|_| Error::CleanupUnconfirmed)
-        }.await;
-        bridge.close_admission();
-        exited.cancel();
-        result
-    };
-    let terminal_done = CancellationToken::new();
-    let (screen_send, mut screen) = tokio::sync::watch::channel(input::Screen::default());
-    let terminal = async {
-        let result = async {
-            let mut buffer = [0u8;8192];
-            let mut decoder=input::Decoder::default();
-            loop {
-                let read=tokio::select! {
-                    biased;
-                    ()=exited.cancelled() => {
-                        return tokio::time::timeout(Duration::from_secs(1),async {
-                            loop {if io.read(&mut buffer).await.map_err(|_|Error::CleanupUnconfirmed)?==0 {return Ok::<(),Error>(());}}
-                        }).await.map_err(|_|Error::CleanupUnconfirmed)?;
-                    }
-                    read=io.read(&mut buffer)=>read.map_err(|_|Error::CleanupUnconfirmed)?,
-                };
-                if read==0 {return Ok(());}
-                screen_send.send_modify(|s|decoder.push(s,&buffer[..read]));
-            }
-        }.await;
-        terminal_done.cancel();
-        result
-    };
-    let business = async {
-        let work = async {
-            let native_prompt = if let Some(update) =
-                journal.instruction_update(request.get("instructions").and_then(Value::as_str))
-            {
-                let instructions = input::text(&runtime::bootstrap_message(Some(&update.text)));
-                let native_instructions = input::submit(
-                    &io,
-                    &mut screen,
-                    cwd.to_str().expect("validated UTF-8 cwd"),
-                    &instructions,
-                    &[],
-                    &bridge,
-                    start,
-                )
-                .await?;
-                let bootstrap_output = BootstrapOutput(output.as_ref());
-                let outcome = observe(
-                    &mut cursor,
-                    &session,
-                    &native_instructions,
-                    0,
-                    &bootstrap_output,
-                    &io,
-                    &mut screen,
-                    start,
-                    None,
-                )
-                .await?;
-                if !matches!(outcome, Outcome::Completed { .. }) {
-                    return Ok(outcome);
-                }
-                journal.confirm_instructions(storage, update).await?;
-                input::send(&io, &mut screen, &prompt, images, start).await?
-            } else {
-                input::submit(
-                    &io,
-                    &mut screen,
-                    cwd.to_str().expect("validated UTF-8 cwd"),
-                    &prompt,
-                    images,
-                    &bridge,
-                    start,
-                )
-                .await?
-            };
-            observe(
-                &mut cursor,
-                &session,
-                &native_prompt,
-                images.len(),
-                output.as_ref(),
-                &io,
-                &mut screen,
-                start,
-                Some(steering),
+}
+
+struct Protocol<'a> {
+    request: &'a Value,
+    session: String,
+    input: String,
+    journal: &'a mut journal::ProtocolSession,
+    output: Arc<dyn OutputSink>,
+    bridge: Arc<mcp::Bridge>,
+    steering: &'a mut steering::Steering,
+}
+impl runtime::PipeProtocol for Protocol<'_> {
+    type Output = Outcome;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(async move {
+            let result = run(
+                io,
+                self.request,
+                &self.session,
+                &self.input,
+                self.journal,
+                self.output.as_ref(),
+                &self.bridge,
+                self.steering,
             )
-            .await
-        };
-        tokio::pin!(work);
-        let result = tokio::select! { biased;
-            () = cancellation.cancelled() => Err(Error::Cancelled),
-            () = bridge.failed.cancelled() => Err(Error::Unknown),
-            result = &mut work => result,
-            () = exited.cancelled() => Err(Error::Unknown),
-            () = terminal_done.cancelled() => Err(Error::Unknown),
-        };
-        bridge.close_admission();
-        // Esc requests the CLI's native interruption before we settle its whole process group.
-        if result.is_err() {
-            let _ = tokio::time::timeout(Duration::from_secs(1), io.write(b"\x1b")).await;
-        }
-        let host = bridge.close().await;
-        settle.cancel();
-        host?;
-        result
-    };
-    let (physical, result, drain) = tokio::join!(lifecycle, business, terminal);
-    if physical.is_err() || drain.is_err() {
-        return Err(Error::CleanupUnconfirmed);
-    }
-    result
-}
-fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathBuf, Error> {
-    let root = configuration_directory(|key| {
-        config
-            .env
-            .get(key)
-            .cloned()
-            .or_else(|| std::env::var(key).ok())
-    })?;
-    // Native Claude encodes each non-ASCII-alphanumeric UTF-16 code unit as '-'.
-    let project: String = cwd
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
-        .encode_utf16()
-        .map(|ch| {
-            if ch <= 127 && (ch as u8).is_ascii_alphanumeric() {
-                char::from(ch as u8)
-            } else {
-                '-'
+            .await;
+            match result {
+                Err(Error::Invalid(_) | Error::Provider(_) | Error::Cancelled) => {
+                    Err(Error::Unknown)
+                }
+                result => result,
             }
         })
-        .collect();
-    Ok(root
-        .join("projects")
-        .join(project)
-        .join(format!("{session}.jsonl")))
+    }
 }
 
-fn configuration_directory(env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, Error> {
-    env("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env("HOME")
-                .or_else(|| env("USERPROFILE"))
-                .map(|home| PathBuf::from(home).join(".claude"))
-        })
-        .ok_or_else(|| Error::Invalid("Claude configuration directory is unavailable".into()))
-}
-
-struct Cursor {
-    path: PathBuf,
-    opened: Option<OpenedTranscript>,
-}
-struct OpenedTranscript {
-    file: tokio::fs::File,
-    identity: std::fs::Metadata,
-    offset: u64,
-    pending: Vec<u8>,
-    scanned: usize,
-}
-impl Cursor {
-    async fn fence(path: PathBuf, resume: bool) -> Result<Self, Error> {
-        let opened = match tokio::fs::File::open(&path).await {
-            Ok(mut file) => {
-                let offset = file
-                    .seek(std::io::SeekFrom::End(0))
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
-                Some(OpenedTranscript {
-                    file,
-                    identity,
-                    offset,
-                    pending: Vec::new(),
-                    scanned: 0,
-                })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !resume => None,
-            Err(error) => {
-                return Err(Error::Invalid(format!(
-                    "Claude original transcript unavailable: {error}"
-                )));
-            }
-        };
-        Ok(Self { path, opened })
-    }
-    async fn next(&mut self) -> Result<Option<Value>, Error> {
-        let metadata = match tokio::fs::metadata(&self.path).await {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opened.is_none() => {
-                return Ok(None);
-            }
-            Err(_) => return Err(Error::Invalid("Claude live transcript disappeared".into())),
-        };
-        let opened = match &mut self.opened {
-            Some(opened) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    if metadata.dev() != opened.identity.dev()
-                        || metadata.ino() != opened.identity.ino()
-                    {
-                        return Err(Error::Invalid("Claude live transcript rotated".into()));
-                    }
-                }
-                #[cfg(not(unix))]
-                if metadata.created().ok() != opened.identity.created().ok() {
-                    return Err(Error::Invalid("Claude live transcript rotated".into()));
-                }
-                if metadata.len() < opened.offset {
-                    return Err(Error::Invalid("Claude live transcript truncated".into()));
-                }
-                opened
-            }
-            slot @ None => {
-                let file = tokio::fs::File::open(&self.path)
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
-                slot.insert(OpenedTranscript {
-                    file,
-                    identity,
-                    offset: 0,
-                    pending: Vec::new(),
-                    scanned: 0,
-                })
-            }
-        };
-        loop {
-            if let Some(relative) = opened.pending[opened.scanned..]
-                .iter()
-                .position(|b| *b == b'\n')
-            {
-                let end = opened.scanned + relative;
-                opened.scanned = 0;
-                let line = opened.pending.drain(..=end).collect::<Vec<_>>();
-                return runtime::parse_json(line, "complete Claude JSONL line")
-                    .await
-                    .map(Some);
-            }
-            opened.scanned = opened.pending.len();
-            let mut bytes = [0u8; 8192];
-            let count = opened
-                .file
-                .read(&mut bytes)
-                .await
-                .map_err(|e| Error::Provider(e.to_string()))?;
-            if count == 0 {
-                return Ok(None);
-            }
-            opened.offset += count as u64;
-            opened.pending.extend_from_slice(&bytes[..count]);
-            if opened.pending.len() > runtime::MAX_MESSAGE_BYTES {
-                return Err(Error::Invalid(
-                    "Claude live JSONL line exceeds 256 MiB".into(),
-                ));
-            }
+fn user_input(
+    request: &Value,
+    session: &str,
+    id: &str,
+) -> BoxFuture<'static, Result<Value, Error>> {
+    let text = runtime::string(request, "/message").map(str::to_owned);
+    let images = request
+        .get("images")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let session = session.to_owned();
+    let id = id.to_owned();
+    Box::pin(async move {
+        let text = text?;
+        let content = tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        if images.is_empty() { return Ok::<_, Error>(Value::String(text)); }
+        let mut blocks = vec![serde_json::json!({"type":"text","text":text})];
+        for image in images {
+            let path = runtime::string(&image, "/path")?;
+            let bytes = std::fs::read(path).map_err(|e| Error::Provider(format!("Claude private image read failed: {e}")))?;
+            let media = runtime::string(&image, "/mediaType")?;
+            blocks.push(serde_json::json!({"type":"image","source":{"type":"base64","media_type":media,"data":base64::engine::general_purpose::STANDARD.encode(bytes)}}));
         }
-    }
-}
-struct BootstrapOutput<'a>(&'a dyn OutputSink);
-impl OutputSink for BootstrapOutput<'_> {
-    fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
-        match output {
-            Output::MessageStart { .. }
-            | Output::MessageEnd { .. }
-            | Output::OutputDelta { .. }
-            | Output::ThinkingDelta { .. } => Box::pin(async { Ok(()) }),
-            output => self.0.emit(output),
-        }
-    }
+        Ok(Value::Array(blocks))
+    }).await.map_err(|e| Error::Provider(format!("Claude input encoding failed: {e}")))??;
+        Ok(
+            serde_json::json!({"type":"user","session_id":session,"uuid":id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}),
+        )
+    })
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "observations and additional input share the original PTY and invocation"
+    reason = "the original wire and canonical witnesses must remain together"
 )]
-async fn observe(
-    cursor: &mut Cursor,
+async fn run(
+    io: &mut Pipe,
+    request: &Value,
     session: &str,
-    prompt: &str,
-    images: usize,
+    input: &str,
+    journal: &journal::ProtocolSession,
     output: &dyn OutputSink,
-    io: &maka_process::pty::PtyIo,
-    screen: &mut tokio::sync::watch::Receiver<input::Screen>,
-    start: &mut Start,
-    mut steering: Option<&mut steering::Steering>,
+    bridge: &mcp::Bridge,
+    steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
-    let mut deadline = Some(input_deadline(prompt));
-    let mut turn = LiveTurn {
-        session,
-        prompt,
-        images,
-        admitted: false,
-        pending: Default::default(),
-        assistant: false,
-        open_message: None,
-        final_message_id: None,
-        closed_message_ids: Default::default(),
-        row_ids: Default::default(),
-        host_tool_calls: Default::default(),
-        api_failure: None,
-    };
+    io.cancellation = CancellationToken::new();
+    let mut turn = StreamTurn::new(session.to_owned());
+    turn.sent(input.to_owned());
+    bridge.admit()?;
+    let wire_input = io
+        .prepare_input(user_input(request, session, input))
+        .await?;
+    io.turn_started();
+    io.send(wire_input).await?;
+    let retired = io.retired.clone();
+    let stop = io.stop.clone();
+    let failed = bridge.failed.clone();
+    let mut stop_deadline = None;
+    let mut bound = false;
     loop {
-        // Keep this future across ready/take/paste. Dropping Cursor::next after it
-        // drained a large row would also discard its in-flight blocking JSON parse.
-        let next = async {
-            loop {
-                if let Some(row) = cursor.next().await? {
-                    return Ok::<_, Error>(row);
+        let row = tokio::select! {
+            biased;
+            () = retired.cancelled() => return Err(Error::ObservationRetired),
+            () = stop.cancelled(), if stop_deadline.is_none() => {
+                bridge.close_admission();
+                if !bound {
+                    return Err(Error::Unknown);
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                let id = Uuid::new_v4().to_string();
+                turn.control(id.clone());
+                io.control_message(serde_json::json!({"type":"control_request","request_id":id,"request":{"subtype":"interrupt"}})).await;
+                stop_deadline = Some(tokio::time::Instant::now() + runtime::INTERRUPT_TIMEOUT);
+                continue;
+            }
+            () = async { match stop_deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => return Err(Error::Unknown),
+            () = failed.cancelled() => return Err(Error::Unknown),
+            row = io.next() => row?,
+            ready = steering.ready(), if stop_deadline.is_none() => {
+                ready?;
+                let next = match steering.take().await {
+                    Err(Error::Cancelled) => {
+                        journal.observation().control_allowed(&io.stop).await?;
+                        None
+                    }
+                    result => result?,
+                };
+                if let Some(next) = next {
+                    let id = Uuid::new_v4().to_string();
+                    let message = io.prepare_input(user_input(&next, session, &id)).await?;
+                    turn.sent(id);
+                    io.send(message).await?;
+                }
+                continue;
             }
         };
-        tokio::pin!(next);
-        let row = loop {
-            tokio::select! {
-                biased;
-                row = &mut next => break row?,
-                ready = async {
-                    match steering.as_deref_mut() {
-                        Some(steering) => steering.ready().await,
-                        None => std::future::pending().await,
-                    }
-                }, if turn.admitted => {
-                    ready?;
-                }
-                () = async {
-                    match deadline {
-                        Some(at) => tokio::time::sleep_until(at).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    return Err(Error::Invalid(
-                        "Claude native JSONL did not confirm prompt admission within the input budget".into(),
-                    ));
-                }
-            }
-            // Commit only outside select: cancellation of ready cannot consume input.
-            if let Some(steering) = steering.as_deref_mut()
-                && let Some(request) = steering.take().await?
-            {
-                let images = request["images"]
-                    .as_array()
-                    .expect("canonical steering images");
-                let prompt = input::text(runtime::string(&request, "/message")?);
-                let prompt = input::send(io, screen, &prompt, images, start).await?;
-                turn.pending.push_back(SubmittedInput {
-                    prompt,
-                    images: images.len(),
-                });
-            }
-        };
-        let terminal = row["type"] == "system"
-            && row["subtype"] == "turn_duration"
-            && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
-        // A ready batch at the final native boundary still belongs to this PTY.
-        // Take it before row() can settle; an empty take does not create a new turn.
-        if terminal
-            && turn.admitted
-            && row.get("sessionId").and_then(Value::as_str) == Some(session)
-            && turn.pending.is_empty()
-            && let Some(steering) = steering.as_deref_mut()
-            && let Some(request) = steering.take().await?
-        {
-            let images = request["images"]
-                .as_array()
-                .expect("canonical steering images");
-            let prompt = input::text(runtime::string(&request, "/message")?);
-            let prompt = input::send(io, screen, &prompt, images, start).await?;
-            turn.pending.push_back(SubmittedInput {
-                prompt,
-                images: images.len(),
-            });
+        if !bound && turn.is_ack(&row, input) {
+            journal
+                .bind_task(NativeTask::ClaudeStream {
+                    session: session.to_owned(),
+                    input: input.to_owned(),
+                })
+                .await?;
+            bound = true;
         }
-        let pending = turn.pending.len();
-        let admitted = turn.admitted;
         if let Some(outcome) = turn.row(row, output).await? {
+            if !bound {
+                return Err(Error::Unknown);
+            }
+            journal.closed(outcome.clone()).await?;
             return Ok(outcome);
-        }
-        if (!admitted && turn.admitted) || turn.pending.len() < pending {
-            // A native busy queue can wait on arbitrarily long running tools.
-            deadline = None;
-        }
-        if terminal
-            && turn.admitted
-            && deadline.is_none()
-            && let Some(input) = turn.pending.front()
-        {
-            // Once a native turn ends, the queued input must be admitted, not lost.
-            deadline = Some(input_deadline(&input.prompt));
         }
     }
 }
-fn input_deadline(prompt: &str) -> tokio::time::Instant {
-    tokio::time::Instant::now()
-        + runtime::SETUP_TIMEOUT
-        + Duration::from_secs(prompt.len() as u64 / (32 * 1024))
-}
-struct SubmittedInput {
-    prompt: String,
-    images: usize,
-}
-fn matches_input(content: &Value, prompt: &str, images: usize) -> bool {
-    content_text(content) == prompt
-        && content.as_array().map_or(images == 0, |blocks| {
-            !blocks.iter().any(|b| b["type"] == "tool_result")
-                && blocks.iter().filter(|b| b["type"] == "image").count() == images
-        })
-}
-struct LiveTurn<'a> {
-    session: &'a str,
-    prompt: &'a str,
-    images: usize,
-    admitted: bool,
-    pending: std::collections::VecDeque<SubmittedInput>,
-    assistant: bool,
-    open_message: Option<AssistantMessage>,
-    final_message_id: Option<String>,
-    closed_message_ids: std::collections::BTreeSet<String>,
-    row_ids: std::collections::BTreeSet<String>,
-    host_tool_calls: std::collections::BTreeSet<String>,
-    api_failure: Option<String>,
-}
-struct AssistantMessage {
+
+struct PendingInput {
     id: String,
-    has_body: bool,
-    has_thinking: bool,
+    accepted: bool,
 }
-impl LiveTurn<'_> {
+struct OpenMessage {
+    id: String,
+    rows: BTreeSet<String>,
+    body: bool,
+    thinking: bool,
+}
+struct StreamTurn {
+    session: String,
+    initialized: bool,
+    pending: VecDeque<PendingInput>,
+    controls: BTreeSet<String>,
+    tools: BTreeMap<String, bool>,
+    message: Option<OpenMessage>,
+    final_message: Option<String>,
+    first_failure: Option<Outcome>,
+}
+impl StreamTurn {
+    fn new(session: String) -> Self {
+        Self {
+            session,
+            initialized: false,
+            pending: VecDeque::new(),
+            controls: BTreeSet::new(),
+            tools: BTreeMap::new(),
+            message: None,
+            final_message: None,
+            first_failure: None,
+        }
+    }
+    fn sent(&mut self, id: String) {
+        self.pending.push_back(PendingInput {
+            id,
+            accepted: false,
+        });
+    }
+    fn control(&mut self, id: String) {
+        self.controls.insert(id);
+    }
+    fn is_ack(&self, row: &Value, id: &str) -> bool {
+        row["type"] == "user"
+            && row["isReplay"] == true
+            && row["uuid"] == id
+            && row["session_id"] == self.session
+            && row["parent_tool_use_id"].is_null()
+    }
     async fn end_message(&mut self, output: &dyn OutputSink) -> Result<(), Error> {
-        if let Some(message) = self.open_message.take() {
+        if let Some(message) = self.message.take() {
             output
                 .emit(Output::MessageEnd {
                     message_id: message.id.clone(),
                 })
                 .await?;
-            self.closed_message_ids.insert(message.id.clone());
-            if message.has_body {
-                self.final_message_id = Some(message.id);
+            if message.body {
+                self.final_message = Some(message.id);
             }
         }
         Ok(())
     }
-    async fn row(&mut self, row: Value, output: &dyn OutputSink) -> Result<Option<Outcome>, Error> {
-        if row
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .is_some_and(|id| id != self.session)
+    async fn row(
+        &mut self,
+        mut row: Value,
+        output: &dyn OutputSink,
+    ) -> Result<Option<Outcome>, Error> {
+        let kind = runtime::string(&row, "/type")?.to_owned();
+        if kind == "control_response" {
+            let id = runtime::string(&row, "/response/request_id")?;
+            if !self.controls.remove(id) {
+                return Err(Error::Unknown);
+            }
+            return Ok(None);
+        }
+        if matches!(
+            kind.as_str(),
+            "system" | "assistant" | "user" | "result" | "stream_event"
+        ) && row["session_id"] != self.session
         {
-            return Err(Error::Invalid(
-                "Claude live transcript session mismatch".into(),
-            ));
+            return Err(Error::Unknown);
         }
-        let kind = row.get("type").and_then(Value::as_str).unwrap_or_default();
-        if row.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        if !row["parent_tool_use_id"].is_null() {
             return Ok(None);
         }
-        if !self.admitted {
-            if kind == "user"
-                && row
-                    .pointer("/message/content")
-                    .is_some_and(|v| matches_input(v, self.prompt, self.images))
-            {
-                if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
-                    return Err(Error::Invalid(
-                        "Claude prompt missing native session identity".into(),
-                    ));
+        match kind.as_str() {
+            "system" => {
+                if row["subtype"] == "init" {
+                    self.initialized = true;
                 }
-                self.admitted = true;
             }
-            return Ok(None);
-        }
-        if kind == "user"
-            && let Some(input) = self.pending.front()
-            && row
-                .pointer("/message/content")
-                .is_some_and(|v| matches_input(v, &input.prompt, input.images))
-        {
-            if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
-                return Err(Error::Invalid(
-                    "Claude steering missing native session identity".into(),
-                ));
-            }
-            self.end_message(output).await?;
-            self.pending.pop_front();
-            // A previous assistant cannot prove that this additional input was answered.
-            self.assistant = false;
-            return Ok(None);
-        }
-        if kind == "assistant" {
-            if row.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-                self.api_failure.get_or_insert_with(|| {
-                    format!(
-                        "Claude API request failed: {}",
-                        content_text(&row["message"]["content"])
-                    )
-                });
-                self.assistant = true;
-                return Ok(None);
-            }
-            let content = &row["message"]["content"];
-            let row_id = runtime::string(&row, "/uuid")?;
-            if !self.row_ids.insert(row_id.into()) {
-                return Ok(None);
-            }
-            self.assistant = true;
-            let id = runtime::string(&row, "/message/id")?;
-            if self
-                .open_message
-                .as_ref()
-                .map(|message| message.id.as_str())
-                != Some(id)
-            {
-                self.end_message(output).await?;
-                if self.closed_message_ids.contains(id) {
-                    return Err(Error::Invalid(
-                        "Claude emitted a closed API message again".into(),
-                    ));
+            "stream_event" => {} // Whole assistant blocks are the canonical output; never emit both forms.
+            "user" if row["isReplay"] == true => {
+                if !self.initialized {
+                    return Err(Error::Unknown);
                 }
-                output
-                    .emit(Output::MessageStart {
-                        message_id: id.into(),
-                    })
-                    .await?;
-                self.open_message = Some(AssistantMessage {
-                    id: id.into(),
-                    has_body: false,
-                    has_thinking: false,
-                });
+                let id = runtime::string(&row, "/uuid")?;
+                let pending = self
+                    .pending
+                    .iter_mut()
+                    .find(|input| !input.accepted)
+                    .ok_or(Error::Unknown)?;
+                if pending.id != id {
+                    return Err(Error::Unknown);
+                }
+                pending.accepted = true;
             }
-            if let Some(blocks) = content.as_array() {
-                for block in blocks {
-                    match block.get("type").and_then(Value::as_str) {
+            "assistant" => {
+                if !self.pending.front().is_some_and(|input| input.accepted) {
+                    return Err(Error::Unknown);
+                }
+                let id = runtime::string(&row, "/message/id")?.to_owned();
+                let row_id = runtime::string(&row, "/uuid")?.to_owned();
+                if self.message.as_ref().map(|m| &m.id) != Some(&id) {
+                    self.end_message(output).await?;
+                    output
+                        .emit(Output::MessageStart {
+                            message_id: id.clone(),
+                        })
+                        .await?;
+                    self.message = Some(OpenMessage {
+                        id: id.clone(),
+                        rows: BTreeSet::new(),
+                        body: false,
+                        thinking: false,
+                    });
+                }
+                if !self
+                    .message
+                    .as_mut()
+                    .expect("started message")
+                    .rows
+                    .insert(row_id)
+                {
+                    return Err(Error::Unknown);
+                }
+                let Value::Array(blocks) = row["message"]["content"].take() else {
+                    return Err(Error::Unknown);
+                };
+                for mut block in blocks {
+                    match block["type"].as_str() {
                         Some("text") => {
-                            let text = runtime::string(block, "/text")?;
+                            let text = runtime::string(&block, "/text")?;
                             if !text.is_empty() {
-                                let message =
-                                    self.open_message.as_mut().expect("started API message");
-                                let emitted = if message.has_body {
+                                let message = self.message.as_mut().expect("started message");
+                                let text = if message.body {
                                     format!("\n\n{text}")
                                 } else {
-                                    text.into()
+                                    text.to_owned()
                                 };
-                                message.has_body = true;
+                                message.body = true;
                                 output
                                     .emit(Output::OutputDelta {
-                                        message_id: id.into(),
-                                        text: emitted,
-                                    })
-                                    .await?;
-                            }
-                        }
-                        Some("tool_use") => {
-                            let name = runtime::string(block, "/name")?;
-                            if matches!(name, "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode")
-                            {
-                                return Err(Error::Invalid("Claude requested unsupported interactive question or plan UI; use Host tools".into()));
-                            }
-                            if name.starts_with("mcp__maka__") {
-                                self.host_tool_calls
-                                    .insert(runtime::string(block, "/id")?.into());
-                            } else {
-                                output
-                                    .emit(Output::ToolStart {
-                                        tool_call_id: runtime::string(block, "/id")?.into(),
-                                        name: name.into(),
-                                        input: block.get("input").cloned().unwrap_or(Value::Null),
+                                        message_id: id.clone(),
+                                        text,
                                     })
                                     .await?;
                             }
                         }
                         Some("thinking") => {
-                            if let Some(text) = block.get("thinking").and_then(Value::as_str)
-                                && !text.is_empty()
-                            {
-                                let message =
-                                    self.open_message.as_mut().expect("started API message");
-                                let emitted = if message.has_thinking {
+                            let text = runtime::string(&block, "/thinking")?;
+                            if !text.is_empty() {
+                                let message = self.message.as_mut().expect("started message");
+                                let text = if message.thinking {
                                     format!("\n\n{text}")
                                 } else {
-                                    text.into()
+                                    text.to_owned()
                                 };
-                                message.has_thinking = true;
+                                message.thinking = true;
                                 output
                                     .emit(Output::ThinkingDelta {
-                                        message_id: id.into(),
-                                        text: emitted,
+                                        message_id: id.clone(),
+                                        text,
                                     })
                                     .await?;
                             }
                         }
-                        _ => {}
-                    }
-                }
-            } else if let Some(text) = content.as_str()
-                && !text.is_empty()
-            {
-                let message = self.open_message.as_mut().expect("started API message");
-                let emitted = if message.has_body {
-                    format!("\n\n{text}")
-                } else {
-                    text.into()
-                };
-                message.has_body = true;
-                output
-                    .emit(Output::OutputDelta {
-                        message_id: id.into(),
-                        text: emitted,
-                    })
-                    .await?;
-            }
-        } else if kind == "user" {
-            if let Some(blocks) = row.pointer("/message/content").and_then(Value::as_array) {
-                for block in blocks {
-                    if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-                        if self
-                            .host_tool_calls
-                            .contains(runtime::string(block, "/tool_use_id")?)
-                        {
-                            continue;
+                        Some("tool_use") => {
+                            let tool = runtime::string(&block, "/id")?.to_owned();
+                            let name = runtime::string(&block, "/name")?.to_owned();
+                            if matches!(
+                                name.as_str(),
+                                "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"
+                            ) {
+                                return Err(Error::Unknown);
+                            }
+                            let host = name.starts_with("mcp__maka__");
+                            if self.tools.insert(tool.clone(), host).is_some() {
+                                return Err(Error::Unknown);
+                            }
+                            if !host {
+                                output
+                                    .emit(Output::ToolStart {
+                                        tool_call_id: tool,
+                                        name,
+                                        input: block["input"].take(),
+                                    })
+                                    .await?;
+                            }
                         }
-                        output
-                            .emit(Output::ToolResult {
-                                tool_call_id: runtime::string(block, "/tool_use_id")?.into(),
-                                text: content_text(&block["content"]),
-                                is_error: block.get("is_error").and_then(Value::as_bool)
-                                    == Some(true),
-                            })
-                            .await?;
+                        Some("redacted_thinking") => {}
+                        _ => return Err(Error::Unknown),
                     }
                 }
             }
-        } else if kind == "system"
-            && row.get("subtype").and_then(Value::as_str) == Some("turn_duration")
-        {
-            if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
-                return Err(Error::Invalid(
-                    "Claude terminal lacks native session identity".into(),
-                ));
+            "user" => {
+                if let Some(blocks) = row.pointer("/message/content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if block["type"] == "tool_result" {
+                            let id = runtime::string(block, "/tool_use_id")?;
+                            let host = self.tools.remove(id).ok_or(Error::Unknown)?;
+                            if !host {
+                                output
+                                    .emit(Output::ToolResult {
+                                        tool_call_id: id.to_owned(),
+                                        text: content_text(&block["content"]),
+                                        is_error: block["is_error"] == true,
+                                    })
+                                    .await?;
+                            }
+                        }
+                    }
+                }
             }
-            if self.api_failure.is_none() {
+            "result" => {
+                if !self.initialized
+                    || !self.pending.front().is_some_and(|input| input.accepted)
+                    || !row["deferred_tool_use"].is_null()
+                {
+                    return Err(Error::Unknown);
+                }
                 self.end_message(output).await?;
+                let subtype = runtime::string(&row, "/subtype")?;
+                let error = row["is_error"].as_bool().ok_or(Error::Unknown)?;
+                if subtype == "success" && !error && !self.tools.is_empty() {
+                    return Err(Error::Unknown);
+                }
+                let outcome = match (subtype, error) {
+                    ("success", false) => Outcome::Completed {
+                        message_id: self.final_message.clone(),
+                    },
+                    ("success", true) | ("error_during_execution" | "error_max_turns", _) => {
+                        Outcome::Failed {
+                            message: row
+                                .get("result")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Claude native result {subtype}: {}",
+                                        row.get("errors").unwrap_or(&Value::Null)
+                                    )
+                                }),
+                            code: Some(format!("native_{subtype}")),
+                            recoverable: false,
+                        }
+                    }
+                    _ => return Err(Error::Unknown),
+                };
+                if matches!(outcome, Outcome::Failed { .. }) && self.first_failure.is_none() {
+                    self.first_failure = Some(outcome.clone());
+                }
+                self.pending.pop_front();
+                if self.pending.is_empty() {
+                    return Ok(Some(self.first_failure.take().unwrap_or(outcome)));
+                }
+                self.final_message = None;
             }
-            // The old native turn can finish after the next input was journaled.
-            // Neither an unconsumed input nor one without its own assistant may settle.
-            if !self.pending.is_empty() || !self.assistant {
-                return Ok(None);
-            }
-            return Ok(Some(match self.api_failure.take() {
-                Some(message) => Outcome::Failed {
-                    message,
-                    code: Some("native_api_failed".into()),
-                    recoverable: false,
-                },
-                None => Outcome::Completed {
-                    message_id: self.final_message_id.clone(),
-                },
-            }));
+            _ => return Err(Error::Unknown),
         }
         Ok(None)
     }
 }
 fn content_text(content: &Value) -> String {
     if let Some(text) = content.as_str() {
-        return text.into();
+        return text.to_owned();
     }
     content
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+pub(super) async fn replay(
+    binding: &NativeBinding,
+    admitted_steering_batches: u64,
+    input: &mut replay::Stream,
+    stream: &mut replay::Stream,
+    output: &dyn OutputSink,
+) -> Result<Outcome, Error> {
+    let NativeTask::ClaudeStream {
+        session,
+        input: initial,
+    } = &binding.task
+    else {
+        return Err(Error::Unknown);
+    };
+    let mut turn = StreamTurn::new(session.clone());
+    let mut first = true;
+    let mut user_frames = 0_u64;
+    while let Some(row) = input.next().await? {
+        match row["type"].as_str() {
+            Some("user")
+                if row["session_id"] == *session
+                    && row["parent_tool_use_id"].is_null()
+                    && row["message"]["role"] == "user" =>
+            {
+                let id = runtime::string(&row, "/uuid")?;
+                Uuid::parse_str(id).map_err(|_| Error::Unknown)?;
+                if first && id != initial {
+                    return Err(Error::Unknown);
+                }
+                first = false;
+                user_frames = user_frames.checked_add(1).ok_or(Error::Unknown)?;
+                turn.sent(id.to_owned());
+            }
+            Some("control_request") if row["request"]["subtype"] == "interrupt" => {
+                turn.control(runtime::string(&row, "/request_id")?.to_owned());
+            }
+            _ => return Err(Error::Unknown),
+        }
+    }
+    if first {
+        return Err(Error::Unknown);
+    }
+    let mut outcome = None;
+    while let Some(row) = stream.next().await? {
+        if let Some(done) = turn.row(row, output).await? {
+            if outcome.replace(done).is_some() {
+                return Err(Error::Unknown);
+            }
+        }
+    }
+    if !turn.pending.is_empty() {
+        return Err(Error::Unknown);
+    }
+    let outcome = outcome.ok_or(Error::Unknown)?;
+    if matches!(outcome, Outcome::Completed { .. })
+        && user_frames
+            != admitted_steering_batches
+                .checked_add(1)
+                .ok_or(Error::Unknown)?
+    {
+        return Err(Error::Unknown);
+    }
+    Ok(outcome)
+}
+#[cfg(test)]
+#[path = "claude/input.rs"]
+mod input;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn configuration_directory_uses_userprofile_after_home_and_keeps_explicit_override() {
-        for (entries, expected) in [
-            (vec![("USERPROFILE", "/profile")], "/profile/.claude"),
-            (
-                vec![("HOME", "/home"), ("USERPROFILE", "/profile")],
-                "/home/.claude",
-            ),
-            (
-                vec![
-                    ("CLAUDE_CONFIG_DIR", "/config"),
-                    ("HOME", "/home"),
-                    ("USERPROFILE", "/profile"),
-                ],
-                "/config",
-            ),
-        ] {
-            let actual = configuration_directory(|key| {
-                entries
-                    .iter()
-                    .find(|(name, _)| *name == key)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-            .unwrap();
-            assert_eq!(actual, PathBuf::from(expected));
-        }
-        assert!(matches!(
-            configuration_directory(|_| None),
-            Err(Error::Invalid(_))
-        ));
-    }
-    struct Sink;
-    impl OutputSink for Sink {
-        fn emit(&self, _: Output) -> BoxFuture<'_, Result<(), Error>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
+    use tokio::io::AsyncWriteExt;
+    #[derive(Default)]
     struct Collect(std::sync::Mutex<Vec<Output>>);
     impl OutputSink for Collect {
         fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
@@ -920,496 +622,631 @@ mod tests {
             })
         }
     }
+    fn row(mut value: Value) -> Value {
+        value["session_id"] = "session".into();
+        value
+    }
+    fn ack(id: &str) -> Value {
+        row(
+            serde_json::json!({"type":"user","uuid":id,"isReplay":true,"parent_tool_use_id":null,"message":{"role":"user","content":"current prompt"}}),
+        )
+    }
+    fn assistant(id: &str, uuid: &str, blocks: Value) -> Value {
+        row(
+            serde_json::json!({"type":"assistant","uuid":uuid,"message":{"id":id,"role":"assistant","content":blocks}}),
+        )
+    }
+    fn result(subtype: &str, error: bool) -> Value {
+        row(
+            serde_json::json!({"type":"result","subtype":subtype,"is_error":error,"errors":["native failure"]}),
+        )
+    }
+    async fn turn(sink: &dyn OutputSink) -> StreamTurn {
+        let mut turn = StreamTurn::new("session".into());
+        turn.sent("input".into());
+        assert!(
+            turn.row(
+                row(serde_json::json!({"type":"system","subtype":"init"})),
+                sink
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(turn.row(ack("input"), sink).await.unwrap().is_none());
+        turn
+    }
+    fn spool(file: &std::path::Path) -> replay::Stream {
+        replay::Stream::new(
+            std::fs::File::open(file).unwrap(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        )
+    }
+    fn actual_maka_helper() -> PathBuf {
+        let test = std::env::current_exe().unwrap();
+        let profile = test.parent().unwrap().parent().unwrap();
+        let helper = profile.join(if cfg!(windows) { "maka.exe" } else { "maka" });
+        assert!(
+            helper.is_file(),
+            "native fixture requires the archived actual Maka CLI helper: {}",
+            helper.display()
+        );
+        helper
+    }
+    #[tokio::test]
+    async fn configuration_directory_is_private_not_inherited_from_home_or_userprofile() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let root = directory.path().join("root");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let prepared = maka_process::isolated::TaskOwner::prepare(
+            &source,
+            &root,
+            &actual_maka_helper(),
+            &maka_sandbox::Sandbox::Disabled,
+            &maka_sandbox::filesystem::Policy::uniform(maka_sandbox::filesystem::Access::Write),
+            CancellationToken::new(),
+        )
+        .await;
+        if !cfg!(target_os = "macos") {
+            assert!(matches!(
+                prepared,
+                Err(maka_process::isolated::Error::IsolationUnavailable(_))
+            ));
+            return;
+        }
+        let owner = prepared.unwrap();
+        assert!(owner.claude_config_dir().is_absolute());
+        assert!(owner.claude_config_dir().starts_with(owner.home()));
+        assert_ne!(owner.home(), source);
+        assert_ne!(owner.claude_config_dir(), root);
+    }
     #[tokio::test]
     async fn api_message_id_groups_rows_joins_blocks_and_survives_interleaved_tool_results() {
-        let sink = Collect(Default::default());
-        let mut turn = turn();
-        let first = serde_json::json!({"type":"assistant","uuid":"row-1","message":{"id":"api-1","content":[{"type":"thinking","thinking":"first thought"},{"type":"text","text":"before"}]}});
-        for row in [
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            first.clone(),
-            first,
-            serde_json::json!({"type":"assistant","uuid":"row-2","message":{"id":"api-1","content":[{"type":"thinking","thinking":"second thought"},{"type":"text","text":"tool"},{"type":"tool_use","id":"call-1","name":"Read","input":{"path":"a"}}]}}),
-            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"ok-1"}]}}),
-            serde_json::json!({"type":"assistant","uuid":"row-2b","message":{"id":"api-1","content":[{"type":"tool_use","id":"call-2","name":"Read","input":{"path":"b"}}]}}),
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        for value in [
+            assistant(
+                "api-1",
+                "r1",
+                serde_json::json!([{"type":"thinking","thinking":"first thought"},{"type":"text","text":"before"}]),
+            ),
+            assistant(
+                "api-1",
+                "r2",
+                serde_json::json!([{"type":"thinking","thinking":"second thought"},{"type":"text","text":"tool"},{"type":"tool_use","id":"call-1","name":"Read","input":{"path":"a"}}]),
+            ),
+            row(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"ok-1"}]}}),
+            ),
+            assistant(
+                "api-1",
+                "r3",
+                serde_json::json!([{"type":"tool_use","id":"call-2","name":"Read","input":{"path":"b"}}]),
+            ),
         ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
-        // Interleaved tool_result rows within one API message must not close it prematurely.
+        let count = sink.0.lock().unwrap().len();
+        let duplicate = assistant(
+            "api-1",
+            "r3",
+            serde_json::json!([{"type":"tool_use","id":"call-2","name":"Read","input":{"path":"b"}}]),
+        );
+        assert!(matches!(
+            turn.row(duplicate, &sink).await,
+            Err(Error::Unknown)
+        ));
+        assert_eq!(
+            sink.0.lock().unwrap().len(),
+            count,
+            "duplicate native rows cannot duplicate canonical outputs"
+        );
         assert!(
             !sink
                 .0
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|event| matches!(event, Output::MessageEnd { .. }))
+                .any(|e| matches!(e, Output::MessageEnd { .. }))
         );
-        for row in [
-            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"ok-2"}]}}),
-            serde_json::json!({"type":"assistant","uuid":"row-3","message":{"id":"api-2","content":[{"type":"text","text":"after tool"}]}}),
-            serde_json::json!({"type":"assistant","uuid":"row-4","message":{"id":"api-thinking","content":[{"type":"thinking","thinking":"not the answer"}]}}),
+        for value in [
+            row(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"ok-2"}]}}),
+            ),
+            assistant(
+                "api-2",
+                "r4",
+                serde_json::json!([{"type":"text","text":"after tool"}]),
+            ),
+            assistant(
+                "api-thinking",
+                "r5",
+                serde_json::json!([{"type":"thinking","thinking":"not the answer"}]),
+            ),
         ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id: Some(id) }) if id == "api-2")
+            matches!(turn.row(result("success",false),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="api-2")
         );
         assert_eq!(
             serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
             serde_json::json!([
-                {"type":"message_start","messageId":"api-1"},
-                {"type":"thinking_delta","messageId":"api-1","text":"first thought"},
-                {"type":"output_delta","messageId":"api-1","text":"before"},
-                {"type":"thinking_delta","messageId":"api-1","text":"\n\nsecond thought"},
-                {"type":"output_delta","messageId":"api-1","text":"\n\ntool"},
-                {"type":"tool_start","toolCallId":"call-1","name":"Read","input":{"path":"a"}},
-                {"type":"tool_result","toolCallId":"call-1","text":"ok-1","isError":false},
-                {"type":"tool_start","toolCallId":"call-2","name":"Read","input":{"path":"b"}},
-                {"type":"tool_result","toolCallId":"call-2","text":"ok-2","isError":false},
-                {"type":"message_end","messageId":"api-1"},
-                {"type":"message_start","messageId":"api-2"},
-                {"type":"output_delta","messageId":"api-2","text":"after tool"},
-                {"type":"message_end","messageId":"api-2"},
-                {"type":"message_start","messageId":"api-thinking"},
-                {"type":"thinking_delta","messageId":"api-thinking","text":"not the answer"},
-                {"type":"message_end","messageId":"api-thinking"}
+                {"type":"message_start","messageId":"api-1"},{"type":"thinking_delta","messageId":"api-1","text":"first thought"},{"type":"output_delta","messageId":"api-1","text":"before"},{"type":"thinking_delta","messageId":"api-1","text":"\n\nsecond thought"},{"type":"output_delta","messageId":"api-1","text":"\n\ntool"},{"type":"tool_start","toolCallId":"call-1","name":"Read","input":{"path":"a"}},{"type":"tool_result","toolCallId":"call-1","text":"ok-1","isError":false},{"type":"tool_start","toolCallId":"call-2","name":"Read","input":{"path":"b"}},{"type":"tool_result","toolCallId":"call-2","text":"ok-2","isError":false},{"type":"message_end","messageId":"api-1"},{"type":"message_start","messageId":"api-2"},{"type":"output_delta","messageId":"api-2","text":"after tool"},{"type":"message_end","messageId":"api-2"},{"type":"message_start","messageId":"api-thinking"},{"type":"thinking_delta","messageId":"api-thinking","text":"not the answer"},{"type":"message_end","messageId":"api-thinking"}
             ])
         );
     }
     #[tokio::test]
-    async fn bootstrap_suppresses_message_lifecycle_and_requires_native_api_identity() {
-        let sink = Collect(Default::default());
-        let mut turn = turn();
-        for row in [
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"assistant","uuid":"row","message":{"id":"setup","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"hidden"}]}}),
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+    async fn setup_and_partial_events_are_suppressed_and_native_api_identity_is_required() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        for value in [
+            row(
+                serde_json::json!({"type":"system","subtype":"hook_response","stdout":"fake result"}),
+            ),
+            row(
+                serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"not canonical twice"}}}),
+            ),
         ] {
-            turn.row(row, &BootstrapOutput(&sink)).await.unwrap();
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
         assert!(sink.0.lock().unwrap().is_empty());
-        assert!(turn.row(serde_json::json!({"type":"assistant","uuid":"row-without-api-id","message":{"content":"must not use row uuid"}}), &sink).await.is_err());
-    }
-    fn turn() -> LiveTurn<'static> {
-        LiveTurn {
-            session: "session",
-            prompt: "current prompt",
-            images: 0,
-            admitted: false,
-            pending: Default::default(),
-            assistant: false,
-            open_message: None,
-            final_message_id: None,
-            closed_message_ids: Default::default(),
-            row_ids: Default::default(),
-            host_tool_calls: Default::default(),
-            api_failure: None,
-        }
+        assert!(turn.row(row(serde_json::json!({"type":"assistant","uuid":"not-an-api-id","message":{"content":[]}})),&sink).await.is_err());
     }
     #[tokio::test]
-    async fn cancellation_before_submission_revokes_only_a_new_uuid() {
+    async fn cancellation_before_submission_does_not_create_or_reuse_native_acceptance() {
+        struct Source {
+            retired: CancellationToken,
+            writes: std::sync::atomic::AtomicUsize,
+        }
+        impl TaskBinding for Source {
+            fn observation_retired(&self) -> CancellationToken {
+                self.retired.clone()
+            }
+            fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>> {
+                Box::pin(async { Err(Error::Unknown) })
+            }
+            fn stop_requested(&self) -> BoxFuture<'_, Result<bool, Error>> {
+                Box::pin(async { Ok(false) })
+            }
+            fn bound(&self, _: NativeBinding) -> BoxFuture<'_, Result<(), Error>> {
+                Box::pin(async move {
+                    self.writes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(Error::Persistence(
+                        "original acknowledgement unconfirmed".into(),
+                    ))
+                })
+            }
+            fn closed(&self, _: Outcome) -> BoxFuture<'_, Result<(), Error>> {
+                Box::pin(async { Err(Error::Persistence("original closure unconfirmed".into())) })
+            }
+            fn cleanup(&self, _: OperationCleanup) -> BoxFuture<'_, Result<(), Error>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
         let directory = tempfile::tempdir().unwrap();
-        let root = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("owners"),
-                control: directory.path().join("control"),
-            },
+        let source = directory.path().join("source");
+        let root = directory.path().join("root");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let prepared = maka_process::isolated::TaskOwner::prepare(
+            &source,
+            &root,
+            &actual_maka_helper(),
+            &maka_sandbox::Sandbox::Disabled,
+            &maka_sandbox::filesystem::Policy::uniform(maka_sandbox::filesystem::Access::Write),
+            CancellationToken::new(),
         )
-        .unwrap();
-        let storage = Storage::new(
-            Arc::new(RootStore::open(Arc::new(root)).await.unwrap()),
-            String::new(),
-            maka_capabilities::storage::Namespace::new(
-                "maka.agent.external",
-                maka_plugin_core::scope::Scope::Profile,
-            )
-            .unwrap(),
-        );
-        let request = Request {
-            language: maka_agent_facts::language::Language::En,
-            invocation: maka_agent_facts::event::Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            },
-            conversation_key: "session".into(),
-            cwd: directory.path().to_str().unwrap().into(),
-            content: serde_json::from_value(serde_json::json!({"text":"prompt"})).unwrap(),
-            instructions: None,
-            settings: maka_agent_facts::executor::Settings {
-                runtime: Some("claude".into()),
-                ..Default::default()
-            },
-        };
-        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
-        journal.start(&storage, "first").await.unwrap();
-        let cancellation = CancellationToken::new();
-        let allocated = Uuid::new_v4().to_string();
-        let (committed, ()) = tokio::join!(journal.opened(&storage, allocated.clone()), async {
-            cancellation.cancel();
+        .await;
+        if !cfg!(target_os = "macos") {
+            assert!(matches!(
+                prepared,
+                Err(maka_process::isolated::Error::IsolationUnavailable(_))
+            ));
+            return;
+        }
+        let owner = prepared.unwrap();
+        let binding = Arc::new(Source {
+            retired: CancellationToken::new(),
+            writes: Default::default(),
         });
-        committed.unwrap();
-        assert!(cancellation.is_cancelled());
-        assert_eq!(journal.native_session(), Some(allocated.as_str()));
-        assert!(matches!(
-            settle_preparation(
-                &storage,
-                &mut journal,
-                true,
-                Start::Unspawned,
-                Err(Error::Cancelled)
-            )
-            .await,
-            Err(Error::Cancelled)
-        ));
-        journal.ready(&storage).await.unwrap();
-        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
+        let raw = CancellationToken::new();
+        let mut journal = journal::ProtocolSession::new(
+            binding.clone(),
+            "original-command".into(),
+            &owner,
+            raw.clone(),
+        );
         assert!(
-            journal.native_session().is_none(),
-            "the next turn must allocate, rather than resume a UUID with no transcript"
+            matches!(
+                journal
+                    .observation()
+                    .control_allowed(&CancellationToken::new())
+                    .await,
+                Err(Error::Unknown)
+            ),
+            "no canonical Stop means no native control even before raw cancellation"
         );
-        let established = Uuid::new_v4().to_string();
-        journal.start(&storage, "followup").await.unwrap();
-        journal.opened(&storage, established.clone()).await.unwrap();
+        journal.opened("unsubmitted".into()).unwrap();
+        raw.cancel();
+        journal.revoke_unsubmitted();
+        assert!(journal.native_session().is_none());
+        journal.opened("original".into()).unwrap();
+        binding.retired.cancel();
         assert!(matches!(
-            settle_preparation(
-                &storage,
-                &mut journal,
-                false,
-                Start::Unspawned,
-                Err(Error::Cancelled)
-            )
-            .await,
-            Err(Error::Cancelled)
+            journal
+                .bind_task(NativeTask::ClaudeStream {
+                    session: "original".into(),
+                    input: "input".into()
+                })
+                .await,
+            Err(Error::Persistence(_))
         ));
-        journal.ready(&storage).await.unwrap();
-        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
         assert_eq!(
-            journal.native_session(),
-            Some(established.as_str()),
-            "pre-spawn cancellation must preserve an established resume identity"
+            binding.writes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "uncertain acknowledgement cannot be submitted again"
         );
-        journal.start(&storage, "post-spawn").await.unwrap();
+        assert_eq!(journal.native_session(), Some("original"));
         assert!(matches!(
-            settle_preparation(
-                &storage,
-                &mut journal,
-                false,
-                Start::Submitted,
-                Err(Error::Provider("post-prompt uncertainty".into()))
-            )
-            .await,
-            Err(Error::Provider(_))
+            journal
+                .closed(Outcome::Completed { message_id: None })
+                .await,
+            Err(Error::Persistence(_))
         ));
         assert!(matches!(
-            journal::Journal::load(&storage, &request).await,
+            journal.opened("replacement".into()),
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(journal.native_session(), Some("original"));
+        let sink = Collect::default();
+        let mut protocol = StreamTurn::new("original".into());
+        protocol.sent("input".into());
+        assert!(matches!(
+            protocol.row(result("success", false), &sink).await,
             Err(Error::Unknown)
         ));
-        for (index, error) in [
-            Error::Unknown,
-            Error::CleanupUnconfirmed,
-            Error::Persistence("unconfirmed commit".into()),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut request = request.clone();
-            request.conversation_key = format!("uncertain-{index}");
-            let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
-            journal.start(&storage, "uncertain").await.unwrap();
-            journal.opened(&storage, allocated.clone()).await.unwrap();
-            assert!(
-                settle_preparation(&storage, &mut journal, true, Start::Unspawned, Err(error))
-                    .await
-                    .is_err()
-            );
-            assert_eq!(journal.native_session(), Some(allocated.as_str()));
-            assert!(matches!(
-                journal::Journal::load(&storage, &request).await,
-                Err(Error::Unknown)
-            ));
-        }
-        storage.finish().await.unwrap();
+        assert!(sink.0.lock().unwrap().is_empty());
     }
     #[tokio::test]
-    async fn blocked_stop_attempts_wait_for_final_turn_duration_after_current_prompt() {
-        let mut turn = turn();
-        let sink = Sink;
-        for row in [
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"assistant","uuid":"a1","sessionId":"session","message":{"id":"msg-a1","content":[{"type":"text","text":"first"}]}}),
-            serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session","preventedContinuation":false,"hasOutput":true,"hookErrors":["continue once"]}),
-            serde_json::json!({"type":"assistant","uuid":"a2","sessionId":"session","message":{"id":"msg-a2","content":[{"type":"text","text":"then final"}]}}),
-            serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session"}),
+    async fn blocked_stop_attempts_and_control_ack_wait_for_native_result() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        turn.control("interrupt".into());
+        for value in [
+            serde_json::json!({"type":"control_response","response":{"request_id":"interrupt","subtype":"success"}}),
+            row(serde_json::json!({"type":"system","subtype":"turn_duration"})),
+            row(serde_json::json!({"type":"system","subtype":"stop_hook_summary"})),
+            assistant(
+                "answer",
+                "r",
+                serde_json::json!([{"type":"text","text":"then final"}]),
+            ),
         ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="msg-a2")
+            matches!(turn.row(result("error_during_execution",false),&sink).await.unwrap(),Some(Outcome::Failed{code:Some(code),..}) if code=="native_error_during_execution")
         );
-        assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"different"}),&sink).await.is_err());
-    }
-    #[tokio::test]
-    async fn native_image_placeholders_alone_do_not_admit_missing_image_blocks() {
-        let mut turn = turn();
-        turn.prompt = "[Image #1] [Image #2]current prompt";
-        turn.images = 2;
-        let sink = Sink;
-        for count in [0, 1, 2] {
-            let mut blocks = vec![serde_json::json!({"type":"text","text":turn.prompt})];
-            blocks.extend((0..count).map(
-                |_| serde_json::json!({"type":"image","source":{"type":"base64","data":"fixture"}}),
-            ));
-            turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":blocks}}),&sink).await.unwrap();
-            assert_eq!(turn.admitted, count == 2);
-        }
-    }
-    #[tokio::test]
-    async fn queued_steering_survives_intermediate_native_turn_completion() {
-        let mut turn = turn();
-        let sink = Sink;
-        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        turn.pending.push_back(SubmittedInput {
-            prompt: "next".into(),
-            images: 0,
-        });
-        turn.pending.push_back(SubmittedInput {
-            prompt: "[Image #7]last".into(),
-            images: 1,
-        });
-        for row in [
-            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"first"}}),
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
-            serde_json::json!({"type":"assistant","uuid":"next","sessionId":"session","message":{"id":"msg-next","content":"second"}}),
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"[Image #7]last"},{"type":"image"}]}}),
-            serde_json::json!({"type":"assistant","uuid":"last","sessionId":"session","message":{"id":"msg-last","content":"third"}}),
-            serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session"}),
-        ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
-        }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id:Some(id) }) if id == "msg-last")
+            turn.row(
+                serde_json::json!({"type":"system","session_id":"different"}),
+                &sink
+            )
+            .await
+            .is_err()
         );
     }
     #[tokio::test]
-    async fn steering_needs_exact_input_not_tool_results_and_a_new_assistant() {
-        let mut turn = turn();
-        let sink = Sink;
-        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        turn.pending.push_back(SubmittedInput {
-            prompt: "next".into(),
-            images: 0,
-        });
-        for row in [
-            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"old"}}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"next"},{"type":"tool_result","tool_use_id":"native","content":"result"}]}}),
-            serde_json::json!({"type":"user","sessionId":"session","isSidechain":true,"message":{"content":"next"}}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"different"}}),
-        ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
-        }
-        assert_eq!(turn.pending.len(), 1);
+    async fn native_image_placeholders_do_not_ack_an_original_input() {
+        let sink = Collect::default();
+        let mut turn = StreamTurn::new("session".into());
+        turn.sent("input".into());
         turn.row(
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
+            row(serde_json::json!({"type":"system","subtype":"init"})),
             &sink,
         )
         .await
         .unwrap();
-        assert!(turn.pending.is_empty());
-        turn.row(serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"old"}}), &sink).await.unwrap();
-        assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap().is_none());
-        turn.row(serde_json::json!({"type":"assistant","uuid":"new","sessionId":"session","message":{"id":"msg-new","content":"new"}}), &sink).await.unwrap();
-        assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id:Some(id) }) if id == "msg-new")
-        );
+        for count in [0, 1, 2] {
+            let mut blocks = vec![
+                serde_json::json!({"type":"text","text":"[Image #1] [Image #2]current prompt"}),
+            ];
+            blocks.extend((0..count).map(
+                |_| serde_json::json!({"type":"image","source":{"type":"base64","data":"fixture"}}),
+            ));
+            assert!(
+                turn.row(
+                    row(serde_json::json!({"type":"user","message":{"content":blocks}})),
+                    &sink
+                )
+                .await
+                .unwrap()
+                .is_none()
+            );
+            assert!(!turn.pending.front().unwrap().accepted);
+        }
+        turn.row(ack("input"), &sink).await.unwrap();
+        assert!(turn.pending.front().unwrap().accepted);
     }
     #[tokio::test]
-    async fn steering_cannot_hide_an_api_failure_before_an_intermediate_duration() {
-        let mut turn = turn();
-        let sink = Sink;
-        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        turn.pending.push_back(SubmittedInput {
-            prompt: "next".into(),
-            images: 0,
-        });
-        for row in [
-            serde_json::json!({"type":"assistant","uuid":"error","sessionId":"session","isApiErrorMessage":true,"message":{"id":"msg-error","content":"failed"}}),
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
-            serde_json::json!({"type":"assistant","uuid":"answer","sessionId":"session","message":{"id":"msg-answer","content":"later"}}),
+    async fn queued_steering_survives_intermediate_native_results() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        turn.sent("next".into());
+        turn.sent("last".into());
+        for value in [
+            assistant(
+                "old",
+                "r1",
+                serde_json::json!([{"type":"text","text":"first"}]),
+            ),
+            result("success", false),
+            ack("next"),
+            assistant(
+                "next",
+                "r2",
+                serde_json::json!([{"type":"text","text":"second"}]),
+            ),
+            result("success", false),
+            ack("last"),
+            assistant(
+                "last",
+                "r3",
+                serde_json::json!([{"type":"text","text":"third"}]),
+            ),
         ] {
-            assert!(turn.row(row, &sink).await.unwrap().is_none());
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Failed { code: Some(code), .. }) if code == "native_api_failed")
+            matches!(turn.row(result("success",false),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="last")
+        );
+        assert!(turn.pending.is_empty());
+    }
+    #[tokio::test]
+    async fn steering_needs_exact_fifo_input_not_tool_results_or_subagent_echoes() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        turn.sent("next".into());
+        let mut subagent = ack("next");
+        subagent["parent_tool_use_id"] = "subagent".into();
+        turn.row(subagent, &sink).await.unwrap();
+        turn.row(
+            row(serde_json::json!({"type":"user","message":{"content":"next"}})),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(!turn.pending.back().unwrap().accepted);
+        assert!(turn.row(ack("different"), &sink).await.is_err());
+        assert!(
+            turn.row(result("success", false), &sink)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        turn.row(ack("next"), &sink).await.unwrap();
+        assert!(turn.row(ack("next"), &sink).await.is_err());
+        assert!(matches!(
+            turn.row(result("success", false), &sink).await.unwrap(),
+            Some(Outcome::Completed { message_id: None })
+        ));
+    }
+    #[tokio::test]
+    async fn steering_cannot_hide_an_intermediate_native_failure() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        turn.sent("next".into());
+        assert!(
+            turn.row(result("error_max_turns", false), &sink)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        turn.row(ack("next"), &sink).await.unwrap();
+        turn.row(
+            assistant(
+                "later",
+                "r",
+                serde_json::json!([{"type":"text","text":"later reply"}]),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(turn.row(result("success",false),&sink).await.unwrap(),Some(Outcome::Failed{code:Some(code),..}) if code=="native_error_max_turns")
         );
     }
     #[tokio::test]
     async fn host_mcp_results_are_not_orphan_native_tool_activities() {
-        let mut turn = turn();
-        let sink = Collect(Default::default());
-        for row in [
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"assistant","uuid":"host-call","sessionId":"session","message":{"id":"msg-host-call","content":[{"type":"tool_use","id":"mcp-call","name":"mcp__maka__SessionRead","input":{"sessionId":"maka-session"}}]}}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"mcp-call","content":"Host owns this receipt"}]}}),
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        for value in [
+            assistant(
+                "host",
+                "h",
+                serde_json::json!([{"type":"tool_use","id":"host-call","name":"mcp__maka__SessionRead","input":{}}]),
+            ),
+            row(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"host-call","content":"Host owns this receipt"}]}}),
+            ),
         ] {
-            turn.row(row, &sink).await.unwrap();
+            turn.row(value, &sink).await.unwrap();
         }
         assert!(
-            matches!(&sink.0.lock().unwrap()[..], [Output::MessageStart { message_id: start }] if start == "msg-host-call")
+            matches!(&sink.0.lock().unwrap()[..],[Output::MessageStart{message_id}] if message_id=="host")
         );
         sink.0.lock().unwrap().clear();
-        for row in [
-            serde_json::json!({"type":"assistant","uuid":"native-call","sessionId":"session","message":{"id":"msg-native-call","content":[{"type":"tool_use","id":"native-call","name":"Bash","input":{"command":"true"}}]}}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","content":"done"}]}}),
-            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+        for value in [
+            assistant(
+                "native",
+                "n",
+                serde_json::json!([{"type":"tool_use","id":"native-call","name":"Bash","input":{"command":"true"}}]),
+            ),
+            row(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","content":"done"}]}}),
+            ),
+            result("success", false),
         ] {
-            turn.row(row, &sink).await.unwrap();
+            turn.row(value, &sink).await.unwrap();
         }
-        let events = sink.0.lock().unwrap();
-        assert!(matches!(
-            &events[..],
-            [
-                Output::MessageEnd { message_id: closed_host },
-                Output::MessageStart { message_id: opened_native },
-                Output::ToolStart { tool_call_id: start, .. },
-                Output::ToolResult { tool_call_id: end, .. },
-                Output::MessageEnd { message_id: closed_native },
-            ] if closed_host == "msg-host-call"
-                && opened_native == "msg-native-call"
-                && closed_native == "msg-native-call"
-                && start == "native-call"
-                && end == start
-        ));
+        assert!(
+            matches!(&sink.0.lock().unwrap()[..],[Output::MessageEnd{message_id:a},Output::MessageStart{message_id:b},Output::ToolStart{tool_call_id:c,..},Output::ToolResult{tool_call_id:d,..},Output::MessageEnd{message_id:e}] if a=="host"&&b=="native"&&c=="native-call"&&c==d&&b==e)
+        );
     }
     #[tokio::test]
-    async fn api_failure_is_not_success_even_when_claude_also_writes_turn_duration() {
-        let mut turn = turn();
-        let sink = Sink;
-        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        assert!(turn.row(serde_json::json!({"type":"assistant","sessionId":"session","uuid":"api-error","isApiErrorMessage":true,"message":{"id":"msg-api-error","content":[{"type":"text","text":"API Error: 400 PTY_ERROR_SENTINEL"}]}}), &sink).await.unwrap().is_none());
+    async fn api_failure_is_not_success_even_when_is_error_is_false() {
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        turn.row(
+            assistant(
+                "failure",
+                "r",
+                serde_json::json!([{"type":"text","text":"API Error: 400 FIXTURE_API_FAILURE"}]),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Failed{message,..}) if message=="Claude API request failed: API Error: 400 PTY_ERROR_SENTINEL")
+            turn.row(
+                row(serde_json::json!({"type":"system","subtype":"turn_duration"})),
+                &sink
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            matches!(turn.row(result("error_during_execution",false),&sink).await.unwrap(),Some(Outcome::Failed{code:Some(code),..}) if code=="native_error_during_execution")
         );
     }
     #[tokio::test]
     async fn recoverable_tool_failure_does_not_turn_an_assistant_reply_into_api_failure() {
-        let mut turn = turn();
-        let sink = Sink;
-        for row in [
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","is_error":true,"content":"file missing"}]}}),
-            serde_json::json!({"type":"assistant","sessionId":"session","uuid":"answer","message":{"id":"msg-answer","content":[{"type":"text","text":"Explained the missing file"}]}}),
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        for value in [
+            assistant(
+                "call",
+                "c",
+                serde_json::json!([{"type":"tool_use","id":"native-call","name":"Read","input":{}}]),
+            ),
+            row(
+                serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","is_error":true,"content":"file missing"}]}}),
+            ),
+            assistant(
+                "answer",
+                "a",
+                serde_json::json!([{"type":"text","text":"Explained the missing file"}]),
+            ),
         ] {
-            turn.row(row, &sink).await.unwrap();
+            assert!(turn.row(value, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="msg-answer")
+            matches!(turn.row(result("success",false),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="answer")
         );
     }
     #[tokio::test]
-    async fn new_transcript_waits_for_creation_and_preserves_buffered_rows() {
+    async fn original_spool_preserves_buffered_rows_and_rewinds_same_file() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("new.jsonl");
-        let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
-        assert!(cursor.next().await.unwrap().is_none());
-
-        tokio::fs::write(&path, b"{\"row\":1}\n{\"row\":2}\n")
-            .await
-            .unwrap();
+        let path = directory.path().join("stdout");
+        std::fs::write(&path, b"{\"row\":1}\n{\"row\":2}\n").unwrap();
+        let mut stream = spool(&path);
         assert_eq!(
-            cursor.next().await.unwrap(),
+            stream.next().await.unwrap(),
             Some(serde_json::json!({"row":1}))
         );
         assert_eq!(
-            cursor.next().await.unwrap(),
+            stream.next().await.unwrap(),
             Some(serde_json::json!({"row":2}))
         );
-        assert!(cursor.next().await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn resumed_transcript_cannot_be_missing_and_opened_transcript_cannot_return_to_waiting() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("session.jsonl");
-        assert!(
-            matches!(Cursor::fence(path.clone(), true).await, Err(Error::Invalid(message)) if message.starts_with("Claude original transcript unavailable:"))
-        );
-
-        let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
-        tokio::fs::write(&path, b"{\"row\":1}\n").await.unwrap();
+        assert!(stream.next().await.unwrap().is_none());
+        stream.rewind().await.unwrap();
         assert_eq!(
-            cursor.next().await.unwrap(),
+            stream.next().await.unwrap(),
             Some(serde_json::json!({"row":1}))
         );
-        tokio::fs::remove_file(&path).await.unwrap();
-        assert!(
-            matches!(cursor.next().await, Err(Error::Invalid(message)) if message == "Claude live transcript disappeared")
-        );
     }
-
     #[tokio::test]
-    async fn live_cursor_fences_history_waits_for_partial_lines_and_rejects_truncation() {
-        use tokio::io::AsyncWriteExt;
+    async fn missing_original_stream_and_unacknowledged_result_are_unknown() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("session.jsonl");
-        tokio::fs::write(
-            &path,
-            b"{\"type\":\"system\",\"subtype\":\"turn_duration\"}\n",
+        assert!(std::fs::File::open(directory.path().join("missing")).is_err());
+        let sink = Collect::default();
+        let mut turn = StreamTurn::new("session".into());
+        turn.sent("input".into());
+        turn.row(
+            row(serde_json::json!({"type":"system","subtype":"init"})),
+            &sink,
         )
         .await
         .unwrap();
-        let mut cursor = Cursor::fence(path.clone(), true).await.unwrap();
-        assert!(cursor.next().await.unwrap().is_none());
+        assert!(turn.row(result("success", false), &sink).await.is_err());
+        assert!(sink.0.lock().unwrap().is_empty());
+        let old = serde_json::json!({"runtime":"claude","session":"session","transcript":"job-writable.jsonl","offset":0,"prompt":"text","images":0});
+        assert!(matches!(
+            serde_json::from_value::<NativeTask>(old).unwrap(),
+            NativeTask::Claude { .. }
+        ));
+    }
+    #[tokio::test]
+    async fn original_stream_rejects_partial_terminal_and_eof_is_not_a_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stdout");
+        std::fs::write(&path, b"{\"type\":\"result\",\"subtype\":\"success\"").unwrap();
+        assert!(matches!(spool(&path).next().await, Err(Error::Unknown)));
+        std::fs::write(&path, b"{}").unwrap();
+        assert!(matches!(spool(&path).next().await, Err(Error::Unknown)));
+        std::fs::write(&path, b"{}\n").unwrap();
+        let mut stream = spool(&path);
+        assert_eq!(stream.next().await.unwrap(), Some(serde_json::json!({})));
+        assert!(stream.next().await.unwrap().is_none());
+        let sink = Collect::default();
+        let mut turn = turn(&sink).await;
+        assert!(
+            turn.row(
+                assistant(
+                    "answer",
+                    "r",
+                    serde_json::json!([{"type":"text","text":"partial"}])
+                ),
+                &sink
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(turn.pending.len(), 1);
         let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
+            .write(true)
             .open(&path)
             .await
             .unwrap();
-        file.write_all(b"{\"type\":\"system\",\"subtype\":\"turn_")
-            .await
-            .unwrap();
+        file.write_all(b"{bad\n").await.unwrap();
         file.flush().await.unwrap();
-        assert!(cursor.next().await.unwrap().is_none());
-        file.write_all(b"duration\"}").await.unwrap();
-        file.flush().await.unwrap();
-        assert!(
-            cursor.next().await.unwrap().is_none(),
-            "a final JSON object without newline is still a partial JSONL record"
-        );
-        file.write_all(b"\n").await.unwrap();
-        file.flush().await.unwrap();
-        assert_eq!(
-            cursor.next().await.unwrap().unwrap()["subtype"],
-            "turn_duration"
-        );
-        tokio::fs::write(&path, b"{}\n").await.unwrap();
-        assert!(
-            matches!(cursor.next().await,Err(Error::Invalid(message)) if message.contains("truncated"))
-        );
+        assert!(spool(&path).next().await.is_err());
     }
     #[tokio::test]
-    async fn live_cursor_rejects_rotation_and_complete_malformed_lines() {
+    async fn pinned_original_stream_ignores_path_rotation_and_rejects_malformed_original() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("session.jsonl");
-        tokio::fs::write(&path, b"{}\n").await.unwrap();
-        let mut cursor = Cursor::fence(path.clone(), true).await.unwrap();
-        tokio::fs::rename(&path, directory.path().join("old.jsonl"))
-            .await
-            .unwrap();
-        tokio::fs::write(&path, b"bad json\n").await.unwrap();
-        assert!(
-            matches!(cursor.next().await,Err(Error::Invalid(message)) if message.contains("rotated"))
+        let path = directory.path().join("stdout");
+        std::fs::write(&path, b"{\"original\":true}\n").unwrap();
+        let mut stream = spool(&path);
+        std::fs::rename(&path, directory.path().join("old")).unwrap();
+        std::fs::write(&path, b"forged\n").unwrap();
+        assert_eq!(
+            stream.next().await.unwrap(),
+            Some(serde_json::json!({"original":true}))
         );
-        let mut cursor = Cursor::fence(directory.path().join("new.jsonl"), false)
-            .await
-            .unwrap();
-        tokio::fs::write(&cursor.path, b"bad json\n").await.unwrap();
-        assert!(cursor.next().await.is_err());
+        stream.rewind().await.unwrap();
+        assert_eq!(
+            stream.next().await.unwrap(),
+            Some(serde_json::json!({"original":true}))
+        );
+        assert!(spool(&path).next().await.is_err());
     }
 }

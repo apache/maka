@@ -299,8 +299,6 @@ export function installation(
     computer: { desktop: 'auto', browsers: [] },
     web: { network: 'allowed' },
     decisions_api: { network: 'allowed' },
-    coordinator: agent,
-    coordinatorProcesses: processes,
     skills: {
       sources: [],
       bundled: true,

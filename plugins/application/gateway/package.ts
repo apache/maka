@@ -33,15 +33,6 @@ export default {
       imports: {
         agent: one(sdk.contracts.agent),
         hostLogs: { contract: sdk.contracts.hostLogs, cardinality: { kind: 'optional' } },
-        coordinator: { contract: sdk.contracts.agent, cardinality: { kind: 'optional' } },
-        workhub: {
-          contract: sdk.contracts.workhubCoordinator,
-          cardinality: { kind: 'optional' },
-        },
-        coordinatorTerminal: {
-          contract: sdk.contracts.terminal,
-          cardinality: { kind: 'optional' },
-        },
         terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
         decisions_api: {
           contract: sdk.contracts.workspaceDecisionsApi,

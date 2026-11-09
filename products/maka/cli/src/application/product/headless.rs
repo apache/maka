@@ -181,7 +181,10 @@ pub(crate) async fn open_host(
 ) -> Result<ProductHost, HostError> {
     #[cfg(unix)]
     raise_open_file_limit();
-    let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
+    let store = Arc::new(
+        maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())
+            .await?,
+    );
     let catalog = async {
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root()?).await?;
         let catalog = match catalog_transport {
@@ -206,10 +209,13 @@ pub(crate) async fn open_host(
     };
     let result = async {
         let (loaded, selection) = prepare(&store, roots).await?;
+        let data = store.data_writer()?;
+        let state =
+            maka_agent_state::Store::new(data.clone(), maka_agent_state::DriverDomain::new(data)?)?;
         Ok(Host::open_loaded_with_options(
             store.clone(),
             loaded,
-            crate::application::serve::native(catalog.catalog())?,
+            crate::application::serve::native(catalog.catalog(), state, std::env::current_exe()?)?,
             Some(maka_host_js::factory(Default::default())),
             selection,
             options,
@@ -370,20 +376,11 @@ async fn begin(
     let deployment = sources.deployment;
     // These product endpoints publish every method of their selected service.
     // Explicit generic Host selections leave this ownership set empty.
-    let product_methods = [
-        "agent",
-        "coordinator",
-        "settings",
-        "authentication",
-        "setup",
-        "terminal",
-        "coordinatorTerminal",
-        "workhub",
-    ]
-    .into_iter()
-    .filter(|name| sources.endpoints.contains_key(*name))
-    .map(str::to_owned)
-    .collect();
+    let product_methods = ["agent", "settings", "authentication", "setup", "terminal"]
+        .into_iter()
+        .filter(|name| sources.endpoints.contains_key(*name))
+        .map(str::to_owned)
+        .collect();
     let selection = Selection::PublicHost {
         endpoints: sources.endpoints,
         native: sources.native,
@@ -515,7 +512,7 @@ pub(crate) async fn configure_workspace_locations(
     owner: Arc<RootOwner>,
     roots: Vec<DirectoryRootSpec>,
 ) -> Result<(), HostError> {
-    let store = maka_transport::open_store(owner).await?;
+    let store = maka_transport::open_store(owner, &maka_product_native::root_migrations()).await?;
     let result = replace_workspace_locations(&store, roots).await;
     store.drain().await;
     result
@@ -649,16 +646,14 @@ mod tests {
             .await
             .unwrap();
         let Selection::PublicHost { endpoints, .. } = &mut selection;
-        for name in ["agent", "coordinator"] {
-            assert!(
-                endpoints
-                    .get_mut(name)
-                    .unwrap()
-                    .grant
-                    .methods
-                    .remove("projectMcp")
-            );
-        }
+        assert!(
+            endpoints
+                .get_mut("agent")
+                .unwrap()
+                .grant
+                .methods
+                .remove("projectMcp")
+        );
         let stale_selection = serde_json::to_value(selection).unwrap();
         assert!(
             store
@@ -685,7 +680,6 @@ mod tests {
             [
                 "/base: update product baseline and user overrides",
                 "/publication/endpoints/agent/grant/methods: follow current service contract",
-                "/publication/endpoints/coordinator/grant/methods: follow current service contract",
             ]
         );
         let unchanged = inspection
@@ -707,7 +701,10 @@ mod tests {
         inspection.drain().await;
         drop(inspection);
 
-        let store = maka_transport::open_store(owner.clone()).await.unwrap();
+        let store =
+            maka_transport::open_store(owner.clone(), &maka_product_native::root_migrations())
+                .await
+                .unwrap();
         let applied = apply_update(&store).await.unwrap();
         assert!(applied.changed && applied.applied);
         assert_eq!(applied.changes, preview.changes);
@@ -756,17 +753,15 @@ mod tests {
                 product_methods,
                 ..
             } = &mut narrowed;
-            for name in ["agent", "coordinator"] {
-                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                    assert!(
-                        endpoints
-                            .get_mut(name)
-                            .unwrap()
-                            .grant
-                            .methods
-                            .remove(method)
-                    );
-                }
+            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                assert!(
+                    endpoints
+                        .get_mut("agent")
+                        .unwrap()
+                        .grant
+                        .methods
+                        .remove(method)
+                );
             }
             if !product_owned {
                 product_methods.clear();
@@ -788,13 +783,11 @@ mod tests {
             assert_eq!(reopened.source().reference, initial.source().reference);
             assert_eq!(reopened.source().input, initial.source().input);
             let Selection::PublicHost { endpoints, .. } = &selection;
-            for name in ["agent", "coordinator"] {
-                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                    assert_eq!(
-                        endpoints[name].grant.methods.contains(method),
-                        product_owned
-                    );
-                }
+            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                assert_eq!(
+                    endpoints["agent"].grant.methods.contains(method),
+                    product_owned
+                );
             }
             let expected = if product_owned { &original } else { &narrowed };
             assert_eq!(serde_json::to_value(selection).unwrap(), *expected);
@@ -828,9 +821,12 @@ mod tests {
         let root = directory.path().join("root");
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let store = RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))
-            .await
-            .unwrap();
+        let store = RootStore::open(
+            Arc::new(RootOwner::create(&root, &namespaces).unwrap()),
+            &maka_product_native::root_migrations(),
+        )
+        .await
+        .unwrap();
         let roots = vec![DirectoryRootSpec {
             label: "Workspace".into(),
             path: workspace.clone(),

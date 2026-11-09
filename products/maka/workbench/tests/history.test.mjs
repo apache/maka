@@ -22,6 +22,9 @@ import test from 'node:test';
 import {
   canRegenerateFromText,
   historyFollowPosition,
+  historyRowKey,
+  historyTurnKey,
+  sameHistoryRow,
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
@@ -30,6 +33,39 @@ import {
 import { hasSkillToken, skillTextGroups } from '../app/skillTokenText.ts';
 import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
 
+const FACTS = {
+  1: 'e18e24b1-55b7-4b2a-98a1-000000000001',
+  2: 'e18e24b1-55b7-4b2a-98a1-000000000002',
+  3: 'e18e24b1-55b7-4b2a-98a1-000000000003',
+  4: 'e18e24b1-55b7-4b2a-98a1-000000000004',
+  5: 'e18e24b1-55b7-4b2a-98a1-000000000005',
+  6: 'e18e24b1-55b7-4b2a-98a1-000000000006',
+  7: 'e18e24b1-55b7-4b2a-98a1-000000000007',
+  8: 'e18e24b1-55b7-4b2a-98a1-000000000008',
+  9: 'e18e24b1-55b7-4b2a-98a1-000000000009',
+  10: 'e18e24b1-55b7-4b2a-98a1-00000000000a',
+  11: 'e18e24b1-55b7-4b2a-98a1-00000000000b',
+  12: 'e18e24b1-55b7-4b2a-98a1-00000000000c',
+  13: 'e18e24b1-55b7-4b2a-98a1-00000000000d',
+  14: 'e18e24b1-55b7-4b2a-98a1-00000000000e',
+  15: 'e18e24b1-55b7-4b2a-98a1-00000000000f',
+  16: 'e18e24b1-55b7-4b2a-98a1-000000000010',
+  17: 'e18e24b1-55b7-4b2a-98a1-000000000011',
+  18: 'e18e24b1-55b7-4b2a-98a1-000000000012',
+  19: 'e18e24b1-55b7-4b2a-98a1-000000000013',
+  20: 'e18e24b1-55b7-4b2a-98a1-000000000014',
+  21: 'e18e24b1-55b7-4b2a-98a1-000000000015',
+  22: 'e18e24b1-55b7-4b2a-98a1-000000000016',
+  23: 'e18e24b1-55b7-4b2a-98a1-000000000017',
+  24: 'e18e24b1-55b7-4b2a-98a1-000000000018',
+  25: 'e18e24b1-55b7-4b2a-98a1-000000000019',
+};
+const livePosition = (sequence, itemIndex = 0) => {
+  const fact = FACTS[sequence];
+  assert.ok(fact, 'the fixture declares this original fact');
+  return { kind: 'live', sequence, fact, itemIndex };
+};
+
 const user = (text, turnId, sequence) => ({
   key: String(sequence),
   messageId: String(sequence),
@@ -37,14 +73,14 @@ const user = (text, turnId, sequence) => ({
   field: 'body',
   text,
   turnId,
-  position: { sourceSequence: sequence, itemIndex: 0 },
-  order: { sourceSequence: sequence, itemIndex: 0 },
+  position: livePosition(sequence, 0),
+  order: { path: [sequence], itemIndex: 0 },
 });
 
 test('unchanged history pages retain rows while fragments and fenced metadata still advance', () => {
   const first = {
-    position: { sourceSequence: 10, itemIndex: 0 },
-    order: { sourceSequence: 10, itemIndex: 0 },
+    position: livePosition(10, 0),
+    order: { path: [10], itemIndex: 0 },
     messageId: 'message',
     turnId: 'turn',
     timestamp: 100,
@@ -86,8 +122,8 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   };
   const reply = {
     ...first,
-    position: { sourceSequence: 11, itemIndex: 0 },
-    order: { sourceSequence: 11, itemIndex: 0 },
+    position: livePosition(11, 0),
+    order: { path: [11], itemIndex: 0 },
     messageId: 'reply',
     role: 'assistant',
     text: 'reply',
@@ -124,8 +160,8 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
 test('canonical order sorts MessageEnd-sourced text before earlier-source tools without changing cursor identity', () => {
   const chunk = (messageId, source, anchor, text) => ({
     messageId,
-    position: { sourceSequence: source, itemIndex: 0 },
-    order: { sourceSequence: anchor, itemIndex: 0 },
+    position: livePosition(source, 0),
+    order: { path: [anchor], itemIndex: 0 },
     field: 'body',
     role: 'assistant',
     offset: 0,
@@ -141,14 +177,14 @@ test('canonical order sorts MessageEnd-sourced text before earlier-source tools 
   assert.deepEqual(
     rows.map((row) => [row.text, row.position, row.order]),
     [
-      ['before', { sourceSequence: 7, itemIndex: 0 }, { sourceSequence: 2, itemIndex: 0 }],
-      ['tool', { sourceSequence: 5, itemIndex: 0 }, { sourceSequence: 5, itemIndex: 0 }],
-      ['after', { sourceSequence: 12, itemIndex: 0 }, { sourceSequence: 8, itemIndex: 0 }],
+      ['before', livePosition(7), { path: [2], itemIndex: 0 }],
+      ['tool', livePosition(5), { path: [5], itemIndex: 0 }],
+      ['after', livePosition(12), { path: [8], itemIndex: 0 }],
     ],
   );
   assert.deepEqual(historyFollowPosition(rows.at(-1), []), {
     kind: 'after',
-    cursor: { position: { sourceSequence: 12, itemIndex: 0 }, field: 'body', offset: 0 },
+    cursor: { position: livePosition(12, 0), field: 'body', offset: 0 },
   });
   assert.deepEqual(historyFollowPosition(rows.at(-1), [], [3, 9], 5), {
     kind: 'event',
@@ -225,15 +261,19 @@ test('early open model text retains its ordinal seat across later canonical tool
     field: 'body',
     role: 'user',
     text: 'go',
-    position: { sourceSequence: 1, itemIndex: 0 },
-    order: { sourceSequence: 1, itemIndex: 0 },
+    position: livePosition(1, 0),
+    order: { path: [1], itemIndex: 0 },
   };
   const early = {
     messageId: 'early',
     field: 'body',
     role: 'assistant',
     text: 'start',
-    modelPart: { stepId: 'step', ordinal: 0 },
+    modelPart: {
+      stepId: 'b1111111-1111-4111-8111-111111111111',
+      attemptId: 'c1111111-1111-4111-8111-111111111111',
+      ordinal: 0,
+    },
     preview: { stepOrder: 1, ordinal: 0, revision: 2 },
   };
   const tool = {
@@ -241,16 +281,24 @@ test('early open model text retains its ordinal seat across later canonical tool
     field: 'body',
     role: 'tool_call',
     text: '{}',
-    position: { sourceSequence: 20, itemIndex: 0 },
-    order: { sourceSequence: 20, itemIndex: 0 },
-    modelPart: { stepId: 'step', ordinal: 1 },
+    position: livePosition(20, 0),
+    order: { path: [20], itemIndex: 0 },
+    modelPart: {
+      stepId: 'b1111111-1111-4111-8111-111111111111',
+      attemptId: 'c1111111-1111-4111-8111-111111111111',
+      ordinal: 1,
+    },
   };
   const later = {
     messageId: 'later',
     field: 'body',
     role: 'assistant',
     text: 'tail',
-    modelPart: { stepId: 'step', ordinal: 2 },
+    modelPart: {
+      stepId: 'b1111111-1111-4111-8111-111111111111',
+      attemptId: 'c1111111-1111-4111-8111-111111111111',
+      ordinal: 2,
+    },
     preview: { stepOrder: 1, ordinal: 2, revision: 2 },
   };
   assert.deepEqual(
@@ -260,8 +308,8 @@ test('early open model text retains its ordinal seat across later canonical tool
   const canonicalEarly = {
     ...early,
     preview: undefined,
-    position: { sourceSequence: 25, itemIndex: 0 },
-    order: { sourceSequence: 25, itemIndex: 0 },
+    position: livePosition(25, 0),
+    order: { path: [25], itemIndex: 0 },
   };
   assert.deepEqual(
     orderProcessRows([user, tool, canonicalEarly, later]).map((row) => row.messageId),
@@ -271,8 +319,8 @@ test('early open model text retains its ordinal seat across later canonical tool
 
 test('a message the Host wrote keeps its origin so the Bot Chat can tell it from the user', () => {
   const chunk = (origin) => ({
-    position: { sourceSequence: 1, itemIndex: 0 },
-    order: { sourceSequence: 1, itemIndex: 0 },
+    position: livePosition(1, 0),
+    order: { path: [1], itemIndex: 0 },
     field: 'body',
     role: 'user',
     offset: 0,
@@ -291,7 +339,7 @@ test('a message the Host wrote keeps its origin so the Bot Chat can tell it from
 
 test('a script is shown as the tools it ran, and as itself only when it fails', () => {
   const tool = (toolUseId, sequence, ancestorToolUseIds, result, origin = 'code_mode') => {
-    const position = { sourceSequence: sequence, itemIndex: 0 };
+    const position = livePosition(sequence, 0);
     return {
       messageId: toolUseId,
       role: 'tool_call',
@@ -332,4 +380,73 @@ test('skill messages preserve adjacent UTF-8 chunks and do not join across unloa
     { offset: 100, text: '/skill:partial' },
   ]);
   assert.deepEqual(groups.map(hasSkillToken), [true, false]);
+});
+
+test('foreign chunks preserve missing original identity, author and qualified order without a Root event', () => {
+  const source = {
+    kind: 'imported',
+    path: ['a7777777-7777-4777-8777-777777777777'],
+    snapshot: 's-import-one',
+    messageOrdinal: 0,
+    partOrdinal: 0,
+  };
+  const chunk = {
+    position: source,
+    order: { path: [2, 1000000], itemIndex: 0 },
+    messageId: null,
+    turnId: null,
+    timestamp: null,
+    importedTurn: 0,
+    role: 'tool',
+    field: 'body',
+    text: 'foreign',
+    offset: 0,
+    totalBytes: 7,
+  };
+  const other = {
+    ...chunk,
+    position: { ...source, snapshot: 's-import-two' },
+    order: { path: [3, 1], itemIndex: 0 },
+  };
+  const root = {
+    ...chunk,
+    position: livePosition(5),
+    order: { path: [5], itemIndex: 0 },
+    messageId: 'root',
+    turnId: 'root-turn',
+    importedTurn: null,
+    role: 'assistant',
+    text: 'root',
+    totalBytes: 4,
+  };
+  const rows = mergeChunks([], [root, other, chunk], false, null);
+  assert.deepEqual(
+    rows.map((row) => row.text),
+    ['foreign', 'foreign', 'root'],
+  );
+  assert.equal(rows[0].messageId, undefined);
+  assert.equal(rows[0].turnId, undefined);
+  assert.equal(rows[0].timestamp, undefined);
+  assert.equal(rows[0].role, 'tool');
+  assert.equal(rows[0].metadataThrough, null);
+  assert.notEqual(rows[0].key, rows[1].key);
+  assert.notEqual(historyTurnKey(rows[0]), historyTurnKey(rows[1]));
+  assert.notEqual(historyTurnKey(rows[0]), rows[0].turnId);
+  assert.deepEqual(historyFollowPosition(rows[0], []), {
+    kind: 'after',
+    cursor: { position: source, field: 'body', offset: 0 },
+  });
+  const reordered = {
+    partOrdinal: 0,
+    messageOrdinal: 0,
+    snapshot: source.snapshot,
+    path: source.path,
+    kind: 'imported',
+  };
+  assert.equal(sameHistoryRow(source, reordered), true);
+  assert.equal(historyRowKey(source), historyRowKey(reordered));
+  const [emptyOriginal] = mergeChunks([], [{ ...chunk, messageId: '', turnId: '' }], false, null);
+  assert.equal(emptyOriginal.messageId, '');
+  assert.equal(emptyOriginal.turnId, '');
+  assert.equal(historyTurnKey(emptyOriginal), historyTurnKey(rows[0]));
 });

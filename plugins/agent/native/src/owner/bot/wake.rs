@@ -21,8 +21,7 @@
 //! ordinary Session; the Bot only keeps a durable watch per worker so that each
 //! finished run is reported to it once, even across restarts.
 use super::*;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_event_log::turns::InvocationState;
+use maka_agent_facts::durable::{ExecutionIdentity, RunId, Terminal};
 
 const WATCH_PREFIX: &str = "watch/";
 const POLL: Duration = Duration::from_secs(2);
@@ -41,9 +40,9 @@ struct Watch {
     model: ModelSelection,
     thinking_level: Option<ThinkingLevel>,
     workspace: Workspace,
-    binding: maka_agent_facts::workspace::BindingStamp,
-    /// The last finished invocation already reported to the Bot.
-    notified: Option<String>,
+    binding: maka_sandbox::workspace::BindingStamp,
+    /// The last finished logical Run already reported to the Bot.
+    notified: Option<RunId>,
 }
 
 impl Bot {
@@ -277,46 +276,51 @@ impl Owner {
             if self.runs.lock().await.busy(&worker) {
                 continue;
             }
-            let Some(boundary) = self
-                .store
-                .session(&worker)
+            let Some(run) = self
+                .durable
+                .latest_run(worker.clone())
                 .await
-                .map_err(|error| error.to_string())?
-                .latest_turn_boundary(&worker)
-                .await
-                .map_err(|_| "agent_execution_unavailable")?
+                .map_err(|e| e.to_string())?
             else {
                 continue;
             };
-            let invocation_id = boundary.invocation.invocation_id.clone();
-            let InvocationState::Ended { outcome, .. } = &boundary.state else {
-                continue;
+            let view = self
+                .durable
+                .frontier(run)
+                .await
+                .map_err(|e| e.to_string())?;
+            let result = match view.terminal {
+                Some(Terminal::Completed) => WorkerResult::Completed,
+                Some(Terminal::Failed) => WorkerResult::Failed,
+                Some(Terminal::Cancelled) => WorkerResult::Cancelled,
+                None => continue,
             };
-            let result = match outcome {
-                InvocationOutcome::Completed => WorkerResult::Completed,
-                InvocationOutcome::Failed { .. } => WorkerResult::Failed,
-                InvocationOutcome::Cancelled { .. } => WorkerResult::Cancelled,
-                // A pause or a context compaction is not a result of the work.
-                InvocationOutcome::HandoffPaused { .. }
-                | InvocationOutcome::ContextCompactFinished { .. } => continue,
-            };
-            if watch.notified.as_deref() == Some(invocation_id.as_str()) {
-                continue;
-            }
-            let bot_busy = self.runs.lock().await.busy(&bot);
-            if bot_busy || self.has_parked_invocation(&bot).await? {
+            if watch.notified == Some(run) {
                 continue;
             }
             let identity = hex::encode(Sha256::digest(
-                format!("bot-worker/{worker}/{invocation_id}").as_bytes(),
+                format!("bot-worker/{worker}/{run}").as_bytes(),
             ))[..32]
                 .to_owned();
-            let source = Invocation {
-                session_id: bot.clone(),
-                turn_id: format!("t_{identity}"),
-                run_id: format!("r_{identity}"),
-                invocation_id: format!("i_{identity}"),
+            let Some(bot_run) = self
+                .durable
+                .latest_run(bot.clone())
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
             };
+            let bot_view = self
+                .durable
+                .frontier(bot_run)
+                .await
+                .map_err(|e| e.to_string())?;
+            let source = ExecutionIdentity {
+                session_id: bot.clone(),
+                turn_id: bot_view.spec.turn_id,
+                run_id: bot_run,
+            };
+            let run_label = run.to_string();
             let title = stored.configuration.title.clone();
             // The Bot's model as it is now, not as it was when the watch was written.
             let route = match crate::model::Source::select(
@@ -345,7 +349,7 @@ impl Owner {
                     &source,
                     &route,
                     &identity,
-                    |language| worker_message(language, &worker, &title, &invocation_id, result),
+                    |language| worker_message(language, &worker, &title, &run_label, result),
                     MessageOrigin::BotWorker {
                         session_id: worker.clone(),
                     },
@@ -356,7 +360,7 @@ impl Owner {
             };
             if self.admit_notification(&admission).await? {
                 let next = Watch {
-                    notified: Some(invocation_id),
+                    notified: Some(run),
                     ..watch
                 };
                 match self

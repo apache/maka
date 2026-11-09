@@ -22,6 +22,20 @@ use crate::checkpoints::{
     LoadOperation, LoadRequest, LoadState, WorkspaceCapture, WorkspaceConsistency, WorkspaceEntry,
 };
 
+async fn publish_workspace(
+    store: &RootStore,
+    handle: &HistoryCheckpoints,
+    publication: PublicationRequest,
+) -> Result<Publication, StoreError> {
+    let source = publication.workspace.as_ref().expect("workspace fixture");
+    let directory = cap_std::fs::Dir::open_ambient_dir(&source.root, cap_std::ambient_authority())?;
+    let workspace = store.workspace(directory).await?;
+    let fence = store.fence_workspace(&workspace).await?;
+    handle
+        .publish_fenced(publication, snapshot_file(), &fence)
+        .await
+}
+
 #[tokio::test]
 async fn workspace_material_is_immutable_and_load_preserves_conditional_guarantee() {
     for mode in [
@@ -47,7 +61,11 @@ async fn workspace_material_is_immutable_and_load_preserves_conditional_guarante
             identity: "workspace-id".into(),
             consistency: mode,
         });
-        let head = published(&handle.publish(request.clone()).await.unwrap());
+        let head = published(
+            &publish_workspace(&store, &handle, request.clone())
+                .await
+                .unwrap(),
+        );
         std::fs::write(source.join("src/main.rs"), "later version").unwrap();
         let checkout = handle.checkout_exact(head.revision).await.unwrap();
         assert_eq!(checkout.manifest.workspace().unwrap().consistency, mode);
@@ -82,9 +100,14 @@ async fn workspace_material_is_immutable_and_load_preserves_conditional_guarante
             !path.exists(),
             "inspection must not copy workspace payloads"
         );
-        assert_eq!(published(&handle.publish(request).await.unwrap()), head);
+        assert_eq!(
+            published(&publish_workspace(&store, &handle, request).await.unwrap()),
+            head
+        );
         store.close().await.unwrap();
-        let store = RootStore::open(owner(dir.path())).await.unwrap();
+        let store = RootStore::open(owner(dir.path()), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         let handle = store.history_checkpoints("source", scope()).await.unwrap();
         assert!(matches!(
             handle.load_receipt(operation).await.unwrap().unwrap().state,
@@ -127,10 +150,13 @@ async fn unsafe_workspace_material_cannot_publish_a_head() {
             consistency: WorkspaceConsistency::Unverified,
         });
         assert!(
-            tokio::time::timeout(Duration::from_secs(10), handle.publish(request))
-                .await
-                .unwrap()
-                .is_err()
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                publish_workspace(&store, &handle, request)
+            )
+            .await
+            .unwrap()
+            .is_err()
         );
         assert!(handle.read_head().await.unwrap().is_none());
         store.close().await.unwrap();
@@ -149,7 +175,7 @@ async fn corrupt_workspace_object_prevents_exact_load() {
         identity: "workspace-id".into(),
         consistency: WorkspaceConsistency::Unverified,
     });
-    let head = published(&handle.publish(request).await.unwrap());
+    let head = published(&publish_workspace(&store, &handle, request).await.unwrap());
     let checkout = handle.checkout_exact(head.revision).await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
     let inventory: serde_json::Value = serde_json::from_reader(
@@ -196,6 +222,8 @@ async fn detected_external_writer_aborts_capture_even_when_caller_confirmed() {
         *hook.borrow_mut() = Some(Box::new(move || std::fs::write(changed, "after!").unwrap()))
     });
     let request = handle.request(publication).unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(&source, cap_std::ambient_authority()).unwrap();
     let error = super::super::workspace::capture(
         &objects,
         &request,
@@ -204,11 +232,26 @@ async fn detected_external_writer_aborts_capture_even_when_caller_confirmed() {
             identity: "workspace".into(),
             consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
         },
+        &directory,
     )
     .unwrap_err();
     assert!(error.to_string().contains("changed"));
     assert!(handle.read_head().await.unwrap().is_none());
     store.close().await.unwrap();
+}
+
+async fn prepare_restore(
+    store: &RootStore,
+    handle: &HistoryCheckpoints,
+    operation: crate::checkpoints::RestoreOperation,
+) -> Result<(crate::checkpoints::PreparedRestore, WorkspaceFence), StoreError> {
+    let parent = store
+        .workspace(cap_std::fs::Dir::open_ambient_dir(
+            &operation.parent,
+            cap_std::ambient_authority(),
+        )?)
+        .await?;
+    handle.prepare_workspace_restore(operation, &parent).await
 }
 
 async fn restore_fixture(
@@ -220,6 +263,7 @@ async fn restore_fixture(
     crate::checkpoints::RestoreOperation,
     crate::checkpoints::PreparedRestore,
     serde_json::Value,
+    WorkspaceFence,
 ) {
     let (store, handle, mut publish) = fixture(path).await;
     let source = path.join("project");
@@ -240,69 +284,16 @@ async fn restore_fixture(
             .unwrap(),
         crate::sessions::SessionMutation::Committed(_)
     ));
-    {
-        use maka_agent_facts::{
-            event::{
-                EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
-            },
-            input::{DeliveredMessage, MessageInput},
-            message::{MessageDisposition, Placement, RootSourceMessage},
-        };
-        let log = handle.session.scoped().await.unwrap();
-        let content: MessageInput = "initial message".to_owned().into();
-        let message = RootSourceMessage {
-            message: DeliveredMessage {
-                origin: None,
-                message_id: "msg-read-1".into(),
-                content: content.clone(),
-                submitted_content_digest: content.content_digest().unwrap(),
-            },
-            unprepared_content: content.clone(),
-            submitted_placement: Placement::CurrentTurn,
-            disposition: MessageDisposition::TurnStarted,
-            submitted_intent: None,
-        };
-        let invocation = Invocation {
-            session_id: "source".into(),
-            turn_id: "turn-1".into(),
-            run_id: "run-1".into(),
-            invocation_id: "inv-1".into(),
-        };
-        log.append(
-            &EventWrite::plain(RuntimeEvent::new(
-                invocation.clone(),
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        content,
-                        source_messages: vec![message],
-                        request_fingerprint: None,
-                    },
-                },
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        log.append(
-            &EventWrite::plain(RuntimeEvent::new(
-                invocation,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Completed,
-                },
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    }
-    publish.confirmed_subtree_digest = store.preview_bundle("source").await.unwrap().subtree_digest;
     publish.workspace = Some(WorkspaceCapture {
         root: source,
         identity: "workspace".into(),
         consistency: WorkspaceConsistency::Unverified,
     });
-    let head = published(&handle.publish(publish.clone()).await.unwrap());
+    let head = published(
+        &publish_workspace(&store, &handle, publish.clone())
+            .await
+            .unwrap(),
+    );
     let parent = path.join("destinations");
     std::fs::create_dir(&parent).unwrap();
     let directory =
@@ -314,8 +305,7 @@ async fn restore_fixture(
         parent,
         parent_identity: super::super::restore::directory_identity(&directory).unwrap(),
     };
-    let prepared = handle
-        .prepare_workspace_restore(operation.clone())
+    let (prepared, fence) = prepare_restore(&store, &handle, operation.clone())
         .await
         .unwrap();
     let binding = store
@@ -323,17 +313,25 @@ async fn restore_fixture(
         .await
         .unwrap();
     let configuration = json!({"title":"restored","workspace":binding,"boundary_revision":2});
-    (store, handle, publish, operation, prepared, configuration)
+    (
+        store,
+        handle,
+        publish,
+        operation,
+        prepared,
+        configuration,
+        fence,
+    )
 }
 async fn commit_restore(
     handle: &HistoryCheckpoints,
     operation: crate::checkpoints::RestoreOperation,
     configuration: &serde_json::Value,
-    now: u64,
+    fence: &WorkspaceFence,
 ) -> Result<crate::checkpoints::RestoredSession, StoreError> {
     let configuration = configuration.clone();
     handle
-        .commit_workspace_restore(operation, now, move |value: &mut serde_json::Value| {
+        .commit_workspace_restore(operation, fence, move |value: &mut serde_json::Value| {
             *value = configuration.clone();
             Ok(())
         })
@@ -342,18 +340,18 @@ async fn commit_restore(
 #[tokio::test]
 async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_changes() {
     let directory = tempfile::tempdir().unwrap();
-    let (store, _handle, _, operation, prepared, configuration) =
+    let (store, _handle, _, operation, prepared, configuration, original_fence) =
         restore_fixture(directory.path()).await;
+    drop(original_fence);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
-    assert_eq!(
-        handle
-            .prepare_workspace_restore(operation.clone())
-            .await
-            .unwrap(),
-        prepared
-    );
+    let (retry, fence) = prepare_restore(&store, &handle, operation.clone())
+        .await
+        .unwrap();
+    assert_eq!(retry, prepared);
     let before = store
         .get_session::<serde_json::Value>("source")
         .await
@@ -363,7 +361,7 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
     log.connection.run(|db|{db.execute_batch("CREATE TRIGGER reject_restore BEFORE UPDATE ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'reject receipt'); END;")?;Ok(())}).await.unwrap();
     drop(log);
     assert!(
-        commit_restore(&handle, operation.clone(), &configuration, 2)
+        commit_restore(&handle, operation.clone(), &configuration, &fence)
             .await
             .is_err()
     );
@@ -383,12 +381,12 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
         .await
         .unwrap();
     drop(log);
-    let committed = commit_restore(&handle, operation.clone(), &configuration, 3)
+    let committed = commit_restore(&handle, operation.clone(), &configuration, &fence)
         .await
         .unwrap();
     assert_eq!(committed.prepared, prepared);
     assert_eq!(
-        commit_restore(&handle, operation.clone(), &configuration, 3)
+        commit_restore(&handle, operation.clone(), &configuration, &fence)
             .await
             .unwrap(),
         committed
@@ -417,7 +415,9 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
         Some(committed.clone())
     );
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert_eq!(
         handle
@@ -434,65 +434,15 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
 }
 #[tokio::test]
 async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
-    for race in [
-        "head",
-        "history",
-        "busy",
-        "files",
-        "extra",
-        "parent",
-        "symlink",
-        "replacement",
-    ] {
+    for race in ["head", "files", "extra", "parent", "symlink", "replacement"] {
         let directory = tempfile::tempdir().unwrap();
-        let (store, handle, mut publish, operation, prepared, configuration) =
+        let (store, handle, mut publish, operation, prepared, configuration, fence) =
             restore_fixture(directory.path()).await;
         match race {
-            "history" | "busy" => {
-                use maka_agent_facts::event::{
-                    EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
-                };
-                let log = handle.session.scoped().await.unwrap();
-                let invocation = Invocation {
-                    session_id: "source".into(),
-                    turn_id: "new".into(),
-                    run_id: "new".into(),
-                    invocation_id: "new".into(),
-                };
-                log.append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::InvocationOpened {
-                            configuration: None,
-                            input: InvocationInput::Message {
-                                content: "new history".into(),
-                                source_messages: vec![],
-                                request_fingerprint: None,
-                            },
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-                if race == "history" {
-                    log.append(
-                        &EventWrite::plain(RuntimeEvent::new(
-                            invocation,
-                            Fact::InvocationEnded {
-                                outcome: InvocationOutcome::Completed,
-                            },
-                        ))
-                        .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                }
-            }
             "head" => {
                 publish.operation = Uuid::new_v4();
                 publish.expected_revision = Some(operation.revision);
-                handle.publish(publish).await.unwrap();
+                publish_workspace(&store, &handle, publish).await.unwrap();
             }
             "files" => std::fs::write(prepared.path.join("file"), "modified").unwrap(),
             "parent" => {
@@ -517,7 +467,7 @@ async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
             .unwrap()
             .unwrap();
         assert!(
-            commit_restore(&handle, operation.clone(), &configuration, 2)
+            commit_restore(&handle, operation.clone(), &configuration, &fence)
                 .await
                 .is_err(),
             "accepted {race} race"
@@ -547,23 +497,25 @@ async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
 #[tokio::test]
 async fn restore_retry_never_adopts_an_occupied_destination() {
     let directory = tempfile::tempdir().unwrap();
-    let (store, handle, _, mut operation, _, _) = restore_fixture(directory.path()).await;
+    let (store, handle, _, mut operation, _, _, _original_fence) =
+        restore_fixture(directory.path()).await;
     operation.operation = Uuid::new_v4();
     let key = crate::checkpoints::load_key(&scope(), "source", operation.operation).unwrap();
     let occupied = operation.parent.join(format!("maka-restored-{key}"));
     std::fs::create_dir(&occupied).unwrap();
     std::fs::write(occupied.join("file"), "frozen").unwrap();
     assert!(
-        handle
-            .prepare_workspace_restore(operation.clone())
+        prepare_restore(&store, &handle, operation.clone())
             .await
             .is_err()
     );
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert!(
-        handle.prepare_workspace_restore(operation).await.is_err(),
+        prepare_restore(&store, &handle, operation).await.is_err(),
         "retry adopted a directory it did not create"
     );
     assert_eq!(
@@ -576,7 +528,8 @@ async fn restore_retry_never_adopts_an_occupied_destination() {
 #[tokio::test]
 async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
     let directory = tempfile::tempdir().unwrap();
-    let (store, handle, _, mut operation, _, _) = restore_fixture(directory.path()).await;
+    let (store, handle, _, mut operation, _, _, _original_fence) =
+        restore_fixture(directory.path()).await;
     operation.operation = Uuid::new_v4();
     let log = handle.session.scoped().await.unwrap();
     log.connection.run(|db|{
@@ -585,8 +538,7 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
     }).await.unwrap();
     drop(log);
     assert!(
-        handle
-            .prepare_workspace_restore(operation.clone())
+        prepare_restore(&store, &handle, operation.clone())
             .await
             .is_err()
     );
@@ -601,8 +553,26 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
         .await
         .unwrap();
     let configuration = json!({"workspace":binding,"boundary_revision":2});
+    let owner = store.log.owned_root().unwrap();
+    let parent =
+        cap_std::fs::Dir::open_ambient_dir(&operation.parent, cap_std::ambient_authority())
+            .unwrap();
+    let slot = crate::root_store::workspace_fence::ChildSlot::reserve(
+        &store.gates,
+        &owner,
+        parent.try_clone().unwrap(),
+        path.file_name().unwrap().to_owned(),
+    )
+    .unwrap();
+    use cap_fs_ext::DirExt;
+    slot.bind_existing(
+        &store.gates,
+        parent.open_dir_nofollow(path.file_name().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let fence = slot.fence();
     assert!(
-        commit_restore(&handle, operation, &configuration, 2)
+        commit_restore(&handle, operation, &configuration, &fence)
             .await
             .is_err()
     );
@@ -654,7 +624,7 @@ async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtu
         identity: "workspace".into(),
         consistency: WorkspaceConsistency::Unverified,
     });
-    let head = published(&handle.publish(request).await.unwrap());
+    let head = published(&publish_workspace(&store, &handle, request).await.unwrap());
     let checkout = handle.checkout_exact(head.revision).await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
     let inventory: serde_json::Value = serde_json::from_reader(
@@ -698,7 +668,7 @@ async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtu
 #[tokio::test]
 async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_history() {
     let directory = tempfile::tempdir().unwrap();
-    let (store, handle, _, original, _, mut configuration) =
+    let (store, handle, _, original, _, mut configuration, _original_fence) =
         restore_fixture(directory.path()).await;
     let current = store
         .get_session::<serde_json::Value>("source")
@@ -719,8 +689,7 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
     let mut request = original.clone();
     request.operation = Uuid::new_v4();
     request.fingerprint = "e".repeat(64);
-    let prepared = handle
-        .prepare_workspace_restore(request.clone())
+    let (prepared, fence) = prepare_restore(&store, &handle, request.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -734,23 +703,17 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
             .unwrap(),
     )
     .unwrap();
-    commit_restore(&handle, request, &configuration, 3)
+    commit_restore(&handle, request, &configuration, &fence)
         .await
         .unwrap();
     let mut again = original;
     again.operation = Uuid::new_v4();
     again.fingerprint = "f".repeat(64);
-    let second = handle
-        .prepare_workspace_restore(again.clone())
+    let (second, second_fence) = prepare_restore(&store, &handle, again.clone())
         .await
         .unwrap();
     assert_ne!(prepared.path, second.path);
-    // Non-history mutations (read marker + metadata update) between prepare and commit
-    // must be preserved rather than rejected or overwritten.
-    store
-        .set_session_read_marker::<serde_json::Value>("source", "msg-read-1")
-        .await
-        .unwrap();
+    // A concurrent metadata edit must survive rebinding the restored workspace.
     let live = store
         .get_session::<serde_json::Value>("source")
         .await
@@ -768,11 +731,15 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
         .await
         .unwrap();
     let restored = handle
-        .commit_workspace_restore(again, 4, move |value: &mut serde_json::Value| {
-            value["workspace"] = serde_json::to_value(new_binding)?;
-            value["boundary_revision"] = json!(3);
-            Ok(())
-        })
+        .commit_workspace_restore(
+            again,
+            &second_fence,
+            move |value: &mut serde_json::Value| {
+                value["workspace"] = serde_json::to_value(new_binding)?;
+                value["boundary_revision"] = json!(3);
+                Ok(())
+            },
+        )
         .await
         .unwrap();
     let after = store
@@ -781,10 +748,7 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
         .unwrap()
         .unwrap();
     assert_eq!(after.revision, restored.session_revision);
-    assert_eq!(
-        after.read_state.last_read_message_id.as_deref(),
-        Some("msg-read-1")
-    );
+
     assert_eq!(
         after.configuration["title"],
         "renamed between prepare and commit"
@@ -810,7 +774,7 @@ async fn case_colliding_paths_fail_before_publishing_a_head() {
         identity: "workspace-id".into(),
         consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
     });
-    let outcome = handle.publish(request).await;
+    let outcome = publish_workspace(&store, &handle, request).await;
     assert!(
         outcome.is_err(),
         "expected case-collision failure: {outcome:?}"

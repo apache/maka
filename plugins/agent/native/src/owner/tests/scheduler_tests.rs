@@ -59,7 +59,7 @@ async fn reopen(f: &mut Fixture) {
     f.app.shutdown().await.unwrap();
     let mut native = NativeRegistry::default();
     maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-    crate::owner::tests::provide_all(&mut native).unwrap();
+    crate::owner::tests::provide_all(&mut native, f.owner.durable.clone()).unwrap();
     f.app = Application::start_from_store(
         f.store.clone(),
         deployment,
@@ -279,10 +279,10 @@ async fn scheduler_model_proposal_requires_user_approval_and_archived_source_blo
 
 #[tokio::test]
 async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_lost_settlement() {
-    use maka_capabilities::storage::Data;
-    use maka_capabilities::storage::Mutation;
-    use maka_capabilities::storage::Namespace;
-    use maka_capabilities::storage::Store;
+    use maka_plugin_core::storage::Data;
+    use maka_plugin_core::storage::Mutation;
+    use maka_plugin_core::storage::Namespace;
+    use maka_plugin_core::storage::Store;
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = fixture(&format!("http://{}/v1",listener.local_addr().unwrap())).await;
@@ -299,7 +299,8 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         pending.claim(now() as i64).unwrap();
         let frozen = serde_json::to_value(&pending).unwrap();
         let fire = pending.pending.as_ref().unwrap().id.clone();
-        storage.batch(vec![Mutation{key:key.clone(),expected_revision:Some(saved.revision),data:Data::Present(frozen.clone())}]).await.unwrap();
+        let ready = storage.read("ready".into()).await.unwrap();
+        storage.batch(vec![Mutation{key:key.clone(),expected_revision:Some(saved.revision),data:Data::Present(frozen.clone())}, Mutation { key: "ready".into(), expected_revision: ready.map(|row| row.revision), data: Data::Deleted }]).await.unwrap();
         reopen(&mut f).await;
         let (mut socket,_) = listener.accept().await.unwrap();
         assert!(request(&mut socket).await.to_string().contains("Remember the original request"));
@@ -309,14 +310,15 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         assert_eq!(run["id"],fire);
         let target = run["sessionId"].as_str().unwrap();
         loop {
-            if service_tools::facts(&f,target).await.iter().any(|fact| matches!(fact,maka_agent_facts::event::Fact::InvocationEnded { .. })) { break; }
+            if service_tools::facts(&f,target).await.iter().any(|fact| matches!(fact,maka_agent_facts::durable::Fact::RunTerminated { .. })) { break; }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         f.app.shutdown().await.unwrap();
         // Durable cut after original Agent admission but before scheduler settlement:
         // retain the exact frozen fire/approval, as a failed settlement would.
         let saved = storage.read(key.clone()).await.unwrap().unwrap();
-        storage.batch(vec![Mutation{key:key.clone(),expected_revision:Some(saved.revision),data:Data::Present(frozen)}]).await.unwrap();
+        let ready = storage.read("ready".into()).await.unwrap();
+        storage.batch(vec![Mutation{key:key.clone(),expected_revision:Some(saved.revision),data:Data::Present(frozen)}, Mutation { key: "ready".into(), expected_revision: ready.map(|row| row.revision), data: Data::Deleted }]).await.unwrap();
         f.store.set_session_archived::<StoredSessionConfiguration>(&source,true,now()).await.unwrap();
         reopen(&mut f).await;
         let recovered = settled(&f,id).await;
@@ -327,7 +329,7 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         assert_eq!(actual["outcome"],"ok","revocation cannot rewrite an already admitted result");
         assert_eq!(recovered["task"]["fireCount"],1);
         let facts = service_tools::facts(&f,target).await;
-        assert_eq!(facts.iter().filter(|fact| matches!(fact,maka_agent_facts::event::Fact::InvocationOpened { .. })).count(),1);
+        assert_eq!(facts.iter().filter(|fact| matches!(fact,maka_agent_facts::durable::Fact::RunAdmitted { .. })).count(),1);
         assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
         f.app.shutdown().await.unwrap();
         storage.finish().await.unwrap();
@@ -336,8 +338,6 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
 
 #[tokio::test]
 async fn scheduler_drives_an_original_pending_admission_after_authority_normalization() {
-    use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
-    use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
@@ -345,52 +345,37 @@ async fn scheduler_drives_an_original_pending_admission_after_authority_normaliz
         let boundary = f.owner.session(&source).await.unwrap().configuration;
         let created = f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"session","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision,"binding":boundary.binding},"model":f.selection().await,"thinkingLevel":null}))}),Uuid::new_v4()).await.unwrap();
         let id = created["taskId"].as_str().unwrap();
-        let storage = maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.scheduler",maka_plugin_core::scope::Scope::Profile).unwrap());
-        let key = format!("task:{id}");
-        let saved = storage.read(key.clone()).await.unwrap().unwrap();
-        let mut pending: maka_scheduler::plan::TaskPlan<ScheduledEffect,Value> = serde_json::from_value(saved.data.value().unwrap().clone()).unwrap();
+        let gate = f.owner.scheduler.gate.lock().await;
+        let mut catalog = f.owner.scheduler.load().await.unwrap();
+        let mut pending = catalog.plans[id].plan.clone();
         pending.task.next_fire_at = Some(now() as i64);
         pending.claim(now() as i64).unwrap();
-        let fire = pending.pending.as_mut().unwrap();
-        let model = &mut fire.authorization.as_mut().unwrap()["basis"]["model"];
-        model["model_override"] = json!({"adapter":model["route"]["adapter"]});
-        let mut basis = fire.authorization.as_ref().unwrap()["basis"].clone();
-        let original_fingerprint = "a".repeat(64);
-        basis["fingerprint"] = json!(original_fingerprint);
+        let fire = pending.pending.as_ref().unwrap().clone();
+        let scheduler::Approval::Execution { approval } = fire.authorization.as_ref().unwrap() else { panic!("actual schedule execution approval"); };
+        let basis = f.owner.prepare_approved_background(&approval, BackgroundKind::Schedule { task_id: id.to_owned() }).await.unwrap();
+        f.owner.scheduler.commit(&mut catalog, id, Some(pending), None).await.unwrap();
         let identity = hex::encode(Sha256::digest(fire.id.as_bytes()));
-        let invocation = Invocation { session_id: source.clone(), turn_id: format!("t_{identity}"), run_id: format!("r_{identity}"), invocation_id: format!("i_{identity}") };
-        let message: maka_agent_facts::input::MessageInput = fire.intent.body().to_string().into();
-        let original = PendingMessageAdmission {
-            execution: PendingExecution { owner: f.owner.prefix.clone(), basis },
-            invocation: invocation.clone(), steering_invocation: None,
-            source: maka_agent_facts::message::RootSourceMessage {
-                message: maka_agent_facts::input::DeliveredMessage { origin: None, message_id: format!("m_{identity}"), submitted_content_digest: message.content_digest().unwrap(), content: message.clone() },
-                unprepared_content: message, submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
-                disposition: maka_agent_facts::message::MessageDisposition::TurnStarted, submitted_intent: None,
-            },
-            required_tools: Default::default(), admitted_at: fire.scheduled_at as u64,
-        };
-        let ordered = f.owner.runs.ordered(&source).await;
-        f.store.session(&source).await.unwrap().admit_message(original).await.unwrap();
-        f.owner.schedule_pending().await.unwrap();
-        storage.batch(vec![Mutation { key, expected_revision: Some(saved.revision), data: Data::Present(serde_json::to_value(&pending).unwrap()) }]).await.unwrap();
-        drop(ordered);
-        // Wake the ordinary scheduler after the durable cut; no user message drives the queued work.
-        f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"reminder"}))}),Uuid::new_v4()).await.unwrap();
+        let message: maka_agent_facts::input::MessageInput = fire.intent.body().to_owned().into();
+        let original = f.owner.enqueue_background(&source, RootSourceMessage {
+            message: DeliveredMessage { origin: None, message_id: format!("m_{identity}"), submitted_content_digest: message.content_digest().unwrap(), content: message.clone() },
+            unprepared_content: message, submitted_placement: Placement::CurrentTurn, disposition: MessageDisposition::TurnStarted, submitted_intent: None,
+        }, &basis, &identity, Default::default()).await.unwrap();
+        drop(gate);
+        f.owner.scheduler.execution_changed();
         let (mut socket,_) = tokio::time::timeout(Duration::from_secs(20), listener.accept()).await.unwrap().unwrap();
         assert!(request(&mut socket).await.to_string().contains("Remember the original request"));
         response(&mut socket).await;
         let recovered = settled(&f,id).await;
         assert_eq!(recovered["task"]["fireCount"], 1);
-        assert_eq!(recovered["task"]["runs"][0]["runId"], invocation.run_id);
+        let maka_agent_state::queue::MessageResolution::Delivered { run, .. } = f.owner.durable.queue().resolve_message(source.clone(), original.message_id.clone()).await.unwrap() else { panic!("original queue admission missing"); };
+        assert_eq!(recovered["task"]["runs"][0]["runId"], run.to_string());
+        assert_eq!(f.owner.durable.frontier(run).await.unwrap().spec, original.spec);
         assert_eq!(recovered["task"]["runs"][0]["outcome"], "ok");
         let facts = service_tools::facts(&f,&source).await;
-        let openings: Vec<_> = facts.iter().filter_map(|fact| match fact {
-            maka_agent_facts::event::Fact::InvocationOpened { input, .. } => Some(input), _ => None,
-        }).collect();
-        assert_eq!(openings.len(), 1);
-        assert_eq!(openings[0].request_fingerprint(), Some(original_fingerprint.as_str()));
+        assert_eq!(facts.iter().filter(|fact| matches!(fact, maka_agent_facts::durable::Fact::RunAdmitted { .. })).count(), 1);
+        let input = f.history(&source).content(run, &original.spec.input).await.unwrap();
+        let input: maka_agent_facts::input::RunInput = serde_json::from_slice(&input).unwrap();
+        assert!(matches!(input, maka_agent_facts::input::RunInput::Message { ref content, .. } if content == &MessageInput::from(fire.intent.body().to_owned())));
         f.app.shutdown().await.unwrap();
-        storage.finish().await.unwrap();
     }).await.unwrap();
 }

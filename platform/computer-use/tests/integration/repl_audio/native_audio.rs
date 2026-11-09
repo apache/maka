@@ -38,7 +38,11 @@ impl ToolExecutor for Native {
                 .await
                 .invoke(
                     serde_json::from_value(input).unwrap(),
-                    &InvocationContext::new("audio-public-fixture", "audio-turn"),
+                    &InvocationContext::new(
+                        "audio-public-fixture",
+                        "audio-turn",
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
                     &cancellation,
                     Language::En,
                 )

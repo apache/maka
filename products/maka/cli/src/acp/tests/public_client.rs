@@ -48,7 +48,7 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
                 .execute(&mut connection).await.unwrap();
             connections.push(connection);
         }
-        let Reply::Mutation { reply, cleanup } = call.confirm().await.unwrap() else { panic!("fork returned no receipt"); };
+        let Reply::Mutation { reply, cleanup } = call.confirm(serde_json::Value::Null).await.unwrap() else { panic!("fork returned no receipt"); };
         cleanup.unwrap();
         assert_eq!(reply.reference,*reference);
         let maka_plugin_core::operation::Receipt::Unavailable { diagnostic } = reply.receipt else { panic!("failed settlement must not claim a recorded fork result"); };
@@ -134,9 +134,9 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
         let mut call=fixture.native.call("agent","publishCheckpoint".into(),input.clone(),Default::default()).await.unwrap();
         call.start().await.unwrap();
         let Reply::Prepared {reference}=call.receive().await.unwrap() else {panic!("original operation reference")};
-        let Reply::Mutation {reply,cleanup}=call.confirm().await.unwrap() else {panic!("publication receipt")};
+        let Reply::Mutation {reply,cleanup}=call.confirm(serde_json::Value::Null).await.unwrap() else {panic!("publication receipt")};
         cleanup.unwrap();
-        let Receipt::Recorded {outcome:OperationOutcome::Returned {value},..}=reply.receipt else {panic!("publication failed")};
+        let Receipt::Recorded {outcome:OperationOutcome::Returned {result: maka_plugin_core::operation::OperationResult::Success {value}},..}=reply.receipt else {panic!("publication failed")};
         assert_eq!(value["state"]["kind"],"published");
         call.close().await.unwrap();
         let receipt=support::query(&fixture.native,"agent","checkpointReceipt",json!({"reference":reference,"input":input})).await;
@@ -147,12 +147,13 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
         stream.start().await.unwrap();
         assert!(matches!(stream.receive().await.unwrap(),Reply::Subscribed));
         let mut bytes=Vec::new(); let mut ended=false;
+        let mut history_snapshot = None;
         loop {
             match stream.pull().await.unwrap() {
                 Reply::Item {value}=>match value["kind"].as_str().unwrap() {
-                    "checkpoint"=>assert_eq!(value["head"],head),
+                    "checkpoint"=>{assert_eq!(value["head"],head); assert!(history_snapshot.is_none()); history_snapshot = Some(serde_json::from_value::<maka_agent_api::contract::HistoryCheckpointSnapshot>(value["history"].clone()).unwrap());},
                     "chunk"=>{assert_eq!(value["offset"],bytes.len() as u64); bytes.extend(STANDARD.decode(value["data"].as_str().unwrap()).unwrap());},
-                    "end"=>{assert_eq!(value["bytes"],bytes.len() as u64); ended=true;},
+                    "end"=>{assert_eq!(value["bytes"],bytes.len() as u64); assert_eq!(value["digest"], maka_agent_facts::artifact::content_digest(&bytes).strip_prefix("sha256:").unwrap()); ended=true;},
                     _=>panic!("{value}"),
                 },
                 Reply::Finished {result,cleanup}=>{assert!(result.unwrap().is_null());cleanup.unwrap();break;},
@@ -160,16 +161,21 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
             }
         }
         assert!(ended);
-        let mut stage=maka_event_log::bundle::StagedBundle::read(bytes.as_slice()).await.unwrap();
-        stage.validate_history().await.unwrap();
-        stage.close().await.unwrap();
+        let history_snapshot = history_snapshot.expect("original checkpoint stream descriptor");
+        assert_eq!(history_snapshot.object.bytes, bytes.len() as u64);
+        assert_eq!(history_snapshot.object.digest, maka_agent_facts::artifact::content_digest(&bytes).strip_prefix("sha256:").unwrap());
+        let maka_agent_facts::history_snapshot::Origin::Canonical { cut } =
+            serde_json::from_slice(&history_snapshot.cut).unwrap() else {
+                panic!("checkpoint must retain the original canonical history cut");
+            };
+        assert_eq!(cut.session, fixture.session);
         let load_input=json!({"sessionId":fixture.session,"revision":head["revision"]});
         let mut loading=fixture.native.call("agent","loadHistoryCheckpoint".into(),load_input.clone(),Default::default()).await.unwrap();
         loading.start().await.unwrap();
         let Reply::Prepared {reference:load_ref}=loading.receive().await.unwrap() else {panic!("load not prepared")};
-        let Reply::Mutation {reply,cleanup}=loading.confirm().await.unwrap() else {panic!("load not returned")};
+        let Reply::Mutation {reply,cleanup}=loading.confirm(serde_json::Value::Null).await.unwrap() else {panic!("load not returned")};
         cleanup.unwrap();
-        let Receipt::Recorded {outcome:OperationOutcome::Returned {value:loaded},..}=reply.receipt else {panic!("load failed")};
+        let Receipt::Recorded {outcome:OperationOutcome::Returned {result: maka_plugin_core::operation::OperationResult::Success {value:loaded}},..}=reply.receipt else {panic!("load failed")};
         assert_eq!(loaded["state"]["kind"],"ready");loading.close().await.unwrap();
         let observed=support::query(&fixture.native,"agent","historyCheckpointLoadReceipt",json!({"reference":load_ref,"input":load_input})).await;
         assert_eq!(observed["load"],loaded);

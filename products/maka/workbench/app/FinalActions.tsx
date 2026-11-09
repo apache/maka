@@ -24,7 +24,8 @@ import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
-import type { Position, Row } from './history';
+import { sameHistoryRow, type Row } from './history';
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { TurnUsage } from './TurnUsage';
@@ -33,8 +34,8 @@ import { C, IconButton } from './ui';
 type Target = {
   sessionId: string;
   key: string;
-  position: Position;
-  turnId: string;
+  position: HistoryRowAddress;
+  turnId?: string;
 };
 const sameTarget = (left: Target | null, right: Target | null) =>
   left === right ||
@@ -43,8 +44,7 @@ const sameTarget = (left: Target | null, right: Target | null) =>
     left.sessionId === right.sessionId &&
     left.key === right.key &&
     left.turnId === right.turnId &&
-    left.position.sourceSequence === right.position.sourceSequence &&
-    left.position.itemIndex === right.position.itemIndex);
+    sameHistoryRow(left.position, right.position));
 
 /** Actions retain this exact completed reply, even if a later turn is running. */
 export function FinalActions(props: {
@@ -59,7 +59,7 @@ export function FinalActions(props: {
   const host = useHost();
   const pending = signal(false);
   const notice = createText();
-  const usage = signal<Target | null>(null);
+  const usage = signal<(Target & { turnId: string }) | null>(null);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -67,7 +67,9 @@ export function FinalActions(props: {
   const target = computed<Target | null>(
     () => {
       const row = props.row();
-      return row.finalOutput && row.position && row.turnId
+      return row.position &&
+        (row.finalOutput ||
+          (row.position.kind !== 'live' && row.role === 'assistant' && row.field === 'body'))
         ? {
             sessionId: props.sessionId,
             key: props.ownerKey(),
@@ -96,7 +98,7 @@ export function FinalActions(props: {
         kind: 'fork',
         session: observed.session,
         title: forkTitle(observed.session.title),
-        position: { kind: 'through_turn', turnId: original.turnId },
+        position: { kind: 'through_source_turn', position: original.position },
       });
       if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
@@ -106,7 +108,13 @@ export function FinalActions(props: {
     }
   };
   const showUsage = (original: Target | null) => {
-    if (original && owns(original)) usage.set(original);
+    if (
+      original &&
+      owns(original) &&
+      original.position.kind === 'live' &&
+      original.turnId !== undefined
+    )
+      usage.set({ ...original, turnId: original.turnId });
   };
   const closeUsage = (original: Target | null) => {
     if (!alive || original === null || !sameValue(usage(), original)) return;
@@ -152,7 +160,7 @@ export function FinalActions(props: {
         <IconButton
           label={tr("View this turn's model usage")}
           icon="activity"
-          disabled={target() === null}
+          disabled={target()?.position.kind !== 'live' || target()?.turnId === undefined}
           onPress={inputAction(showUsage, target())}
         />
         <If when={details()}>

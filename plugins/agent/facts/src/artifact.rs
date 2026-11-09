@@ -20,6 +20,36 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Canonical tool-return manifest. The body codec belongs to its actual consumer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublishedArtifact {
+    pub artifact: Artifact,
+    pub payload: crate::durable::ContentRef,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolReturn<T> {
+    pub schema_version: u32,
+    pub artifacts: Vec<PublishedArtifact>,
+    pub body: T,
+}
+impl<T> ToolReturn<T> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != crate::durable::SCHEMA_VERSION {
+            return Err("unsupported tool return schema");
+        }
+        for published in &self.artifacts {
+            published.artifact.validate()?;
+            published.payload.validate()?;
+            if published.artifact.size_bytes != published.payload.bytes {
+                return Err("artifact payload length mismatch");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Material committed atomically with a canonical fact, not a best-effort file reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

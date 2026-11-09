@@ -120,7 +120,7 @@ async fn retained_subscriptions_do_not_block_queries_or_controls_and_close_drain
         assert!(matches!(
             reply.receipt,
             Receipt::Recorded {
-                outcome: OperationOutcome::Returned { value }, ..
+                outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, ..
             } if value == json!({"sent": 1})
         ));
         assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);

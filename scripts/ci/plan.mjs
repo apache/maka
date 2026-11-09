@@ -18,7 +18,7 @@
  */
 
 import { dirname, relative, resolve } from 'node:path';
-import { suites, workers } from './suites.mjs';
+import { suites, taskHelperBinaries, taskHelperConsumers, workers } from './suites.mjs';
 
 export function contains(directory, path) {
   return path === directory || path.startsWith(`${directory}/`);
@@ -71,6 +71,15 @@ function graph(root, metadata) {
         if (!reverse.has(key)) reverse.set(key, new Set());
         reverse.get(key).add(consumer);
       }
+    }
+  }
+  // Agent tests launch the packaged isolation helper and Python worker.
+  for (const artifact of taskHelperBinaries) {
+    const helper = [...packages].find(([, pkg]) => pkg.name === artifact.package)?.[0];
+    if (helper === undefined) continue;
+    if (!reverse.has(helper)) reverse.set(helper, new Set());
+    for (const [key, pkg] of packages) {
+      if (taskHelperConsumers.includes(pkg.name)) reverse.get(helper).add(key);
     }
   }
   return { packages, reverse, members };

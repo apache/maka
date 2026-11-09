@@ -70,9 +70,9 @@ impl Policy for PeerPolicy {
 }
 struct PeerEffect(Arc<AtomicUsize>);
 impl Handler for PeerEffect {
-    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, HandlerResult> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move { Ok(input) })
+        Box::pin(async move { Ok(input.into()) })
     }
 }
 struct Fixture {

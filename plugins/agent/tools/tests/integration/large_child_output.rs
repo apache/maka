@@ -17,18 +17,18 @@
  * under the License.
  */
 
-use crate::support::preflight as support;
-
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
+use super::support::preflight::{Fixture, observe};
+use maka_agent_facts::{
+    artifact::ToolReturn,
+    cells::{
+        CellEvent, CellObservation, CellOutput, CellReplyState, CellReturnedResult, CellStatus,
+    },
+    tools::{ToolExecutor, ToolFuture},
+};
 use maka_code_runtime::CellLimits;
-use maka_event_log::EventLog;
-use maka_tools::CodeExecutor;
 use maka_tools::{
-    RunTools, ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
-    ToolSemantics,
+    CellAdmission, CellPersistence, CodeExecutor, ToolCatalog, ToolDefinition, ToolHandler,
+    ToolNesting, ToolRegistration, ToolSemantics,
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -41,12 +41,10 @@ struct LargeOutput {
     value: Value,
     calls: AtomicUsize,
 }
-
 impl ToolExecutor for LargeOutput {
     fn names(&self) -> Vec<String> {
         vec!["read".into()]
     }
-
     fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let value = self.value.clone();
@@ -57,8 +55,8 @@ impl ToolExecutor for LargeOutput {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn large_child_value_is_consumable_and_complete_cell_emission_remains_durable() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("events.sqlite");
-    let log = Arc::new(EventLog::open(&path).await.unwrap());
+    let root = Fixture::open(directory.path(), "large-output").await;
+    let port = root.port();
     let effect = Arc::new(LargeOutput {
         value: json!({"text": "x".repeat(1024 * 1024)}),
         calls: AtomicUsize::new(0),
@@ -77,9 +75,9 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
         semantics: ToolSemantics::Parallel,
     }])
     .unwrap();
-    let cells = CodeExecutor::new(CellLimits::default()).unwrap();
-    let mut children = Vec::new();
-    for (id, code, expected_text) in [
+    let cells = root.cells(CodeExecutor::new(CellLimits::default()).unwrap());
+    let mut originals = Vec::new();
+    for (name, code, expected_text) in [
         (
             "consumed",
             "const value = await tools.read({}); let sum = 0; for (let i = 0; i < value.text.length; i++) sum += value.text.charCodeAt(i); text({length: value.text.length, codePointSum: sum});",
@@ -91,89 +89,94 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             serde_json::to_string(&effect.value).unwrap(),
         ),
     ] {
-        let invocation = support::invocation(id);
-        let call = support::call("exec", "exec", json!({"code": code}));
-        support::accepted(&log, &invocation, std::slice::from_ref(&call)).await;
-        let run = RunTools::new(
-            maka_agent_facts::language::Language::En,
-            log.clone(),
-            invocation.clone(),
-            catalog.clone(),
-            ToolMode::CodeMode,
-            cells.clone(),
-            maka_tools::availability::LoadedTools::temporary().unwrap(),
-        );
-        let result = run
-            .capture(".", tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap()
-            .into_step(&invocation.invocation_id)
-            .prepare(call.clone(), CancellationToken::new())
-            .await
-            .unwrap()
-            .publish(&[])
-            .await
-            .unwrap()
-            .start()
+        let admission = CellAdmission::new(code.into(), port.owner(), port.now());
+        let cell = cells
+            .start_cell(
+                &admission,
+                catalog.clone(),
+                port.clone(),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
-        assert_eq!(result["result"]["ok"], true);
-        assert_eq!(result["content"].as_array().unwrap().len(), 1);
-        assert_eq!(result["content"][0]["kind"], "text");
-        assert!(
-            result["content"][0]["text"].as_str() == Some(expected_text.as_str()),
-            "complete cell emission must match the independently expected JSON bytes"
+        let observed = observe(&cells, cell, false, port.clone()).await;
+        let CellReplyState::Completed { result: completion } = observed.state else {
+            panic!("{name} did not complete")
+        };
+        let CellObservation::Completed {
+            content, result, ..
+        } = observed.observation
+        else {
+            panic!("{name} has no completion observation")
+        };
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            content,
+            [CellOutput::Text {
+                text: expected_text.clone()
+            }],
+            "complete Cell emission must match independently expected JSON bytes"
         );
-        // Both cases share this ledger; each retains the complete child value.
-        let prefix = log.prefix(usize::MAX, usize::MAX).await.unwrap();
-        let outcomes: Vec<_> = prefix
-            .events
+        let events = root.events().await;
+        let outcomes = events
             .iter()
-            .filter(|stored| stored.event.invocation == invocation)
-            .filter(|stored| {
-                matches!(
-                    stored.event.fact,
-                    Fact::ToolSettled {
-                        outcome: ToolOutcome::Succeeded { .. },
-                        ..
-                    }
-                )
+            .filter(|entry| {
+                entry.event.event.cell() == cell
+                    && matches!(
+                        &entry.event.event,
+                        CellEvent::LocalChildReturned { .. }
+                            | CellEvent::Completed { .. }
+                            | CellEvent::ResultAccepted { .. }
+                    )
             })
-            .collect();
+            .collect::<Vec<_>>();
         assert_eq!(
             outcomes.len(),
             3,
-            "child, cell and its observation have durable success"
-        );
-        let child = &outcomes[0].event;
-        assert_eq!(
-            log.resolve_tool_result(&invocation.session_id, &child.id)
-                .await
-                .unwrap()
-                .into_json(),
-            effect.value
+            "child return, Cell completion and atomic result acceptance have original canonical sources"
         );
         assert!(
-            log.invocation_recovery(&invocation)
-                .await
-                .unwrap()
-                .uncertain_operations
-                .is_empty()
+            outcomes
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
         );
-        children.push((invocation.session_id, child.id.clone()));
+        let CellEvent::LocalChildReturned { result: child, .. } = &outcomes[0].event.event else {
+            panic!("original child return missing")
+        };
+        let returned: ToolReturn<CellReturnedResult> = port.raw(cell, child.clone()).await;
+        assert!(!returned.body.is_error);
+        assert_eq!(returned.body.output.into_json(), effect.value);
+        let view = port.read(cell).await.unwrap().unwrap();
+        assert!(matches!(
+            view.status,
+            CellStatus::Completed { accepted: true, .. }
+        ));
+        assert!(!view.pending());
+        assert!(view.physical_cleanup_confirmed());
+        originals.push((cell, child.clone(), completion, expected_text));
     }
     assert_eq!(effect.calls.load(Ordering::SeqCst), 2);
-    support::close(log).await;
-    let reopened = EventLog::open(&path).await.unwrap();
-    for (session, event) in children {
-        assert_eq!(
-            reopened
-                .resolve_tool_result(&session, &event)
-                .await
-                .unwrap()
-                .into_json(),
-            effect.value
-        );
+    cells.shutdown().await.unwrap();
+    drop(cells);
+    drop(port);
+    root.close().await;
+    let reopened = Fixture::open(directory.path(), "large-output").await;
+    let port = reopened.port();
+    for (cell, child, completion, expected) in originals {
+        let returned: ToolReturn<CellReturnedResult> = port.raw(cell, child).await;
+        assert_eq!(returned.body.output.into_json(), effect.value);
+        let completed: CellObservation = port.raw(cell, completion).await;
+        let CellObservation::Completed { content, .. } = completed else {
+            panic!("reopened original report is not complete")
+        };
+        assert_eq!(content, [CellOutput::Text { text: expected }]);
+        assert!(!port.read(cell).await.unwrap().unwrap().pending());
     }
-    reopened.close().await.unwrap();
+    assert_eq!(
+        effect.calls.load(Ordering::SeqCst),
+        2,
+        "reopening only reads original evidence"
+    );
+    drop(port);
+    reopened.close().await;
 }

@@ -20,11 +20,15 @@
 use super::*;
 
 enum Service {
+    Echo {
+        parallel: bool,
+    },
     Counter {
         handler: Option<Arc<Counter>>,
         query: bool,
     },
     Computer(Arc<Counter>),
+    Browser,
     Questions,
     Forms,
     File(&'static str),
@@ -72,13 +76,33 @@ impl Setup {
             confirmation: contract::ToolConfirmation::Preapproved,
         }
     }
+    pub(in crate::owner::tests) fn echo(
+        handler: Arc<dyn Handler>,
+        owner: Arc<dyn NativeOwner>,
+    ) -> Self {
+        Self {
+            replacement: Some((handler, owner)),
+            tool_name: Some("echo"),
+            ..Self::new(Service::Echo { parallel: false })
+        }
+    }
+    pub(in crate::owner::tests) fn parallel_echo(
+        handler: Arc<dyn Handler>,
+        owner: Arc<dyn NativeOwner>,
+    ) -> Self {
+        Self {
+            replacement: Some((handler, owner)),
+            tool_name: Some("echo"),
+            ..Self::new(Service::Echo { parallel: true })
+        }
+    }
     pub(in crate::owner::tests) fn javascript() -> Self {
         Self::new(Service::Counter {
             handler: None,
             query: false,
         })
     }
-    pub(super) fn native(counter: Arc<Counter>, granted: bool) -> Self {
+    pub(in crate::owner::tests) fn native(counter: Arc<Counter>, granted: bool) -> Self {
         Self {
             granted,
             ..Self::new(Service::Counter {
@@ -165,7 +189,10 @@ impl Setup {
     pub(in crate::owner::tests) fn decisions_api() -> Self {
         Self::new(Service::DecisionsApi)
     }
-    pub(super) fn computer(handler: Arc<Counter>) -> Self {
+    pub(in crate::owner::tests) fn browser_consent() -> Self {
+        Self::new(Service::Browser)
+    }
+    pub(in crate::owner::tests) fn computer(handler: Arc<Counter>) -> Self {
         Self::new(Service::Computer(handler))
     }
     pub(in crate::owner::tests) fn web() -> Self {
@@ -282,6 +309,11 @@ impl Setup {
     }
     pub(in crate::owner::tests) fn selection(&self) -> contract::ServiceTool {
         let (name, description) = match self.service {
+            Service::Echo { .. } => ("echo", "Return the original value unchanged."),
+            Service::Browser => (
+                "Navigate",
+                "Exercise native browser consent without launching a browser.",
+            ),
             Service::Web => ("WebFetch", "Increment the explicitly selected counter."),
             Service::File(_) | Service::FileEditors => {
                 ("WorkspaceFile", "Use the selected workspace files.")
@@ -365,7 +397,7 @@ impl Setup {
         if matches!(self.service, Service::Processes { .. }) {
             exports["terminal"] = json!({"contract":maka_workspace_api::terminal::contract(),"availability":"required"});
         }
-        let mut files=BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture.counter","application":{"host":{
+        let mut files=BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":match self.service { Service::Echo { .. } => "fixture.echo", Service::Browser => "fixture.browser", _ => "fixture.counter" },"application":{"host":{
             "implementation":self.service.implementation(),"configuration":self.service.schema(),"imports":{},"exports":exports
         }}})).unwrap())]);
         match &self.service {
@@ -398,6 +430,30 @@ impl Setup {
             },
         );
         packages.push(package);
+        if matches!(self.service, Service::Processes { .. })
+            && self.host_tools.iter().any(|tool| matches!(&tool.target,
+                maka_host_runtime::application::ServiceTarget::Import { name } if name == "foreignProcesses"))
+        {
+            let mut foreign = input.instances["service"].clone();
+            foreign.key = Uuid::from_u128(23);
+            input.instances.insert("foreignProcesses".into(), foreign);
+            let mut manifest = packages[0].manifest().clone();
+            let mut declaration = manifest.application.as_ref().unwrap().declaration().clone();
+            declaration.host.as_mut().unwrap().imports.insert("foreignProcesses".into(), Import {
+                contract: maka_workspace_api::processes::contract(),
+                cardinality: Cardinality::One,
+            });
+            manifest.application = Some(maka_plugin_core::package::CheckedDeclaration::new(declaration).unwrap());
+            let mut files = packages[0].files().clone();
+            files.insert(MANIFEST_FILE.into(), serde_json::to_vec(&manifest).unwrap());
+            let provider = Package::new(files).unwrap();
+            let node = input.instances.get_mut("provider").unwrap();
+            node.package = provider.application_ref().into();
+            node.bindings.insert("foreignProcesses".into(), vec![Target::Instance {
+                path: vec!["foreignProcesses".into()], export: maka_workspace_api::processes::EXPORT.into(),
+            }]);
+            packages[0] = provider;
+        }
         if matches!(self.service, Service::Processes { health: true, .. }) {
             super::super::health::install(input, packages);
         }
@@ -537,8 +593,18 @@ impl Setup {
 impl Service {
     fn contract(&self) -> Contract {
         match self {
+            Self::Echo { parallel } => Contract {
+                name: "fixture.Echo".into(), version: 1, transport: Transport::Remote,
+                interface: Interface::Service { methods: BTreeMap::from([("echo".into(), Method {
+                    progress: None, mode: if *parallel { MethodMode::Query } else { MethodMode::Mutation },
+                    input: if *parallel { json!({"type":"object"}) } else { json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"],"additionalProperties":false}) }.into(),
+                    output: if *parallel { json!({"type":"object"}) } else { json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"],"additionalProperties":false}) }.into(),
+                    resources: BTreeMap::new(),
+                })]) },
+            },
             Self::Counter { .. } => counter_contract(),
             Self::Computer(_) => maka_workspace_api::computer::contract(),
+            Self::Browser => browser_consent_contract(),
             Self::Questions => maka_interactions_api::questions::contract(),
             Self::Forms => maka_interactions_api::forms::contract(),
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::contract(),
@@ -553,8 +619,10 @@ impl Service {
     }
     fn export(&self) -> &str {
         match self {
+            Self::Echo { .. } => "Echo",
             Self::Counter { .. } => "Counter",
             Self::Computer(_) => maka_workspace_api::computer::EXPORT,
+            Self::Browser => "Browser",
             Self::Questions => maka_interactions_api::questions::EXPORT,
             Self::Forms => maka_interactions_api::forms::EXPORT,
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::EXPORT,
@@ -569,7 +637,9 @@ impl Service {
     }
     fn method(&self) -> &str {
         match self {
+            Self::Echo { .. } => "echo",
             Self::Computer(_) => "evaluate",
+            Self::Browser => "navigate",
             Self::Counter { query: true, .. } => "read",
             Self::Counter { .. } => "write",
             Self::Questions | Self::Forms => "ask",
@@ -586,11 +656,13 @@ impl Service {
     }
     fn implementation(&self) -> Value {
         let name = match self {
+            Self::Echo { .. } => "fixture.echo",
             Self::Counter { handler: None, .. } => {
                 return json!({"kind":"javascript","module":"counter.mjs","realm":"shared"});
             }
             Self::Counter { .. } => "fixture.counter",
             Self::Computer(_) => maka_workspace_api::computer::IMPLEMENTATION,
+            Self::Browser => "fixture.browser",
             Self::Questions => maka_interactions_api::questions::IMPLEMENTATION,
             Self::Forms => maka_interactions_api::forms::IMPLEMENTATION,
             Self::File(_) | Self::FileEditors => maka_workspace_api::files::IMPLEMENTATION,
@@ -649,6 +721,7 @@ impl Service {
     }
     fn provide(&self, registry: &mut NativeRegistry) {
         match self {
+            Self::Echo { .. } => panic!("Echo requires its actual handler and owner"),
             Self::Counter {
                 handler: Some(counter),
                 ..
@@ -676,6 +749,28 @@ impl Service {
                     .unwrap();
             }
             Self::Counter { handler: None, .. } => {}
+            Self::Browser => {
+                registry
+                    .insert(
+                        "fixture.browser".into(),
+                        Arc::new(|_, _| {
+                            Box::pin(async {
+                                let handler = Arc::new(BrowserConsent);
+                                NativeActivation {
+                                    exports: Ok(BTreeMap::from([(
+                                        "Browser".into(),
+                                        Published {
+                                            contract: browser_consent_contract(),
+                                            value: handler.clone() as Arc<dyn Handler>,
+                                        },
+                                    )])),
+                                    owner: handler,
+                                }
+                            })
+                        }),
+                    )
+                    .unwrap();
+            }
             Self::Computer(handler) => {
                 let handler = handler.clone();
                 registry

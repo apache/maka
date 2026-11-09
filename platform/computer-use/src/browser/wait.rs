@@ -293,13 +293,19 @@ impl Browsers {
                 }
             }),
             plan => {
-                self.use_tab(&identity, invocation.turn(), cancellation)
-                    .await?;
+                self.use_tab(
+                    &identity,
+                    invocation.turn(),
+                    invocation.execution_correlation(),
+                    cancellation,
+                )
+                .await?;
                 let tab = self
                     .targets
                     .get_mut(&handle)
                     .expect("checked browser wait handle");
                 tab.last_turn = invocation.turn().to_owned();
+                tab.last_execution = invocation.execution_correlation().clone();
                 tab.authorize(None, invocation, cancellation, language)
                     .await?;
                 tab.verify(BrowserCall::new(invocation, cancellation, language))
@@ -384,6 +390,7 @@ impl Tab {
             cursor_host: self.cursor_host.clone(),
             cursor_spec: self.cursor_spec.clone(),
             last_turn: self.last_turn.clone(),
+            last_execution: self.last_execution.clone(),
             dialogs: None,
             downloads: None,
             filechoosers: None,
@@ -1113,8 +1120,12 @@ mod tests {
     #[tokio::test]
     async fn remote_host_custody_retains_same_timer_when_the_caller_drops_its_wait() {
         let custody = std::sync::Arc::new(Kept::default());
-        let context = crate::InvocationContext::new("fixture", "turn")
-            .with_browser_services(std::sync::Arc::new(RemoteServices(custody.clone())));
+        let context = crate::InvocationContext::new(
+            "fixture",
+            "turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_browser_services(std::sync::Arc::new(RemoteServices(custody.clone())));
         assert!(
             context.operation_settlement().is_none(),
             "matches actual Windows worker context"

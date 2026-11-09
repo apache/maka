@@ -20,9 +20,9 @@
 use super::*;
 use maka_agent_facts::executor::Output;
 #[cfg(unix)]
-use runtime::interruptible_pipe as native_pipe;
+use runtime::task_interruptible_pipe as native_pipe;
 #[cfg(not(unix))]
-use runtime::pipe as native_pipe;
+use runtime::task_pipe as native_pipe;
 use runtime::{Pipe, string};
 
 #[expect(
@@ -33,12 +33,12 @@ pub(super) async fn execute(
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     _steering: &mut steering::Steering,
+    owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     let provisional = journal.native_session().is_none();
     let mut submitted = false;
@@ -46,26 +46,41 @@ pub(super) async fn execute(
         config,
         cwd,
         request,
-        storage,
         journal,
         output.as_ref(),
         &bridge,
         cancellation,
         &mut submitted,
+        owner,
     )
     .await;
-    let closed = bridge.close().await;
-    if matches!(result, Err(Error::CleanupUnconfirmed)) {
+    let result = if submitted
+        && matches!(
+            result,
+            Err(Error::Provider(_) | Error::Invalid(_) | Error::Cancelled)
+        ) {
+        Err(Error::Unknown)
+    } else {
+        result
+    };
+    bridge.close_admission();
+    if matches!(
+        result,
+        Err(Error::CleanupUnconfirmed | Error::ObservationRetired | Error::Persistence(_))
+    ) {
         return result;
     }
-    closed?;
     if !submitted && let Err(error) = &result {
         match error {
-            Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_) => return result,
+            Error::Unknown
+            | Error::ObservationRetired
+            | Error::CleanupUnconfirmed
+            | Error::Persistence(_)
+            | Error::IsolationUnavailable(_) => return result,
             _ => {}
         }
         if provisional && journal.native_session().is_some() {
-            journal.revoke_unsubmitted(storage).await?;
+            journal.revoke_unsubmitted();
         }
         if !matches!(error, Error::Cancelled) {
             return Ok(Outcome::Failed {
@@ -86,12 +101,12 @@ async fn prepare(
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: &dyn OutputSink,
     bridge: &Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     submitted: &mut bool,
+    owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -163,31 +178,65 @@ async fn prepare(
     }
     let host = bridge.clone();
     native_pipe(
+        owner,
+        journal.observation(),
         plan,
         runtime::Transport::JsonLines,
         Some(bridge.clone()),
         cancellation,
-        |mut io| async move {
-            let result =
-                converse(&mut io, request, storage, journal, output, &host, submitted).await;
-            (result, io)
+        Protocol {
+            request,
+            journal,
+            output,
+            bridge: host,
+            submitted,
         },
     )
     .await
 }
 
+struct Protocol<'a> {
+    request: &'a Value,
+    journal: &'a mut journal::ProtocolSession,
+    output: &'a dyn OutputSink,
+    bridge: Arc<mcp::Bridge>,
+    submitted: &'a mut bool,
+}
+impl runtime::PipeProtocol for Protocol<'_> {
+    type Output = Outcome;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(async move {
+            converse(
+                io,
+                self.request,
+                self.journal,
+                self.output,
+                &self.bridge,
+                self.submitted,
+            )
+            .await
+        })
+    }
+}
+
 async fn converse(
     io: &mut Pipe,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: &dyn OutputSink,
     bridge: &mcp::Bridge,
     submitted: &mut bool,
 ) -> Result<Outcome, Error> {
-    let init = tokio::time::timeout(runtime::SETUP_TIMEOUT, io.next())
-        .await
-        .map_err(|_| Error::Provider("agy initialization timed out".into()))??;
+    let stop = io.stop.clone();
+    let init = tokio::select! {
+        biased;
+        () = stop.cancelled() => return Err(Error::Cancelled),
+        init = tokio::time::timeout(runtime::SETUP_TIMEOUT, io.next()) =>
+            init.map_err(|_| Error::Provider("agy initialization timed out".into()))??,
+    };
     if init.get("event").and_then(Value::as_str) != Some("init") {
         return Err(Error::Invalid(
             "agy did not emit its native init event".into(),
@@ -213,14 +262,8 @@ async fn converse(
             "agy did not select the requested model".into(),
         ));
     }
-    journal.opened(storage, session.clone()).await?;
+    journal.opened(session.clone())?;
     bridge.admit()?;
-    let interrupt = io.interrupt.take();
-    let stop = io.cancellation.clone();
-    if interrupt.is_some() {
-        // Root Stop requests native interruption; it must not cancel the stream reader.
-        io.cancellation = CancellationToken::new();
-    }
     let work = async {
         if stop.is_cancelled() {
             return Err(Error::Cancelled);
@@ -232,8 +275,10 @@ async fn converse(
         if !journal.bootstrap_completed() || update.is_some() {
             let bootstrap =
                 runtime::bootstrap_message(update.as_ref().map(|update| update.text.as_str()));
+            io.turn_started();
             io.send(user_message(&bootstrap)).await?;
-            let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
+            let bootstrap = observe(io, &session, &mut cursor, output, false, None).await?;
+            io.turn_finished();
             if !matches!(bootstrap, Outcome::Completed { .. }) {
                 return Ok(bootstrap);
             }
@@ -248,49 +293,18 @@ async fn converse(
                 });
             }
             if let Some(update) = update {
-                journal.confirm_instructions(storage, update).await?;
+                journal.confirm_instructions(update);
             }
             if !journal.bootstrap_completed() {
-                journal.complete_bootstrap(storage).await?;
+                journal.complete_bootstrap();
             }
         }
-        io.send(user_message(&native_prompt(request)?)).await?;
-        observe(io, &session, &mut cursor, output, true).await
+        let prompt = user_message(&native_prompt(request)?);
+        io.turn_started();
+        io.send(prompt).await?;
+        observe(io, &session, &mut cursor, output, true, Some(journal)).await
     };
-    tokio::pin!(work);
-    let soft = interrupt.is_some();
-    let result = if let Some(interrupt) = interrupt {
-        tokio::select! {
-            biased;
-            result = &mut work => result,
-            () = stop.cancelled() => {
-                bridge.close_admission();
-                // A closed receiver means the child owner already finished. Its
-                // physical result is still checked by pipe; native terminal is required here.
-                let _ = interrupt.send(());
-                tokio::time::timeout(runtime::INTERRUPT_TIMEOUT, &mut work).await
-                    .map_err(|_| Error::CleanupUnconfirmed)?
-            }
-        }
-    } else {
-        work.await
-    };
-    if soft {
-        match result {
-            Ok(outcome) => Ok(outcome),
-            Err(
-                error @ (Error::Cancelled
-                | Error::Unknown
-                | Error::CleanupUnconfirmed
-                | Error::Persistence(_)),
-            ) => Err(error),
-            // A later Root Stop during physical cleanup cannot settle malformed
-            // or uncorrelated observations either.
-            _ => Err(Error::Unknown),
-        }
-    } else {
-        result
-    }
+    work.await
 }
 
 fn native_prompt(request: &Value) -> Result<String, Error> {
@@ -326,21 +340,53 @@ async fn observe(
     cursor: &mut TurnCursor,
     output: &dyn OutputSink,
     show_text: bool,
+    journal: Option<&journal::ProtocolSession>,
 ) -> Result<Outcome, Error> {
-    let previous_step = cursor.highest_step;
-    let mut user = None;
-    let mut user_done = false;
-    let mut tools = std::collections::BTreeSet::new();
-    let mut messages = AgentMessages::default();
-    let mut admission = Some(tokio::time::Instant::now() + runtime::SETUP_TIMEOUT);
+    let mut turn = NativeTurn::new(cursor.highest_step, show_text);
+    let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
     loop {
-        let event = if let Some(deadline) = admission {
+        let event = if turn.user.is_none() {
             tokio::time::timeout_at(deadline, io.next())
                 .await
                 .map_err(|_| Error::Provider("agy user input admission timed out".into()))??
         } else {
             io.next().await?
         };
+        if let Some(outcome) = turn.event(event, session, cursor, output, journal).await? {
+            if let Some(journal) = journal {
+                journal.closed(outcome.clone()).await?;
+            }
+            return Ok(outcome);
+        }
+    }
+}
+struct NativeTurn {
+    previous_step: Option<u64>,
+    user: Option<u64>,
+    user_done: bool,
+    tools: std::collections::BTreeSet<u64>,
+    messages: AgentMessages,
+    show_text: bool,
+}
+impl NativeTurn {
+    fn new(previous_step: Option<u64>, show_text: bool) -> Self {
+        Self {
+            previous_step,
+            user: None,
+            user_done: false,
+            tools: Default::default(),
+            messages: Default::default(),
+            show_text,
+        }
+    }
+    async fn event(
+        &mut self,
+        event: Value,
+        session: &str,
+        cursor: &mut TurnCursor,
+        output: &dyn OutputSink,
+        journal: Option<&journal::ProtocolSession>,
+    ) -> Result<Option<Outcome>, Error> {
         match event.get("event").and_then(Value::as_str) {
             Some("step_update") => {
                 let step = &event["step_update"];
@@ -354,17 +400,26 @@ async fn observe(
                 let kind = string(step, "/step_type")?;
                 let state = string(step, "/state")?;
                 if kind == "user_input" {
-                    if previous_step.is_some_and(|previous| index <= previous)
-                        || user.is_some_and(|user| user != index)
+                    if self.previous_step.is_some_and(|previous| index <= previous)
+                        || self.user.is_some_and(|user| user != index)
                     {
                         return Err(Error::Invalid(
                             "agy did not correlate the submitted user turn".into(),
                         ));
                     }
-                    user = Some(index);
-                    admission = None;
-                    user_done |= state == "DONE";
-                } else if !user.is_some_and(|user| index > user) {
+                    if self.user.is_none()
+                        && let Some(journal) = journal
+                    {
+                        journal
+                            .bind_task(NativeTask::Antigravity {
+                                conversation: session.into(),
+                                user_step: index,
+                            })
+                            .await?;
+                    }
+                    self.user = Some(index);
+                    self.user_done |= state == "DONE";
+                } else if !self.user.is_some_and(|user| index > user) {
                     return Err(Error::Invalid(
                         "agy emitted activity before the submitted user input".into(),
                     ));
@@ -375,30 +430,33 @@ async fn observe(
                         .map_or(index, |previous| previous.max(index)),
                 );
                 if kind == "agent_response" {
-                    messages.step(step, index, state, output, show_text).await?;
+                    self.messages
+                        .step(step, index, state, output, self.show_text)
+                        .await?;
                 }
                 if kind == "tool" {
-                    emit_tool(step, session, index, state, &mut tools, output).await?;
+                    emit_tool(step, session, index, state, &mut self.tools, output).await?;
                 }
+                Ok(None)
             }
             Some("result") => {
                 let result = &event["result"];
-                if string(result, "/conversation_id")? != session || !user_done {
+                if string(result, "/conversation_id")? != session || !self.user_done {
                     return Err(Error::Invalid(
                         "agy terminal did not correlate to this user input".into(),
                     ));
                 }
-                let outcome = terminal(result, messages.final_message_id.clone())?;
+                let outcome = terminal(result, self.messages.final_message_id.clone())?;
                 if matches!(outcome, Outcome::Completed { .. })
-                    && messages.steps.values().any(|message| !message.ended)
+                    && self.messages.steps.values().any(|message| !message.ended)
                 {
                     return Err(Error::Invalid(
                         "agy succeeded with an unfinished assistant message".into(),
                     ));
                 }
-                return Ok(outcome);
+                Ok(Some(outcome))
             }
-            _ => return Err(Error::Invalid("Unsupported agy stream event".into())),
+            _ => Err(Error::Invalid("Unsupported agy stream event".into())),
         }
     }
 }
@@ -557,6 +615,96 @@ async fn emit_tool(
     Ok(())
 }
 
+pub(super) async fn replay(
+    request: &Request,
+    binding: &NativeBinding,
+    input: &mut replay::Stream,
+    stream: &mut replay::Stream,
+    output: &dyn OutputSink,
+) -> Result<Outcome, Error> {
+    let NativeTask::Antigravity {
+        conversation,
+        user_step,
+    } = &binding.task
+    else {
+        return Err(Error::Unknown);
+    };
+    let instructions = request
+        .instructions
+        .as_deref()
+        .map(|text| journal::instruction_text(Some(text)));
+    let bootstrap_input = input.required().await?;
+    if bootstrap_input != user_message(&runtime::bootstrap_message(instructions.as_deref())) {
+        return Err(Error::Unknown);
+    }
+    let actual_input = input.required().await?;
+    if actual_input["event"] != "user"
+        || actual_input
+            .pointer("/message/content")
+            .and_then(Value::as_str)
+            .is_none()
+        || input.next().await?.is_some()
+    {
+        return Err(Error::Unknown);
+    }
+    let init = stream.required().await?;
+    if init["event"] != "init"
+        || init["conversation_id"] != *conversation
+        || init["init"]["permission_mode"] != "always-proceed"
+    {
+        return Err(Error::Unknown);
+    }
+    if let Some(model) = request
+        .settings
+        .model
+        .as_deref()
+        .filter(|model| *model != "default")
+        && init.pointer("/init/model").and_then(Value::as_str) != Some(model)
+    {
+        return Err(Error::Unknown);
+    }
+    let mut cursor = TurnCursor::default();
+    let mut bootstrap = NativeTurn::new(None, false);
+    loop {
+        let event = stream.required().await?;
+        if let Some(outcome) = bootstrap
+            .event(event, conversation, &mut cursor, output, None)
+            .await?
+        {
+            if !matches!(outcome, Outcome::Completed { .. }) {
+                return Err(Error::Unknown);
+            }
+            break;
+        }
+    }
+    if cursor
+        .highest_step
+        .is_none_or(|previous| previous >= *user_step)
+    {
+        return Err(Error::Unknown);
+    }
+    let mut turn = NativeTurn::new(cursor.highest_step, true);
+    let outcome = loop {
+        let event = stream.required().await?;
+        if event["event"] == "step_update"
+            && event["step_update"]["step_type"] == "user_input"
+            && event["step_update"]["step_index"].as_u64() != Some(*user_step)
+        {
+            return Err(Error::Unknown);
+        }
+        if let Some(outcome) = turn
+            .event(event, conversation, &mut cursor, output, None)
+            .await?
+        {
+            break outcome;
+        }
+    };
+    if turn.user != Some(*user_step) || stream.next().await?.is_some() {
+        return Err(Error::Unknown);
+    }
+    Ok(outcome)
+}
+
 pub(super) async fn models(
     config: &runtime::ResolvedCommand<'_>,
     cwd: &str,
@@ -603,6 +751,7 @@ pub(super) async fn models(
             process
                 .child
                 .terminate()
+                .await
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             tokio::time::timeout(std::time::Duration::from_secs(4), process.child.wait())
                 .await
@@ -682,7 +831,6 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
     }
     Ok(models)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

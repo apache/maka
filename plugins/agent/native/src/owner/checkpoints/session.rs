@@ -59,80 +59,83 @@ impl Owner {
     ) -> Result<CheckpointPublication, String> {
         management(scope)?;
         let operation = operation.clone();
-        self.resource_work(scope, move |owner, _| {
+        self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
                 let publisher = owner.history_checkpoints();
                 let (mut capture, mode) = requested(input);
-                let request = publisher.request(&capture, &operation).map_err(failure)?;
-                let repository = publisher
-                    .repository(&capture.session_id)
+                publisher
+                    .validate_request(&capture, &operation)
+                    .map_err(failure)?;
+                let state = owner.checkpoint_state()?;
+                let history = state.session_history(owner.run_owner(), capture.session_id.clone());
+                let id = snapshot_id(&operation)?;
+                let original = history
+                    .captured_snapshot(id, scope.cancellation.child_token())
                     .await
                     .map_err(failure)?;
-                if let Some(original) = repository
-                    .original_request(request)
-                    .await
-                    .map_err(failure)?
-                {
-                    return repository
-                        .publish(original)
-                        .await
-                        .map(|p| response(p, mode))
-                        .map_err(failure);
-                }
-                let Some(workspace_mode) = mode else {
-                    return publisher
-                        .publish(capture, &operation)
-                        .await
-                        .map(|value| response(value, None))
-                        .map_err(failure);
+                let recovering = original.is_some();
+                let mut admission = None;
+                let snapshot = match original {
+                    Some((_, snapshot)) => snapshot,
+                    None => {
+                        let inventory = owner.checkpoint_inventory(&capture.session_id).await?;
+                        if inventory.subtree_digest != capture.confirmed_subtree_digest {
+                            return Err("agent_history_checkpoint_changed".into());
+                        }
+                        let (guard, session) = owner
+                            .checkpoint_admission(&capture.session_id, mode.is_some())
+                            .await?;
+                        if let Some(workspace_mode) = mode {
+                            capture.workspace = Some(storage::WorkspaceCapture {
+                                root: session.configuration.workspace.path.into(),
+                                identity: session.configuration.workspace.identity.into(),
+                                consistency: consistency(workspace_mode),
+                            });
+                        }
+                        let writer = owner.store.data_writer().map_err(failure)?;
+                        let metadata = owner
+                            .store
+                            .session(&capture.session_id)
+                            .await
+                            .map_err(failure)?
+                            .revision_guard(&writer, session.revision)
+                            .map_err(failure)?;
+                        let request = maka_agent_state::session_history::snapshot::CaptureRequest {
+                            id,
+                            cut: history.capture().await.map_err(failure)?,
+                        };
+                        admission = Some(guard);
+                        history
+                            .capture_snapshot_guarded(
+                                request,
+                                metadata,
+                                scope.cancellation.child_token(),
+                            )
+                            .await
+                            .map_err(failure)?
+                    }
                 };
-                let (admission, session) = owner
-                    .checkpoint_admission(&capture.session_id, None)
-                    .await?;
-                if owner.behavior.is_some()
-                    || session.configuration.parent_session_id.is_some()
-                    || session
-                        .configuration
-                        .backend
-                        .as_ref()
-                        .is_some_and(|v| !matches!(v, BackendPreference::Model { .. }))
-                    || owner.graph_selected(&session.id).await?
-                    || owner
-                        .store
-                        .session(&session.id)
+                let file = owner.checkpoint_file(&capture.session_id).await?;
+                let material = snapshot.export(file).await.map_err(failure)?;
+                if recovering {
+                    return publisher
+                        .receipt(capture, &operation, &material.history)
                         .await
-                        .map_err(|e| e.to_string())?
-                        .session_manager(&session.id)
-                        .await
-                        .map_err(|_| "agent_session_unavailable")?
-                        .is_some()
-                {
-                    return Err("agent_checkpoint_unsupported_session".into());
+                        .map_err(failure)?
+                        .map(|value| response(value, mode))
+                        .ok_or_else(|| "agent_history_checkpoint_publication_not_recorded".into());
                 }
-                let inventory = owner
-                    .store
-                    .preview_bundle(&capture.session_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if inventory.sessions.len() != 1 {
-                    return Err("agent_checkpoint_multiple_workspaces_unsupported".into());
-                }
-                workspace::validate(
-                    &owner.workspace_roots,
-                    &session.configuration.workspace,
-                    &owner.managed_worktrees,
-                )
-                .await
-                .map_err(|_| "agent_workspace_unavailable")?;
-                capture.workspace = Some(storage::WorkspaceCapture {
-                    root: session.configuration.workspace.path.into(),
-                    identity: session.configuration.workspace.identity.into(),
-                    consistency: consistency(workspace_mode),
-                });
                 let result = publisher
-                    .publish(capture, &operation)
+                    .publish(
+                        capture,
+                        &operation,
+                        material,
+                        admission
+                            .as_ref()
+                            .and_then(|guard| guard.physical.as_deref()),
+                    )
                     .await
-                    .map(|p| response(p, mode))
+                    .map(|value| response(value, mode))
                     .map_err(failure);
                 drop(admission);
                 result
@@ -148,34 +151,36 @@ impl Owner {
     ) -> Result<CheckpointReceipt, String> {
         management(context.scope())?;
         let scope = context.scope().clone();
-        self.resource_work(&scope, move |owner, _| {
+        self.resource_work(&scope, move |owner, scope| {
             Box::pin(async move {
                 let publisher = owner.history_checkpoints();
                 let (capture, mode) = requested(input.input);
                 publisher
                     .validate_request(&capture, &input.reference)
                     .map_err(failure)?;
-                let request = publisher
-                    .request(&capture, &input.reference)
-                    .map_err(failure)?;
-                let operation = context.recover(input.reference)?.await?;
+                let operation = context.recover(input.reference.clone())?.await?;
                 let publication = if operation.is_some() {
-                    let repository = publisher
-                        .repository(&capture.session_id)
-                        .await
-                        .map_err(failure)?;
-                    if let Some(original) = repository
-                        .original_request(request)
+                    let state = owner.checkpoint_state()?;
+                    let history =
+                        state.session_history(owner.run_owner(), capture.session_id.clone());
+                    match history
+                        .captured_snapshot(
+                            snapshot_id(&input.reference)?,
+                            scope.cancellation.child_token(),
+                        )
                         .await
                         .map_err(failure)?
                     {
-                        repository
-                            .receipt(original)
-                            .await
-                            .map_err(failure)?
-                            .map(|p| response(p, mode))
-                    } else {
-                        None
+                        Some((_, snapshot)) => {
+                            let file = owner.checkpoint_file(&capture.session_id).await?;
+                            let material = snapshot.export(file).await.map_err(failure)?;
+                            publisher
+                                .receipt(capture, &input.reference, &material.history)
+                                .await
+                                .map_err(failure)?
+                                .map(|value| response(value, mode))
+                        }
+                        None => None,
                     }
                 } else {
                     None

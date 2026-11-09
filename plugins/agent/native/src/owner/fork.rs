@@ -17,12 +17,27 @@
  * under the License.
  */
 
-//! History-seeded side conversations retain their original copy receipt.
+//! A fork publishes source history, metadata and the original Host return together.
 use super::*;
-use maka_agent_facts::session::{CopyPurpose, CopyRequest, CopyState};
+use maka_agent_facts::{
+    durable::{RunOrigin, RunOwner, UnixMillis},
+    history_snapshot::SnapshotId,
+    session::{BranchOrigin, Lineage},
+};
+use maka_agent_state::{
+    session_catalog::{ControlCommand, ControlEdit},
+    session_history::snapshot::ForkSnapshotSource,
+};
 use maka_capabilities::call::Scope;
-use maka_event_log::{StoreError, root_store::CreationRejection, sessions::SessionCopyResult};
-use maka_plugin_core::operation::RecoveryRef;
+use maka_event_log::{
+    StoreError,
+    root_store::CreationRejection,
+    writeback::{Notification, Prepared, Statement},
+};
+use maka_plugin_core::{
+    operation::{OperationOutcome, OperationResult, RecoveryRef},
+    storage::Namespace,
+};
 
 impl Owner {
     pub async fn fork(
@@ -30,7 +45,7 @@ impl Owner {
         input: Fork,
         operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<ForkResult, String> {
+    ) -> Result<NativeMutation<ForkResult>, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move { owner.fork_inner(input, &operation, &scope).await })
@@ -38,49 +53,80 @@ impl Owner {
         .await
     }
 
+    async fn original_fork(&self, reference: &RecoveryRef) -> Result<Option<ForkResult>, String> {
+        self.check_fork_reference(reference)?;
+        let observed = self
+            .store
+            .operation(reference)
+            .map_err(fork_failure)?
+            .operation_observation()
+            .await
+            .map_err(fork_failure)?;
+        match observed.map(|observed| observed.outcome) {
+            Some(OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            }) => {
+                let value: ForkResult = serde_json::from_value(value)
+                    .map_err(|_| "agent_fork_reference_unavailable")?;
+                if let ForkResult::Forked { session } = &value {
+                    if session.id != self.operation_id(reference) {
+                        return Err("agent_fork_reference_unavailable".into());
+                    }
+                }
+                Ok(Some(value))
+            }
+            Some(OperationOutcome::Returned {
+                result: OperationResult::Failure { diagnostic },
+            }) => Err(diagnostic),
+            Some(OperationOutcome::Unknown { .. }) => Err("agent_fork_outcome_unknown".into()),
+            Some(OperationOutcome::NotExecuted { .. }) => Err("agent_fork_not_executed".into()),
+            Some(OperationOutcome::Unresolved) | None => Ok(None),
+        }
+    }
+
+    fn check_fork_reference(&self, reference: &RecoveryRef) -> Result<(), String> {
+        reference
+            .validate()
+            .map_err(|_| "agent_fork_reference_invalid")?;
+        if reference.source.state_domain != self.data_source.state_domain
+            || reference.source.deployment != self.data_source.deployment
+            || reference.namespace != self.data_source.namespace
+            || reference.export != maka_agent_api::EXPORT
+            || reference.method != "fork"
+        {
+            return Err("agent_fork_reference_unavailable".into());
+        }
+        Ok(())
+    }
+
     async fn fork_inner(
         &self,
         input: Fork,
         operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<ForkResult, String> {
-        let request = CopyRequest {
-            source_session_id: input.session_id.clone(),
-            target_session_id: self.operation_id(operation),
-            expected_source_revision: input.expected_revision,
-            purpose: CopyPurpose::Branch {
-                position: input.position,
-                side_conversation: true,
-            },
-        };
-        // Original publication precedes source/configuration checks, including
-        // after source deletion. This never recreates a removed destination.
-        if let Some(receipt) = self
-            .store
-            .session_copy_receipt(&request.target_session_id)
-            .await
-            .map_err(fork_failure)?
-        {
-            if receipt.request != request || receipt.state != CopyState::Committed {
-                return Err("agent_fork_conflict".into());
-            }
-            let session = self.session(&request.target_session_id).await?;
-            return Ok(ForkResult::Forked {
-                session: Box::new(crate::service::summary(self, session)),
-            });
+    ) -> Result<NativeMutation<ForkResult>, String> {
+        // The exact Host receipt wins even after source changes or deletion.
+        // Neither this lookup nor forkReceipt recreates a removed destination.
+        if let Some(recorded) = self.original_fork(operation).await? {
+            return Ok(NativeMutation::Returned(recorded));
         }
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
-            return Ok(ForkResult::Rejected { reason });
+            return Ok(rejected(reason));
         }
-        if self.runs.lock().await.closing {
-            return Ok(ForkResult::Rejected {
-                reason: Rejection::Closed,
-            });
+        if self.runs.state().await.closing {
+            return Ok(rejected(Rejection::Closed));
         }
         if !self.owns(&input.session_id) {
-            return Ok(ForkResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(rejected(Rejection::SessionUnavailable));
+        }
+        let selected = match self.store.session(&input.session_id).await {
+            Ok(selected) => selected,
+            Err(error) => return publication_error(error),
+        };
+        match selected.is_managed().await {
+            Ok(true) => return Ok(rejected(Rejection::ManagedSession)),
+            Ok(false) => {}
+            Err(error) => return publication_error(error),
         }
         let Some(source) = self
             .store
@@ -88,24 +134,20 @@ impl Owner {
             .await
             .map_err(fork_failure)?
         else {
-            return Ok(ForkResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(rejected(Rejection::SessionUnavailable));
         };
         let source = resolve_session(source)?;
         if source.revision != input.expected_revision {
-            return Ok(ForkResult::RevisionConflict {
+            return Ok(NativeMutation::Returned(ForkResult::RevisionConflict {
                 expected: input.expected_revision,
                 actual: source.revision,
-            });
+            }));
         }
         if !self
             .project_accepts_session(&source.configuration.workspace)
             .await?
         {
-            return Ok(ForkResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(rejected(Rejection::SessionUnavailable));
         }
         if workspace::validate(
             &self.workspace_roots,
@@ -115,20 +157,67 @@ impl Owner {
         .await
         .is_err()
         {
-            return Ok(ForkResult::Rejected {
-                reason: Rejection::WorkspaceUnavailable,
-            });
+            return Ok(rejected(Rejection::WorkspaceUnavailable));
         }
         if scope.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_fork_cancelled".into());
         }
+        let writer = if let Some(execution) = scope.identity.agent() {
+            let custody = scope.work_custody().ok_or("agent_work_custody_required")?;
+            self.store
+                .data_writer_for_work(custody.as_ref(), &execution.session_id)
+        } else {
+            self.store.data_writer()
+        }
+        .map_err(fork_failure)?;
+        let state = self
+            .durable
+            .with_data_writer(writer.clone())
+            .map_err(fork_failure)?;
+        let run_owner = RunOwner {
+            deployment: self.data_source.deployment,
+            namespace: self.data_source.namespace.clone(),
+        };
+        let history = state.session_history(run_owner.clone(), input.session_id.clone());
+        // The complete reference, not a provider-local UUID, names this fork.
+        let digest =
+            Sha256::digest(serde_json::to_vec(operation).map_err(|error| error.to_string())?);
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        let id = SnapshotId::try_from(uuid::Uuid::from_bytes(bytes))
+            .map_err(|error| error.to_string())?;
+        let guard = selected
+            .revision_guard(&writer, input.expected_revision)
+            .map_err(fork_failure)?;
+        let cancellation = scope.cancellation.child_token();
+        let capture =
+            history.capture_fork_snapshot(id, input.position.clone(), guard, cancellation.clone());
+        tokio::pin!(capture);
+        let capture = tokio::select! {
+            biased;
+            _=self.stop.cancelled()=> {cancellation.cancel();capture.await},
+            capture=&mut capture=>capture,
+        };
+        let captured = match capture {
+            Ok(captured) => captured,
+            Err(_) if scope.cancellation.is_cancelled() || self.stop.is_cancelled() => {
+                return Err("agent_fork_cancelled".into());
+            }
+            Err(error) if matches!(error.underlying(), StoreError::InvalidTransition(_)) => {
+                fork_failure(error);
+                return Ok(rejected(Rejection::HistoryUnavailable));
+            }
+            Err(error) => return publication_error(error),
+        };
+        let snapshot = captured.snapshot();
         let parent = source.configuration;
         let catalog = if parent
             .tools
             .as_ref()
             .is_some_and(|names| names.iter().any(|name| name.starts_with("mcp__")))
         {
-            self.mcp_projects.capture(&parent.workspace).await?
+            let floor = self.capture_sandbox(&parent, scope.sandbox_floor()).await?;
+            self.mcp_projects.capture(&parent.workspace, &floor).await?
         } else {
             self.mcp_projects.base.clone()
         };
@@ -175,73 +264,113 @@ impl Owner {
             },
             boundary_revision: 0,
         };
-        let copied = match self
-            .store
-            .copy_session(request, &configuration, now())
-            .await
-        {
-            Ok(copied) => copied,
-            Err(
-                StoreError::HistoryTurnMissing
-                | StoreError::HistoryTurnSplit
-                | StoreError::HistoryUnsettled
-                | StoreError::HistoryProviderEffectUnresolved
-                | StoreError::SessionCreationRejected(
-                    CreationRejection::HistoryTurnMissing
-                    | CreationRejection::HistoryTurnSplit
-                    | CreationRejection::HistoryUnsettled
-                    | CreationRejection::HistoryProviderEffectUnresolved,
-                ),
-            ) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::HistoryUnavailable,
-                });
-            }
-            Err(
-                StoreError::ManagedSession
-                | StoreError::SessionCreationRejected(CreationRejection::ManagedSource),
-            ) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::ManagedSession,
-                });
-            }
-            Err(
-                StoreError::SessionNotFound
-                | StoreError::SessionRetired
-                | StoreError::SessionCreationRejected(
-                    CreationRejection::MissingDependency | CreationRejection::Retired,
-                ),
-            ) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::SessionUnavailable,
-                });
-            }
-            Err(StoreError::SessionCreationRejected(
-                CreationRejection::MissingWorkspaceBinding
-                | CreationRejection::StaleWorkspaceBinding,
-            )) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::WorkspaceUnavailable,
-                });
-            }
-            Err(StoreError::SessionCreationRejected(CreationRejection::IdentityConflict)) => {
-                return Err("agent_fork_conflict".into());
-            }
-            Err(StoreError::SessionBusy) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::Busy,
-                });
-            }
-            Err(error) => return Err(fork_failure(error)),
+
+        let claim = maka_event_log::sessions::PluginSession {
+            session_id: self.operation_id(operation),
+            creator: Namespace::new(IMPLEMENTATION, maka_plugin_core::scope::Scope::Profile)
+                .map_err(|error| error.to_string())?,
+            fingerprint: operation.fingerprint.clone(),
+            managed: false,
+            authority_session_id: Some(input.session_id.clone()),
         };
-        match copied {
-            SessionCopyResult::Committed(session) => Ok(ForkResult::Forked {
-                session: Box::new(crate::service::summary(self, resolve_session(*session)?)),
-            }),
-            SessionCopyResult::SourceRevisionConflict { expected, actual } => {
-                Ok(ForkResult::RevisionConflict { expected, actual })
+        let guard = selected
+            .revision_guard(&writer, input.expected_revision)
+            .map_err(fork_failure)?;
+        let at = now();
+        let recorded_at = UnixMillis(at.try_into().map_err(|_| "agent_clock_invalid")?);
+        let catalog = self.canonical_catalog()?;
+        let control = catalog.control_statement(
+            claim.session_id.clone(),
+            ControlCommand {
+                id: self.control_id(operation, "fork_lineage"),
+                at: recorded_at,
+                expected_revision: 0,
+                edit: ControlEdit::EstablishLineage {
+                    lineage: Lineage::Branch {
+                        origin: BranchOrigin {
+                            parent_session_id: input.session_id.clone(),
+                            position: input.position.clone(),
+                        },
+                    },
+                    source: captured.guard_cut().clone(),
+                },
+            },
+        );
+        let (prepared, planned) = match captured.source() {
+            ForkSnapshotSource::Empty => {
+                let planned = catalog
+                    .planned_empty(&claim.session_id)
+                    .map_err(fork_failure)?
+                    .with_control(&control)
+                    .map_err(fork_failure)?;
+                let statement = control.with(EmptyHistory, &writer).map_err(fork_failure)?;
+                let statement = captured
+                    .guard(&history, guard, statement)
+                    .map_err(fork_failure)?;
+                (
+                    self.store
+                        .prepare_plugin_session(&claim, &configuration, at, &writer, statement)
+                        .await,
+                    planned,
+                )
             }
-        }
+            ForkSnapshotSource::Canonical { .. } | ForkSnapshotSource::Imported => {
+                let binding = self
+                    .store
+                    .workspace_binding::<Workspace>(configuration.workspace.id)
+                    .await
+                    .map_err(fork_failure)?
+                    .ok_or("agent_workspace_binding_unavailable")?;
+                let stamp = binding.stamp();
+                let resolved = configuration
+                    .clone()
+                    .resolve(binding.workspace, stamp)
+                    .map_err(|error| error.to_string())?;
+                let (mut spec, contents) = self
+                    .history_source_spec(&claim.session_id, &resolved, snapshot, operation, scope)
+                    .await?;
+                if let ForkSnapshotSource::Canonical { run } = captured.source() {
+                    let source = snapshot.run_source(run).await.map_err(fork_failure)?;
+                    spec.origin = RunOrigin::Forked {
+                        source_run: source.run,
+                        source: snapshot.reference().clone(),
+                    };
+                }
+                let target = state.session_history(run_owner, claim.session_id.clone());
+                let adoption = snapshot
+                    .adopt(&target, id.as_uuid(), spec, recorded_at, contents)
+                    .map_err(fork_failure)?;
+                let planned = catalog
+                    .planned_adoption(&adoption)
+                    .await
+                    .map_err(fork_failure)?
+                    .with_control(&control)
+                    .map_err(fork_failure)?;
+                let statement = control.with(adoption, &writer).map_err(fork_failure)?;
+                let statement = captured
+                    .guard(&history, guard, statement)
+                    .map_err(fork_failure)?;
+                (
+                    self.store
+                        .prepare_plugin_session(&claim, &configuration, at, &writer, statement)
+                        .await,
+                    planned,
+                )
+            }
+        };
+        let (record, change) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return publication_error(error),
+        };
+        Ok(NativeMutation::Commit {
+            value: ForkResult::Forked {
+                session: Box::new(crate::service::summary(
+                    self,
+                    planned.record(record).map_err(fork_failure)?,
+                )?),
+            },
+            change,
+        })
     }
 
     pub async fn fork_receipt(
@@ -249,52 +378,20 @@ impl Owner {
         input: ForkReceipt,
         scope: &Scope,
     ) -> Result<ForkReceiptResult, String> {
-        input
-            .reference
-            .validate()
-            .map_err(|_| "agent_fork_reference_invalid")?;
-        let reference = &input.reference;
-        if reference.source.state_domain != self.data_source.state_domain
-            || reference.source.deployment != self.data_source.deployment
-            || reference.namespace != self.data_source.namespace
-            || reference.export != maka_agent_api::EXPORT
-            || reference.method != "fork"
-        {
-            return Err("agent_fork_reference_unavailable".into());
-        }
+        self.check_fork_reference(&input.reference)?;
         self.resource_work(scope, move |owner, _scope| {
             Box::pin(async move {
-                let target = owner.operation_id(&input.reference);
-                let Some(receipt) = owner
-                    .store
-                    .session_copy_receipt(&target)
-                    .await
-                    .map_err(fork_failure)?
+                let Some(ForkResult::Forked { .. }) = owner.original_fork(&input.reference).await?
                 else {
                     return Ok(ForkReceiptResult { session: None });
                 };
-                if receipt.state != CopyState::Committed
-                    || receipt.request.target_session_id != target
-                    || !owner.owns(&receipt.request.source_session_id)
-                    || !matches!(
-                        receipt.request.purpose,
-                        CopyPurpose::Branch {
-                            side_conversation: true,
-                            ..
-                        }
-                    )
-                {
-                    return Err("agent_fork_reference_unavailable".into());
-                }
+                let target = owner.operation_id(&input.reference);
                 let session = owner
-                    .store
-                    .get_session::<StoredSessionConfiguration>(&target)
+                    .canonical_catalog()?
+                    .record(&target)
                     .await
                     .map_err(fork_failure)?
-                    .map(|session| {
-                        resolve_session(session)
-                            .map(|session| Box::new(crate::service::summary(&owner, session)))
-                    })
+                    .map(|record| crate::service::summary(&owner, record).map(Box::new))
                     .transpose()?;
                 Ok(ForkReceiptResult { session })
             })
@@ -303,14 +400,63 @@ impl Owner {
     }
 }
 
+struct EmptyHistory;
+impl Statement for EmptyHistory {
+    type Value = ();
+    type Output = ();
+    fn execute(self, _: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
+        Ok(Prepared {
+            value: (),
+            changed: false,
+            notification: Notification::NONE,
+        })
+    }
+    fn committed(_: ()) {}
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
+    }
+}
+fn rejected(reason: Rejection) -> NativeMutation<ForkResult> {
+    NativeMutation::Returned(ForkResult::Rejected { reason })
+}
+fn publication_error(error: StoreError) -> Result<NativeMutation<ForkResult>, String> {
+    let reason = match error {
+        StoreError::SessionRevisionConflict { expected, actual }
+        | StoreError::SessionCreationRejected(CreationRejection::SourceRevisionConflict {
+            expected,
+            actual,
+        }) => {
+            return Ok(NativeMutation::Returned(ForkResult::RevisionConflict {
+                expected,
+                actual,
+            }));
+        }
+        StoreError::SessionNotFound
+        | StoreError::SessionRetired
+        | StoreError::SessionCreationRejected(
+            CreationRejection::MissingDependency | CreationRejection::Retired,
+        ) => Rejection::SessionUnavailable,
+        StoreError::SessionCreationRejected(
+            CreationRejection::MissingWorkspaceBinding | CreationRejection::StaleWorkspaceBinding,
+        ) => Rejection::WorkspaceUnavailable,
+        StoreError::SessionCreationRejected(CreationRejection::IdentityConflict)
+        | StoreError::EventConflict
+        | StoreError::SessionConflict => return Err("agent_fork_conflict".into()),
+        StoreError::SessionBusy => Rejection::Busy,
+        error => return Err(fork_failure(error)),
+    };
+    Ok(rejected(reason))
+}
+
 fn fork_failure(error: StoreError) -> String {
     tracing::warn!(
         stage = "session_fork",
         cause = crate::diagnostics::store_cause(&error),
+        error = ?error,
         sql_code = crate::diagnostics::store_sql_code(&error),
         "Session fork storage operation failed"
     );
-    match error {
+    match error.underlying() {
         StoreError::CommitUnknown(_) | StoreError::OperationUnknown => "agent_fork_outcome_unknown",
         _ => "agent_fork_failed",
     }

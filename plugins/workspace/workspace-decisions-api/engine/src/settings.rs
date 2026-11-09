@@ -21,7 +21,7 @@ mod patch;
 pub use patch::{HeaderPatch, SecretChange, SecretsPatch};
 
 use maka_capabilities::credentials;
-use maka_capabilities::storage;
+use maka_plugin_core::storage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

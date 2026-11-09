@@ -20,12 +20,12 @@
 //! Shared mutable workspace selections. Session configurations retain references;
 //! permission evidence captures immutable stamps instead of following this pointer.
 use crate::{EventLog, StoreError};
-use maka_agent_facts::workspace::{BindingRef, BindingStamp, PermissionBasis};
+use maka_sandbox::workspace::{BindingRef, BindingStamp, PermissionBasis};
 use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-const MAX: u64 = maka_agent_facts::interaction::MAX_SAFE_INTEGER;
+const MAX: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceBinding<W = Value> {
@@ -61,7 +61,13 @@ fn canonical(mut workspace: Value) -> Result<(String, String), StoreError> {
     }
     workspace.sort_all_objects();
     let encoded = serde_json::to_string(&workspace)?;
-    let digest = maka_agent_facts::artifact::content_digest(encoded.as_bytes());
+    let digest = {
+        use sha2::Digest;
+        format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(encoded.as_bytes()))
+        )
+    };
     Ok((encoded, digest))
 }
 
@@ -140,7 +146,7 @@ impl crate::writeback::Statement for WriteAttachment {
             Ok(crate::writeback::Prepared {
                 value: binding.reference(),
                 changed,
-                notification: crate::writeback::Notification::None,
+                notification: crate::writeback::Notification::NONE,
             })
         }
     }
@@ -262,8 +268,9 @@ pub(crate) fn effective_boundary(
     })
 }
 
-/// Called inside the same transaction as grant/T1 verification.
-pub(crate) fn permission_basis(
+/// Read effective permission data inside a trusted caller's original Root transaction.
+/// The caller must use that same Root connection; this does not grant authority.
+pub fn permission_basis(
     connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<Option<PermissionBasis>, StoreError> {

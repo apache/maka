@@ -515,6 +515,7 @@ async fn source_fixture(f: &Fixture) -> super::super::Source {
     );
     Source {
         configuration: f.store.clone(),
+        pricing: Arc::new(super::super::ConfigPricing(f.store.clone())),
         credentials: f.credentials.clone(),
         definition: f.definition.clone(),
         session: "session".into(),

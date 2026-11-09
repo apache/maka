@@ -19,7 +19,8 @@
 
 use futures_util::future::BoxFuture;
 use maka_agent_facts::attachment::AttachmentRef;
-pub use maka_agent_facts::history::RowPosition;
+pub use maka_agent_facts::history::HistoryRowAddress as RowPosition;
+pub use maka_agent_facts::history::{HistoryOrder, HistoryRowAddress};
 use maka_capabilities::authorization::CommandError;
 use maka_capabilities::call::Scope;
 use schemars::JsonSchema;
@@ -140,7 +141,7 @@ pub enum HistoryField {
 }
 
 /// Byte offset in one message field's UTF-8 text, not a bearer capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Cursor {
     #[serde(default)]
@@ -153,7 +154,7 @@ pub struct Cursor {
 /// Row reveals an exact field; Before/After continue at byte boundaries and
 /// Event addresses the raw event log. Returned chunks retain ascending presentation
 /// order, including a reverse window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "HistoryPosition")]
 pub enum Position {
@@ -196,37 +197,36 @@ impl Read {
         if self.through.is_some_and(|value| value > MAX) {
             return Err(invalid());
         }
-        match self.position {
-            Position::Row { position, field }
+        match &self.position {
+            Position::Row { position, field } => {
                 if self.through.is_none()
                     || position.validate().is_err()
-                    || self
-                        .through
-                        .is_some_and(|through| position.source_sequence > through)
-                    || (!self.include_thinking && field == HistoryField::Thinking) =>
-            {
-                Err(invalid())
+                    || matches!(position, HistoryRowAddress::Live { sequence, .. } if self.through.is_some_and(|through| *sequence > through))
+                    || (!self.include_thinking && *field == HistoryField::Thinking)
+                {
+                    return Err(invalid());
+                }
             }
-            Position::Before { cursor } | Position::After { cursor }
+            Position::Before { cursor } | Position::After { cursor } => {
                 if self.through.is_none()
                     || cursor.position.validate().is_err()
-                    || self
-                        .through
-                        .is_some_and(|through| cursor.position.source_sequence > through)
+                    || matches!(&cursor.position, HistoryRowAddress::Live { sequence, .. } if self.through.is_some_and(|through| *sequence > through))
                     || cursor.offset > MAX
-                    || (!self.include_thinking && cursor.field == HistoryField::Thinking) =>
-            {
-                Err(invalid())
+                    || (!self.include_thinking && cursor.field == HistoryField::Thinking)
+                {
+                    return Err(invalid());
+                }
             }
             Position::Event { sequence }
-                if sequence == 0
-                    || sequence > MAX
-                    || self.through.is_some_and(|through| sequence > through) =>
+                if *sequence == 0
+                    || *sequence > MAX
+                    || self.through.is_some_and(|through| *sequence > through) =>
             {
-                Err(invalid())
+                return Err(invalid());
             }
-            _ => Ok(()),
+            _ => {}
         }
+        Ok(())
     }
 }
 
@@ -235,6 +235,9 @@ impl Read {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    System,
+    Context,
+    Tool,
     Compaction,
     Failure,
     User,
@@ -318,6 +321,10 @@ pub enum SourceField {
     Result,
     /// The original service operation observation, separate from its returned value.
     Receipt,
+    /// Immutable adapter metadata; never active model options or a grant.
+    ProviderMetadata,
+    /// Original imported producer record, not the public display/context projection.
+    Original,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -345,6 +352,9 @@ pub enum SourceFormat {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "HistorySourceRole")]
 pub enum SourceRole {
+    System,
+    Context,
+    Tool,
     User,
     Assistant,
     ToolCall,
@@ -392,10 +402,10 @@ pub struct HistorySource {
     pub position: RowPosition,
     /// Host-recorded milliseconds of this immutable row; not a client clock.
     #[schemars(range(max = 9_007_199_254_740_991u64))]
-    pub timestamp: u64,
+    pub timestamp: Option<u64>,
     pub role: SourceRole,
     /// Readable canonical fields of this same immutable row, in display order.
-    #[schemars(length(min = 1, max = 7))]
+    #[schemars(length(min = 1))]
     pub fields: Vec<SourceField>,
     pub field: SourceField,
     /// Omission reads the encoded field. A selected JSON string is literal text.
@@ -413,15 +423,17 @@ pub struct HistorySource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelPartIdentity {
-    pub step_id: String,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
     pub ordinal: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    pub imported_turn: Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
     /// Chronological display anchor; position remains the source/read address.
-    pub order: RowPosition,
+    pub order: HistoryOrder,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.
@@ -442,9 +454,10 @@ pub struct Chunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<TurnTiming>,
     pub field: HistoryField,
-    pub message_id: String,
-    pub turn_id: String,
-    pub timestamp: u64,
+    pub message_id: Option<String>,
+    pub run_id: Option<maka_agent_facts::durable::RunId>,
+    pub turn_id: Option<String>,
+    pub timestamp: Option<u64>,
     pub role: Role,
     pub position: RowPosition,
     pub offset: u64,
@@ -503,7 +516,7 @@ pub enum TurnOutcome {
 )]
 pub enum Page {
     Ready {
-        through: u64,
+        through: Option<u64>,
         chunks: Vec<Chunk>,
         before: Option<Cursor>,
         after: Option<Cursor>,
@@ -551,17 +564,22 @@ mod tests {
     fn history_positions_require_fixed_cursor_fences_and_distinguish_raw_events() {
         let cursor = Cursor {
             field: Default::default(),
-            position: RowPosition {
-                source_sequence: 16,
+            position: RowPosition::Live {
+                sequence: 16,
+                fact: maka_agent_facts::durable::FactId::new(),
                 item_index: 0,
             },
             offset: 0,
         };
         for position in [
-            Position::Before { cursor },
-            Position::After { cursor },
+            Position::Before {
+                cursor: cursor.clone(),
+            },
+            Position::After {
+                cursor: cursor.clone(),
+            },
             Position::Row {
-                position: cursor.position,
+                position: cursor.position.clone(),
                 field: HistoryField::Body,
             },
         ] {
@@ -613,8 +631,9 @@ mod tests {
             Position::Before {
                 cursor: Cursor {
                     field: Default::default(),
-                    position: RowPosition {
-                        source_sequence: 0,
+                    position: RowPosition::Live {
+                        sequence: 0,
+                        fact: maka_agent_facts::durable::FactId::new(),
                         item_index: 0,
                     },
                     offset: 0,

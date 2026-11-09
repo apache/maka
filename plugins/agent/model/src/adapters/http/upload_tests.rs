@@ -47,6 +47,13 @@ struct PullTransport {
     settled: Arc<AtomicBool>,
 }
 impl Transport for PullTransport {
+    fn send_text(
+        &self,
+        socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+        chunks: maka_agent_ports::model::TextStream,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
+        Box::pin(async move { socket.send_text(chunks).await })
+    }
     fn identity(&self) -> u64 {
         1
     }
@@ -104,7 +111,7 @@ fn upload(chunks: Vec<(u64, &'static [u8])>) -> http::Request {
         Ok(http::Bytes::from_static(bytes))
     });
     http::Request {
-        method: http::Method::Post,
+        method: maka_plugin_core::http::Method::Post,
         url: "https://fixture.test/".into(),
         headers: Vec::new(),
         body: http::RequestBody::stream(stream),
@@ -175,6 +182,18 @@ struct ReopenOriginal {
     closed: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl maka_agent_ports::model::FrozenPrompt for ReopenOriginal {
+    fn authorize(&self, cancellation: CancellationToken) -> BoxFuture<'_, Result<(), ModelError>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                Err(ModelError::Cancelled)
+            } else {
+                Ok(())
+            }
+        })
+    }
+    fn authorization_failure(&self) -> Option<ModelError> {
+        None
+    }
     fn open(
         &self,
         cancellation: CancellationToken,
@@ -203,6 +222,13 @@ impl http::Body for RejectBody {
 }
 struct UsageRejection(Arc<Mutex<Vec<serde_json::Value>>>);
 impl Transport for UsageRejection {
+    fn send_text(
+        &self,
+        socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+        chunks: maka_agent_ports::model::TextStream,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
+        Box::pin(async move { socket.send_text(chunks).await })
+    }
     fn identity(&self) -> u64 {
         7
     }

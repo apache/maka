@@ -47,8 +47,8 @@ test('complete active tool identities survive 129 starts, updates and exact term
   const name = 'Shell';
   const title = 'Run the workspace checks';
   const progress = 'Workspace checks: ' + 'module/行为🦀 test passed; '.repeat(400) + 'all passed';
-  const event = (index, fact, invocationId = 'invocation') => ({
-    invocationId,
+  const event = (index, fact, runId = 'invocation') => ({
+    runId,
     turnId: 'turn',
     sequence: index + 1,
     fact,
@@ -107,7 +107,7 @@ test('complete active tool identities survive 129 starts, updates and exact term
   assert.equal(latestToolActivity(active, 'other', 'turn').name, 'independent');
   active = updateToolActivity(active, event(133, { kind: 'ended' }));
   assert.deepEqual(
-    active.map((tool) => [tool.invocationId, tool.toolUseId, tool.name]),
+    active.map((tool) => [tool.runId, tool.toolUseId, tool.name]),
     [['other', id(0), 'independent']],
   );
 });

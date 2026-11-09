@@ -224,7 +224,11 @@ async fn git_snapshot_install_and_whole_directory_update_use_physical_locations(
         )
         .unwrap(),
     );
-    let store = Arc::new(RootStore::open(root.clone()).await.unwrap());
+    let store = Arc::new(
+        RootStore::open(root.clone(), maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     let mut library = Library::open(
         Configuration {
             home: Some(home.to_str().unwrap().into()),

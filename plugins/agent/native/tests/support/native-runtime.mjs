@@ -32,7 +32,6 @@ import {
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { StringDecoder } from 'node:string_decoder';
 
 // The managed daemon's control socket uses WebSocket, including through its stdio proxy.
 function websocket() {
@@ -110,8 +109,8 @@ function websocket() {
   return { input, write };
 }
 
-const port = Number(process.argv[2]);
-const args = process.argv.slice(3);
+const port = Number(process.argv[1]);
+const args = process.argv.slice(2);
 if (args.includes('daemon') && args.includes('start')) process.exit(0);
 const option = (name) => {
   const index = args.indexOf(name);
@@ -211,14 +210,14 @@ async function pauseInput(stage, extra = {}) {
   trace(stage, extra);
   await gate.next();
 }
-async function confirmInstructions(text) {
+async function confirmInstructions(text, phase = 'before_instructions_ack') {
   if (
     !process.env.MAKA_NATIVE_FIXTURE_PAUSE_INSTRUCTIONS ||
     !text.includes('CANCEL_UNCONFIRMED_GUIDANCE')
   )
     return;
   await connectControl();
-  trace('before_instructions_ack');
+  trace(phase);
   await gate.next();
 }
 async function mcp(method, params = {}, id = 1, signal) {
@@ -354,7 +353,7 @@ function nativeThinking(text, streaming) {
   }
 }
 function boundaryTool(messageId) {
-  const id = 'boundary-tool';
+  const id = activePlan?.boundaryToolCallId ?? 'boundary-tool';
   const name = 'native-boundary-tool';
   if (claude) {
     append({
@@ -402,7 +401,26 @@ function boundaryTool(messageId) {
 
 function terminal(cancelled = false) {
   if (claude) {
-    if (!cancelled) append({ type: 'system', subtype: 'turn_duration', durationMs: 1 });
+    append({
+      type: 'result',
+      subtype: cancelled
+        ? 'error_during_execution'
+        : request.message.endsWith('api-error')
+          ? 'error_during_execution'
+          : 'success',
+      is_error: false,
+      errors: cancelled
+        ? []
+        : request.message.endsWith('api-error')
+          ? ['API Error: 400 FIXTURE_API_FAILURE']
+          : [],
+      uuid: crypto.randomUUID(),
+      result: cancelled
+        ? 'Interrupted'
+        : request.message.endsWith('api-error')
+          ? 'API Error: 400 FIXTURE_API_FAILURE'
+          : 'completed',
+    });
   } else if (agy)
     send({
       event: 'result',
@@ -423,7 +441,7 @@ function terminal(cancelled = false) {
 async function cancel() {
   if (interrupted) return;
   interrupted = true;
-  if (request?.message === 'wait-cancel-terminal') {
+  if ((request && currentMessage()) === 'wait-cancel-terminal') {
     trace('interrupt_requested');
     await gate.next();
   }
@@ -438,12 +456,13 @@ if (agy)
     if (interrupted) return;
     interrupted = true;
     const held =
-      request?.message === 'soft-interrupt' || request?.message === 'soft-interrupt-unconfirmed';
+      (request && currentMessage()) === 'soft-interrupt' ||
+      (request && currentMessage()) === 'soft-interrupt-unconfirmed';
     if (held) {
       trace('interrupt_requested');
       await gate.next();
     }
-    if (request?.message !== 'soft-interrupt-unconfirmed') terminal(true);
+    if (!(request && currentMessage() === 'soft-interrupt-unconfirmed')) terminal(true);
     if (held) {
       trace('terminal');
       await gate.next();
@@ -474,11 +493,26 @@ async function preopenProbe() {
   if (JSON.parse(premature.content[0].text).code !== -32600)
     throw Error('Host call admitted before native identity persistence');
 }
+const currentMessage = (input = request) =>
+  input.message.split('\n\n--- Current user message ---\n').at(-1);
 async function prompt() {
   await connectControl();
+  const prefix =
+    'Read the canonical conversation history from this private read-only input file before answering: ';
+  if (request.message.startsWith(prefix)) {
+    const marker = request.message.indexOf('\n\n--- Current user message ---\n');
+    if (marker < 0) throw Error('canonical history file reference lacks current user boundary');
+    const path = JSON.parse(request.message.slice(prefix.length, marker));
+    request.canonicalHistory = { path, text: readFileSync(path, 'utf8') };
+  }
   request.tools = agy ? catalogTools : await loadTools();
   request.mcp = { url: server.url, ...(configPath ? { configPath } : {}) };
-  trace('opened', { cwd: process.cwd() });
+  trace('opened', {
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    configDirectory: process.env.CLAUDE_CONFIG_DIR,
+    stdio: { inputIsTty: !!process.stdin.isTTY, outputIsTty: !!process.stdout.isTTY },
+  });
   let first = (await gate.next()).value,
     plan;
   try {
@@ -535,12 +569,13 @@ async function prompt() {
       return;
     }
   }
-  if (claude && request.message === 'api-error')
+  if (claude && request.message.endsWith('api-error'))
     append({
       type: 'assistant',
       uuid: crypto.randomUUID(),
       isApiErrorMessage: true,
       message: {
+        id: 'api-error-' + messageIndex++,
         content: [{ type: 'text', text: 'API Error: 400 FIXTURE_API_FAILURE' }],
       },
     });
@@ -549,19 +584,19 @@ async function prompt() {
     if (plan?.messageBoundaries) nativeThinking('native snapshot', false);
   }
   trace('output');
-  if (agy && request.message.startsWith('soft-interrupt')) {
+  if (agy && currentMessage().startsWith('soft-interrupt')) {
     await new Promise(() => {});
     return;
   }
-  if (request.message === 'wait' || request.message === 'wait-cancel-terminal') return;
+  if (currentMessage() === 'wait' || currentMessage() === 'wait-cancel-terminal') return;
   await gate.next();
-  if (request.message === 'crash' || request.message === 'exit0')
-    process.exit(request.message === 'exit0' ? 0 : 3);
-  if (request.message === 'malformed') {
+  if (currentMessage() === 'crash' || currentMessage() === 'exit0')
+    process.exit(currentMessage() === 'exit0' ? 0 : 3);
+  if (currentMessage() === 'malformed') {
     write('{bad json}');
     return;
   }
-  if (request.message === 'pipe-holder-crash') {
+  if (currentMessage() === 'pipe-holder-crash') {
     const escaped = spawn(
       process.execPath,
       [
@@ -577,7 +612,7 @@ async function prompt() {
   }
   trace('terminal');
   await gate.next();
-  if (request.message === 'wrong-turn') {
+  if (currentMessage() === 'wrong-turn') {
     if (agy) {
       send({
         event: 'result',
@@ -596,7 +631,7 @@ async function prompt() {
     });
     process.exit(0);
   }
-  if (claude && request.message === 'blocked-stop') {
+  if (claude && currentMessage() === 'blocked-stop') {
     append({ type: 'system', subtype: 'stop_hook_summary' });
     output('after blocked Stop');
   }
@@ -607,144 +642,94 @@ async function prompt() {
     terminal();
   }
 }
-let transcript;
 function appendUser(input) {
   append({
     type: 'user',
-    uuid: crypto.randomUUID(),
-    message: {
-      content: [
-        ...input.images.map((image) => ({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: image.mediaType,
-            data: readFileSync(image.path).toString('base64'),
-          },
-        })),
-        {
-          type: 'text',
-          text: input.images.map((_, i) => '[Image #' + (i + 1) + ']').join(' ') + input.message,
-        },
-      ],
-    },
+    uuid: input.uuid,
+    isReplay: true,
+    parent_tool_use_id: null,
+    message: { role: 'user', content: input.content },
   });
 }
 function append(row) {
-  appendFileSync(transcript, JSON.stringify({ sessionId: thread, ...row }) + '\n');
+  send({ session_id: thread, ...row });
 }
 if (claude) {
-  if (args.some((a) => a === '-p' || a === '--print')) throw Error('interactive PTY required');
-  thread = args[args.indexOf(args.includes('--resume') ? '--resume' : '--session-id') + 1];
-  const cwd = realpathSync(process.cwd()),
-    project = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  const directory = join(process.env.CLAUDE_CONFIG_DIR, 'projects', project);
-  mkdirSync(directory, { recursive: true });
-  transcript = join(directory, thread + '.jsonl');
+  if (
+    !args.includes('--print') ||
+    option('--input-format') !== 'stream-json' ||
+    option('--output-format') !== 'stream-json' ||
+    !args.includes('--verbose') ||
+    !args.includes('--replay-user-messages') ||
+    args.includes('--resume')
+  )
+    throw Error('Claude requires a fresh pipe stream-json producer');
+  if (process.stdin.isTTY || process.stdout.isTTY) throw Error('Claude run must not use a PTY');
+  thread = option('--session-id');
+  if (!thread) throw Error('missing original session UUID');
   configPath = option('--mcp-config');
   server = JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.maka;
   server.authorization = server.headers.Authorization;
+  instructionMessage = option('--append-system-prompt');
   request = {
     message: '',
     images: [],
-    ...(args.includes('--resume') ? { resume: thread } : {}),
+    ...(instructionMessage ? { instructions: instructionMessage } : {}),
+    instructionOrder: ['system/instructions'],
   };
-  process.stdin.setRawMode(true);
-  await mcp('initialize', {
-    protocolVersion: '2025-03-26',
-    capabilities: {},
-    clientInfo: { name: 'native-fixture', version: '1' },
-  });
-  await mcp('notifications/initialized', {}, null);
-  await mcp('tools/list');
-  await pauseInput('startup', { cwd });
-  const decoder = new StringDecoder('utf8');
-  let pending = '',
-    composing = '',
-    images = [],
-    submitted = false,
-    trusted = !process.env.MAKA_NATIVE_FIXTURE_TRUST;
-  const ready = () => process.stdout.write('Claude Code native fixture\r\n$');
-  if (!trusted)
-    process.stdout.write(
-      'Permission Required: Accessing workspace:\r\n' +
-        cwd +
-        '\r\ny. Yes, I trust this folder\r\nn. No, exit\r\nEnter y/n:\r\nEnter to confirm',
-    );
-  else ready();
-  process.stdin.on('data', async (bytes) => {
-    pending += decoder.write(bytes);
-    if (!trusted) {
-      if (!pending.includes('y\r')) return;
-      pending = pending.slice(pending.indexOf('y\r') + 2);
-      trusted = true;
-      writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, 'fixture-trusted-workspace'), cwd);
-      ready();
+  await pauseInput('startup', { cwd: process.cwd() });
+  append({ type: 'system', subtype: 'init', cwd: process.cwd(), tools: [], mcp_servers: [] });
+  const lines = createInterface({ input: process.stdin });
+  let submitted = false;
+  for await (const line of lines) {
+    const packet = JSON.parse(line);
+    if (packet.type === 'control_request') {
+      if (packet.request?.subtype !== 'interrupt') throw Error('unknown Claude control request');
+      send({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: packet.request_id, response: {} },
+      });
+      void cancel();
+      continue;
     }
-    while (pending.length) {
-      if (pending.startsWith('\x1b[200~')) {
-        const end = pending.indexOf('\x1b[201~');
-        if (end < 0) return;
-        const pasted = pending.slice(6, end);
-        pending = pending.slice(end + 6);
-        if (/\.(png|jpg|gif|webp)$/.test(pasted) && existsSync(pasted)) {
-          const extension = pasted.split('.').at(-1);
-          const mediaType = {
-            png: 'image/png',
-            jpg: 'image/jpeg',
-            gif: 'image/gif',
-            webp: 'image/webp',
-          }[extension];
-          images.push({ path: pasted, mediaType });
-          await pauseInput('image', { path: pasted });
-          process.stdout.write('[Image #' + images.length + ']');
-        } else {
-          composing += pasted;
-          if (!instructionMessageText(pasted)) await pauseInput('text');
-          process.stdout.write(
-            pasted.length > 4096 ? '[Pasted text #1]' : pasted.replace(/(.{1,100})\s+/g, '$1\r\n'),
-          );
-        }
-      } else if ('\x1b[200~'.startsWith(pending)) return;
-      else if (pending.startsWith('\r')) {
-        pending = pending.slice(1);
-        const input = { message: composing, images };
-        composing = '';
-        images = [];
-        process.stdout.write('\r\n$');
-        if (!submitted && !instructionMessage && instructionMessageText(input.message)) {
-          if (input.images.length)
-            throw Error('instructions must be a standalone ordinary message');
-          instructionMessage = input.message;
-          instructionOrder.push('user/instructions');
-          appendUser(input);
-          await confirmInstructions(instructionMessage);
-          output('instructions acknowledged');
-          terminal();
-          ready();
-          continue;
-        }
-        if (submitted) {
-          queuedInputs.push(input);
-          trace('steered', { request: input, thread, turn });
-        } else {
-          instructionOrder.push('user/task');
-          request = {
-            ...request,
-            ...input,
-            ...(instructionMessage ? { instructions: instructionMessage } : {}),
-            instructionOrder: [...instructionOrder],
-          };
-          submitted = true;
-          appendUser(input);
-          void prompt();
-        }
-      } else if (pending.startsWith('\x1b')) {
-        pending = pending.slice(1);
-        void cancel();
-      } else pending = pending.slice(1);
+    if (
+      packet.type !== 'user' ||
+      packet.session_id !== thread ||
+      packet.message?.role !== 'user' ||
+      packet.parent_tool_use_id != null ||
+      !packet.uuid
+    )
+      throw Error('invalid original Claude user packet');
+    const content = packet.message.content;
+    const blocks = Array.isArray(content) ? content : [];
+    const images = blocks
+      .filter((b) => b.type === 'image')
+      .map((b) => ({ mediaType: b.source.media_type, data: b.source.data }));
+    const message =
+      typeof content === 'string'
+        ? content
+        : blocks
+            .filter((b) => b.type === 'text')
+            .map((b) => b.text)
+            .join('\n');
+    const input = { uuid: packet.uuid, content, message, images };
+    if (images.length) await pauseInput('image', { images });
+    await pauseInput('text');
+    if (submitted) {
+      queuedInputs.push(input);
+      trace('steered', { request: input, thread, turn });
+    } else {
+      submitted = true;
+      request = {
+        ...request,
+        ...input,
+        instructionOrder: [...request.instructionOrder, 'user/task'],
+      };
+      await confirmInstructions(instructionMessage ?? '', 'before_input_ack');
+      appendUser(input);
+      void prompt();
     }
-  });
+  }
 } else if (agy) {
   const roots = args.flatMap((arg, index) => (arg === '--add-dir' ? [args[index + 1]] : []));
   const config = roots
@@ -764,7 +749,7 @@ if (claude) {
     effort: option('--effort') ?? 'vendor-deep',
   };
   const resumed = option('--conversation');
-  const nativeHistory = join(process.env.MAKA_NATIVE_FIXTURE_CLAUDE_DIR, 'agy');
+  const nativeHistory = join(process.env.CLAUDE_CONFIG_DIR, 'agy');
   mkdirSync(nativeHistory, { recursive: true });
   const bootstrapRecord = join(nativeHistory, `${resumed ?? thread}.bootstrap`);
   agyBootstrapped = !!resumed && existsSync(bootstrapRecord);
@@ -874,9 +859,17 @@ if (claude) {
   });
   lines.on('close', () => process.exit(0));
 } else {
-  const wire = websocket();
-  write = wire.write;
-  const lines = createInterface({ input: wire.input });
+  let input;
+  if (args.includes('app-server') && option('--listen') === 'stdio://') {
+    input = process.stdin;
+  } else if (args.includes('app-server') && args.includes('proxy')) {
+    const wire = websocket();
+    write = wire.write;
+    input = wire.input;
+  } else {
+    throw Error('Codex fixture requires foreground stdio or an explicit daemon proxy');
+  }
+  const lines = createInterface({ input });
   lines.on('line', async (line) => {
     const value = JSON.parse(line),
       p = value.params ?? {},

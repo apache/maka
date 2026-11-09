@@ -102,6 +102,7 @@ async function tick(t, delay = 0) {
   t.mock.timers.tick(delay);
   await flush();
 }
+const returned = (value) => ({ kind: 'returned', result: { kind: 'success', value } });
 function stream(initial) {
   const queue = [initial];
   let waiting;
@@ -200,7 +201,8 @@ test('automatic upload recovery adopts the returned attachment once and preserve
     ...initial,
     receipt: {
       kind: 'recorded',
-      outcome: { kind: 'returned', value: { kind: 'uploaded', attachment } },
+      outcome: returned({ kind: 'uploaded', attachment }),
+      cleanup: { kind: 'confirmed' },
     },
   };
   const updates = stream([initial]);
@@ -248,7 +250,11 @@ test('unresolved uploads remain pending and are observed again without duplicati
     id: 'pending',
     upload: { name: 'pending.txt' },
     reference: {},
-    receipt: { kind: 'recorded', outcome: { kind: 'unresolved' } },
+    receipt: {
+      kind: 'recorded',
+      outcome: { kind: 'unresolved' },
+      cleanup: { kind: 'unconfirmed' },
+    },
   };
   let recoveries = 0;
   globalThis.uploadBoundary = {
@@ -313,19 +319,17 @@ test('a locally selected upload retries exact lookup and adopts its original res
     upload: { name: 'notes.txt' },
     receipt: {
       kind: 'recorded',
-      outcome: {
-        kind: 'returned',
-        value: {
-          kind: 'uploaded',
-          attachment: {
-            sessionId: 'session',
-            id: 'notes',
-            name: 'notes.txt',
-            mimeType: 'text/plain',
-            bytes: 8,
-          },
+      outcome: returned({
+        kind: 'uploaded',
+        attachment: {
+          sessionId: 'session',
+          id: 'notes',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          bytes: 8,
         },
-      },
+      }),
+      cleanup: { kind: 'confirmed' },
     },
   };
   globalThis.uploadBoundary = {
@@ -381,12 +385,19 @@ test('interface recovery observes reserved and unresolved operations without rep
           assert.equal(id, 'interface');
           recoveries++;
           if (recoveries === 1)
-            return { receipt: { kind: 'recorded', outcome: { kind: 'unresolved' } } };
+            return {
+              receipt: {
+                kind: 'recorded',
+                outcome: { kind: 'unresolved' },
+                cleanup: { kind: 'unconfirmed' },
+              },
+            };
           pending = [];
           return {
             receipt: {
               kind: 'recorded',
-              outcome: { kind: 'returned', value: { status: 'committed' } },
+              outcome: returned({ status: 'committed' }),
+              cleanup: { kind: 'confirmed' },
             },
           };
         },
@@ -415,7 +426,9 @@ for (const kind of ['write', 'recover']) {
     const original = { id: 'setting', endpoint: 'settings', method: 'updateAssistantPreferences' };
     const originals = kind === 'recover' ? [original] : [];
     const value = { kind: 'committed', revision: 7 };
-    const reply = { receipt: { kind: 'recorded', outcome: { kind: 'returned', value } } };
+    const reply = {
+      receipt: { kind: 'recorded', outcome: returned(value), cleanup: { kind: 'confirmed' } },
+    };
     const requests = [];
     const observed = [];
     let refreshing = false;
@@ -504,7 +517,11 @@ test('a disposed settings owner still drains its accepted mutation and becomes i
   ]);
   command.resolve({
     reply: {
-      receipt: { kind: 'recorded', outcome: { kind: 'returned', value: { kind: 'committed' } } },
+      receipt: {
+        kind: 'recorded',
+        outcome: returned({ kind: 'committed' }),
+        cleanup: { kind: 'confirmed' },
+      },
     },
   });
   await running;
@@ -612,19 +629,17 @@ for (const terminal of ['uploaded', 'abandoned']) {
           ...original,
           receipt: {
             kind: 'recorded',
-            outcome: {
-              kind: 'returned',
-              value: {
-                kind: 'uploaded',
-                attachment: {
-                  sessionId: 'session',
-                  id: 'ready-file',
-                  name: 'file.txt',
-                  mimeType: 'text/plain',
-                  bytes: 8,
-                },
+            outcome: returned({
+              kind: 'uploaded',
+              attachment: {
+                sessionId: 'session',
+                id: 'ready-file',
+                name: 'file.txt',
+                mimeType: 'text/plain',
+                bytes: 8,
               },
-            },
+            }),
+            cleanup: { kind: 'confirmed' },
           },
         },
       ]);
@@ -648,19 +663,17 @@ test('a successful exact recovery keeps the observer disconnection visible until
     ...original,
     receipt: {
       kind: 'recorded',
-      outcome: {
-        kind: 'returned',
-        value: {
-          kind: 'uploaded',
-          attachment: {
-            sessionId: 'session',
-            id: 'file',
-            name: 'file.txt',
-            mimeType: 'text/plain',
-            bytes: 8,
-          },
+      outcome: returned({
+        kind: 'uploaded',
+        attachment: {
+          sessionId: 'session',
+          id: 'file',
+          name: 'file.txt',
+          mimeType: 'text/plain',
+          bytes: 8,
         },
-      },
+      }),
+      cleanup: { kind: 'confirmed' },
     },
   };
   const updates = stream([original]);
@@ -722,19 +735,17 @@ test('a late recovery failure cannot block an upload already confirmed by observ
       ...original,
       receipt: {
         kind: 'recorded',
-        outcome: {
-          kind: 'returned',
-          value: {
-            kind: 'uploaded',
-            attachment: {
-              sessionId: 'session',
-              id: 'file',
-              name: 'file.txt',
-              mimeType: 'text/plain',
-              bytes: 8,
-            },
+        outcome: returned({
+          kind: 'uploaded',
+          attachment: {
+            sessionId: 'session',
+            id: 'file',
+            name: 'file.txt',
+            mimeType: 'text/plain',
+            bytes: 8,
           },
-        },
+        }),
+        cleanup: { kind: 'confirmed' },
       },
     },
   ]);
@@ -847,7 +858,11 @@ test('a late unresolved recovery cannot resurrect an upload already ended by obs
     id: 'upload',
     upload: { name: 'file.txt' },
     reference: {},
-    receipt: { kind: 'recorded', outcome: { kind: 'unresolved' } },
+    receipt: {
+      kind: 'recorded',
+      outcome: { kind: 'unresolved' },
+      cleanup: { kind: 'unconfirmed' },
+    },
   };
   const updates = stream([original]);
   let finishRecovery;

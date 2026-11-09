@@ -24,6 +24,7 @@ use std::time::Duration;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Start {
+    pub job_nonce: uuid::Uuid,
     pub source: String,
     pub names: Vec<String>,
     pub metadata: Vec<ToolMetadata>,
@@ -32,7 +33,12 @@ pub(crate) struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Request {
-    Ready,
+    Prepared {
+        job_nonce: uuid::Uuid,
+    },
+    Ready {
+        job_nonce: uuid::Uuid,
+    },
     Call {
         id: u32,
         name: String,

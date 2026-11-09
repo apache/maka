@@ -48,7 +48,7 @@ struct Probe {
     stream: bool,
 }
 impl Handler for Probe {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let calls = self.calls.clone();
         let started = self.started.clone();
         let release = self.release.clone();
@@ -74,7 +74,7 @@ impl Handler for Probe {
                 let snapshot = json!({"verified":verified,"metadata":resource.metadata()});
                 started.add_permits(1);
                 permit(&release).await;
-                return Ok(json!(serde_json::to_string(&snapshot).unwrap()));
+                return Ok(json!(serde_json::to_string(&snapshot).unwrap()).into());
             }
             if input == "whole" {
                 let empty_valid = resource.read(0..0)?.is_empty();
@@ -89,7 +89,8 @@ impl Handler for Probe {
                     "emptyValid":empty_valid, "splitRejected":split_rejected,
                     "emptySplitRejected":empty_split_rejected, "outsideRejected":outside_rejected,
                     "text":text,
-                })).unwrap()));
+                })).unwrap())
+                .into());
             }
             if let Some(text) = input
                 .as_str()
@@ -97,7 +98,7 @@ impl Handler for Probe {
             {
                 return Ok(json!(serde_json::to_string(&json!({
                     "metadata":resource.metadata(), "length":resource.bytes(), "inputBytes":text.len(),
-                })).unwrap()));
+                })).unwrap()).into());
             }
             let snapshot = json!({"metadata":resource.metadata(), "length":resource.bytes(), "encoding":resource.encoding(),
                 "first":resource.read(0..resource.bytes().min(8))?, "splitRejected":resource.read(1..2).is_err(),
@@ -115,7 +116,7 @@ impl Handler for Probe {
             if stream {
                 context.emit(reply.clone()).await?;
             }
-            Ok(reply)
+            Ok(reply.into())
         })
     }
 }

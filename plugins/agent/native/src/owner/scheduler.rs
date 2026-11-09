@@ -22,10 +22,10 @@ mod dispatch;
 mod repository;
 mod tools;
 use super::*;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::Store;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::Store;
 use maka_scheduler::{
     plan::TaskPlan,
     task::{Creator, Outcome, Run, Status},
@@ -36,13 +36,15 @@ use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Approval {
+pub(in crate::owner) enum Approval {
     Reminder,
-    Execution { basis: Box<MessageBasis> },
+    Execution {
+        approval: super::notifications::BackgroundApproval,
+    },
 }
 pub(crate) struct Scheduler {
     storage: Arc<maka_host_runtime::storage::Storage>,
-    gate: Mutex<()>,
+    pub(in crate::owner) gate: Mutex<()>,
     wake: Notify,
     changed: tokio::sync::watch::Sender<u64>,
     link: OnceLock<Weak<Owner>>,
@@ -69,6 +71,9 @@ impl Scheduler {
         self.link
             .set(Arc::downgrade(owner))
             .expect("scheduler bound once");
+    }
+    pub fn execution_changed(&self) {
+        self.wake.notify_one();
     }
     pub async fn finish(&self) -> Result<(), String> {
         self.storage.finish().await
@@ -170,7 +175,7 @@ impl Owner {
         if !self.settings.scheduled_tasks {
             return Err("scheduler_disabled".into());
         }
-        let runs = self.runs.lock().await;
+        let runs = self.runs.state().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }

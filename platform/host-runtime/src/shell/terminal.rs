@@ -22,8 +22,8 @@ use super::{
     control::{ControlError, WriteReceipt},
     output::Output,
 };
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::{PREVIEW_BYTES, TerminalScreen, display::Display};
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::{PREVIEW_BYTES, TerminalScreen, display::Display};
 use maka_process::pty::PtyIo;
 use maka_process::terminal::Screen;
 use std::collections::VecDeque;
@@ -173,7 +173,7 @@ impl PendingWrite {
         self.accepted == self.bytes.len()
     }
 
-    pub fn finish(mut self, record: std::sync::Arc<maka_agent_facts::shell_run::ShellObservation>) {
+    pub fn finish(mut self, record: std::sync::Arc<maka_plugin_core::shell_run::ShellObservation>) {
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Ok(WriteReceipt {
                 accepted_bytes: self.accepted,
@@ -269,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn raw_output_preserves_native_bytes_before_screen_decoding() {
         use super::{Output, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
+        use maka_plugin_core::terminal::TerminalSize;
 
         let size = TerminalSize::new(80, 24).unwrap();
         let output = Output::new(size).unwrap();
@@ -297,7 +297,7 @@ mod tests {
     async fn parser_failure_and_later_drain_preserve_original_raw_bytes() {
         use super::super::output::PtyStreamEvent;
         use super::{Output, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
+        use maka_plugin_core::terminal::TerminalSize;
 
         let size = TerminalSize::new(80, 24).unwrap();
         let output = Output::new(size).unwrap();
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn large_user_control_does_not_consume_automatic_reply_capacity() {
         use super::{Output, PendingWrite, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
+        use maka_plugin_core::terminal::TerminalSize;
         let size = TerminalSize::new(80, 24).unwrap();
         let output = Output::new(size).unwrap();
         let mut terminal = Terminal::new(size, output);

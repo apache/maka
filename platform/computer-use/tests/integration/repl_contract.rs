@@ -400,7 +400,11 @@ impl ToolExecutor for LocalBridge {
                 .await
                 .invoke(
                     serde_json::from_value(input).unwrap(),
-                    &maka_computer_use::InvocationContext::new("language-fixture", "fixture-turn"),
+                    &maka_computer_use::InvocationContext::new(
+                        "language-fixture",
+                        "fixture-turn",
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
                     &cancellation,
                     language,
                 )

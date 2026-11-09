@@ -150,6 +150,7 @@ struct State {
 /// session, target, public handle, or permission cache is allocated here.
 pub(super) struct Resource {
     turn: String,
+    execution: crate::ExecutionCorrelation,
     epoch: crate::desktop::NativeEpochId,
     state: Mutex<State>,
 }
@@ -157,10 +158,12 @@ impl Resource {
     fn new(
         admission: extension::OwnedInputAdmission,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         epoch: crate::desktop::NativeEpochId,
     ) -> Self {
         Self {
             turn: turn.to_owned(),
+            execution: execution.clone(),
             epoch,
             state: Mutex::new(State {
                 held: Vec::new(),
@@ -181,9 +184,12 @@ impl Resource {
     pub(super) fn belongs(
         &self,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
         epoch: Option<crate::desktop::NativeEpochId>,
     ) -> bool {
-        turn.is_none_or(|turn| self.turn == turn) && epoch.is_none_or(|epoch| self.epoch == epoch)
+        turn.is_none_or(|turn| self.turn == turn)
+            && execution.is_none_or(|execution| &self.execution == execution)
+            && epoch.is_none_or(|epoch| self.epoch == epoch)
     }
     pub(super) fn check_settled(&self) -> Result<(), ToolError> {
         match &self.state().completion {
@@ -636,7 +642,12 @@ impl Tab {
             .ok_or_else(|| failed("tab connection unavailable"))?
             .clone();
         let admission = socket.preparation.before_owned_input().await?;
-        let resource = Arc::new(Resource::new(admission, &self.last_turn, self.cursor_epoch));
+        let resource = Arc::new(Resource::new(
+            admission,
+            &self.last_turn,
+            &self.last_execution,
+            self.cursor_epoch,
+        ));
         let identity = self.identity()?;
         let mut branch = self.wait_observation_branch(socket.connection.subscribe())?;
         branch.origin_proof = self.origin_proof.clone();
@@ -646,6 +657,7 @@ impl Tab {
             identity,
             self.cursor_owner,
             &self.last_turn,
+            &self.last_execution,
             self.provider.clone(),
             self.generation.clone(),
             resource.clone(),
@@ -780,6 +792,7 @@ mod tests {
             resource: Arc::new(Resource::new(
                 admission,
                 "turn",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 crate::desktop::NativeEpochId::new(),
             )),
             cancellation,
@@ -822,13 +835,20 @@ mod tests {
             identity.clone(),
             owner,
             "turn",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             wire.provider.clone(),
             wire.generation.clone(),
             resource.clone(),
         )
         .unwrap();
         assert!(
-            host.finish(owner, Some("turn")).await.is_err(),
+            host.finish(
+                owner,
+                Some("turn"),
+                Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap())
+            )
+            .await
+            .is_err(),
             "pending original input still blocks owner cleanup"
         );
 
@@ -868,7 +888,13 @@ mod tests {
             .unwrap();
         resource.check_settled().unwrap();
         assert_eq!(
-            host.finish(owner, Some("turn")).await.unwrap(),
+            host.finish(
+                owner,
+                Some("turn"),
+                Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap())
+            )
+            .await
+            .unwrap(),
             vec![identity]
         );
 

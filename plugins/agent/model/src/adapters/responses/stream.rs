@@ -164,14 +164,17 @@ async fn run(
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
     let headers = headers(&request)?;
     let mut decoder = Decoder::new(plaintext, &request.tools).operation(request.operation);
-    let lane = lane.filter(|_| {
-        request.provider.headers.is_empty()
-            && request
-                .provider
-                .body_overlay
-                .as_ref()
-                .is_none_or(|value| value.is_empty())
-    });
+    if lane.as_ref().is_some_and(|lane| {
+        lane.retry_transport_phase() == maka_agent_ports::model::RetryTransportPhase::Primary
+    }) && (!request.provider.headers.is_empty()
+        || request
+            .provider
+            .body_overlay
+            .as_ref()
+            .is_some_and(|value| !value.is_empty()))
+    {
+        return Err(ModelError::Adapter("Responses primary conversation cannot silently use HTTP for custom headers or request overlays".into()));
+    }
     drop(request);
     if let Some(lane) = lane {
         let exchange = Exchange::new(lane, cancellation.clone(), network.clone(), transport);
@@ -218,7 +221,7 @@ async fn run(
     let response = request_http(
         network.as_ref(),
         http::Request {
-            method: http::Method::Post,
+            method: maka_plugin_core::http::Method::Post,
             url: url.to_string(),
             headers: headers.into_iter().collect(),
             body: body.http(source),
@@ -423,6 +426,8 @@ fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelErro
 fn failure(error: super::Error, quota_scope: QuotaScope) -> ModelError {
     use super::Error;
     match error {
+        Error::LocalAuthorization(cause) => ModelError::LocalAuthorization(cause),
+        Error::Cancelled => ModelError::Cancelled,
         Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
         Error::Truncated {
             replay_safe,
@@ -483,6 +488,14 @@ mod upload_settlement_tests {
         unknown: bool,
     }
     impl Transport for Draining {
+        fn send_text(
+            &self,
+            socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            chunks: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async move { socket.send_text(chunks).await })
+        }
         fn identity(&self) -> u64 {
             0
         }
@@ -553,6 +566,14 @@ mod upload_settlement_tests {
         owner: std::sync::Weak<()>,
     }
     impl Transport for Uploaded {
+        fn send_text(
+            &self,
+            socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            chunks: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async move { socket.send_text(chunks).await })
+        }
         fn identity(&self) -> u64 {
             0
         }
@@ -726,7 +747,7 @@ mod upload_settlement_tests {
                 request_http(
                     task_network.as_ref(),
                     http::Request {
-                        method: http::Method::Post,
+                        method: maka_plugin_core::http::Method::Post,
                         url: "http://fixture.invalid".into(),
                         headers: vec![],
                         body: Default::default(),

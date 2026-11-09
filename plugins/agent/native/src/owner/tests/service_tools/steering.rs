@@ -37,6 +37,7 @@ async fn steering_advances_before_the_original_effect_finishes_and_delivers_its_
             }).await;
             let session = fixture.create("Steer a long tool").await;
             let original = fixture.send(&session).await.unwrap();
+            let original_run = fixture.delivered_run(&original).await;
             let (mut first, _) = listener.accept().await.unwrap();
             request(&mut first).await;
             if code {
@@ -47,7 +48,7 @@ async fn steering_advances_before_the_original_effect_finishes_and_delivers_its_
             counter.entered.acquire().await.unwrap().forget();
             let started = std::time::Instant::now();
             let steered = fixture.mutation(2, "send", json!({
-                "sessionId":session, "message":"Use the new direction", "expectedInvocationId":original["invocationId"]
+                "sessionId":session, "message":"Use the new direction", "expectedRunId":original_run
             }), Uuid::new_v4()).await.unwrap();
             assert_eq!(steered["kind"], "queued");
             let admitted = started.elapsed();
@@ -57,19 +58,27 @@ async fn steering_advances_before_the_original_effect_finishes_and_delivers_its_
             assert!(next["messages"].as_array().unwrap().iter().any(|message| message["role"] == "user" && message.to_string().contains("Use the new direction")));
             assert_eq!(counter.effects.load(Ordering::SeqCst), 1);
             assert_eq!(counter.cancelled.available_permits(), 0);
-            let current = fixture.owner.runs.lock().await.controls[&session].invocation.invocation_id.clone();
+            let current = fixture.owner.runs.state().await.controls[&session].execution.run_id;
             let recorded = facts(&fixture, &session).await;
-            assert_eq!(current, original["invocationId"], "{:?}\n{}", recorded.iter().filter(|fact| matches!(fact, Fact::InvocationEnded { .. } | Fact::ModelInterrupted { .. })).collect::<Vec<_>>(), log_text(&mut logs));
-            let store = fixture.session(&session).await;
-            let mut changes = store.subscribe_commits().unwrap();
+            assert_eq!(current, original_run, "{:?}\n{}", recorded.iter().filter(|fact| matches!(fact, Fact::RunTerminated { .. } | Fact::ModelInterrupted { .. })).collect::<Vec<_>>(), log_text(&mut logs));
+            let mut changes = fixture.owner.durable.subscribe().unwrap();
             counter.release.add_permits(1);
             loop {
                 let recorded = facts(&fixture, &session).await;
-                let completed = |name: &str| recorded.iter().any(|fact| {
-                    let Fact::ToolDispatched { operation_id, name: actual, .. } = fact else { return false; };
-                    actual == name && recorded.iter().any(|fact| matches!(fact, Fact::ToolSettled { operation_id: settled, .. } if settled == operation_id))
-                });
-                if completed("Counter") && (!code || completed("code_cell")) { break; }
+                let completed = if code {
+                    let child_done = recorded.iter().any(|fact| {
+                        let Fact::Cell { event: maka_agent_facts::cells::CellEvent::ChildPrepared { cell, operation, name, .. } } = fact else { return false; };
+                        name == "Counter" && recorded.iter().any(|fact| matches!(fact,
+                            Fact::Cell { event: maka_agent_facts::cells::CellEvent::ChildResultRecorded { cell: original_cell, operation: original, is_error: false, .. } }
+                            if original_cell == cell && original == operation))
+                    });
+                    child_done && recorded.iter().any(|fact| matches!(fact,
+                        Fact::LocalToolReturned { tool, is_error: false, .. } if tool.call == "code-call"))
+                } else {
+                    recorded.iter().any(|fact| matches!(fact,
+                        Fact::HostToolResultRecorded { tool, is_error: false, .. } if tool.call == "counter-call"))
+                };
+                if completed { break; }
                 changes.changed().await.unwrap();
             }
             response(&mut second).await;
@@ -82,8 +91,33 @@ async fn steering_advances_before_the_original_effect_finishes_and_delivers_its_
             response(&mut third).await;
             fixture.drained().await;
             let recorded = facts(&fixture, &session).await;
-            assert_eq!(recorded.iter().filter(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "Counter")).count(), 1);
-            assert!(recorded.iter().any(|fact| matches!(fact, Fact::MessageSteered { message, .. } if message.message_id == steered["messageId"])));
+            if code {
+                let children: Vec<_> = recorded.iter().filter_map(|fact| match fact {
+                    Fact::Cell { event: maka_agent_facts::cells::CellEvent::ChildPrepared { cell, operation, name, .. } } if name == "Counter" => Some((cell, operation)),
+                    _ => None,
+                }).collect();
+                assert_eq!(children.len(), 1);
+                let (cell, operation) = children[0];
+                assert_eq!(recorded.iter().filter(|fact| matches!(fact,
+                    Fact::Cell { event: maka_agent_facts::cells::CellEvent::ChildAdmitted { cell: original_cell, operation: original } }
+                    if original_cell == cell && original == operation)).count(), 1);
+            } else {
+                assert_eq!(recorded.iter().filter(|fact| matches!(fact,
+                    Fact::ToolAdmitted { tool } if tool.call == "counter-call")).count(), 1);
+            }
+            assert!(matches!(fixture.owner.durable.queue().resolve_message(session.clone(), steered["messageId"].as_str().unwrap().to_owned()).await.unwrap(),
+                maka_agent_state::queue::MessageResolution::Delivered { run, shared: true } if run == original_run));
+            let view = fixture.owner.durable.frontier(original_run).await.unwrap();
+            let mut original_steering = false;
+            for step in view.steps.keys() {
+                let request = fixture.owner.durable.request(original_run, *step).await.unwrap();
+                for reference in request.steering {
+                    let source: maka_agent_facts::message::RootSourceMessage = serde_json::from_slice(
+                        &fixture.owner.durable.content(original_run, reference).await.unwrap()).unwrap();
+                    original_steering |= source.message.message_id == steered["messageId"].as_str().unwrap();
+                }
+            }
+            assert!(original_steering, "the original Run's immutable request must capture the actual steered message");
             fixture.app.shutdown().await.unwrap();
             fixture.config.shutdown().await.unwrap();
         }).await.unwrap();
@@ -104,26 +138,28 @@ async fn default_send_preempts_sampling_in_both_modes_and_stop_fences_a_delayed_
             }).await;
             let session = fixture.create("Steer sampling").await;
             let original = fixture.send(&session).await.unwrap();
+            let original_run = fixture.delivered_run(&original).await;
             let (mut first, _) = listener.accept().await.unwrap();
             request(&mut first).await;
-            let mut changes = fixture.session(&session).await.subscribe_commits().unwrap();
+            let mut changes = fixture.owner.durable.subscribe().unwrap();
             let part = format!("data: {}\n\n", json!({"id":"partial-response","choices":[{"index":0,"delta":{"content":"The original answer is being written"},"finish_reason":null}]}));
+            let original_attempt = fixture.owner.durable.frontier(original_run).await.unwrap().current_attempt.unwrap();
             first.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{part}\r\n", part.len()).as_bytes()).await.unwrap();
             loop {
                 if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::ModelObserved { .. })) { break; }
                 changes.changed().await.unwrap();
             }
-            fixture.mutation(2, "send", json!({"sessionId":session,"message":"Change direction","expectedInvocationId":original["invocationId"]}), Uuid::new_v4()).await.unwrap();
+            fixture.mutation(2, "send", json!({"sessionId":session,"message":"Change direction","expectedRunId":original_run}), Uuid::new_v4()).await.unwrap();
             let (mut next, _) = listener.accept().await.unwrap();
             let request = request(&mut next).await;
             assert!(request["messages"].to_string().contains("Change direction"));
-            assert!(facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::ModelInterrupted { status: maka_agent_facts::event::ModelInterruption::Steered, .. })));
-            fixture.mutation(2, "stop", json!({"sessionId":session,"invocationId":original["invocationId"]}), Uuid::new_v4()).await.unwrap();
+            assert!(facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::ModelInterrupted { attempt, .. } if *attempt == original_attempt)));
+            fixture.mutation(2, "stop", json!({"sessionId":session,"runId":original_run}), Uuid::new_v4()).await.unwrap();
             fixture.drained().await;
-            let delayed = fixture.mutation(2, "send", json!({"sessionId":session,"message":"This was sent before Stop","expectedInvocationId":original["invocationId"]}), Uuid::new_v4()).await.unwrap();
+            let delayed = fixture.mutation(2, "send", json!({"sessionId":session,"message":"This was sent before Stop","expectedRunId":original_run}), Uuid::new_v4()).await.unwrap();
             assert_eq!(delayed["kind"], "rejected");
             assert_eq!(delayed["reason"], "turn_stopped");
-            assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
+            assert!(fixture.owner.durable.queue().read(session.clone()).await.unwrap().entries.is_empty());
             fixture.app.shutdown().await.unwrap();
             fixture.config.shutdown().await.unwrap();
         }).await.unwrap();

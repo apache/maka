@@ -43,6 +43,7 @@ import type {
   AgentInteractionResult,
   AgentWorkspaceAccess,
   ModelSelection,
+  RunId,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -484,7 +485,7 @@ export function createConversationUi(
     if (result.kind === 'recorded') {
       const record = result.record;
       if (
-        record.sessionId === original.sessionId &&
+        record.execution.sessionId === original.sessionId &&
         record.requestId === original.requestId &&
         record.outcome
       ) {
@@ -565,8 +566,9 @@ export function createConversationUi(
       throw new UiError('This action could not be completed.');
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
       throw new UiError('Syncing changes…');
-    const value = receipt.outcome.value;
-    return value;
+    const result = receipt.outcome.result;
+    if (result.kind === 'failure') throw new Error(result.diagnostic);
+    return result.value;
   };
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
@@ -581,7 +583,14 @@ export function createConversationUi(
               original.method,
             ))) &&
         original.sessionId === (input.sessionId ?? null) &&
-        (method !== 'stop' || original.correlation.invocationId === input.invocationId) &&
+        (method !== 'stop' || original.correlation.runId === input.runId) &&
+        (method !== 'continueRun' ||
+          (original.correlation.sourceRunId === input.sourceRunId &&
+            original.correlation.sourceHighWater === input.sourceHighWater)) &&
+        (method !== 'adjudicateRisk' ||
+          (original.correlation.runId === input.runId &&
+            original.correlation.blockerId === input.blockerId &&
+            original.correlation.expectedHighWater === input.expectedHighWater)) &&
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
@@ -1208,13 +1217,7 @@ export function createConversationUi(
     await browsing.refresh();
     return opened;
   };
-  const stop = ({
-    sessionId,
-    invocationId,
-  }: {
-    sessionId: string | null;
-    invocationId: string | null;
-  }) => {
+  const stop = ({ sessionId, runId }: { sessionId: string | null; runId: RunId | null }) => {
     const owner = handle();
     if (
       !alive ||
@@ -1224,15 +1227,15 @@ export function createConversationUi(
       !owner.connected() ||
       selected() !== sessionId ||
       owner.sessionId !== sessionId ||
-      owner.invocation() !== invocationId
+      owner.run() !== runId
     )
       return;
-    void owner.stop(invocationId).catch(report);
+    void owner.stop(runId).catch(report);
   };
   const stopAction = () =>
     inputAction(stop, {
       sessionId: selected(),
-      invocationId: handle()?.invocation() ?? null,
+      runId: handle()?.run() ?? null,
     });
   const closeCommand = (context: ActionContext) =>
     alive &&
@@ -1371,9 +1374,9 @@ export function createConversationUi(
   const commandActivity = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
-  const commandStop = (context: ActionContext & { invocationId: string | null }) => {
+  const commandStop = (context: ActionContext & { runId: RunId | null }) => {
     if (closeCommand(context) && handle()?.connected())
-      void handle()?.stop(context.invocationId).catch(report);
+      void handle()?.stop(context.runId).catch(report);
   };
   const commandQueue = (context: ActionContext) => {
     if (!closeCommand(context)) return false;
@@ -1987,7 +1990,7 @@ export function createConversationUi(
   );
   const commands = (source: ActionContext): CommandEntry[] => {
     const expectedOwner = handle();
-    const expectedInvocation = expectedOwner?.invocation() ?? null;
+    const expectedRun = expectedOwner?.run() ?? null;
     return commandCandidates().flatMap<CommandEntry>(({ contribution, metadata }) => {
       if (!runtime.commandEnabled(contribution, { sessionId: source.sessionId })) return [];
       return [
@@ -2004,8 +2007,7 @@ export function createConversationUi(
                   overlay() === null &&
                   (!['stop', 'queue'].includes(contribution.id) ||
                     ownedContributions().get(contribution.id)?.key !== contribution.key ||
-                    (handle() === expectedOwner &&
-                      expectedOwner?.invocation() === expectedInvocation)),
+                    (handle() === expectedOwner && expectedOwner?.run() === expectedRun)),
               );
             } catch (reason) {
               report(reason);
@@ -2133,7 +2135,15 @@ export function createConversationUi(
                   continuationPending={() =>
                     !controlsKnown() ||
                     controls().some(
-                      (original) => original.method === 'resume' && original.sessionId === id(),
+                      (original) =>
+                        original.method === 'continueRun' && original.sessionId === id(),
+                    )
+                  }
+                  riskPending={() =>
+                    !controlsKnown() ||
+                    controls().some(
+                      (original) =>
+                        original.method === 'adjudicateRisk' && original.sessionId === id(),
                     )
                   }
                   fork={async (action) => {
@@ -2205,7 +2215,7 @@ export function createConversationUi(
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;
-                    if (request?.sessionId === next.sessionId) {
+                    if (request !== null && request.sessionId === next.sessionId) {
                       pendingReveal = null;
                       void next
                         .reveal(request.anchor, request.current)
@@ -2479,7 +2489,7 @@ export function createConversationUi(
                       return (
                         <ModelSelect
                           owner={owner}
-                          running={() => owner.invocation() !== null}
+                          running={() => owner.run() !== null}
                           instance={() => {
                             const current = overlay();
                             return current?.kind === 'models' &&
@@ -2662,14 +2672,14 @@ export function createConversationUi(
       if (id === 'goal') return handle()?.goal.view()?.enabled ?? pendingWorkspace() !== null;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
-      if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.run() != null;
       if (id === 'queue') {
         const owner = handle();
         return (
           !!owner &&
           owner.connected() &&
           owner.editable() &&
-          owner.invocation() !== null &&
+          owner.run() !== null &&
           !owner.blockedReason() &&
           (!!owner.draft().trim() || owner.attachments.files().length > 0) &&
           !matchComposerCommand(
@@ -2725,7 +2735,7 @@ export function createConversationUi(
         case 'stop':
           return commandStop({
             ...source,
-            invocationId: handle()?.invocation() ?? null,
+            runId: handle()?.run() ?? null,
           });
         case 'queue':
           return commandQueue(source);
@@ -2823,11 +2833,14 @@ function projectComposerSession(
     notice: owner.notice,
     recovering: owner.recovering,
     connected: owner.connected,
-    invocation: owner.invocation,
+    run: owner.run,
+    execution: owner.execution,
     stopping: owner.stopping,
-    resumable: owner.resumable,
-    resuming: owner.resuming,
-    resume: owner.resume,
+    continuation: owner.continuation,
+    continuing: owner.continuing,
+    continueRun: owner.continueRun,
+    adjudicating: owner.adjudicating,
+    adjudicateRisk: owner.adjudicateRisk,
     metrics: owner.metrics,
     contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,

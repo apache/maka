@@ -57,10 +57,7 @@ pub(super) async fn query(
                             runtime::Transport::WebSocket,
                             None,
                             cancellation.clone(),
-                            |mut io| async move {
-                                let result = probe(&mut io).await;
-                                (result, io)
-                            },
+                            Probe,
                         )
                         .await
                     }
@@ -112,6 +109,17 @@ pub(super) async fn query(
         Ok(Value::Array(result))
     }
 }
+struct Probe;
+impl runtime::PipeProtocol for Probe {
+    type Output = Value;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Value, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(probe(io))
+    }
+}
+
 async fn probe(io: &mut Pipe) -> Result<Value, Error> {
     let init = io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     io.notify("initialized", serde_json::json!({})).await?;

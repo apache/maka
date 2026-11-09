@@ -31,7 +31,7 @@ use alacritty_terminal::{
     },
     vte::ansi::{self, Handler},
 };
-use maka_agent_facts::terminal::{
+use maka_plugin_core::terminal::{
     TerminalCursor,
     display::{self, Color, Display, Metadata, Row, Run, Style},
 };
@@ -84,7 +84,7 @@ impl Viewport {
 }
 
 fn viewport_range(
-    size: maka_agent_facts::terminal::TerminalSize,
+    size: maka_plugin_core::terminal::TerminalSize,
     history: usize,
     offset: usize,
     count: usize,
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn viewport_reads_only_the_requested_physical_extent_and_clamps_to_retained_history() {
-        let mut source = Screen::new(maka_agent_facts::terminal::TerminalSize::new(8, 3).unwrap());
+        let mut source = Screen::new(maka_plugin_core::terminal::TerminalSize::new(8, 3).unwrap());
         source.write("zero\r\none\r\ntwo\r\nthree").unwrap();
         let text = |view: &Viewport| {
             view.rows
@@ -379,7 +379,7 @@ mod tests {
         assert!(source.viewport(0, 0).is_err());
         assert!(source.viewport(0, 4).is_err());
     }
-    use maka_agent_facts::terminal::TerminalSize;
+    use maka_plugin_core::terminal::TerminalSize;
 
     #[test]
     fn styled_display_round_trips_exact_cells_palette_cursor_and_resized_alternate() {

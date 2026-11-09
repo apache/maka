@@ -103,7 +103,7 @@ pub(super) async fn publish_with_policy(
         .unwrap();
     let mut native = NativeRegistry::default();
     maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-    crate::owner::tests::provide_all(&mut native).unwrap();
+    crate::owner::tests::provide_all(&mut native, fixture.owner.durable.clone()).unwrap();
     fixture.app = Application::start_from_store(
         fixture.store.clone(),
         source.deployment,
@@ -295,14 +295,23 @@ async fn replaced_directory_marker_and_removed_publication_refuse_before_message
     );
     assert!(
         fixture
-            .session(&id)
-            .await
-            .session_projection::<StoredSessionConfiguration>(&id)
+            .owner
+            .durable
+            .latest_run(id.clone())
             .await
             .unwrap()
-            .unwrap()
-            .root_turn
             .is_none()
+    );
+    assert!(
+        fixture
+            .owner
+            .durable
+            .queue()
+            .read(id.clone())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
     );
     std::fs::write(&marker, &original).unwrap();
     let other = fixture.owner.settings.workspace_roots[1].clone();
@@ -316,14 +325,23 @@ async fn replaced_directory_marker_and_removed_publication_refuse_before_message
     );
     assert!(
         fixture
-            .session(&id)
-            .await
-            .session_projection::<StoredSessionConfiguration>(&id)
+            .owner
+            .durable
+            .latest_run(id.clone())
             .await
             .unwrap()
-            .unwrap()
-            .root_turn
             .is_none()
+    );
+    assert!(
+        fixture
+            .owner
+            .durable
+            .queue()
+            .read(id.clone())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
     );
     assert_eq!(std::fs::read(&marker).unwrap(), original);
     fixture.app.shutdown().await.unwrap();

@@ -25,12 +25,13 @@ mod network;
 use contract::configuration_schema;
 use contract::*;
 use futures_util::future::BoxFuture;
-use maka_capabilities::call::Resources;
-use maka_capabilities::storage::Namespace;
 use maka_config::ConfigurationStore;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeContext,
+    NativeOwner, NativeRegistry,
 };
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::work::resources::Resources;
 use maka_web_api::{EXPORT, IMPLEMENTATION};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -44,7 +45,6 @@ struct Web {
     network: maka_sandbox::Network,
     resources: Arc<Resources>,
     stopping: CancellationToken,
-    origin: maka_agent_facts::tool_call::ToolOrigin,
 }
 pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     registry.insert(
@@ -118,13 +118,6 @@ impl Web {
             network: input.network,
             resources,
             stopping,
-            origin: maka_agent_facts::tool_call::ToolOrigin::HostSdk {
-                package_id: context.package().id.clone(),
-                entry_id: serde_json::to_string(context.activation().instance())
-                    .map_err(message)?,
-                activation: context.activation().epoch().to_string(),
-                parent: None,
-            },
         }))
     }
     async fn capture(&self) -> Result<Capture, String> {
@@ -156,15 +149,18 @@ impl Handler for Service {
         name: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
-        Box::pin(async move {
+        let failure = network::Failure::default();
+        let observed_failure = failure.clone();
+        let result = async move {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
                 return Err("web_closed".into());
             }
             if !matches!(name.as_str(), "snapshot" | "capture") && context.operation().is_none() {
                 return Err("web_mutation_required".into());
             }
+            let native = network::native_call(&owner, &context, &failure).await?;
             match name.as_str() {
                 "capture" => encode(owner.capture().await?),
                 "snapshot" => encode(owner.repository.snapshot().await.map_err(message)?),
@@ -174,26 +170,38 @@ impl Handler for Service {
                         Ok(_) => encode(Update::Updated {
                             snapshot: owner.repository.snapshot().await.map_err(message)?,
                         }),
-                        Err(maka_capabilities::storage::StoreError::Conflict { .. }) => {
+                        Err(maka_plugin_core::storage::StoreError::Conflict { .. }) => {
                             encode(Update::Changed)
                         }
                         Err(error) => Err(message(error)),
                     }
                 }
-                "checkKey" => check::run(owner, input, context).await,
+                "checkKey" => check::run(owner, input, context, failure).await,
                 "probe" => {
                     let input: maka_web_api::probe::Input =
                         serde_json::from_value(input).map_err(message)?;
-                    let authority = network::Access::health(owner, context.scope())?;
+                    let authority = network::Access::health(
+                        owner,
+                        context.scope(),
+                        native.ok_or("web_requires_native_call")?,
+                        failure.clone(),
+                    )?;
                     let client = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
                     match crate::probe::probe(client, context.scope(), input).await {
                         Ok(endpoint) => encode(ResultValue::Completed {
                             value: serde_json::to_value(endpoint).map_err(message)?,
                         }),
                         Err(maka_agent_facts::tools::ToolError::Failed(message)) => {
-                            encode(ResultValue::Failed { message })
+                            if failure.is_uncertain() {
+                                Err(message)
+                            } else {
+                                encode(ResultValue::Failed { message })
+                            }
                         }
-                        Err(error) => Err(message(error)),
+                        Err(error) => {
+                            failure.observe(&error);
+                            Err(message(error))
+                        }
                     }
                 }
                 "saveKey" | "deleteKey" => {
@@ -248,8 +256,10 @@ impl Handler for Service {
                     let authority = network::Access::new(
                         owner.clone(),
                         context.scope(),
+                        native.ok_or("web_requires_native_call")?,
                         call.basis,
                         name == "search",
+                        failure.clone(),
                     )?;
                     let client = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
                     let result = if name == "fetch" {
@@ -295,23 +305,35 @@ impl Handler for Service {
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })
                     };
+                    if let Err(error) = &result {
+                        failure.observe(error);
+                    }
                     match result {
                         Ok(value) => encode(ResultValue::Completed { value }),
                         Err(maka_agent_facts::tools::ToolError::Failed(message)) => {
-                            encode(ResultValue::Failed { message })
+                            if failure.is_uncertain() {
+                                Err(message)
+                            } else {
+                                encode(ResultValue::Failed { message })
+                            }
                         }
                         Err(error) => Err(message(error)),
                     }
                 }
                 _ => Err("web_method_unavailable".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result
+                .map(HandlerValue::Json)
+                .map_err(|diagnostic| observed_failure.returned(diagnostic))
         })
     }
 }
 impl NativeOwner for Service {
     fn execution_basis(&self) -> Option<Value> {
         // Settings and credentials share this Root and instance namespace.
-        // The origin epoch identifies audit records, not an execution target.
         self.0.storage.execution_basis()
     }
     fn prepare_retirement(

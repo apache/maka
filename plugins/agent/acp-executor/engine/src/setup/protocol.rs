@@ -170,8 +170,12 @@ pub async fn execute(
     };
     tokio::time::timeout(Duration::from_secs(4), connection.owner.close())
         .await
-        .map_err(|_| Error::CleanupUnconfirmed)?
-        .map_err(|_| Error::CleanupUnconfirmed)?;
+        .map_err(|error| {
+            Error::OutcomeUnknown(format!("ACP setup original close timed out: {error}"))
+        })?
+        .map_err(|error| {
+            Error::OutcomeUnknown(format!("ACP setup original close failed: {error}"))
+        })?;
     result
 }
 async fn run(

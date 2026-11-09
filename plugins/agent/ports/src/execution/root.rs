@@ -23,8 +23,8 @@ use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::ModelBinding;
 use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::execution::ThinkingLevel;
-use maka_agent_facts::execution::WorkspaceIdentity;
-use maka_agent_facts::execution::WorkspaceTarget;
+use maka_sandbox::workspace::WorkspaceIdentity;
+use maka_sandbox::workspace::WorkspaceTarget;
 use serde::{Deserialize, Serialize};
 
 /// Explicit choices for a new root Session. No mutable Host defaults are

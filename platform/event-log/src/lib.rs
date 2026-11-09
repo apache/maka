@@ -19,71 +19,31 @@
 
 //! Separate prototype database; does not open or migrate old Maka State Roots.
 
-mod append;
 mod application_inspection;
 pub mod applications;
-pub mod archive;
-pub mod artifacts;
-pub mod bundle;
-mod canonical;
-mod canonical_insert;
-mod catalog_changes;
 pub mod checkpoints;
 mod commits;
-mod content;
-pub(crate) mod snapshots;
+pub mod content;
 pub use commits::SessionSubscription;
 pub mod connection;
-pub mod context;
-mod continuation;
-pub mod diagnostics;
 pub mod effects;
-mod executor;
-mod handoff;
-pub use handoff::PendingHandoff;
-pub mod composition;
-pub mod interactions;
-pub mod message_admissions;
-mod message_identity;
-pub mod message_interrupts;
-pub mod message_queue;
-pub mod message_resolution;
-pub mod message_sources;
 pub mod migration;
-mod model_items;
-pub mod observation;
 pub mod plugins;
-mod prefix;
 pub mod projects;
-mod read_resources;
-pub mod recovery;
 pub mod root;
 pub mod root_store;
 pub use root_store::{RootStore, SessionStore};
-pub mod model_retries;
-pub mod native_approvals;
-pub mod native_computer;
-pub mod recall;
-pub mod run_source;
 mod schema;
+pub use schema::ROOT_MIGRATIONS;
 pub mod sessions;
 pub mod shell_runs;
-mod sqlite_functions;
-pub mod steering;
-mod steering_delivery;
-pub mod title;
-mod tool_calls;
-mod tool_payloads;
-pub mod transcript;
-pub mod turns;
-pub mod usage;
 pub mod workspace;
 pub mod workspace_bindings;
 
 use std::path::Path;
 use std::sync::Arc;
 
-mod writeback;
+pub mod writeback;
 
 use connection::OpenOptions;
 use connection::{ConnectionAuthority, OwnedConnection};
@@ -96,26 +56,16 @@ pub enum StoreError {
     AmbiguousReadResource,
     #[error(transparent)]
     Project(#[from] projects::ProjectError),
-    #[error(transparent)]
-    Archive(#[from] archive::ArchiveError),
     #[error("event log already has a writer")]
     WriterBusy,
     #[error("not a supported Rust prototype event log; old Maka databases are not migrated")]
     UnsupportedDatabase,
-    #[error("invocation is sealed")]
-    Sealed,
-    #[error("imported invocation is historical evidence, not locally accepted work")]
-    ImportedInvocation,
     #[error("event identity conflicts with committed content")]
     EventConflict,
     #[error("session create request conflicts with committed configuration")]
     SessionConflict,
     #[error("Session creation was rejected: {0}")]
     SessionCreationRejected(root_store::CreationRejection),
-    #[error("artifact identity conflicts with committed metadata or payload")]
-    ArtifactConflict,
-    #[error("artifact chunk offset is out of range")]
-    ArtifactOffset,
     #[error("shell resource identity already exists")]
     ShellConflict,
     #[error("shell resource not found in this session")]
@@ -124,46 +74,29 @@ pub enum StoreError {
     SessionNotFound,
     #[error("session retired")]
     SessionRetired,
+    #[error("Root work cleanup is unconfirmed: {0}")]
+    CleanupUnconfirmed(String),
     #[error("permission grant is no longer current")]
     PermissionRevoked,
-    #[error("native Computer Use is stopped for this logical Turn")]
-    NativeTurnInterrupted,
-    #[error("session has an unsealed invocation")]
+    #[error("session has active native work")]
     SessionBusy,
-    #[error("invalid event transition: source Turn does not exist")]
-    HistoryTurnMissing,
-    #[error("invalid event transition: history cut splits a logical Turn")]
-    HistoryTurnSplit,
-    #[error("invalid event transition: Session contains unsealed or unresolved prior execution")]
-    HistoryUnsettled,
-    #[error("invalid event transition: Session contains an unresolved prior provider tool effect")]
-    HistoryProviderEffectUnresolved,
-    #[error("invalid event transition: managed Session history requires its owner's lifecycle")]
-    ManagedSession,
     #[error("catalog revision changed from {expected} to {actual}")]
     RevisionConflict { expected: String, actual: String },
+    #[error("Session revision changed from {expected} to {actual}")]
+    SessionRevisionConflict { expected: u64, actual: u64 },
+    #[error("external completion remains unresolved: {cause}")]
+    CompletionUnresolved {
+        #[source]
+        cause: Arc<StoreError>,
+    },
+    #[error("{diagnostic}: {cause}")]
+    StatementRejected {
+        diagnostic: String,
+        #[source]
+        cause: Arc<StoreError>,
+    },
     #[error("invalid event transition: {0}")]
     InvalidTransition(String),
-    #[error("prefix exceeds the requested event or byte limit")]
-    PrefixTooLarge,
-    #[error("conversation material in this scope was collected after Session removal")]
-    MaterialCollected,
-    #[error("derived transcript identity conflicts with its committed bytes")]
-    TranscriptConflict,
-    #[error("history source {source_sequence} could not be rendered: {cause}")]
-    TranscriptSource {
-        source_sequence: u64,
-        #[source]
-        cause: Box<StoreError>,
-    },
-    #[error("{cause}; read-cache transaction failed: {transaction}")]
-    ReadCacheTransaction {
-        #[source]
-        cause: Box<StoreError>,
-        transaction: rusqlite::Error,
-    },
-    #[error(transparent)]
-    Projection(#[from] maka_presentation::ProjectionError),
     #[error("event log mutex poisoned")]
     Poisoned,
     #[error("event commit outcome unknown: {0}")]
@@ -215,6 +148,7 @@ pub struct EventLog {
     // The independent owner drains SQLite work and closes the connection before releasing its lease.
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
+    operation_live: Arc<applications::operations::LiveOperations>,
     commits: commits::CommitHub,
     shell_changes: tokio::sync::broadcast::Sender<shell_runs::ShellChange>,
 }
@@ -240,6 +174,7 @@ impl EventLog {
             connection: self.connection.scoped(custody.clone()),
             expected_session: self.expected_session.clone(),
             root_owner: self.root_owner.clone(),
+            operation_live: self.operation_live.clone(),
             commits: self.commits.clone(),
             shell_changes: self.shell_changes.clone(),
         }
@@ -270,7 +205,7 @@ impl EventLog {
     pub(crate) async fn for_root(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         owner.validate_current()?;
         let path = owner.canonical_path().join(root::ROOT_DATABASE);
-        Self::open_owned(&path, Some(owner), OpenPurpose::Execution).await
+        Self::open_owned(&path, Some(owner), OpenPurpose::Execution, ROOT_MIGRATIONS).await
     }
 
     /// Inspect saved application state without migrations, derived initialization
@@ -282,7 +217,7 @@ impl EventLog {
     ) -> Result<Self, StoreError> {
         owner.validate_current()?;
         let path = owner.canonical_path().join(root::ROOT_DATABASE);
-        Self::open_owned(&path, Some(owner), OpenPurpose::ApplicationInspection).await
+        Self::open_owned(&path, Some(owner), OpenPurpose::ApplicationInspection, &[]).await
     }
 
     /// Reuse the actual owned Root for another trusted native store. This is a
@@ -302,13 +237,14 @@ impl EventLog {
     }
 
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_owned(path, None, OpenPurpose::Execution).await
+        Self::open_owned(path, None, OpenPurpose::Execution, ROOT_MIGRATIONS).await
     }
 
     async fn open_owned(
         path: &Path,
         root_owner: Option<Arc<root::RootOwner>>,
         purpose: OpenPurpose,
+        catalog: &[migration::Migration],
     ) -> Result<Self, StoreError> {
         // A symlink alias must share the same lease and SQLite sidecars.
         let path = match path.canonicalize() {
@@ -367,6 +303,7 @@ impl EventLog {
             OpenPurpose::Execution => OpenOptions::file(&path).create(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
+        let catalog = catalog.to_vec();
         let connection = OwnedConnection::open(
             options,
             match purpose {
@@ -380,7 +317,7 @@ impl EventLog {
                 },
             },
             move |connection| match purpose {
-                OpenPurpose::Execution => schema::initialize_connection(connection),
+                OpenPurpose::Execution => schema::initialize_connection(connection, &catalog),
                 OpenPurpose::ApplicationInspection => {
                     application_inspection::initialize(connection)
                 }
@@ -409,10 +346,15 @@ impl EventLog {
                 return Err(cause);
             }
         };
+        let operation_live = root_owner.as_ref().map_or_else(
+            || Arc::new(applications::operations::LiveOperations::default()),
+            |owner| owner.operation_live.clone(),
+        );
         Ok(Self {
             expected_session: None,
             connection,
             root_owner,
+            operation_live,
             commits: commits::CommitHub::new(high_water),
             shell_changes: tokio::sync::broadcast::channel(256).0,
         })
@@ -485,17 +427,5 @@ fn sequence_number(value: i64) -> Result<u64, StoreError> {
         .map_err(|_| StoreError::InvalidTransition("negative ledger sequence".into()))
 }
 
-// Cache fault injection must run on the original private-cache owner.
 #[cfg(test)]
 extern crate self as maka_event_log;
-#[cfg(test)]
-mod executor_identity_tests;
-#[cfg(test)]
-mod session_copy_tests;
-#[cfg(test)]
-mod test_store;
-#[cfg(test)]
-#[path = "../tests/support/transcript.rs"]
-mod transcript_cache;
-#[cfg(test)]
-mod transcript_index_tests;

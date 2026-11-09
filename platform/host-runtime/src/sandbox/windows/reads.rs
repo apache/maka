@@ -233,7 +233,7 @@ fn grant_name(target: &Target) -> io::Result<String> {
 
 fn roots() -> io::Result<Vec<PathBuf>> {
     // Use the account profile, not an overridable USERPROFILE environment value.
-    let home = maka_event_log::root::windows::account_home()?;
+    let home = maka_sandbox::account_home()?;
     let mut roots = Vec::new();
     for entry in fs::read_dir(home)? {
         let entry = entry?;

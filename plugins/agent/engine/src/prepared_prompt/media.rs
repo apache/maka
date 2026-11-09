@@ -252,7 +252,7 @@ impl MediaView {
         if !changed {
             return Ok(None);
         }
-        let identity = crate::runner::digest(&(
+        let identity = crate::digest(&(
             &self.identity,
             works
                 .iter()
@@ -672,8 +672,7 @@ pub(super) async fn prepare(
     if works.is_empty() {
         return Ok(());
     }
-    let identity =
-        crate::runner::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
+    let identity = crate::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
     let view = Arc::new(MediaView {
         works,
         base: base.clone(),

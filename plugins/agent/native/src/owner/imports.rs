@@ -20,12 +20,18 @@
 //! Explicit source reads and one atomic publication into this Agent's history.
 use super::*;
 use maka_capabilities::call::Scope;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
-use maka_session_import::{Transcript, catalog, source};
+use maka_event_log::{StoreError, root_store::DataWriter};
+use maka_plugin_core::operation::{OperationOutcome, OperationResult, RecoveryRef};
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Namespace;
+use maka_session_import::{catalog, source};
 
 mod access;
+mod capture;
+mod copy;
+mod history_source;
+mod preview;
 use access::SourceRead;
 
 #[derive(Clone, Copy)]
@@ -38,8 +44,13 @@ enum Failure {
 impl From<maka_session_import::Error> for Failure {
     fn from(error: maka_session_import::Error) -> Self {
         use maka_session_import::Error;
+        tracing::warn!(stage = "session_import_source", error = ?error, "Source import read failed");
         match error {
-            Error::Invalid(_) | Error::Decode { .. } => Self::Invalid,
+            Error::Invalid(_)
+            | Error::Decode { .. }
+            | Error::Json(_)
+            | Error::Encoding(_)
+            | Error::Unsupported(_) => Self::Invalid,
             _ => Self::Unavailable,
         }
     }
@@ -126,26 +137,6 @@ impl Owner {
             .ok_or(Failure::Changed)?;
         SourceRead::open(self, source, scope).await
     }
-    async fn import_transcript(
-        &self,
-        source: &ImportSourceRef,
-        entry: &ImportEntryRef,
-        scope: &Scope,
-    ) -> Result<(SourceRead, Transcript, String), Failure> {
-        let reader = self.import_source(source, scope).await?;
-        let selection = source::Selection {
-            source_id: source.id,
-            source_revision: source.revision,
-            session_id: entry.session_id.clone(),
-            path: entry.path.clone(),
-        };
-        let transcript = reader.adapter.read(&reader, &selection).await?;
-        reader.validate(self).await?;
-        let mut hash = TranscriptDigest(Sha256::new());
-        serde_json::to_writer(&mut hash, &transcript).map_err(|_| Failure::Invalid)?;
-        let digest = hex::encode(hash.0.finalize());
-        Ok((reader, transcript, digest))
-    }
     pub async fn imports(
         self: &Arc<Self>,
         input: ImportsRead,
@@ -213,25 +204,28 @@ impl Owner {
                 if after > 0 && digest.is_none() {
                     return Err(Failure::Invalid);
                 }
-                let (_, transcript, actual) =
-                    self.import_transcript(&source, &entry, scope).await?;
+                let reader = self.import_source(&source, scope).await?;
+                let selected = source::Selection {
+                    source_id: source.id,
+                    source_revision: source.revision,
+                    session_id: entry.session_id.clone(),
+                    path: entry.path.clone(),
+                };
+                let mut page = preview::Preview::new(after);
+                let transcript = reader
+                    .adapter
+                    .read_exact(&reader, &selected, &mut page)
+                    .await?;
+                reader.validate(self).await?;
+                let actual = preview::digest(&transcript.fingerprint)?;
                 if digest.is_some_and(|digest| digest != actual) {
                     return Err(Failure::Changed);
                 }
-                if after >= transcript.records.len() as u64 {
+                if after >= page.count {
                     return Err(Failure::Invalid);
                 }
-                let count = transcript.records.len() as u64;
-                let items = transcript
-                    .records
-                    .iter()
-                    .enumerate()
-                    .skip(after as usize)
-                    .take(8)
-                    .map(|(index, record)| preview_item(index, record))
-                    .collect::<Vec<_>>();
-                let next =
-                    (after + (items.len() as u64) < count).then_some(after + items.len() as u64);
+                let next = (after + (page.items.len() as u64) < page.count)
+                    .then_some(after + page.items.len() as u64);
                 ImportsPage::Preview {
                     preview: ImportPreview {
                         selection: ImportSelection {
@@ -241,10 +235,10 @@ impl Owner {
                         },
                         title: transcript.title,
                         cwd: transcript.cwd,
-                        records: count,
+                        records: page.count,
                         bytes: transcript.fingerprint.bytes,
                         incomplete_tail: transcript.fingerprint.incomplete_tail,
-                        items,
+                        items: page.items,
                         next,
                     },
                 }
@@ -253,22 +247,26 @@ impl Owner {
                 if after.as_ref().is_some_and(|id| !self.owns(id)) {
                     return Err(Failure::Invalid);
                 }
-                let (records, next) = self
-                    .store
-                    .imported_sessions::<StoredSessionConfiguration>(
-                        &self.prefix,
-                        after.as_deref(),
-                        16,
-                    )
+                let page = self
+                    .durable
+                    .imported_sessions(self.run_owner(), self.prefix.clone(), after, 16)
                     .await
-                    .map_err(|_| Failure::Unavailable)?;
-                let sessions = records
-                    .into_iter()
-                    .map(|record| {
-                        resolve_session(record).map(|record| crate::service::summary(self, record))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| Failure::Unavailable)?;
+                    .map_err(Failure::from)?;
+                let catalog = self.canonical_catalog().map_err(|_| Failure::Unavailable)?;
+                let mut sessions = Vec::with_capacity(page.ids.len());
+                for id in page.ids {
+                    if let Some(session) = catalog
+                        .record(&id)
+                        .await
+                        .map_err(Failure::from)?
+                        .map(|record| crate::service::summary(self, record))
+                        .transpose()
+                        .map_err(|_| Failure::Unavailable)?
+                    {
+                        sessions.push(session);
+                    }
+                }
+                let next = page.next;
                 ImportsPage::Copies { sessions, next }
             }
         };
@@ -290,111 +288,99 @@ impl Owner {
     pub async fn import(
         self: &Arc<Self>,
         input: ImportChange,
-        operation: maka_plugin_core::operation::RecoveryRef,
+        operation: RecoveryRef,
         scope: &Scope,
-    ) -> Result<ImportResult, String> {
+    ) -> Result<NativeMutation<ImportResult>, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                match owner.import_change(input, operation, &scope).await {
+                if let Some(original) = owner.original_import(&operation).await? {
+                    return Ok(NativeMutation::Returned(original));
+                }
+                match owner.import_change(input, &operation, &scope).await {
                     Ok(result) => Ok(result),
-                    Err(failure) => failure.result(),
+                    Err(Failure::Unknown) => match owner.original_import(&operation).await? {
+                        Some(original) => Ok(NativeMutation::Returned(original)),
+                        None => Err("agent_import_unknown".into()),
+                    },
+                    Err(failure) => failure.result().map(NativeMutation::Returned),
                 }
             })
         })
         .await
     }
+
+    async fn original_import(
+        &self,
+        operation: &RecoveryRef,
+    ) -> Result<Option<ImportResult>, String> {
+        operation
+            .validate()
+            .map_err(|_| "agent_import_reference_invalid")?;
+        if operation.source.state_domain != self.data_source.state_domain
+            || operation.source.deployment != self.data_source.deployment
+            || operation.namespace != self.data_source.namespace
+            || operation.export != maka_agent_api::EXPORT
+            || operation.method != "import"
+        {
+            return Err("agent_import_reference_unavailable".into());
+        }
+        let observed = self
+            .store
+            .operation(operation)
+            .map_err(|_| "agent_import_unavailable")?
+            .operation_observation()
+            .await
+            .map_err(|_| "agent_import_unavailable")?;
+        match observed.map(|value| value.outcome) {
+            Some(OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            }) => {
+                let result: ImportResult = serde_json::from_value(value)
+                    .map_err(|_| "agent_import_reference_unavailable")?;
+                if let ImportResult::Imported { session } = &result
+                    && session.id != self.operation_id(operation)
+                {
+                    return Err("agent_import_reference_unavailable".into());
+                }
+                Ok(Some(result))
+            }
+            Some(OperationOutcome::Returned {
+                result: OperationResult::Failure { diagnostic },
+            }) => Err(diagnostic),
+            Some(OperationOutcome::Unknown { .. }) => Err("agent_import_unknown".into()),
+            Some(OperationOutcome::NotExecuted { .. }) => Err("agent_import_not_executed".into()),
+            Some(OperationOutcome::Unresolved) | None => Ok(None),
+        }
+    }
+
+    fn import_writer(&self, scope: &Scope) -> Result<DataWriter, Failure> {
+        if let Some(execution) = scope.identity.agent() {
+            let custody = scope.work_custody().ok_or(Failure::Unavailable)?;
+            self.store
+                .data_writer_for_work(custody.as_ref(), &execution.session_id)
+        } else {
+            self.store.data_writer()
+        }
+        .map_err(Failure::from)
+    }
+
     async fn import_change(
         &self,
         input: ImportChange,
-        operation: maka_plugin_core::operation::RecoveryRef,
+        operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<ImportResult, Failure> {
+    ) -> Result<NativeMutation<ImportResult>, Failure> {
         match input {
             ImportChange::Copy {
                 selection,
                 path,
                 title,
             } => {
-                if metadata_rejection(&title, &[]).is_some() {
-                    return Err(Failure::Invalid);
-                }
-                let (reader, transcript, digest) = self
-                    .import_transcript(&selection.source, &selection.entry, scope)
-                    .await?;
-                if digest != selection.digest {
-                    return Err(Failure::Changed);
-                }
-                let runs = self.runs.lock().await;
-                if runs.closing || scope.cancellation.is_cancelled() {
-                    return Err(Failure::Unavailable);
-                }
-                if self.import_sources().await?.revision != selection.source.revision {
-                    return Err(Failure::Changed);
-                }
-                reader.validate(self).await?;
-                let workspace = self
-                    .create_project_workspace(&path)
+                self.import_copy(selection, path, title, operation, scope)
                     .await
-                    .map_err(|_| Failure::Unknown)?
-                    .ok_or(Failure::Unavailable)?;
-                let workspace = self
-                    .store
-                    .attach_workspace(&self.prefix, &workspace)
-                    .await
-                    .map_err(|_| Failure::Unavailable)?;
-                let owner = maka_event_log::sessions::PluginSession {
-                    session_id: self.operation_id(&operation),
-                    creator: namespace(),
-                    fingerprint: operation.fingerprint,
-                    managed: false,
-                    authority_session_id: None,
-                };
-                let policy = self
-                    .creation_policy(scope)
-                    .await
-                    .map_err(|_| Failure::Unavailable)?;
-                let record = self
-                    .store
-                    .import_session(
-                        &owner,
-                        &transcript.source,
-                        &StoredSessionConfiguration {
-                            parent_session_id: scope
-                                .identity
-                                .agent()
-                                .map(|source| source.session_id.clone()),
-                            backend: None,
-                            compaction_prompt: None,
-                            collaboration_mode: CollaborationMode::Agent,
-                            tools: policy.tools,
-                            title,
-                            title_is_manual: true,
-                            pinned: false,
-                            labels: vec![],
-                            workspace,
-                            permissions: policy.permissions,
-                            boundary_revision: 0,
-                        },
-                        transcript.records,
-                        now(),
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        maka_event_log::StoreError::InvalidTransition(_) => Failure::Invalid,
-                        maka_event_log::StoreError::SessionConflict
-                        | maka_event_log::StoreError::EventConflict => Failure::Changed,
-                        _ => Failure::Unknown,
-                    })?;
-                Ok(ImportResult::Imported {
-                    session: Box::new(crate::service::summary(
-                        self,
-                        resolve_session(record).map_err(|_| Failure::Unavailable)?,
-                    )),
-                })
             }
             other => {
-                let runs = self.runs.lock().await;
-                if runs.closing || scope.cancellation.is_cancelled() {
+                if self.runs.state().await.closing || scope.cancellation.is_cancelled() {
                     return Err(Failure::Unavailable);
                 }
                 let mut current = self.import_sources().await?;
@@ -459,9 +445,10 @@ impl Owner {
                 if scope.cancellation.is_cancelled() {
                     return Err(Failure::Unavailable);
                 }
-                let records = self
+                let writer = self.import_writer(scope)?;
+                let (records, change) = self
                     .store
-                    .plugin_data_batch(
+                    .prepare_plugin_data_batch(
                         &namespace(),
                         vec![Mutation {
                             key: format!("{}import_sources", self.prefix),
@@ -471,72 +458,38 @@ impl Owner {
                                     .map_err(|_| Failure::Invalid)?,
                             ),
                         }],
+                        &writer,
                     )
-                    .await
-                    .map_err(|error| match error {
-                        maka_event_log::StoreError::RevisionConflict { .. } => Failure::Changed,
-                        _ => Failure::Unknown,
-                    })?;
+                    .map_err(Failure::from)?;
                 let revision = records.first().ok_or(Failure::Unknown)?.revision;
-                Ok(ImportResult::Sources {
-                    revision,
-                    sources: current.sources,
+                Ok(NativeMutation::Commit {
+                    value: ImportResult::Sources {
+                        revision,
+                        sources: current.sources,
+                    },
+                    change,
                 })
             }
         }
     }
 }
-fn preview_item(index: usize, record: &maka_agent_facts::import::Record) -> ImportPreviewItem {
-    use maka_agent_facts::import::Content;
-    let (kind, text) = match &record.content {
-        Content::User { text } => (ImportRecordKind::User, text.clone()),
-        Content::Assistant { text, thinking, .. } => (
-            ImportRecordKind::Assistant,
-            if text.is_empty() {
-                thinking.clone().unwrap_or_default()
-            } else {
-                text.clone()
-            },
-        ),
-        Content::ToolCall { name, input, .. } => (
-            ImportRecordKind::ToolCall,
-            format!(
-                "{}\n{}",
-                name,
-                input
-                    .as_ref()
-                    .map_or(String::new(), serde_json::Value::to_string)
-            ),
-        ),
-        Content::ToolResult { output, .. } => (
-            ImportRecordKind::ToolResult,
-            output
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| output.to_string()),
-        ),
-        Content::Note { text } => (ImportRecordKind::Note, text.clone()),
-    };
-    let truncated = text.len() > 4096;
-    let mut end = text.len().min(4096);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    ImportPreviewItem {
-        index: index as u64,
-        kind,
-        text: text[..end].into(),
-        truncated,
-    }
-}
 
-struct TranscriptDigest(Sha256);
-impl std::io::Write for TranscriptDigest {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+impl From<StoreError> for Failure {
+    fn from(error: StoreError) -> Self {
+        tracing::warn!(
+            stage = "session_import",
+            cause = crate::diagnostics::store_cause(&error),
+            error = ?error,
+            sql_code = crate::diagnostics::store_sql_code(&error),
+            "Import storage operation failed"
+        );
+        match error.underlying() {
+            StoreError::CommitUnknown(_) | StoreError::OperationUnknown => Self::Unknown,
+            StoreError::RevisionConflict { .. }
+            | StoreError::EventConflict
+            | StoreError::SessionConflict => Self::Changed,
+            StoreError::InvalidTransition(_) => Self::Invalid,
+            _ => Self::Unavailable,
+        }
     }
 }

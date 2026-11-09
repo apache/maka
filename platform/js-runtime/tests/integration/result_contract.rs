@@ -86,22 +86,23 @@ async fn complete_source_runs_forty_ordered_effects_and_returns_complete_value()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn complete_scratch_output_and_notifications_survive_cell_settlement() {
-    use maka_code_runtime::{CellContext, CellOutput, CellStore};
-    let store = CellStore::temporary().unwrap();
+    use super::cell_context::SessionData;
+    use maka_code_runtime::{CellContext, CellOutput};
+    let owner = Arc::new(SessionData::default());
+    let store = owner.cell_store();
     let context = CellContext::new(store.clone(), vec![]).unwrap();
     let engine = CodeExecutor::new(CellLimits::default()).unwrap();
     let result = engine.execute_with_context(
         "const complete='保留😀z'.repeat(100000); store('original',complete); for(let index=0;index<70;index++) text(String(index)); text(complete); notify(complete); return complete;".into(),
         Arc::new(Echo::default()), CancellationToken::new(), context.clone()
     ).await.unwrap();
-    let committed = context.commit();
     let output = context.take_output();
     let notifications = context.take_notifications();
     assert!(
         matches!(result, CellResult::Success { .. }),
         "full scratch/output must complete"
     );
-    committed.unwrap();
+    owner.accept(&result, context.take_draft().unwrap());
     let complete = "保留😀z".repeat(100_000);
     assert_eq!(output.len(), 71, "all emitted entries must survive");
     for (index, output) in output[..70].iter().enumerate() {

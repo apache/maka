@@ -34,7 +34,6 @@ impl Manager {
             return Err("foreign managed deployment source".into());
         }
         check_path(&request.path, true)?;
-        let _read = self.writes.lock().await;
         let loaded = self
             .store
             .load_application_at(&request.source)

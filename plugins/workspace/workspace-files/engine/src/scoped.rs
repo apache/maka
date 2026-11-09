@@ -91,6 +91,62 @@ impl Authority {
         &self.cwd
     }
 
+    pub(crate) fn publication_route(&self, relative: &Path) -> Result<Option<Route>, ToolError> {
+        let root = match &self.scope {
+            CapturedScope::Workspace(root) => root,
+            CapturedScope::Restricted(roots) if roots.len() == 1 && roots[0].path == self.cwd => {
+                &roots[0]
+            }
+            _ => return Ok(None),
+        };
+        // Publication stays within the original selected root. General Write
+        // alias routing must not redirect a changed parent into another root.
+        Ok(Some(Route {
+            root: Directory::new(
+                root.dir.try_clone().map_err(io_error)?,
+                root.path.clone(),
+                self.policy.clone(),
+            ),
+            relative: relative.to_owned(),
+            root_path: root.path.clone(),
+        }))
+    }
+
+    pub(crate) fn publication_source(
+        &self,
+        expected: &crate::publication::SourceIdentity,
+    ) -> Result<crate::publication::SourceCheck, ToolError> {
+        use crate::publication::SourceCheck;
+        use cap_fs_ext::MetadataExt;
+        let root = match &self.scope {
+            CapturedScope::Workspace(root) => root,
+            CapturedScope::Restricted(roots) if roots.len() == 1 && roots[0].path == self.cwd => {
+                &roots[0]
+            }
+            _ => return Ok(SourceCheck::Uncaptured),
+        };
+        let held = root.dir.dir_metadata().map_err(io_error)?;
+        if held.dev() != expected.device || held.ino() != expected.inode {
+            return Ok(SourceCheck::Changed);
+        }
+        let visible = match Dir::open_ambient_dir(&root.path, ambient_authority())
+            .and_then(|directory| directory.dir_metadata())
+        {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(SourceCheck::Changed);
+            }
+            Err(error) => return Err(io_error(error)),
+        };
+        Ok(
+            if visible.dev() == expected.device && visible.ino() == expected.inode {
+                SourceCheck::Matched
+            } else {
+                SourceCheck::Changed
+            },
+        )
+    }
+
     pub(crate) fn write_display_path(&self, path: &Path) -> Result<String, ToolError> {
         let absolute = path::resolve(&self.cwd, path)?;
         let normalized: PathBuf = absolute.components().collect();

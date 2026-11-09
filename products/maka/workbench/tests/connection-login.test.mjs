@@ -57,6 +57,7 @@ const host = {
   beginSetting: async () => ({ next: async () => boundary.event, cancel() {} }),
 };
 const action = { editor: 1, input: { expected: { connectionId: 'connection', revision: 1 } } };
+const returned = (value) => ({ kind: 'returned', result: { kind: 'success', value } });
 function setup({
   cleanupError = null,
   result = { kind: 'saved', connection: { connectionId: 'connection' } },
@@ -64,9 +65,15 @@ function setup({
 } = {}) {
   boundary.pending = [];
   boundary.event = {
-    kind: 'final',
+    kind: 'finished',
     cleanupError,
-    reply: { receipt: { kind: 'recorded', outcome: { kind: 'returned', value: result } } },
+    reply: {
+      receipt: {
+        kind: 'recorded',
+        outcome: returned(result),
+        cleanup: { kind: 'confirmed' },
+      },
+    },
   };
   const operations = createSettingsOperations(host);
   operations.pendingKnown.set(true);
@@ -213,22 +220,20 @@ function connectionEditor({
       configured = true;
       return {
         next: async () => ({
-          kind: 'final',
+          kind: 'finished',
           cleanupError: null,
           reply: {
             receipt: {
               kind: 'recorded',
-              outcome: {
-                kind: 'returned',
-                value: {
-                  kind: 'saved',
-                  connection: {
-                    connectionId: 'connection',
-                    slug: 'chatgpt',
-                    provider: receiptProvider,
-                  },
+              outcome: returned({
+                kind: 'saved',
+                connection: {
+                  connectionId: 'connection',
+                  slug: 'chatgpt',
+                  provider: receiptProvider,
                 },
-              },
+              }),
+              cleanup: { kind: 'confirmed' },
             },
           },
         }),
@@ -247,13 +252,11 @@ function connectionEditor({
           reply: {
             receipt: {
               kind: 'recorded',
-              outcome: {
-                kind: 'returned',
-                value: {
-                  kind: 'committed',
-                  connection: { connectionId: 'connection', revision: version },
-                },
-              },
+              outcome: returned({
+                kind: 'committed',
+                connection: { connectionId: 'connection', revision: version },
+              }),
+              cleanup: { kind: 'confirmed' },
             },
           },
         };
@@ -263,12 +266,12 @@ function connectionEditor({
         reply: {
           receipt: {
             kind: 'recorded',
-            outcome: {
-              kind: 'returned',
-              value: failDiscovery
+            outcome: returned(
+              failDiscovery
                 ? { kind: 'failed' }
                 : { kind: 'ready', connection: { connectionId: 'connection', revision: version } },
-            },
+            ),
+            cleanup: { kind: 'confirmed' },
           },
         },
       };
@@ -488,12 +491,13 @@ test('browser opening failure leaves the same device sign-in cancellable and can
       return {
         cancel() {
           completion.resolve({
-            kind: 'final',
+            kind: 'finished',
             cleanupError: null,
             reply: {
               receipt: {
                 kind: 'recorded',
-                outcome: { kind: 'returned', value: { kind: 'failed', reason: 'cancelled' } },
+                outcome: returned({ kind: 'failed', reason: 'cancelled' }),
+                cleanup: { kind: 'confirmed' },
               },
             },
           });

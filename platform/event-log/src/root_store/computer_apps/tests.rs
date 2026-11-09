@@ -23,7 +23,7 @@ use maka_agent_facts::event::{InvocationInput, InvocationOutcome, RuntimeEvent};
 use maka_agent_facts::interaction::{
     ComputerAppDisplay, ComputerAppPlatform, Decision, GrantCapability,
 };
-use maka_agent_facts::workspace::BindingStamp;
+use maka_sandbox::workspace::BindingStamp;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
@@ -168,7 +168,11 @@ async fn fixture() -> (
         )
         .unwrap(),
     );
-    let root = Arc::new(RootStore::open(owner.clone()).await.unwrap());
+    let root = Arc::new(
+        RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap(),
+    );
     let (store, invocation, basis) = session(&root, "session").await;
     (dir, owner, root, store, invocation, basis)
 }
@@ -658,7 +662,9 @@ async fn always_belongs_to_selected_root_profile_across_workspaces_and_restart()
     );
     root.shutdown().await.unwrap();
     drop(root);
-    let reopened = RootStore::open(owner).await.unwrap();
+    let reopened = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let other = reopened.session("other").await.unwrap();
     let next = Invocation {
         turn_id: "next-turn".into(),

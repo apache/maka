@@ -206,6 +206,8 @@ pub enum ModelError {
     },
     #[error("model request cancelled")]
     Cancelled,
+    #[error("local model authorization refused: {0}")]
+    LocalAuthorization(String),
     #[error("model transport physical cleanup is unconfirmed")]
     CleanupUnconfirmed,
     #[error("model stream idle timeout exceeded")]
@@ -236,7 +238,7 @@ impl ModelError {
     }
     pub fn failure_cause(&self) -> Option<ModelFailureCause> {
         Some(match self {
-            Self::Cancelled => return None,
+            Self::Cancelled | Self::LocalAuthorization(_) => return None,
             Self::Http { status, .. } => ModelFailureCause::Http { status: *status },
             Self::TimedOut => ModelFailureCause::TimedOut,
             Self::ContextOverflow { .. } => ModelFailureCause::ContextOverflow,

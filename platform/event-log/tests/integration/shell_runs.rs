@@ -17,29 +17,28 @@
  * under the License.
  */
 
-use maka_agent_facts::shell_run::ShellOutcome;
-use maka_agent_facts::shell_run::ShellOutput;
-use maka_agent_facts::shell_run::ShellPatch;
-use maka_agent_facts::shell_run::ShellRun;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::ShellVisibility;
 use maka_event_log::{EventLog, StoreError};
+use maka_plugin_core::shell_run::ShellOutcome;
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
 use serde_json::json;
 
 use crate::support::shell_binding as binding;
-use maka_agent_facts::workspace::PermissionBasis;
+use maka_sandbox::workspace::PermissionBasis;
 
 fn starting(id: &str, basis: PermissionBasis) -> ShellRun {
     ShellRun {
         id: id.into(),
         session_id: "session".into(),
-        source_run_id: Some("run".into()),
-        source_turn_id: "turn".into(),
-        source_tool_call_id: "call".into(),
+        source_work_id: None,
+        correlation: json!({"fixture":"shell-lifecycle"}),
         visibility: ShellVisibility::Model,
-        permissions: maka_agent_facts::shell_run::ShellPermissions {
+        permissions: maka_plugin_core::shell_run::ShellPermissions {
             basis,
-            sandbox: maka_agent_facts::shell_run::Sandbox::Disabled,
+            sandbox: maka_plugin_core::shell_run::Sandbox::Disabled,
         },
         cwd: "/captured/workspace".into(),
         command: "command".into(),
@@ -230,23 +229,40 @@ async fn durable_lifecycle_keeps_terminal_output_mutable_and_never_reattaches_on
         .await
         .unwrap();
     assert_eq!(
-        log.prefix(1, 1024).await.unwrap().high_water,
-        0,
-        "resource control is not fabricated invocation history"
+        log.get_session::<serde_json::Value>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        1,
+        "resource control must not rewrite Session control metadata"
     );
     log.close().await.unwrap();
 
     let log = EventLog::open(&path).await.unwrap();
-    let before = log.workspace_fence("/captured/workspace").await.unwrap();
-    assert_eq!(before.0.len(), 1);
-    assert!(!before.0[0].orphaned_shells);
+    let before = log.query_shell_resources("session", None, 0).await.unwrap();
+    assert_eq!(before.total, 3);
+    assert!(!before.resources.iter().any(|resource| matches!(
+        resource.state,
+        ShellState::Terminal {
+            outcome: ShellOutcome::Orphaned { .. },
+            ..
+        }
+    )));
     assert_eq!(log.recover_shell_runs(50).await.unwrap(), 2);
-    let after = log.workspace_fence("/captured/workspace").await.unwrap();
+    let after = log.query_shell_resources("session", None, 0).await.unwrap();
+    assert_eq!(after.total, before.total);
     assert!(
-        after.0[0].orphaned_shells,
+        after.resources.iter().any(|resource| matches!(
+            resource.state,
+            ShellState::Terminal {
+                outcome: ShellOutcome::Orphaned { .. },
+                ..
+            }
+        )) && log.has_unsettled_shells("session").await.unwrap(),
         "unknown cleanup is not a transient busy workspace"
     );
-    assert_ne!(before, after);
+    assert_ne!(before.revision, after.revision);
     assert_eq!(log.recover_shell_runs(60).await.unwrap(), 0);
     assert_eq!(
         log.read_shell_run("session", "finished").await.unwrap(),
@@ -364,85 +380,13 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
 }
 
 #[tokio::test]
-async fn read_prefixes_exclude_user_only_and_foreign_tasks_and_prefer_exact_ids() {
-    use maka_agent_facts::read::ResourceAddress::Task;
-    let temp = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&temp.path().join("prefix.sqlite"))
-        .await
-        .unwrap();
-    let basis = binding::create(&log, "session", "/captured/workspace").await;
-    assert_eq!(
-        basis,
-        binding::create(&log, "other", "/captured/workspace").await
-    );
-    for id in ["task_a", "task_ab"] {
-        log.create_shell_run(starting(id, basis)).await.unwrap();
-    }
-    let mut hidden = starting("task_hidden", basis);
-    hidden.visibility = ShellVisibility::User;
-    log.create_shell_run(hidden).await.unwrap();
-    let mut foreign = starting("task_foreign", basis);
-    foreign.session_id = "other".into();
-    log.create_shell_run(foreign).await.unwrap();
-    assert_eq!(
-        log.resolve_read_resource("session", Task("task_a".into()))
-            .await
-            .unwrap(),
-        Some(Task("task_a".into()))
-    );
-    assert!(matches!(
-        log.resolve_read_resource("session", Task("task_".into()))
-            .await,
-        Err(StoreError::AmbiguousReadResource)
-    ));
-    for prefix in ["task_h", "task_f", "TASK_A"] {
-        assert!(
-            log.resolve_read_resource("session", Task(prefix.into()))
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-    assert_eq!(
-        log.resolve_read_resource("other", Task("task_".into()))
-            .await
-            .unwrap(),
-        Some(Task("task_foreign".into()))
-    );
-    log.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
-    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
-    use maka_agent_facts::workspace::BindingStamp;
+async fn shell_admission_fences_the_complete_workspace_basis() {
     use maka_event_log::sessions::SessionMutation;
+    use maka_sandbox::workspace::BindingStamp;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("permission-basis.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let original = binding::create(&log, "session", "/original").await;
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
-    log.append(
-        &EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    content: "work".into(),
-                    request_fingerprint: None,
-                    source_messages: vec![],
-                },
-            },
-        ))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
     log.create_shell_run(starting("already-admitted", original))
         .await
         .unwrap();
@@ -457,10 +401,9 @@ async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
         .unwrap()
         .revision;
     assert!(matches!(
-        log.update_session_permissions::<serde_json::Value, _>(
+        log.update_session_metadata::<serde_json::Value, _>(
             "session",
             revision,
-            2,
             move |configuration| {
                 configuration["workspace"] = serde_json::to_value(replacement).unwrap();
                 Ok(())
@@ -500,11 +443,6 @@ async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
                 .await
                 .is_err()
         );
-        assert!(
-            log.admit_session_process_for(&invocation, id, &stale)
-                .await
-                .is_err()
-        );
     }
     let inspect = rusqlite::Connection::open(&path).unwrap();
     assert_eq!(
@@ -525,11 +463,6 @@ async fn shell_and_protocol_admission_fence_the_complete_workspace_basis() {
     log.create_shell_run(starting("current", current))
         .await
         .unwrap();
-    let protocol = uuid::Uuid::new_v4();
-    log.admit_session_process_for(&invocation, protocol, &current)
-        .await
-        .unwrap();
-    log.clean_session_process(protocol).await.unwrap();
     // Withdrawal of launch authority must not rewrite history or prevent cleanup.
     let settled = log
         .patch_shell_run(

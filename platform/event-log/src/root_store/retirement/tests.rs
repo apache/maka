@@ -18,13 +18,11 @@
  */
 
 use super::*;
-use crate::sessions::{SessionCopy, SessionCopyResult};
-use maka_agent_facts::event::{
-    EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
-};
-use maka_agent_facts::session::CopyPurpose;
+use crate::sessions::PluginSession;
+use maka_plugin_core::{scope::Scope, storage::Namespace};
 use serde_json::{Value, json};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 async fn open(path: &std::path::Path) -> RootStore {
     let owner = root::RootOwner::create(
@@ -35,46 +33,9 @@ async fn open(path: &std::path::Path) -> RootStore {
         },
     )
     .unwrap();
-    RootStore::open(Arc::new(owner)).await.unwrap()
-}
-
-async fn editable_turn(log: &EventLog) {
-    let content: maka_agent_facts::input::MessageInput = "editable input".into();
-    let source = maka_agent_facts::message::RootSourceMessage {
-        message: maka_agent_facts::input::DeliveredMessage {
-            origin: None,
-            message_id: "message".into(),
-            submitted_content_digest: content.content_digest().unwrap(),
-            content: content.clone(),
-        },
-        unprepared_content: content.clone(),
-        submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
-        disposition: maka_agent_facts::message::MessageDisposition::TurnStarted,
-        submitted_intent: None,
-    };
-    let invocation = Invocation {
-        session_id: "parent".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
-    for fact in [
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                content,
-                source_messages: vec![source],
-                request_fingerprint: None,
-            },
-        },
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    ] {
-        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
-            .await
-            .unwrap();
-    }
+    RootStore::open(Arc::new(owner), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap()
 }
 
 async fn retirement_snapshot(log: &EventLog) -> (Vec<(String, i64)>, i64, i64) {
@@ -101,7 +62,7 @@ async fn retirement_snapshot(log: &EventLog) -> (Vec<(String, i64)>, i64, i64) {
 }
 
 #[tokio::test]
-async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
+async fn new_authority_dependent_rejects_stale_plan_and_retries_with_its_binding_pin() {
     let directory = tempfile::tempdir().unwrap();
     let root = Arc::new(open(directory.path()).await);
     let parent_binding = root
@@ -122,48 +83,39 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
         .await
         .unwrap();
     let owner = parent.owner().unwrap();
-    editable_turn(&owner).await;
     let expected = parent.get::<Value>().await.unwrap().unwrap().revision;
-    assert!(matches!(
-        root.copy_session(
-            SessionCopy {
-                source_session_id: "parent".into(),
-                target_session_id: "draft".into(),
-                expected_source_revision: expected,
-                purpose: CopyPurpose::Revision {
-                    turn_id: "turn".into()
-                },
-            },
-            &json!({"workspace":draft_binding,"boundary_revision":0}),
-            2,
-        )
-        .await
-        .unwrap(),
-        SessionCopyResult::Committed(_)
-    ));
     let plan = owner.preview_session_removal("parent").await.unwrap();
     assert_eq!(plan.remove, ["parent"]);
+    assert!(plan.archive.is_empty());
+    // A newly published Host authority dependency expands the advisory plan.
+    // Revision/fork membership is Agent state, not a Root removal authority.
+    root.create_plugin_session(
+        &PluginSession {
+            session_id: "draft".into(),
+            creator: Namespace::new("retirement.fixture", Scope::Profile).unwrap(),
+            fingerprint: "draft".into(),
+            managed: false,
+            authority_session_id: Some("parent".into()),
+        },
+        &json!({"workspace":draft_binding,"boundary_revision":0}),
+        2,
+    )
+    .await
+    .unwrap();
     let access = root
         .gates
         .write([gates::Key::Session("parent".into())])
         .await
         .unwrap();
-    assert_eq!(owner.preview_session_removal("parent").await.unwrap(), plan);
     let binding = root
         .gates
         .read([gates::Key::Binding(parent_binding.id)])
         .await
         .unwrap();
     let stale = owner.scoped(Arc::new((access, binding)));
-
-    // Accepted draft use does not acquire an ancestor's Session gate. It can
-    // join the family after the second preview but before the removal SQL.
-    let draft = root.session("draft").await.unwrap().scoped().await.unwrap();
-    draft.retain_session("draft").await.unwrap();
-    drop(draft);
-    owner.connection.run(|_| Ok(())).await.unwrap();
     let expanded = owner.preview_session_removal("parent").await.unwrap();
-    assert_eq!(expanded.remove, ["draft", "parent"]);
+    assert_eq!(expanded.remove, ["parent"]);
+    assert_eq!(expanded.archive, ["draft"]);
     let before = retirement_snapshot(&owner).await;
     assert_eq!((before.1, before.2), (0, 0));
 
@@ -235,8 +187,8 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
 #[tokio::test]
 async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
     use crate::sessions::PluginSession;
-    use maka_capabilities::storage::Namespace;
     use maka_plugin_core::scope::Scope;
+    use maka_plugin_core::storage::Namespace;
 
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
@@ -280,26 +232,21 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
         .await
         .unwrap();
     let child = root.session("child").await.unwrap();
-    let new_work = RuntimeEvent::new(
-        Invocation {
-            session_id: "child".into(),
-            turn_id: "new-turn".into(),
-            run_id: "new-run".into(),
-            invocation_id: "new-invocation".into(),
-        },
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                source_messages: vec![],
-                content: "continue after restore".into(),
-                request_fingerprint: None,
-            },
-        },
-    );
+    let record = child.get::<Value>().await.unwrap().unwrap();
     child
-        .append(&EventWrite::plain(new_work.clone()).unwrap())
+        .update_session_metadata::<Value, _>("child", record.revision, |configuration| {
+            configuration["restoredWork"] = json!("original new work 中");
+            Ok(())
+        })
         .await
         .unwrap();
+    let (new_work, _effects) = child
+        .work_scope(None)
+        .await
+        .unwrap()
+        .accept(CancellationToken::new());
+    let custody = new_work.store().work_custody().unwrap();
+    let before = child.get::<Value>().await.unwrap().unwrap();
     assert_eq!(
         owner
             .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
@@ -308,22 +255,20 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
         RemoveFamilyResult::Accepted(plan)
     );
     assert!(!child.get::<Value>().await.unwrap().unwrap().archived);
-    let events = child
-        .scoped_prefix(
-            maka_agent_facts::event::LogScope::Session { id: "child".into() },
-            1,
-            16384,
-        )
-        .await
-        .unwrap()
-        .events;
+    assert_eq!(child.get::<Value>().await.unwrap(), Some(before));
     assert_eq!(
-        events
-            .into_iter()
-            .map(|stored| stored.event)
-            .collect::<Vec<_>>(),
-        [new_work]
+        root.session_for_work(custody.as_ref(), "child")
+            .unwrap()
+            .id(),
+        "child"
     );
+    assert!(
+        root.gates
+            .try_write([gates::Key::Work("child".into())])
+            .unwrap()
+            .is_none()
+    );
+    new_work.finish();
     drop(owner);
     root.close().await.unwrap();
 }
@@ -336,11 +281,15 @@ async fn archive_and_retirement_wait_for_cross_session_sql_after_observer_cancel
         .create_session("session", "session", &json!({}), 1)
         .await
         .unwrap();
-    let lease = session.execution_scope(None).await.unwrap().accept();
+    let (lease, _effects) = session
+        .work_scope(None)
+        .await
+        .unwrap()
+        .accept(CancellationToken::new());
     let running = lease.store();
     let original = session.owner().unwrap();
     let other = &root.log;
-    let log = other.scoped(running.execution.as_ref().unwrap().custody().unwrap());
+    let log = other.scoped(running.work.as_ref().unwrap().custody().unwrap());
     let (entered, reached) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let caller = tokio::spawn(async move {

@@ -76,12 +76,9 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
             retry_started.send(()).unwrap();
             let mut pending = [0; 4096];
             while retry.read(&mut pending).await.unwrap() != 0 {}
-            let body = http_ok(&listener).await;
-            assert!(
-                body["input"]
-                    .to_string()
-                    .contains("after cancelled connect")
-            );
+            let mut after_cancel = accept(&listener).await;
+            wire(&mut after_cancel, "after cancelled connect").await;
+            finish(&mut after_cancel, "after_cancel").await;
             // Cancellation of a retry must release its socket, not defer this
             // route or allow a later timer to reconnect behind the caller.
             let mut stalled = accept(&listener).await;
@@ -156,6 +153,10 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
             .cancel_and_wait()
             .await
             .expect("actual stream cleanup");
+        assert_eq!(
+            connecting_lane.retry_transport_phase(),
+            maka_agent_ports::model::RetryTransportPhase::Primary
+        );
         generate(
             &executor,
             &connecting_lane,
@@ -209,9 +210,26 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
             assert_failed(stream).await;
         }
         generate(&executor, &healthy_lane, request(&base, "still healthy")).await;
+        let after_failure = Conversation::default();
+        assert_failed(
+            executor
+                .stream_in_conversation(
+                    request(&base, "after transport failure"),
+                    CancellationToken::new(),
+                    Some(after_failure.clone()),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            after_failure.retry_transport_phase(),
+            maka_agent_ports::model::RetryTransportPhase::Primary
+        );
+        assert!(after_failure.try_switch_fallback_transport());
         generate(
             &executor,
-            &Conversation::default(),
+            &after_failure,
             request(&base, "after transport failure"),
         )
         .await;
@@ -222,7 +240,7 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rejected_upgrade_falls_back_before_dispatch_and_stays_http() {
+async fn rejected_upgrade_requires_explicit_selection_before_dispatch_and_stays_http() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_port = listener.local_addr().unwrap().port();
@@ -260,15 +278,22 @@ async fn rejected_upgrade_falls_back_before_dispatch_and_stays_http() {
         });
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let lane = Conversation::default();
+        assert_failed(executor.stream_in_conversation(proxied_request(proxy_port,"first"),CancellationToken::new(),Some(lane.clone())).await.unwrap()).await;
+        assert_eq!(lane.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary);
+        assert!(lane.try_switch_fallback_transport());
         generate(&executor, &lane, proxied_request(proxy_port, "first")).await;
         generate(&executor, &lane, proxied_request(proxy_port, "second")).await;
         drop(lane);
-        generate(&executor, &Conversation::default(), proxied_request(proxy_port, "new Turn")).await;
+        let new_turn=Conversation::default();
+        assert_failed(executor.stream_in_conversation(proxied_request(proxy_port,"new Turn"),CancellationToken::new(),Some(new_turn.clone())).await.unwrap()).await;
+        assert_eq!(new_turn.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary);
+        assert!(new_turn.try_switch_fallback_transport());
+        generate(&executor,&new_turn,proxied_request(proxy_port,"new Turn")).await;
         server.await.unwrap();
     }).await.unwrap();
 }
 
-async fn assert_failed(mut stream: maka_model::ModelStream) {
+pub(super) async fn assert_failed(mut stream: maka_model::ModelStream) {
     let mut failed = false;
     while let Some(event) = stream.next().await {
         if event.is_err() {
@@ -363,6 +388,8 @@ async fn interrupted_reads_preserve_diagnostics_and_decoder_replay_safety() {
                 if let Err(error) = event { failure = Some(error); break; }
             }
             stream.cancel_and_wait().await.expect("actual stream cleanup");
+            assert_eq!(lane.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary,"neither send/drop/idle timeout nor a close frame selects fallback");
+            assert_eq!(lane.fallback_availability(),maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary);
             let failure = failure.expect("interrupted request must not fabricate completion");
             if mode == "policy" {
                 assert!(matches!(&failure, ModelError::Adapter(message) if message.contains("1008") && message.contains("request refused")), "{failure}");
@@ -383,7 +410,11 @@ async fn interrupted_reads_preserve_diagnostics_and_decoder_replay_safety() {
                 assert!(lane.try_switch_fallback_transport());
                 assert!(!lane.try_switch_fallback_transport());
                 generate(&executor, &lane, input()).await;
-                generate(&executor, &Conversation::default(), input()).await;
+                let fresh=Conversation::default();
+                assert_failed(executor.stream_in_conversation(input(),CancellationToken::new(),Some(fresh.clone())).await.unwrap()).await;
+                assert_eq!(fresh.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary);
+                assert!(fresh.try_switch_fallback_transport());
+                generate(&executor,&fresh,input()).await;
             }
             server.await.unwrap();
         }

@@ -19,32 +19,45 @@
 
 use super::*;
 use maka_agent_api::executor;
-use maka_host_runtime::application::{Context, Handler, NativeOwner};
+use maka_host_runtime::application::{Context, Handler, HandlerResult, HandlerValue, NativeOwner};
 use maka_plugin_core::runtime::Published;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy)]
-enum Behavior {
+pub(super) enum Behavior {
     Unsettled,
     Streaming,
     Attachments,
     InvalidSuccess,
+    Protocol,
+    SetupProtocol,
 }
-struct Probe {
+pub(super) struct Probe {
     behavior: Behavior,
     calls: AtomicUsize,
-    entered: Arc<Semaphore>,
+    pub(super) entered: Arc<Semaphore>,
     cancelled: Arc<Semaphore>,
-    release: Arc<Semaphore>,
+    pub(super) release: Arc<Semaphore>,
+    pub(super) contexts: Arc<StdMutex<std::collections::VecDeque<Arc<Context>>>>,
+    pub(super) services: std::sync::OnceLock<maka_host_runtime::application::NativeServices>,
+    tasks: Arc<StdMutex<BTreeMap<maka_agent_facts::durable::ExternalTaskId, ProbeTask>>>,
+}
+struct ProbeTask {
+    outputs: Vec<executor::IndexedOutput>,
+    state: executor::TaskState,
+    changes: tokio::sync::watch::Sender<()>,
 }
 impl Probe {
-    fn new(behavior: Behavior) -> Arc<Self> {
+    pub(super) fn new(behavior: Behavior) -> Arc<Self> {
         Arc::new(Self {
             behavior,
             calls: AtomicUsize::new(0),
             entered: Arc::new(Semaphore::new(0)),
             cancelled: Arc::new(Semaphore::new(0)),
             release: Arc::new(Semaphore::new(0)),
+            contexts: Arc::default(),
+            services: std::sync::OnceLock::new(),
+            tasks: Arc::default(),
         })
     }
 }
@@ -54,15 +67,132 @@ impl Handler for Probe {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
+        let tasks = self.tasks.clone();
+        let context = Arc::new(context);
+        if method == "setup" {
+            assert!(matches!(self.behavior, Behavior::SetupProtocol));
+            let contexts = self.contexts.clone();
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            return Box::pin(async move {
+                let actual = context
+                    .native_context::<maka_agent_authority::setup::ActualSetupContext>()
+                    .expect("actual selected setup provider context");
+                actual
+                    .0
+                    .bind_original(&context)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                contexts.lock().unwrap().push_back(context);
+                entered.add_permits(1);
+                release.acquire().await.unwrap().forget();
+                Ok(HandlerValue::Json(
+                    json!({"kind":"checked","info":null,"methods":[]}),
+                ))
+            });
+        }
+        if method == "observe" {
+            return Box::pin(async move {
+                let input: executor::Observe = serde_json::from_value(input).unwrap();
+                let mut after = input.after_index;
+                loop {
+                    let (observation, changes) = {
+                        let tasks = tasks.lock().unwrap();
+                        match tasks.get(&input.task_id) {
+                            None => (executor::TaskObservation::Missing, None),
+                            Some(task) => {
+                                let start = after.map(|after| usize::try_from(after).unwrap());
+                                assert!(start.is_none_or(|start| start <= task.outputs.len()));
+                                let end = start.map_or(0, |start| {
+                                    start.saturating_add(256).min(task.outputs.len())
+                                });
+                                (
+                                    executor::TaskObservation::Found {
+                                        task_id: input.task_id,
+                                        observed: end as u64,
+                                        has_more: start.is_some() && end < task.outputs.len(),
+                                        outputs: task.outputs[start.unwrap_or(0)..end].to_vec(),
+                                        state: task.state.clone(),
+                                        cleanup: if matches!(
+                                            &task.state,
+                                            executor::TaskState::Closed { .. }
+                                        ) {
+                                            maka_plugin_core::operation::OperationCleanup::Confirmed
+                                        } else {
+                                            maka_plugin_core::operation::OperationCleanup::Unconfirmed
+                                        },
+                                    },
+                                    Some(task.changes.subscribe()),
+                                )
+                            }
+                        }
+                    };
+                    let (has_more, terminal) = match &observation {
+                        executor::TaskObservation::Missing => (false, true),
+                        executor::TaskObservation::Found {
+                            observed,
+                            has_more,
+                            state,
+                            ..
+                        } => {
+                            if after.is_some() {
+                                after = Some(*observed);
+                            }
+                            (*has_more, !matches!(state, executor::TaskState::Running))
+                        }
+                    };
+                    context
+                        .emit(serde_json::to_value(observation).unwrap())
+                        .await?;
+                    if has_more {
+                        continue;
+                    }
+                    if terminal {
+                        return Ok(HandlerValue::Json(Value::Null));
+                    }
+                    let mut changes =
+                        changes.expect("original running fixture task has its own notice");
+                    tokio::select! {
+                        () = context.scope().cancellation.cancelled() => return Ok(HandlerValue::Json(Value::Null)),
+                        changed = changes.changed() => changed.expect("original fixture producer remains owned"),
+                    }
+                }
+            });
+        }
         assert_eq!(method, "execute");
         assert!(context.operation().is_some());
-        let Identity::Agent { invocation, .. } = &context.scope().identity else {
-            panic!("native Agent identity required");
-        };
-        assert_eq!(
-            input["invocation"],
-            serde_json::to_value(invocation).unwrap()
+        let execution = context
+            .scope()
+            .identity
+            .agent()
+            .expect("native Agent identity required");
+        assert_eq!(input["execution"], serde_json::to_value(execution).unwrap());
+        let request: executor::Execute = serde_json::from_value(input.clone()).unwrap();
+        let task_id = request.task_id;
+        let authority = context
+            .native_context::<maka_agent_authority::executor::ExecutorCallContext>()
+            .expect("selected executor requires its real native call context");
+        assert_eq!(authority.0.task_id(), task_id);
+        assert_eq!(authority.0.execution(), execution);
+        if let Some(task) = tasks.lock().unwrap().get(&task_id) {
+            let outcome = match &task.state {
+                executor::TaskState::Closed { outcome } => {
+                    Ok(HandlerValue::Json(serde_json::to_value(outcome).unwrap()))
+                }
+                _ => Err(maka_host_runtime::application::HandlerError::Unknown {
+                    diagnostic: "original fixture task is still running".into(),
+                }),
+            };
+            return Box::pin(async move { outcome });
+        }
+        tasks.lock().unwrap().insert(
+            task_id,
+            ProbeTask {
+                outputs: vec![],
+                state: executor::TaskState::Running,
+                changes: tokio::sync::watch::channel(()).0,
+            },
         );
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let (behavior, entered, cancelled, release) = (
@@ -71,27 +201,52 @@ impl Handler for Probe {
             self.cancelled.clone(),
             self.release.clone(),
         );
+        let contexts = self.contexts.clone();
         Box::pin(async move {
+            authority
+                .0
+                .validate(&context)
+                .await
+                .map_err(|e| e.to_string())?;
+            let emit = |value: Value| {
+                let tasks = tasks.clone();
+                let context = context.clone();
+                async move {
+                    let indexed = {
+                        let mut tasks = tasks.lock().unwrap();
+                        let task = tasks.get_mut(&task_id).unwrap();
+                        let output = executor::IndexedOutput {
+                            index: task.outputs.len() as u64,
+                            output: serde_json::from_value(value).unwrap(),
+                        };
+                        task.outputs.push(output.clone());
+                        task.changes.send_replace(());
+                        output
+                    };
+                    context.emit(serde_json::to_value(indexed).unwrap()).await
+                }
+            };
+            if matches!(behavior, Behavior::Protocol) {
+                contexts.lock().unwrap().push_back(context.clone());
+            }
             entered.add_permits(1);
+            let result: Result<Value, String> = async {
+
             let answer = match behavior {
                 Behavior::Streaming => {
-                    context
-                        .emit(json!({"type":"message_start","messageId":"commentary"}))
+                    emit(json!({"type":"message_start","messageId":"commentary"}))
                         .await?;
-                    context
-                        .emit(json!({"type":"thinking_delta","messageId":"commentary","text":"checking"}))
+                    emit(json!({"type":"thinking_delta","messageId":"commentary","text":"checking"}))
                         .await?;
                     for index in 0..35 {
-                        context
-                            .emit(json!({"type":"output_delta","messageId":"commentary","text":format!("part {index}\n")}))
+                        emit(json!({"type":"output_delta","messageId":"commentary","text":format!("part {index}\n")}))
                             .await?;
                     }
                     tokio::select! {
                         permit=release.acquire() => permit.unwrap().forget(),
                         ()=context.scope().cancellation.cancelled() => return Ok(json!({"status":"cancelled","reason":"stopped"})),
                     }
-                    context
-                        .emit(json!({"type":"message_end","messageId":"commentary"}))
+                    emit(json!({"type":"message_end","messageId":"commentary"}))
                         .await?;
                     input["message"].clone()
                 }
@@ -100,8 +255,8 @@ impl Handler for Probe {
                     assert_eq!(context.attachments().len(), 1);
                     let resource = context.attachments().get("attachments").unwrap();
                     assert_eq!(
-                        resource.encoding(),
-                        maka_capabilities::call::ResourceEncoding::Bytes
+                        resource.resource_type(),
+                        maka_plugin_core::contract::binary_resource_type()
                     );
                     let manifest: Vec<executor::AttachmentMetadata> =
                         serde_json::from_value(resource.metadata()).unwrap();
@@ -133,17 +288,21 @@ impl Handler for Probe {
                     );
                     json!(serde_json::to_string(&files).unwrap())
                 }
+                Behavior::Protocol => {
+                    release.acquire().await.unwrap().forget();
+                    input["message"].clone()
+                }
                 Behavior::Unsettled => {
                     context.scope().cancellation.cancelled().await;
                     cancelled.add_permits(1);
                     release.acquire().await.unwrap().forget();
                     return Ok(json!({"status":"completed","message_id":null}));
                 }
+                Behavior::SetupProtocol=>return Err("Setup fixture cannot execute an Agent task".into()),
                 Behavior::InvalidSuccess => {
-                    context
-                        .emit(json!({"type":"message_start","messageId":"partial"}))
+                    emit(json!({"type":"message_start","messageId":"partial"}))
                         .await?;
-                    context.emit(json!({"type":"output_delta","messageId":"partial","text":"partial answer"})).await?;
+                    emit(json!({"type":"output_delta","messageId":"partial","text":"partial answer"})).await?;
                     let message_id = if call == 0 { None } else { Some("unknown") };
                     return Ok(json!({"status":"completed","message_id":message_id}));
                 }
@@ -153,9 +312,30 @@ impl Handler for Probe {
                 json!({"type":"output_delta","messageId":"answer","text":answer}),
                 json!({"type":"message_end","messageId":"answer"}),
             ] {
-                context.emit(output).await?;
+                emit(output).await?;
             }
             Ok(json!({"status":"completed","message_id":"answer"}))
+            }.await;
+            match result {
+                Ok(value) => {
+                    let mut tasks = tasks.lock().unwrap();
+                    let task = tasks.get_mut(&task_id).unwrap();
+                    task.state = executor::TaskState::Closed {
+                        outcome: serde_json::from_value(value.clone()).unwrap(),
+                    };
+                    task.changes.send_replace(());
+                    Ok(HandlerValue::Json(value))
+                }
+                Err(diagnostic) => {
+                    let mut tasks = tasks.lock().unwrap();
+                    let task = tasks.get_mut(&task_id).unwrap();
+                    task.state = executor::TaskState::Unknown {
+                        diagnostic: diagnostic.clone(),
+                    };
+                    task.changes.send_replace(());
+                    Err(maka_host_runtime::application::HandlerError::Unknown { diagnostic })
+                }
+            }
         })
     }
 }
@@ -167,7 +347,7 @@ impl NativeOwner for Probe {
 async fn activate(fixture: &mut Fixture, install: bool, probe: Option<Arc<Probe>>, granted: bool) {
     activate_backend(fixture, install, probe, granted, None, &[]).await;
 }
-async fn activate_backend(
+pub(super) async fn activate_backend(
     fixture: &mut Fixture,
     install: bool,
     probe: Option<Arc<Probe>>,
@@ -175,6 +355,17 @@ async fn activate_backend(
     acp: Option<maka_agent_api::acp::Configuration>,
     denied: &[&str],
 ) {
+    let setup_probe = probe
+        .as_ref()
+        .is_some_and(|probe| matches!(probe.behavior, Behavior::SetupProtocol));
+    let with_setup = acp.is_some() || setup_probe;
+    let with_protocol = with_setup
+        || probe
+            .as_ref()
+            .is_some_and(|probe| matches!(probe.behavior, Behavior::Protocol));
+    let publication_method = "publishChange";
+    let with_publication =
+        with_protocol && acp.is_some() && granted && !denied.contains(&publication_method);
     let source = fixture.app.source().unwrap().clone();
     fixture.app.shutdown().await.unwrap();
     if install {
@@ -183,7 +374,7 @@ async fn activate_backend(
             name: "external".into(),
             import: "executor".into(),
             member: 0,
-            setup: acp.as_ref().map(|_| executor::setup::Binding {
+            setup: with_setup.then(|| executor::setup::Binding {
                 import: "setup".into(),
                 member: 0,
             }),
@@ -198,6 +389,15 @@ async fn activate_backend(
                 cardinality: Cardinality::One,
             },
         );
+        if with_publication {
+            manifest_application.host.as_mut().unwrap().imports.insert(
+                "files".into(),
+                Import {
+                    contract: maka_workspace_api::files::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
+        }
         let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
             manifest.application = Some(
                 maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
@@ -218,7 +418,21 @@ async fn activate_backend(
                     export: "executor".into(),
                 }],
             );
-        let provider = if acp.is_some() {
+        if with_publication {
+            input
+                .instances
+                .get_mut("provider")
+                .unwrap()
+                .bindings
+                .insert(
+                    "files".into(),
+                    vec![Target::Instance {
+                        path: vec!["files".into()],
+                        export: "files".into(),
+                    }],
+                );
+        }
+        let provider = if with_setup {
             let mut manifest = provider.manifest().clone();
             let mut manifest_application =
                 manifest.application.as_ref().unwrap().declaration().clone();
@@ -260,7 +474,7 @@ async fn activate_backend(
         };
         let mut imports = serde_json::Map::new();
         let mut bindings = BTreeMap::new();
-        if acp.is_some() {
+        if with_protocol {
             for (name, key, implementation, contract, schema, configuration) in [
                 (
                     "processes",
@@ -271,7 +485,7 @@ async fn activate_backend(
                         maka_workspace_api::processes::Configuration
                     ))
                     .unwrap(),
-                    json!({"filesystem":{"default":"write","rules":[],"denyGlobs":[]},"network":"allowed","helper":null,"sessionOwner":id(1),"setupDirectory":if denied.contains(&"directory") { Value::Null } else { json!(fixture.workspace) }}),
+                    json!({"filesystem":{"default":"write","rules":[],"denyGlobs":[]},"network":"allowed","helper":crate::owner::tests::native_helper()}),
                 ),
                 (
                     "files",
@@ -290,6 +504,9 @@ async fn activate_backend(
                     json!({}),
                 ),
             ] {
+                if acp.is_none() && name != "processes" {
+                    continue;
+                }
                 let export = if name == "processes" {
                     "protocol"
                 } else {
@@ -340,7 +557,7 @@ async fn activate_backend(
             "executor".into(),
             json!({"contract":executor::contract(),"availability":"required"}),
         )]);
-        if acp.is_some() {
+        if with_setup {
             exports.insert(
                 "setup".into(),
                 json!({"contract":executor::setup::contract(),"availability":"required"}),
@@ -351,7 +568,9 @@ async fn activate_backend(
             "exports":exports
         }}})).unwrap())]);
         if probe.is_none() && acp.is_none() {
-            files.insert("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input, observation, context){{
+            files.insert("executor.mjs".into(),format!(r#"const tasks=new Map(); function changed(task){{const wake=task.wake;task.changed=new Promise(resolve=>{{task.wake=resolve;}});if(wake)wake();}} export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input, observation, context){{
+                const previous=tasks.get(input.taskId); if(previous){{if(previous.state.kind==='closed')return previous.state.outcome;throw new Error('original task is still running');}} const task={{outputs:[],state:{{kind:'running'}}}};changed(task);tasks.set(input.taskId,task);
+                try {{
                 for (const value of [
                     {{type:'message_start',messageId:'commentary'}},
                     {{type:'thinking_delta',messageId:'commentary',text:'思考'}},
@@ -363,8 +582,19 @@ async fn activate_backend(
                     {{type:'message_start',messageId:'answer'}},
                     {{type:'output_delta',messageId:'answer',text:input.message+' / '+input.settings.model+' / '+input.settings.thinkingLevel}},
                     {{type:'message_end',messageId:'answer'}}
-                ]) await context.invoke({{operation:'emit',value}});
-                return {{status:'completed',message_id:'answer'}};
+                ]) {{ const indexed={{index:task.outputs.length,output:value}};task.outputs.push(indexed);changed(task);await context.invoke({{operation:'emit',value:indexed}}); }}
+                const outcome={{status:'completed',message_id:'answer'}};task.state={{kind:'closed',outcome}};changed(task);return outcome;
+                }} catch(error) {{task.state={{kind:'unknown',diagnostic:'original fixture output delivery failed'}};changed(task);throw error;}}
+            }},async observe(input, observation, context){{
+                const task=tasks.get(input.taskId);if(!task){{await context.invoke({{operation:'emit',value:{{kind:'missing'}}}});return null;}}
+                const headers=input.afterIndex==null;let after=headers?0:input.afterIndex;
+                for (;;) {{
+                    const notice=task.changed;
+                    const end=headers?0:Math.min(after+256,task.outputs.length);const state=task.state;const hasMore=!headers&&end<task.outputs.length;
+                    await context.invoke({{operation:'emit',value:{{kind:'found',taskId:input.taskId,observed:end,hasMore,outputs:task.outputs.slice(after,end),state,cleanup:{{kind:state.kind==='closed'?'confirmed':'unconfirmed'}}}}}});
+                    after=end;if(hasMore)continue;if(state.kind!=='running')return null;
+                    await notice;
+                }}
             }}}};"#,serde_json::to_string(&executor::contract()).unwrap()).into_bytes());
         }
         let package = Package::new(files).unwrap();
@@ -396,25 +626,32 @@ async fn activate_backend(
     }
     let mut native = NativeRegistry::default();
     maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
+    if with_protocol {
+        maka_processes_native::provide(&mut native).unwrap();
+    }
     if acp.is_some() {
         maka_acp_native::provide(&mut native).unwrap();
-        maka_processes_native::provide(&mut native).unwrap();
         maka_files_native::provide(&mut native).unwrap();
         maka_interactions_native::forms::provide(&mut native).unwrap();
     }
     let captured = Arc::new(StdMutex::new(None));
     let capture = captured.clone();
+    let durable = fixture.owner.durable.clone();
     native
         .insert(
             IMPLEMENTATION.into(),
             Arc::new(move |context, configuration| {
                 let capture = capture.clone();
+                let durable = durable.clone();
                 Box::pin(async move {
                     let services = context.services();
                     let owner = Owner::open(
                         context,
                         configuration,
                         crate::owner::tests::bundled_catalog(),
+                        durable,
+                        crate::owner::tests::native_helper(),
+                        None,
                     )
                     .await
                     .unwrap();
@@ -438,18 +675,31 @@ async fn activate_backend(
         native
             .insert(
                 "fixture.executor".into(),
-                Arc::new(move |_, _| {
+                Arc::new(move |context, _| {
                     let probe = probe.clone();
+                    let _ = probe.services.set(context.services());
                     Box::pin(async move {
                         NativeActivation {
                             owner: probe.clone(),
-                            exports: Ok(BTreeMap::from([(
-                                "executor".into(),
-                                Published {
-                                    contract: executor::contract(),
-                                    value: probe as Arc<dyn Handler>,
-                                },
-                            )])),
+                            exports: {
+                                let mut exports = BTreeMap::from([(
+                                    "executor".into(),
+                                    Published {
+                                        contract: executor::contract(),
+                                        value: probe.clone() as Arc<dyn Handler>,
+                                    },
+                                )]);
+                                if setup_probe {
+                                    exports.insert(
+                                        "setup".into(),
+                                        Published {
+                                            contract: executor::setup::contract(),
+                                            value: probe as Arc<dyn Handler>,
+                                        },
+                                    );
+                                }
+                                Ok(exports)
+                            },
                         }
                     })
                 }),
@@ -462,14 +712,24 @@ async fn activate_backend(
             consumer: id(1),
             provider: id(21),
             export: "executor".into(),
-            methods: ["execute".into()].into_iter().collect(),
+            methods: ["execute".into(), "observe".into()].into_iter().collect(),
             recovery: true,
         }]
     } else {
         vec![]
     };
-    if acp.is_some() {
-        if granted && !denied.contains(&"setup") {
+    if with_protocol {
+        if with_publication {
+            grants.push(maka_transport::transport::NativeGrant {
+                origin: id(1),
+                consumer: id(1),
+                provider: id(23),
+                export: "files".into(),
+                methods: [publication_method.into()].into_iter().collect(),
+                recovery: true,
+            });
+        }
+        if with_setup && granted && !denied.contains(&"setup") {
             grants.push(maka_transport::transport::NativeGrant {
                 origin: id(1),
                 consumer: id(1),
@@ -480,10 +740,13 @@ async fn activate_backend(
             });
         }
         for (provider, export, methods) in [
-            (22, "protocol", vec!["run", "input", "launch"]),
+            (22, "protocol", vec!["run", "input", "launch", "close"]),
             (23, "files", vec!["readText", "write"]),
             (24, "forms", vec!["ask"]),
         ] {
+            if acp.is_none() && provider != 22 {
+                continue;
+            }
             grants.push(maka_transport::transport::NativeGrant {
                 origin: id(21),
                 consumer: id(21),
@@ -518,7 +781,109 @@ fn input_for(session: &str, message: &str) -> Value {
     json!({"sessionId":session,"message":message,"delivery":"queue","backend":{"kind":"executor","selection":{"executor":"external","settings":{"model":"backend-model","thinkingLevel":"high"}}}})
 }
 async fn work(fixture: &Fixture, session: &str, accepted: &Value) -> Value {
-    fixture.query("work",json!({"sessionId":session,"target":{"kind":"invocation","invocationId":accepted["invocationId"]}})).await.unwrap()
+    assert_eq!(accepted["kind"], "queued");
+    assert_eq!(accepted["sessionId"], session);
+    let run = fixture.delivered_run(accepted).await;
+    fixture
+        .query(
+            "work",
+            json!({"sessionId":session,"target":{"kind":"run","runId":run}}),
+        )
+        .await
+        .unwrap()
+}
+
+async fn external_result(
+    fixture: &Fixture,
+    session: &str,
+    accepted: &Value,
+) -> (
+    maka_agent_state::fold::RunView,
+    Vec<maka_agent_facts::durable::RecordedFact>,
+    String,
+) {
+    use maka_agent_facts::durable::{Fact, Terminal};
+    use maka_agent_facts::executor::Output;
+    let run = fixture.delivered_run(accepted).await;
+    let head = fixture
+        .owner
+        .durable
+        .frontier(run)
+        .await
+        .unwrap_or_else(|_| panic!("original Delivered Run frontier unavailable"));
+    assert!(head.run == run, "original Delivered Run identity required");
+    assert!(
+        head.spec.session_id == session,
+        "original Delivered session required"
+    );
+    assert!(
+        head.spec.owner == fixture.owner.run_owner(),
+        "original Delivered owner required"
+    );
+    let task = head
+        .external
+        .as_ref()
+        .expect("original external Task required");
+    assert!(task.admitted, "original external Task must be admitted");
+    let closed = task
+        .closed
+        .as_ref()
+        .expect("original external Task must be closed");
+    assert_eq!(closed.outcome, Terminal::Completed);
+    let final_message = closed
+        .final_message
+        .as_ref()
+        .expect("original final message required");
+    let mut prefix = Vec::new();
+    let mut after = 0;
+    while after < head.revision {
+        let page = fixture
+            .owner
+            .durable
+            .history(run, after, 128)
+            .await
+            .unwrap_or_else(|_| panic!("original Delivered Run history page unavailable"));
+        let page: Vec<_> = page
+            .into_iter()
+            .filter(|row| row.revision <= head.revision)
+            .collect();
+        let next = page
+            .last()
+            .expect("original Run history must reach its captured revision")
+            .revision;
+        assert!(next > after, "original Run revision cursor must advance");
+        assert!(
+            page.iter().all(|row| row.run == run),
+            "history must retain the original Run"
+        );
+        prefix.extend(page);
+        after = next;
+    }
+    assert_eq!(prefix.len() as u64, head.revision);
+    let end = prefix
+        .iter()
+        .find(|row| row.id == final_message.end)
+        .expect("original final MessageEnd fact required");
+    assert!(
+        matches!(&end.fact, Fact::ExternalTaskObserved {
+        task: original, output: Output::MessageEnd { message_id }, ..
+    } if *original == task.task && *message_id == final_message.message_id),
+        "final MessageEnd must belong to the original Task and message"
+    );
+    let answer = prefix
+        .iter()
+        .filter_map(|row| match &row.fact {
+            Fact::ExternalTaskObserved {
+                task: original,
+                output: Output::OutputDelta { message_id, text },
+                ..
+            } if *original == task.task && *message_id == final_message.message_id => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    (head, prefix, answer)
 }
 
 #[tokio::test]
@@ -595,26 +960,28 @@ async fn executor_service_selects_the_exact_authorized_import_member() {
         f.app.adopt_committed(source).await.unwrap();
         f.app.ready().await.unwrap();
         let session = f.create("Selected member").await;
-        let mut changes = f.session(&session).await.subscribe_commits().unwrap();
+        let mut changes = f.owner.durable.subscribe().unwrap();
         let mut execution = input_for(&session, "second binding");
         execution["backend"]["selection"]["executor"] = json!(executor_name);
         let accepted = f
             .mutation(2, "send", execution, Uuid::new_v4())
             .await
             .unwrap();
-        assert_eq!(accepted["kind"], "started", "{accepted}");
+        assert_eq!(accepted["kind"], "queued", "{accepted}");
         loop {
+            changes.borrow_and_update();
             let observed = work(&f, &session, &accepted).await;
-            match observed["execution"]["state"].as_str() {
-                Some("running") | Some("admitted") | Some("waiting_for_user") | None => {
+            match observed["execution"]["state"]["kind"].as_str() {
+                Some("running" | "admitted" | "waiting") => {
                     changes.changed().await.unwrap();
                 }
                 _ => {
-                    assert_eq!(observed["execution"]["state"], "completed", "{observed}");
                     assert_eq!(
-                        observed["answer"]["text"],
-                        "second binding / backend-model / high"
+                        observed["execution"]["state"]["kind"], "completed",
+                        "{observed}"
                     );
+                    let (_, _, answer) = external_result(&f, &session, &accepted).await;
+                    assert_eq!(answer, "second binding / backend-model / high");
                     break;
                 }
             }
@@ -673,12 +1040,21 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             .mutation(2, "send", input.clone(), operation)
             .await
             .unwrap();
-        assert_eq!(accepted["kind"], "started");
+        assert_eq!(accepted["kind"], "queued");
         fixture.drained().await;
-        let observed = work(&fixture, &session, &accepted).await;
-        assert_eq!(observed["execution"]["state"], "completed");
+        let mut changes = fixture.owner.durable.subscribe().unwrap();
+        let observed = loop {
+            changes.borrow_and_update();
+            let observed = work(&fixture, &session, &accepted).await;
+            if !matches!(observed["execution"]["state"]["kind"].as_str(), Some("admitted" | "running" | "waiting")) {
+                break observed;
+            }
+            changes.changed().await.unwrap();
+        };
+        assert_eq!(observed["execution"]["state"]["kind"], "completed");
+        let (head, prefix, answer) = external_result(&fixture, &session, &accepted).await;
         assert_eq!(
-            observed["answer"]["text"],
+            answer,
             "original 外部 text / backend-model / high"
         );
         let records = fixture
@@ -689,36 +1065,12 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].reference.namespace, id(21));
         assert_eq!(records[0].reference.method, "execute");
-        let configuration = fixture.session(&(Invocation {
-                session_id: session.clone(),
-                turn_id: observed["execution"]["turnId"].as_str().unwrap().into(),
-                run_id: observed["execution"]["runId"].as_str().unwrap().into(),
-                invocation_id: accepted["invocationId"].as_str().unwrap().into(),
-            }).session_id).await.invocation_configuration(&Invocation {
-                session_id: session.clone(),
-                turn_id: observed["execution"]["turnId"].as_str().unwrap().into(),
-                run_id: observed["execution"]["runId"].as_str().unwrap().into(),
-                invocation_id: accepted["invocationId"].as_str().unwrap().into(),
-            })
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(configuration.model.is_none());
-        let source = fixture.session(&session).await.run_source(
-            &session, observed["execution"]["runId"].as_str().unwrap(), None,
-        ).await.unwrap().unwrap();
-        let mut prefix = fixture.session(&session).await.session_events(
-            &session, 0, source.last.sequence, 512, 65536,
-        ).await.unwrap();
-        assert!(prefix.next_after.is_none());
-        prefix.events.retain(|row| row.event.invocation == source.boundary.invocation);
-        assert_eq!(prefix.events.len() as u64, source.boundary.high_water);
-        assert!(prefix.events.iter().all(|row| !matches!(
-            row.event.fact,
-            maka_agent_facts::event::Fact::ModelRequested { .. }
-        )));
-        let outputs=prefix.events.iter().filter_map(|row| match &row.event.fact {
-            maka_agent_facts::event::Fact::ExecutorObserved { output } => Some(serde_json::to_value(output).unwrap()),
+        assert_eq!(records[0].reference.export, "executor");
+        assert!(matches!(head.spec.backend, maka_agent_facts::durable::BackendSpec::Executor { .. }));
+        assert_eq!(prefix.len() as u64, head.revision);
+        assert!(prefix.iter().all(|row| !matches!(row.fact, maka_agent_facts::durable::Fact::ModelAttemptPrepared { .. })));
+        let outputs=prefix.iter().filter_map(|row| match &row.fact {
+            maka_agent_facts::durable::Fact::ExternalTaskObserved { output, .. } => Some(serde_json::to_value(output).unwrap()),
             _=>None,
         }).collect::<Vec<_>>();
         assert_eq!(outputs,vec![
@@ -733,16 +1085,15 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             json!({"type":"output_delta","messageId":"answer","text":"original 外部 text / backend-model / high"}),
             json!({"type":"message_end","messageId":"answer"}),
         ]);
-        let binding = prefix
-            .events
-            .iter()
-            .find_map(|row| match &row.event.fact {
-                maka_agent_facts::event::Fact::ExecutorStarted { binding, .. } => Some(binding),
-                _ => None,
-            })
-            .unwrap();
+        let descriptor = prefix.iter().find_map(|row| match &row.fact {
+            maka_agent_facts::durable::Fact::ExternalTaskPrepared { descriptor, .. } => Some(descriptor),
+            _ => None,
+        }).unwrap();
+        let bytes = fixture.history(&session).content(head.run, descriptor).await.unwrap();
+        let descriptor: maka_agent_facts::executor::TaskDescriptor<Value> = serde_json::from_slice(&bytes).unwrap();
+        let binding = descriptor.source;
         assert_eq!(binding.package_id, "fixture-executor");
-        assert_eq!(binding.entry_id, "host");
+        assert_eq!(binding.entry_id, "executor");
         let current = fixture
             .services
             .imports()
@@ -788,37 +1139,28 @@ async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
             .mutation(2, "send", input_for(&session, "blocked"), Uuid::new_v4())
             .await
             .unwrap();
+        assert_eq!(accepted["kind"], "queued");
+        assert_eq!(accepted["sessionId"], session);
+        let run = fixture.delivered_run(&accepted).await;
         probe.entered.acquire().await.unwrap().forget();
         let stopped = fixture
             .mutation(
                 2,
                 "stop",
-                json!({"sessionId":session,"invocationId":accepted["invocationId"]}),
+                json!({"sessionId":session,"runId":run}),
                 Uuid::new_v4(),
             )
             .await
             .unwrap();
         assert_eq!(stopped["requested"], true);
         probe.cancelled.acquire().await.unwrap().forget();
-        fixture.drained().await;
-        assert!(
-            fixture
-                .owner
-                .runs
-                .lock()
-                .await
-                .retained_cleanup
-                .contains(&session)
-        );
-        assert!(
-            !fixture
-                .owner
-                .runs
-                .lock()
-                .await
-                .controls
-                .contains_key(&session)
-        );
+        assert!(fixture.owner.runs.state().await.busy(&session));
+        let view = fixture.owner.durable.frontier(run).await.unwrap();
+        assert_eq!(view.run, run);
+        assert_eq!(view.spec.owner, fixture.owner.run_owner());
+        assert_eq!(view.spec.session_id, session);
+        assert!(view.stopped);
+
         assert!(
             fixture
                 .app
@@ -839,7 +1181,8 @@ async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
         {
             tokio::task::yield_now().await;
         }
-        assert!(fixture.app.shutdown().await.is_err());
+        fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     })
     .await
@@ -853,7 +1196,7 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         let probe = Probe::new(Behavior::Streaming);
         activate(&mut fixture, true, Some(probe.clone()), true).await;
         let session = fixture.create("Live output").await;
-        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
+        let mut commits = fixture.owner.durable.subscribe().unwrap();
         let accepted = fixture
             .mutation(
                 2,
@@ -868,38 +1211,29 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         let run = live["execution"]["runId"].as_str().unwrap();
         loop {
             commits.borrow_and_update();
-            let source = fixture
-                .session(&session)
+            let run_id =
+                serde_json::from_value::<maka_agent_facts::durable::RunId>(json!(run)).unwrap();
+            let head = fixture.owner.durable.frontier(run_id).await.unwrap();
+            let prefix: Vec<_> = fixture
+                .recorded_facts(&session)
                 .await
-                .run_source(&session, run, None)
-                .await
-                .unwrap()
-                .unwrap();
-            let mut prefix = fixture
-                .session(&session)
-                .await
-                .session_events(&session, 0, source.last.sequence, 512, 65536)
-                .await
-                .unwrap();
-            assert!(prefix.next_after.is_none());
-            prefix
-                .events
-                .retain(|row| row.event.invocation == source.boundary.invocation);
-            assert_eq!(prefix.events.len() as u64, source.boundary.high_water);
+                .into_iter()
+                .filter(|row| row.run == run_id && row.revision <= head.revision)
+                .collect();
+            assert_eq!(prefix.len() as u64, head.revision);
             let outputs = prefix
-                .events
                 .iter()
                 .filter(|row| {
                     matches!(
-                        &row.event.fact,
-                        maka_agent_facts::event::Fact::ExecutorObserved { .. }
+                        row.fact,
+                        maka_agent_facts::durable::Fact::ExternalTaskObserved { .. }
                     )
                 })
                 .count();
-            assert!(prefix.events.iter().all(|row| !matches!(
-                &row.event.fact,
-                maka_agent_facts::event::Fact::InvocationEnded { .. }
-                    | maka_agent_facts::event::Fact::ExecutorCompleted { .. }
+            assert!(prefix.iter().all(|row| !matches!(
+                row.fact,
+                maka_agent_facts::durable::Fact::RunTerminated { .. }
+                    | maka_agent_facts::durable::Fact::ExternalTaskClosed { .. }
             )));
             if outputs == 37 {
                 break;
@@ -910,9 +1244,56 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
             .query("observe", json!({"sessionId":session}))
             .await
             .unwrap();
-        let parts = snapshot["parts"].as_array().unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["messageId"], parts[1]["messageId"]);
+        assert!(snapshot["run"].is_object());
+        let live_history = fixture
+            .query(
+                "history",
+                json!({"sessionId":session,"position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        let through = live_history["through"]
+            .as_u64()
+            .expect("original live history cut required");
+        let mut page = live_history;
+        let mut live_chunks = Vec::new();
+        loop {
+            assert_eq!(page["through"].as_u64(), Some(through));
+            live_chunks.extend(page["chunks"].as_array().unwrap().iter().cloned());
+            let after = page
+                .get("after")
+                .expect("original history page cursor field required");
+            if after.is_null() {
+                break;
+            }
+            page = fixture
+                .query(
+                    "history",
+                    json!({
+                        "sessionId":session, "through":through,
+                        "position":{"kind":"after","cursor":after}
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        let body: String = live_chunks
+            .iter()
+            .filter(|row| row["role"] == "assistant" && row["field"] == "body")
+            .filter_map(|row| row["text"].as_str())
+            .collect();
+        assert_eq!(
+            body,
+            (0..35)
+                .map(|index| format!("part {index}\n"))
+                .collect::<String>()
+        );
+        assert!(
+            live_chunks
+                .iter()
+                .filter(|row| row["role"] == "assistant")
+                .all(|row| row["finalOutput"] != true)
+        );
         let mut stream = fixture
             .app
             .client()
@@ -931,20 +1312,49 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
             let page = stream.recv().await.unwrap();
             if let Some(events) = page["events"].as_array() {
                 for event in events {
-                    let fact = &event["fact"];
-                    match fact["kind"].as_str().unwrap() {
-                        "executor_message_started" => started = Some(fact["messageId"].clone()),
-                        "delta" => {
-                            assert_eq!(fact["stepId"], parts[0]["messageId"]);
-                            deltas.push((fact["partId"].clone(), fact["text"].clone()));
+                    assert_ne!(
+                        event["fact"]["kind"], "ended",
+                        "watch ended before backend completion"
+                    );
+                    let history = fixture.history(&session);
+                    let cut = history
+                        .capture_at(page["through"].as_u64().unwrap())
+                        .await
+                        .unwrap();
+                    let item = history
+                        .item(&cut, event["sequence"].as_u64().unwrap())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if let maka_agent_facts::durable::Fact::ExternalTaskObserved {
+                        output, ..
+                    } = item.recorded.fact
+                    {
+                        match output {
+                            maka_agent_facts::executor::Output::MessageStart { message_id } => {
+                                started = Some(json!(message_id))
+                            }
+                            maka_agent_facts::executor::Output::ThinkingDelta {
+                                message_id,
+                                text,
+                            } => {
+                                assert_eq!(message_id, "commentary");
+                                deltas.push((json!("thinking"), json!(text)));
+                            }
+                            maka_agent_facts::executor::Output::OutputDelta {
+                                message_id,
+                                text,
+                            } => {
+                                assert_eq!(message_id, "commentary");
+                                deltas.push((json!("text"), json!(text)));
+                            }
+                            _ => {}
                         }
-                        "ended" => panic!("watch ended before actual backend completion"),
-                        _ => {}
                     }
                 }
             }
         }
-        assert_eq!(started, Some(parts[0]["messageId"].clone()));
+        assert_eq!(started, Some(json!("commentary")));
         assert_eq!(deltas[0], (json!("thinking"), json!("checking")));
         for index in 0..35 {
             assert_eq!(
@@ -973,10 +1383,20 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         );
         probe.release.add_permits(1);
         fixture.drained().await;
-        assert_eq!(
-            work(&fixture, &session, &accepted).await["answer"]["text"],
-            "final canonical answer"
-        );
+        let observed = loop {
+            commits.borrow_and_update();
+            let observed = work(&fixture, &session, &accepted).await;
+            if !matches!(
+                observed["execution"]["state"]["kind"].as_str(),
+                Some("admitted" | "running" | "waiting")
+            ) {
+                break observed;
+            }
+            commits.changed().await.unwrap();
+        };
+        assert_eq!(observed["execution"]["state"]["kind"], "completed");
+        let (_, _, answer) = external_result(&fixture, &session, &accepted).await;
+        assert_eq!(answer, "final canonical answer");
         let history = fixture
             .query(
                 "history",
@@ -984,24 +1404,61 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
             )
             .await
             .unwrap();
-        let chunks = history["chunks"].as_array().unwrap();
-        let commentary = chunks
+        let through = history["through"]
+            .as_u64()
+            .expect("original completed history cut required");
+        let mut page = history;
+        let mut chunks = Vec::new();
+        loop {
+            assert_eq!(page["through"].as_u64(), Some(through));
+            chunks.extend(page["chunks"].as_array().unwrap().iter().cloned());
+            let after = page
+                .get("after")
+                .expect("original history page cursor field required");
+            if after.is_null() {
+                break;
+            }
+            page = fixture
+                .query(
+                    "history",
+                    json!({
+                        "sessionId":session, "through":through,
+                        "position":{"kind":"after","cursor":after}
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        let commentary: Vec<_> = chunks
             .iter()
-            .find(|chunk| chunk["messageId"] == parts[0]["messageId"])
-            .unwrap();
+            .filter(|row| {
+                row["role"] == "assistant"
+                    && row["field"] == "body"
+                    && row["text"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("part "))
+            })
+            .collect();
         assert_eq!(
-            commentary["text"],
+            commentary
+                .iter()
+                .filter_map(|row| row["text"].as_str())
+                .collect::<String>(),
             (0..35)
                 .map(|index| format!("part {index}\n"))
                 .collect::<String>()
         );
-        assert_ne!(commentary["finalOutput"], true);
+        assert!(commentary.iter().all(|row| row["finalOutput"] != true));
         let final_answer = chunks
             .iter()
-            .find(|chunk| chunk["finalOutput"] == true)
+            .find(|row| row["finalOutput"] == true)
             .unwrap();
         assert_eq!(final_answer["text"], "final canonical answer");
-        assert_ne!(final_answer["messageId"], commentary["messageId"]);
+        assert!(
+            commentary
+                .iter()
+                .all(|row| row["messageId"] != final_answer["messageId"])
+        );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -1022,19 +1479,38 @@ async fn executor_service_invalid_success_fails_durably_and_preserves_interrupte
                 .mutation(2, "send", input_for(&session, "answer"), Uuid::new_v4())
                 .await
                 .unwrap();
-            assert_eq!(accepted["kind"], "started");
+            assert_eq!(accepted["kind"], "queued");
             fixture.drained().await;
-            let observed = work(&fixture, &session, &accepted).await;
-            assert_eq!(observed["execution"]["state"], "failed", "{observed}");
-            let stored = super::service_tools::stored_facts(&fixture, &session).await;
+            let mut changes = fixture.owner.durable.subscribe().unwrap();
+            let observed = loop {
+                changes.borrow_and_update();
+                let observed = work(&fixture, &session, &accepted).await;
+                if !matches!(
+                    observed["execution"]["state"]["kind"].as_str(),
+                    Some("admitted" | "running" | "waiting")
+                ) {
+                    break observed;
+                }
+                changes.changed().await.unwrap();
+            };
+            assert_eq!(
+                observed["execution"]["state"]["kind"], "failed",
+                "{observed}"
+            );
+            let stored = fixture.recorded_facts(&session).await;
             assert!(!stored.iter().any(|row| matches!(
-                row.event.fact,
-                maka_agent_facts::event::Fact::ExecutorCompleted { .. }
+                row.fact,
+                maka_agent_facts::durable::Fact::ExternalTaskClosed {
+                    outcome: maka_agent_facts::durable::Terminal::Completed,
+                    ..
+                }
             )));
-            assert!(stored.iter().any(|row| matches!(&row.event.fact,
-                maka_agent_facts::event::Fact::InvocationEnded {
-                    outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. }
-                } if class == "executor"
+            assert!(stored.iter().any(|row| matches!(
+                &row.fact,
+                maka_agent_facts::durable::Fact::RunTerminated {
+                    terminal: maka_agent_facts::durable::Terminal::Failed,
+                    diagnostic: Some(_)
+                }
             )));
             let history = fixture
                 .query(
@@ -1072,8 +1548,14 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         let session = f.create("Attachments").await;
         let other = f.create("Other").await;
         let files = [
-            ("notes.md".to_owned(), "original immutable content\n".repeat(3000)),
-            ("utf8.txt".to_owned(), "distinct executor file\n中\0tail".to_owned()),
+            (
+                "notes.md".to_owned(),
+                "original immutable content\n".repeat(3000),
+            ),
+            (
+                "utf8.txt".to_owned(),
+                "distinct executor file\n中\0tail".to_owned(),
+            ),
         ];
         let mut ids = Vec::new();
         for (name, bytes) in &files {
@@ -1091,11 +1573,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         ] {
             let mut input = input_for(target, "");
             input["attachments"] = ids;
-            assert!(
-                f.mutation(2, "send", input, Uuid::new_v4())
-                    .await
-                    .is_err()
-            );
+            assert!(f.mutation(2, "send", input, Uuid::new_v4()).await.is_err());
         }
         let mut input = input_for(&session, "");
         input["attachments"] = json!(ids);
@@ -1104,29 +1582,32 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
             .mutation(2, "send", input.clone(), operation)
             .await
             .unwrap();
-        assert_eq!(accepted["kind"], "started");
+        assert_eq!(accepted["kind"], "queued");
+        assert_eq!(accepted["sessionId"], session);
+        let run = f.delivered_run(&accepted).await;
 
         probe.entered.acquire().await.unwrap().forget();
 
         f.drained().await;
 
-        let observed = work(&f, &session, &accepted).await;
-        assert_eq!(observed["execution"]["state"], "completed", "{observed}");
-        let mut page = observed;
-        let mut answer = String::new();
-        loop {
-            assert_eq!(page["execution"]["state"], "completed");
-            assert_eq!(page["execution"]["invocationId"], accepted["invocationId"]);
-            answer.push_str(page["answer"]["text"].as_str().unwrap());
-            let cursor = &page["answer"]["next"];
-            if cursor.is_null() {
-                break;
+        let mut changes = f.owner.durable.subscribe().unwrap();
+        let observed = loop {
+            changes.borrow_and_update();
+            let observed = work(&f, &session, &accepted).await;
+            if !matches!(
+                observed["execution"]["state"]["kind"].as_str(),
+                Some("admitted" | "running" | "waiting")
+            ) {
+                break observed;
             }
-            page = f
-                .query("work", json!({"sessionId":session,"target":{"kind":"invocation","invocationId":accepted["invocationId"]},"cursor":cursor}))
-                .await
-                .unwrap();
-        }
+            changes.changed().await.unwrap();
+        };
+        assert_eq!(
+            observed["execution"]["state"]["kind"], "completed",
+            "{observed}"
+        );
+        let (original, _, answer) = external_result(&f, &session, &accepted).await;
+        assert_eq!(original.run, run);
         let received: Vec<Value> = serde_json::from_str(&answer).unwrap();
         assert_eq!(received.len(), files.len());
         for (received, (name, bytes)) in received.iter().zip(&files) {
@@ -1143,7 +1624,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
             accepted
         );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
-        assert!(f.owner.runs.lock().await.controls.is_empty());
+        assert!(f.owner.runs.state().await.controls.is_empty());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

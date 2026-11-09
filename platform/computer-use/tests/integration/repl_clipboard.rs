@@ -173,9 +173,13 @@ impl ToolExecutor for Bridge {
                 .await
                 .invoke(
                     command,
-                    &InvocationContext::new("clipboard-fixture", turn)
-                        .with_browser_authorization(authority)
-                        .with_browser_host_effects(effects),
+                    &InvocationContext::new(
+                        "clipboard-fixture",
+                        turn,
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    )
+                    .with_browser_authorization(authority)
+                    .with_browser_host_effects(effects),
                     &cancellation,
                     Language::En,
                 )
@@ -838,7 +842,12 @@ async fn public_clipboard_shares_real_page_values_and_owns_turn_and_epoch_cleanu
     session
         .lock()
         .await
-        .finish_turn("clipboard-fixture", "clipboard-first", Language::En)
+        .finish_turn(
+            "clipboard-fixture",
+            "clipboard-first",
+            &maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -861,7 +870,12 @@ async fn public_clipboard_shares_real_page_values_and_owns_turn_and_epoch_cleanu
     session
         .lock()
         .await
-        .finish_turn("clipboard-fixture", "clipboard-second", Language::En)
+        .finish_turn(
+            "clipboard-fixture",
+            "clipboard-second",
+            &maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -940,7 +954,12 @@ async fn public_clipboard_shares_real_page_values_and_owns_turn_and_epoch_cleanu
     session
         .lock()
         .await
-        .finish_turn("clipboard-fixture", "clipboard-third", Language::En)
+        .finish_turn(
+            "clipboard-fixture",
+            "clipboard-third",
+            &maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
         .await
         .unwrap();
     let rejected = tokio::time::timeout(Duration::from_secs(10), pending)

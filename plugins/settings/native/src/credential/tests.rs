@@ -40,6 +40,17 @@ struct Script {
     fail: bool,
 }
 impl Transport for Script {
+    fn send_text(
+        &self,
+        _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+        _: maka_agent_ports::model::TextStream,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
+        Box::pin(async {
+            Err(maka_agent_ports::model::Error::LocalAuthorization(
+                "this credential exchange has no WebSocket dispatch authority".into(),
+            ))
+        })
+    }
     fn identity(&self) -> u64 {
         1
     }

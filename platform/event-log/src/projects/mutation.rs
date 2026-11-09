@@ -333,7 +333,7 @@ impl crate::writeback::Statement for WriteRegistration {
             Ok(crate::writeback::Prepared {
                 value: record,
                 changed: true,
-                notification: crate::writeback::Notification::None,
+                notification: crate::writeback::Notification::NONE,
             })
         }
     }

@@ -18,29 +18,108 @@
  */
 
 use super::*;
-use maka_agent_facts::workspace::{BindingRef, PermissionBasis};
-use maka_agent_facts::{event::Invocation, tools::ToolError};
-use maka_capabilities::call::{Resources, Scope, Ticket};
+use maka_plugin_core::work::{
+    WorkCustody,
+    resources::{Resources, Ticket},
+};
+use maka_sandbox::workspace::{BindingRef, PermissionBasis};
 use rusqlite::OptionalExtension;
 use std::sync::{Mutex, OnceLock};
 use tokio_util::sync::CancellationToken;
 
-struct InvocationLifetime {
-    invocation: Invocation,
+pub(super) struct WorkLifetime {
     cancellation: CancellationToken,
     effects: Arc<Resources>,
+    settlement: Arc<SettlementSignal>,
 }
 
-struct Guards {
+#[derive(Clone, Copy, Default)]
+enum Settlement {
+    #[default]
+    Pending,
+    Unconfirmed,
+    Released,
+}
+#[derive(Default)]
+struct SettlementSignal {
+    state: Mutex<Settlement>,
+    changed: tokio::sync::Notify,
+}
+impl SettlementSignal {
+    fn unconfirmed(&self) {
+        let mut state = self.state.lock().unwrap();
+        if matches!(*state, Settlement::Pending) {
+            *state = Settlement::Unconfirmed;
+            self.changed.notify_waiters();
+        }
+    }
+    fn released(&self) {
+        *self.state.lock().unwrap() = Settlement::Released;
+        self.changed.notify_waiters();
+    }
+}
+
+/// Read-only observation of one original accepted work's physical custody.
+/// This holds only its signal, never pins, resources, or completion authority.
+#[derive(Clone)]
+pub struct WorkSettlementObserver {
+    signal: Arc<SettlementSignal>,
+}
+impl WorkSettlementObserver {
+    /// Await actual release or report retained cleanup uncertainty. This does not
+    /// seal, cancel, or settle resources. A later release does not erase the
+    /// original failed resource or Root shutdown receipt.
+    pub async fn wait(&self) -> Result<(), StoreError> {
+        loop {
+            let changed = self.signal.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match *self.signal.state.lock().unwrap() {
+                Settlement::Pending => {}
+                Settlement::Unconfirmed => {
+                    return Err(StoreError::CleanupUnconfirmed(
+                        "original work custody is retained pending cleanup confirmation".into(),
+                    ));
+                }
+                Settlement::Released => return Ok(()),
+            }
+            changed.await;
+        }
+    }
+}
+impl RootStore {
+    pub fn observe_work_settlement(
+        &self,
+        custody: &dyn WorkCustody,
+        session: &str,
+    ) -> Result<WorkSettlementObserver, StoreError> {
+        let selected = self.session_for_work(custody, session)?;
+        Ok(WorkSettlementObserver {
+            signal: selected.work_lifetime()?.settlement.clone(),
+        })
+    }
+}
+
+struct PhysicalGuards {
+    _workspace: super::WorkspaceFence,
     _work: gates::SharedPins,
     _binding: gates::SharedPins,
     _authority: Arc<root::RootOwner>,
+}
+struct Guards {
+    physical: Option<PhysicalGuards>,
     registry: Arc<gates::Gates>,
-    invocation: OnceLock<Arc<InvocationLifetime>>,
+    lifetime: OnceLock<Arc<WorkLifetime>>,
 }
 impl Drop for Guards {
     fn drop(&mut self) {
+        // Drop runs before fields: explicitly release the original physical
+        // guards before notifying observers that custody has actually ended.
+        drop(self.physical.take());
         self.registry.finish_work();
+        if let Some(lifetime) = self.lifetime.get() {
+            lifetime.settlement.released();
+        }
     }
 }
 
@@ -48,20 +127,18 @@ pub(super) struct Pins {
     guards: Mutex<Option<Arc<Guards>>>,
 }
 impl Pins {
-    fn invocation(&self, invocation: &Invocation) -> Result<Arc<InvocationLifetime>, StoreError> {
-        let guards = self.guards.lock().unwrap();
-        let lifetime = guards
+    fn lifetime(&self) -> Result<Arc<WorkLifetime>, StoreError> {
+        self.guards
+            .lock()
+            .unwrap()
             .as_ref()
             .ok_or(StoreError::ConnectionClosed)?
-            .invocation
+            .lifetime
             .get()
-            .ok_or_else(|| StoreError::InvalidTransition("execution has no bound Run".into()))?;
-        if &lifetime.invocation != invocation {
-            return Err(StoreError::InvalidTransition(
-                "execution belongs to another Run".into(),
-            ));
-        }
-        Ok(lifetime.clone())
+            .cloned()
+            .ok_or_else(|| {
+                StoreError::InvalidTransition("Session work has not been accepted".into())
+            })
     }
     pub(super) fn active(&self) -> bool {
         self.guards.lock().unwrap().is_some()
@@ -90,83 +167,125 @@ impl Pins {
     fn release(&self) {
         drop(self.guards.lock().unwrap().take());
     }
-    fn retain_unconfirmed(&self) {
+    fn retain_unconfirmed(&self, material: impl Send + Sync + 'static) {
         if let Some(guards) = self.guards.lock().unwrap().take() {
             // Keep the original pin and Root authority until physical cleanup
             // is confirmed; uncertainty must not make shutdown claim success.
             let registry = guards.registry.clone();
-            registry.retain_unconfirmed(guards);
+            if let Some(lifetime) = guards.lifetime.get() {
+                lifetime.settlement.unconfirmed();
+            }
+            registry.retain_unconfirmed(Arc::new((material, guards)));
         }
     }
-    fn retain_original_material(&self, material: impl Send + Sync + 'static) {
-        let guards = self
-            .guards
-            .lock()
-            .unwrap()
-            .take()
-            .expect("unconfirmed resource retains its original guards");
-        let registry = guards.registry.clone();
-        registry.retain_unconfirmed(Arc::new((guards, material)));
+    fn retain_original_material(
+        self: &Arc<Self>,
+        material: impl Send + Sync + 'static,
+    ) -> RetainedWorkSettlement {
+        let registry = {
+            let guards = self.guards.lock().unwrap();
+            let guards = guards
+                .as_ref()
+                .expect("unconfirmed resource retains its original guards");
+            if let Some(lifetime) = guards.lifetime.get() {
+                lifetime.settlement.unconfirmed();
+            }
+            guards.registry.clone()
+        };
+        RetainedWorkSettlement {
+            settlement: registry
+                .retain_with_settlement(Arc::new((material, RetainedPins(self.clone())))),
+        }
+    }
+}
+
+struct RetainedPins(Arc<Pins>);
+impl Drop for RetainedPins {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// Confirmation authority for one original retained work owner. It cannot grant
+/// I/O or name another owner; dropping it leaves the original custody retained.
+/// Existing accepted writers keep their original pins until confirmation.
+#[must_use = "retain this token until the original cleanup and durable obligations are confirmed"]
+pub struct RetainedWorkSettlement {
+    settlement: gates::RetainedSettlement,
+}
+impl RetainedWorkSettlement {
+    /// Call only after the original physical resources and their required
+    /// canonical/Host receipt acknowledgements have actually settled.
+    pub fn confirm_cleanup(self) {
+        self.settlement.confirm_cleanup();
     }
 }
 
 /// Prepared admission can be cancelled before the physical worker starts.
 /// Once accepted, only that worker may confirm cleanup and release its lease.
-pub struct SessionExecutionScope {
+pub struct SessionWorkScope {
     store: SessionStore,
     pins: Option<Arc<Pins>>,
 }
-pub struct SessionExecutionLease {
+pub struct SessionWorkLease {
     store: SessionStore,
     pins: Option<Arc<Pins>>,
 }
 
-/// An original native journal operation which may outlive its evaluation
-/// observer, but must settle before its Run can be sealed.
-pub struct InvocationEffectLease {
-    lease: Option<SessionExecutionLease>,
+/// Original accepted resource work which may outlive its observer. The group
+/// owner must settle these effects before acknowledging physical cleanup.
+pub struct WorkEffectLease {
+    lease: Option<SessionWorkLease>,
     ticket: Option<Ticket>,
-    lifetime: Arc<InvocationLifetime>,
+    lifetime: Arc<WorkLifetime>,
     cancellation: CancellationToken,
 }
-/// Completion authority retained only by the accepted Run owner. Child stores
+/// Completion authority retained only by the accepted work owner. Child stores
 /// can register effects, but cannot seal the group while owning a ticket.
-pub struct InvocationEffects {
-    lifetime: Arc<InvocationLifetime>,
+pub struct WorkEffects {
+    lifetime: Arc<WorkLifetime>,
 }
-impl InvocationEffects {
+impl WorkEffects {
     pub fn is_idle(&self) -> bool {
         self.lifetime.effects.is_idle()
     }
-    pub async fn settle(&self) -> Result<(), ToolError> {
-        self.lifetime.effects.settle().await
+    /// Ticket count only; an empty group does not prove physical cleanup.
+    pub fn has_pending(&self) -> bool {
+        self.lifetime.effects.has_pending()
+    }
+    /// Fence new effects immediately, preserving any original failure receipt.
+    /// The returned level concerns tickets, not resource or journal proof.
+    pub fn seal(&self) -> Result<bool, StoreError> {
+        self.lifetime
+            .effects
+            .seal()
+            .map_err(|error| StoreError::CleanupUnconfirmed(error.to_string()))
+    }
+    pub async fn settle(&self) -> Result<(), StoreError> {
+        self.lifetime
+            .effects
+            .settle()
+            .await
+            .map_err(|error| StoreError::CleanupUnconfirmed(error.to_string()))
     }
 }
-impl InvocationEffectLease {
+impl WorkEffectLease {
     pub fn store(&self) -> SessionStore {
         self.lease.as_ref().expect("live effect lease").store()
     }
     pub fn cancellation(&self) -> CancellationToken {
         self.cancellation.clone()
     }
-    /// Construct the initial scope before journal admission. A stopped Run can
-    /// reject that construction without leaving an unowned effect ticket.
-    pub fn into_scope(self, source: &Scope) -> Result<(Self, Scope), ToolError> {
-        let scope = (|| {
-            if source.identity.agent() != Some(&self.lifetime.invocation) {
-                return Err(ToolError::Failed(
-                    "effect scope belongs to another Run".into(),
-                ));
-            }
-            source.for_execution(
-                self.store()
-                    .execution_custody()
-                    .map_err(|error| ToolError::Persistence(error.to_string()))?,
-                self.cancellation(),
-            )
-        })();
-        match scope {
-            Ok(scope) => Ok((self, scope)),
+    /// Validate the actual parent token before any native resource is dispatched.
+    /// A rejected, not-yet-used ticket settles normally rather than quarantining.
+    pub fn for_parent(self, parent: Option<&dyn WorkCustody>) -> Result<Self, StoreError> {
+        let result = parent
+            .ok_or_else(|| {
+                StoreError::InvalidTransition("effect scope has no actual work custody".into())
+            })
+            .and_then(|parent| self.store().require_work_custody(parent));
+        match result {
+            Ok(()) => Ok(self),
             Err(error) => {
                 self.finish(Ok(()));
                 Err(error)
@@ -185,18 +304,21 @@ impl InvocationEffectLease {
                     .expect("live effect ticket")
                     .complete(Ok(()));
             }
-            Err(message) => self.fail(message),
+            Err(message) => self.fail((), message),
         }
     }
-    pub fn retain_unconfirmed(mut self, message: String) {
-        self.fail(message);
+    /// Permanently retain actual material when no original cleanup owner can
+    /// produce a later confirmation. This does not mint a settlement token.
+    pub fn retain_unconfirmed(mut self, material: impl Send + Sync + 'static, message: String) {
+        self.fail(material, message);
     }
-    pub(crate) fn retain_original_material(
+    pub fn retain_original_material(
         mut self,
         material: impl Send + Sync + 'static,
         message: String,
-    ) {
-        self.lease
+    ) -> RetainedWorkSettlement {
+        let settlement = self
+            .lease
             .take()
             .expect("live effect lease")
             .retain_original_material(material);
@@ -205,10 +327,13 @@ impl InvocationEffectLease {
             .expect("live effect ticket")
             .complete(Err(message));
         self.lifetime.cancellation.cancel();
+        settlement
     }
-    fn fail(&mut self, message: String) {
-        if let Some(lease) = self.lease.take() {
-            lease.retain_unconfirmed();
+    fn fail(&mut self, material: impl Send + Sync + 'static, message: String) {
+        if let Some(mut lease) = self.lease.take() {
+            if let Some(pins) = lease.pins.take() {
+                pins.retain_unconfirmed(material);
+            }
         }
         if let Some(ticket) = self.ticket.take() {
             ticket.complete(Err(message));
@@ -216,21 +341,21 @@ impl InvocationEffectLease {
         self.lifetime.cancellation.cancel();
     }
 }
-impl Drop for InvocationEffectLease {
+impl Drop for WorkEffectLease {
     fn drop(&mut self) {
         if self.ticket.is_some() {
-            self.fail("original invocation effect owner disappeared".into());
+            self.fail((), "original work effect owner disappeared".into());
         }
     }
 }
 impl SessionStore {
     pub(super) fn capture_source_log(&self) -> Result<(EventLog, SessionStore), StoreError> {
-        let mut lease = self.fork_execution()?;
+        let mut lease = self.fork_work()?;
         let captured = (|| {
             let owner = lease.store.owner()?;
             let custody = lease
                 .store
-                .execution
+                .work
                 .as_ref()
                 .ok_or(StoreError::ConnectionClosed)?
                 .custody()?;
@@ -247,127 +372,96 @@ impl SessionStore {
         captured
     }
 
-    pub(crate) fn source_invocation_effect(
-        &self,
-    ) -> Result<Option<InvocationEffectLease>, StoreError> {
-        let lifetime = self
-            .execution
+    pub(crate) fn source_work_effect(&self) -> Result<Option<WorkEffectLease>, StoreError> {
+        self.work
             .as_ref()
             .ok_or(StoreError::ConnectionClosed)?
-            .guards
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or(StoreError::ConnectionClosed)?
-            .invocation
-            .get()
-            .cloned();
-        lifetime
-            .map(|lifetime| self.fork_invocation_effect(&lifetime.invocation))
-            .transpose()
+            .lifetime()?;
+        self.fork_effect().map(Some)
     }
 
-    pub(crate) fn source_execution_lease(&self) -> Result<SessionExecutionLease, StoreError> {
-        self.fork_execution()
+    pub(crate) fn source_work_lease(&self) -> Result<SessionWorkLease, StoreError> {
+        self.fork_work()
     }
 
-    fn invocation_lifetime(
-        &self,
-        invocation: &Invocation,
-    ) -> Result<Arc<InvocationLifetime>, StoreError> {
-        self.execution
+    pub(super) fn work_lifetime(&self) -> Result<Arc<WorkLifetime>, StoreError> {
+        self.work
             .as_ref()
-            .ok_or_else(|| StoreError::InvalidTransition("Session has no active execution".into()))?
-            .invocation(invocation)
+            .ok_or_else(|| StoreError::InvalidTransition("Session has no active work".into()))?
+            .lifetime()
     }
-    pub(super) fn fork_invocation_effect(
-        &self,
-        invocation: &Invocation,
-    ) -> Result<InvocationEffectLease, StoreError> {
-        let lifetime = self.invocation_lifetime(invocation)?;
+    pub fn fork_effect(&self) -> Result<WorkEffectLease, StoreError> {
+        let lifetime = self.work_lifetime()?;
         let mut ticket = lifetime
             .effects
             .reserve()
             .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
-        let lease = self.fork_execution()?;
+        let lease = self.fork_work()?;
         ticket.start();
-        Ok(InvocationEffectLease {
+        Ok(WorkEffectLease {
             lease: Some(lease),
             ticket: Some(ticket),
             cancellation: lifetime.cancellation.child_token(),
             lifetime,
         })
     }
-    pub(super) fn fork_execution(&self) -> Result<SessionExecutionLease, StoreError> {
+    pub(super) fn fork_work(&self) -> Result<SessionWorkLease, StoreError> {
+        self.work_lifetime()?;
         let pins = self
-            .execution
+            .work
             .as_ref()
-            .ok_or_else(|| StoreError::InvalidTransition("Session has no active execution".into()))?
+            .ok_or_else(|| StoreError::InvalidTransition("Session has no active work".into()))?
             .fork()?;
         let mut store = self.clone();
-        store.execution = Some(pins.clone());
-        Ok(SessionExecutionLease {
+        store.work = Some(pins.clone());
+        Ok(SessionWorkLease {
             store,
             pins: Some(pins),
         })
     }
 }
-impl SessionExecutionScope {
-    /// Bind the actual Run owner before any executor or tool can obtain custody.
-    pub fn accept_invocation(
-        mut self,
-        invocation: Invocation,
-        cancellation: CancellationToken,
-    ) -> Result<(SessionExecutionLease, InvocationEffects), StoreError> {
-        self.store.check_session(&invocation.session_id)?;
-        let lifetime = Arc::new(InvocationLifetime {
-            invocation,
+impl SessionWorkScope {
+    pub fn accept(mut self, cancellation: CancellationToken) -> (SessionWorkLease, WorkEffects) {
+        let lifetime = Arc::new(WorkLifetime {
             cancellation,
             effects: Arc::default(),
+            settlement: Arc::default(),
         });
         {
             let guards = self
                 .pins
                 .as_ref()
-                .ok_or(StoreError::ConnectionClosed)?
+                .expect("unaccepted work scope owns pins")
                 .guards
                 .lock()
                 .unwrap();
             guards
                 .as_ref()
-                .ok_or(StoreError::ConnectionClosed)?
-                .invocation
+                .expect("unaccepted work scope is active")
+                .lifetime
                 .set(lifetime.clone())
-                .map_err(|_| {
-                    StoreError::InvalidTransition("execution Run is already bound".into())
-                })?;
+                .unwrap_or_else(|_| panic!("unique work scope accepts once"));
         }
-        Ok((
-            SessionExecutionLease {
+        (
+            SessionWorkLease {
                 store: self.store.clone(),
                 pins: self.pins.take(),
             },
-            InvocationEffects { lifetime },
-        ))
+            WorkEffects { lifetime },
+        )
     }
     pub fn store(&self) -> SessionStore {
         self.store.clone()
     }
-    pub fn accept(mut self) -> SessionExecutionLease {
-        SessionExecutionLease {
-            store: self.store.clone(),
-            pins: self.pins.take(),
-        }
-    }
 }
-impl Drop for SessionExecutionScope {
+impl Drop for SessionWorkScope {
     fn drop(&mut self) {
         if let Some(pins) = self.pins.take() {
             pins.release();
         }
     }
 }
-impl SessionExecutionLease {
+impl SessionWorkLease {
     pub fn store(&self) -> SessionStore {
         self.store.clone()
     }
@@ -376,34 +470,53 @@ impl SessionExecutionLease {
             pins.release();
         }
     }
-    pub fn retain_unconfirmed(mut self) {
+    pub fn retain_unconfirmed(mut self, material: impl Send + Sync + 'static) {
         if let Some(pins) = self.pins.take() {
-            pins.retain_unconfirmed();
+            pins.retain_unconfirmed(material);
         }
     }
-    pub(crate) fn retain_original_material(mut self, material: impl Send + Sync + 'static) {
+    /// Retain the actual unsettled owner with this lease's original guards.
+    pub fn retain_original_material(
+        mut self,
+        material: impl Send + Sync + 'static,
+    ) -> RetainedWorkSettlement {
         self.pins
             .take()
             .expect("live original resource lease")
-            .retain_original_material(material);
+            .retain_original_material(material)
     }
 }
-impl Drop for SessionExecutionLease {
+impl Drop for SessionWorkLease {
     fn drop(&mut self) {
         if let Some(pins) = self.pins.take() {
-            pins.retain_unconfirmed();
+            pins.retain_unconfirmed(());
         }
     }
 }
 
 impl SessionStore {
-    pub async fn execution_scope(
+    pub async fn work_scope(
         &self,
         expected: Option<PermissionBasis>,
-    ) -> Result<SessionExecutionScope, StoreError> {
-        if self.execution.is_some() {
+    ) -> Result<SessionWorkScope, StoreError> {
+        self.work_scope_with_workspace(expected, None).await
+    }
+    pub async fn work_scope_in(
+        &self,
+        expected: Option<PermissionBasis>,
+        workspace: &super::RootWorkspace,
+    ) -> Result<SessionWorkScope, StoreError> {
+        self.work_scope_with_workspace(expected, Some(workspace))
+            .await
+    }
+    async fn work_scope_with_workspace(
+        &self,
+        expected: Option<PermissionBasis>,
+        workspace: Option<&super::RootWorkspace>,
+    ) -> Result<SessionWorkScope, StoreError> {
+        if self.work.is_some() {
             return Err(StoreError::InvalidTransition(
-                "execution scope is already captured".into(),
+                "work scope is already captured".into(),
             ));
         }
         if let Some(basis) = expected {
@@ -445,13 +558,17 @@ impl SessionStore {
             )
             .await?;
         let authority = owner.owned_root()?;
+        let workspace = self.workspace_work_pin(workspace).await?;
         self.gates.start_work()?;
         let guards = Arc::new(Guards {
-            _work: work,
-            _binding: binding,
-            _authority: authority,
+            physical: Some(PhysicalGuards {
+                _workspace: workspace,
+                _work: work,
+                _binding: binding,
+                _authority: authority,
+            }),
             registry: self.gates.clone(),
-            invocation: OnceLock::new(),
+            lifetime: OnceLock::new(),
         });
         let id = self.id.to_string();
         let observed = owner.scoped(Arc::new((access, guards.clone())));
@@ -483,8 +600,8 @@ impl SessionStore {
             guards: Mutex::new(Some(guards)),
         });
         let mut store = self.clone();
-        store.execution = Some(pins.clone());
-        Ok(SessionExecutionScope {
+        store.work = Some(pins.clone());
+        Ok(SessionWorkScope {
             store,
             pins: Some(pins),
         })

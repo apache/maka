@@ -26,8 +26,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 pub const SEARCH: &str = "tool_search";
 
-/// Session-owned discovery preferences, never executable capabilities. Runs
-/// borrow this one source; each request still captures the current catalog.
+/// Read-only canonical discovery preferences, never executable capabilities.
+/// Each request still captures its current authorized catalog.
 #[derive(Clone)]
 pub struct LoadedTools(maka_session_state::Session);
 
@@ -45,16 +45,20 @@ impl LoadedTools {
                 .session("tools"),
         ))
     }
-    pub fn clear(&self) -> Result<(), ToolError> {
-        self.0.update_loaded(BTreeSet::clear).map_err(state_error)
-    }
-    pub fn snapshot(&self) -> Result<BTreeSet<String>, ToolError> {
-        self.0.loaded().map_err(state_error)
+    pub async fn snapshot(&self) -> Result<BTreeSet<String>, ToolError> {
+        // Ignore any private staging on the supplied Session. Only accepted
+        // canonical facts can affect a subsequent model request.
+        let session = self.0.fork_draft();
+        tokio::task::spawn_blocking(move || session.loaded())
+            .await
+            .map_err(|error| {
+                ToolError::Persistence(format!("loaded tools reader failed: {error}"))
+            })?
+            .map_err(state_error)
     }
 }
 fn state_error(error: maka_session_state::Error) -> ToolError {
-    // Storage failure is fatal even after a successful tool journal settlement.
-    // Ordinary Failed errors are model-visible tool outcomes and may continue.
+    // A canonical read failure must not masquerade as an empty loaded set.
     ToolError::Persistence(error.to_string())
 }
 
@@ -62,7 +66,6 @@ fn state_error(error: maka_session_state::Error) -> ToolError {
 pub struct Availability {
     catalog: ToolCatalog,
     names: Arc<[String]>,
-    behavior: Option<maka_agent_facts::execution::BehaviorId>,
     loaded: LoadedTools,
 }
 
@@ -89,29 +92,23 @@ impl Availability {
     pub async fn capture(
         &self,
         model: Option<maka_agent_facts::tools::ModelToolContext>,
-        invocation: maka_agent_facts::event::Invocation,
-        execution: Option<std::sync::Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+        execution: maka_agent_facts::durable::ExecutionIdentity,
+        custody: Option<Arc<dyn maka_plugin_core::work::WorkCustody>>,
         cwd: String,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<Self, ToolError> {
         let mut catalog = self.catalog.clone();
         let request = crate::request::BindingRequest {
-            behavior: self.behavior.clone(),
+            behavior: None,
             model,
-            invocation,
             execution,
+            custody,
             cwd,
             tools: BTreeSet::new(),
             available_tools: self.names.clone(),
             cancellation,
         };
         catalog.bind_request(request).await?;
-        // Only the complete, successfully bound catalog is authoritative here.
-        // Base and nested-only views would erase live DirectOnly names.
-        self.loaded
-            .0
-            .update_loaded(|names| names.retain(|name| catalog.contains(name)))
-            .map_err(state_error)?;
         Ok(self.with_subset(catalog))
     }
 
@@ -119,12 +116,8 @@ impl Availability {
         Self {
             names: catalog.names().into(),
             catalog,
-            behavior: None,
             loaded,
         }
-    }
-    pub fn set_behavior(&mut self, behavior: maka_agent_facts::execution::BehaviorId) {
-        self.behavior = Some(behavior);
     }
     pub fn enabled(&self) -> bool {
         self.catalog.discovery
@@ -147,7 +140,6 @@ impl Availability {
         Self {
             catalog,
             names,
-            behavior: self.behavior.clone(),
             loaded: self.loaded.clone(),
         }
     }
@@ -158,8 +150,8 @@ impl Availability {
     pub fn digest(&self) -> String {
         self.catalog.digest()
     }
-    pub fn snapshot(&self) -> Result<ToolCatalog, ToolError> {
-        let active = self.loaded.snapshot()?;
+    pub async fn snapshot(&self) -> Result<ToolCatalog, ToolError> {
+        let active = self.loaded.snapshot().await?;
         Ok(self.select(&active))
     }
     pub fn select(&self, active: &BTreeSet<String>) -> ToolCatalog {
@@ -173,33 +165,6 @@ impl Availability {
     /// descriptions, so metadata discovery never changes executable authority.
     pub fn all(&self) -> ToolCatalog {
         self.catalog.clone()
-    }
-    pub fn checkpoint(&self) -> Result<maka_agent_facts::handoff::HandoffTools, ToolError> {
-        Ok(maka_agent_facts::handoff::HandoffTools {
-            catalog_digest: self.catalog.digest(),
-            // Names survive handoff; implementations and grants do not. The
-            // successor intersects them with its freshly bound capabilities.
-            loaded: self.loaded.snapshot()?,
-        })
-    }
-
-    pub fn restore(
-        &self,
-        checkpoint: &maka_agent_facts::handoff::HandoffTools,
-    ) -> Result<(), ToolError> {
-        if checkpoint.catalog_digest != self.catalog.digest()
-            || checkpoint
-                .loaded
-                .iter()
-                .any(|name| name.is_empty() || name.len() > 128)
-        {
-            return Err(ToolError::Failed("handoff tool catalog changed".into()));
-        }
-        self.loaded
-            .0
-            .update_loaded(|names| *names = checkpoint.loaded.clone())
-            .map_err(state_error)?;
-        Ok(())
     }
     pub fn definition(&self) -> Option<ToolDefinition> {
         if !self.enabled() {
@@ -217,7 +182,7 @@ impl Availability {
             provider: None,
             name: SEARCH.into(),
             description: format!(
-                "Find tools by name or description. Matches become callable on the next model step. Loaded names persist in this Session until successful compaction or Host restart; current permissions and availability apply. Inventory: {}.",
+                "Find tools by name or description. Matches become callable on the next model step. Accepted loaded names persist in this Session across Host restarts; current permissions and availability apply. Inventory: {}.",
                 names.join(", ")
             ),
             input_schema: crate::input::inline_refs(schemars::schema_for!(SearchInput).into()),
@@ -234,33 +199,21 @@ impl Availability {
         let availability = self.clone();
         Ok(PreparedEffect::new(move |_| {
             Box::pin(async move {
-                serde_json::to_value(availability.search(&input)?)
-                    .map(Into::into)
-                    .map_err(|error| ToolError::Failed(error.to_string()))
+                let found = availability.search(&input).await?;
+                let loaded_tools = found.activated.iter().cloned().collect();
+                let output = serde_json::to_value(found)
+                    .map_err(|error| ToolError::Failed(error.to_string()))?;
+                Ok(maka_agent_facts::tool_output::ToolSuccess::from(output)
+                    .with_loaded_tools(loaded_tools))
             })
         }))
-    }
-    /// Delivery from ToolJournal proves T2 committed. These preferences change only
-    /// future snapshots; neither an in-flight step nor its captured effects widen.
-    pub fn settled(&self, name: &str, result: &Value) -> Result<(), ToolError> {
-        if name != SEARCH || !self.enabled() {
-            return Ok(());
-        }
-        let result: SearchResult = serde_json::from_value(result.clone()).map_err(|error| {
-            ToolError::OutcomeUnknown(format!("invalid committed search result: {error}"))
-        })?;
-        self.loaded
-            .0
-            .update_loaded(|names| names.extend(result.activated))
-            .map_err(state_error)?;
-        Ok(())
     }
     fn direct(&self, name: &str) -> bool {
         self.catalog.always_visible(name) || direct(name)
     }
 
-    fn search(&self, input: &SearchInput) -> Result<SearchResult, ToolError> {
-        let active = self.loaded.snapshot()?;
+    async fn search(&self, input: &SearchInput) -> Result<SearchResult, ToolError> {
+        let active = self.loaded.snapshot().await?;
         let query = input.query.trim().to_lowercase();
         let terms: Vec<_> = query
             .split(|c: char| !c.is_alphanumeric())
@@ -324,7 +277,7 @@ mod state_tests {
             PreparationFuture, ToolCallContext, ToolHandler, ToolNesting, ToolPreparer,
             ToolRegistration, ToolSemantics,
         };
-        use maka_agent_facts::event::Invocation;
+        use maka_agent_facts::durable::{ExecutionIdentity, RunId};
         use std::{
             collections::BTreeMap,
             future::Future,
@@ -376,11 +329,10 @@ mod state_tests {
         fn capture(view: &Availability, cwd: &str) -> Availability {
             let mut pending = std::pin::pin!(view.capture(
                 None,
-                Invocation {
+                ExecutionIdentity {
                     session_id: "session".into(),
                     turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
+                    run_id: RunId::new(),
                 },
                 None,
                 cwd.into(),
@@ -446,40 +398,64 @@ mod state_tests {
         assert_eq!(seen[0].ceiling.as_ref(), ["alpha", "beta", "gamma"]);
     }
 
-    #[test]
-    fn discovery_handles_restore_clear_and_retire_together() {
-        let backend = maka_session_state::Backend::temporary().unwrap();
-        let session = backend.session("s");
+    #[tokio::test]
+    async fn discovery_handles_share_committed_preferences_and_source_lifetime() {
+        use std::sync::Mutex;
+        struct Owner(Mutex<Option<BTreeSet<String>>>);
+        impl maka_session_state::SessionDataReader for Owner {
+            fn load(&self, _: &str) -> maka_session_state::Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            fn loaded(&self) -> maka_session_state::Result<BTreeSet<String>> {
+                self.0.lock().unwrap().clone().ok_or_else(|| {
+                    maka_session_state::Error::Unavailable("canonical source closed".into())
+                })
+            }
+        }
+        let owner = Arc::new(Owner(Mutex::new(Some(BTreeSet::new()))));
+        let session = maka_session_state::Session::new(owner.clone());
         let first = LoadedTools::new(session.clone());
-        let catalog = ToolCatalog::default();
-        let view = Availability::new(catalog.clone(), first.clone());
-        let checkpoint = maka_agent_facts::handoff::HandoffTools {
-            catalog_digest: catalog.digest(),
-            loaded: BTreeSet::from(["preference-without-authority".into()]),
-        };
-        view.restore(&checkpoint).unwrap();
+        let view = Availability::new(ToolCatalog::default(), first.clone());
+        let accepted = BTreeSet::from(["preference-without-authority".into()]);
+        *owner.0.lock().unwrap() = Some(accepted.clone());
+        session
+            .stage_loaded(BTreeSet::from(["unaccepted-staging".into()]))
+            .unwrap();
         drop(first);
-        let restored = LoadedTools::new(backend.session("s"));
-        assert_eq!(restored.snapshot().unwrap(), checkpoint.loaded);
+        let restored = LoadedTools::new(maka_session_state::Session::new(owner.clone()));
+        assert_eq!(restored.snapshot().await.unwrap(), accepted);
+        assert_eq!(
+            view.loaded.snapshot().await.unwrap(),
+            accepted,
+            "catalog views ignore private discovery staging"
+        );
         assert!(
             !view
                 .snapshot()
+                .await
                 .unwrap()
-                .contains("preference-without-authority")
+                .contains("preference-without-authority"),
+            "a committed display preference cannot introduce executable authority"
         );
-        restored.clear().unwrap();
-        assert!(view.checkpoint().unwrap().loaded.is_empty());
-        session.retire().unwrap();
+        *owner.0.lock().unwrap() = Some(BTreeSet::new());
+        assert!(view.loaded.snapshot().await.unwrap().is_empty());
+        assert!(restored.snapshot().await.unwrap().is_empty());
+        *owner.0.lock().unwrap() = None;
+        for handle in [&restored, &view.loaded] {
+            assert!(matches!(
+                handle.snapshot().await,
+                Err(ToolError::Persistence(_))
+            ));
+        }
         assert!(matches!(
-            restored.snapshot(),
+            view.snapshot().await,
             Err(ToolError::Persistence(_))
         ));
-        assert!(matches!(restored.clear(), Err(ToolError::Persistence(_))));
-        assert!(matches!(
-            view.restore(&checkpoint),
-            Err(ToolError::Persistence(_))
-        ));
-        assert!(matches!(view.snapshot(), Err(ToolError::Persistence(_))));
-        assert!(LoadedTools::new(backend.session("s")).snapshot().is_err());
+        assert!(
+            LoadedTools::new(maka_session_state::Session::new(owner))
+                .snapshot()
+                .await
+                .is_err()
+        );
     }
 }

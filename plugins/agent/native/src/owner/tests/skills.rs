@@ -67,8 +67,14 @@ async fn selected_skill_tools_use_actual_agent_context_without_duplicate_grants_
                 "binding" => invalid[0].target = maka_host_runtime::application::ServiceTarget::Import { name: "absent".into() },
                 _ => unreachable!(),
             }
-            assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));
+            assert_eq!(crate::tools::catalog(f.services.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));
         }
+        for (locale, language, expected) in [
+            ("en", maka_agent_facts::language::Language::En, ["Search skills · Review", "Read skill · source:fixture:review", "Read skill resource · source:fixture:review / references/guide.txt"]),
+            ("zh-CN", maka_agent_facts::language::Language::ZhCn, ["搜索技能 · Review", "读取技能 · source:fixture:review", "读取技能资源 · source:fixture:review / references/guide.txt"]),
+            ("zh-TW", maka_agent_facts::language::Language::ZhTw, ["搜尋技能 · Review", "讀取技能 · source:fixture:review", "讀取技能資源 · source:fixture:review / references/guide.txt"]),
+        ] {
+        prompt_language::select_language(&f, locale).await;
         let session = f.create("Skill tools").await;
         f.send(&session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -119,24 +125,22 @@ async fn selected_skill_tools_use_actual_agent_context_without_duplicate_grants_
         socket = last_socket;
         response(&mut socket).await;
         f.drained().await;
-        let prefix = f.prefix(&session, 1024, 4 * 1024 * 1024).await;
-        let titles: Vec<_> = prefix.events.iter().filter_map(|row| match &row.event.fact {
-            maka_agent_facts::event::Fact::ToolDispatched { title, .. } => title.as_ref(),
+        assert_eq!(f.latest_run(&session).await.spec.language, language);
+        let facts = f.recorded_facts(&session).await;
+        let titles: Vec<_> = facts.iter().filter_map(|row| match &row.fact {
+            maka_agent_facts::durable::Fact::ToolDecided { decision, .. } => decision.display().title.as_deref(),
             _ => None,
         }).collect();
-        for (locale, expected) in [
-            ("en", ["Search skills · Review", "Read skill · source:fixture:review", "Read skill resource · source:fixture:review / references/guide.txt"]),
-            ("zh-CN", ["搜索技能 · Review", "读取技能 · source:fixture:review", "读取技能资源 · source:fixture:review / references/guide.txt"]),
-            ("zh-TW", ["搜尋技能 · Review", "讀取技能 · source:fixture:review", "讀取技能資源 · source:fixture:review / references/guide.txt"]),
-        ] {
-            for expected in expected { assert!(titles.iter().any(|title| title.resolve(locale) == expected), "{titles:?}"); }
+        for expected in expected {
+            assert!(titles.contains(&expected), "{locale}: {titles:?}");
+        }
         }
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
         let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(service_tools::Setup::forms())).await;
         let mut invalid = f.owner.settings.tools.clone();
         invalid[0].input = contract::ToolInput::Skill;
-        assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some("agent_skill_tool_contract_invalid"));
+        assert_eq!(crate::tools::catalog(f.services.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some("agent_skill_tool_contract_invalid"));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

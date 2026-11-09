@@ -119,7 +119,9 @@ impl Fixture {
             control: root.join("control"),
         };
         let owner = RootOwner::create(&root, &namespaces).unwrap();
-        let writer = RootStore::open(Arc::new(owner)).await.unwrap();
+        let writer = RootStore::open(Arc::new(owner), maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         let input: Input = serde_json::from_value(json!({
             "instances":{}
         }))

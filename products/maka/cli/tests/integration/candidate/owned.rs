@@ -134,9 +134,10 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(60), async {
-            let store = maka_event_log::root_store::RootStore::open(Arc::new(
-                RootOwner::open(&fixture.root, &namespaces).unwrap(),
-            ))
+            let store = maka_event_log::root_store::RootStore::open(
+                Arc::new(RootOwner::open(&fixture.root, &namespaces).unwrap()),
+                &maka_product_native::root_migrations(),
+            )
             .await
             .unwrap();
             let deployment = Uuid::new_v4();
@@ -218,7 +219,7 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                 query(&second, "business", "read", Value::Null).await,
                 json!({"effects":0})
             );
-            let reply = match write.confirm().await.unwrap() {
+            let reply = match write.confirm(serde_json::Value::Null).await.unwrap() {
                 Reply::Mutation {
                     reply,
                     cleanup: Ok(()),
@@ -231,7 +232,9 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                 reply.receipt,
                 Receipt::Recorded {
                     outcome: OperationOutcome::Returned {
-                        value: json!({"effects":1})
+                        result: maka_plugin_core::operation::OperationResult::Success {
+                            value: json!({"effects":1})
+                        }
                     },
                     cleanup: OperationCleanup::Confirmed,
                 }

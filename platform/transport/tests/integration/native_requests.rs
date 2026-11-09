@@ -26,12 +26,12 @@ use maka_event_log::{
     root_store::RootStore,
 };
 use maka_host_runtime::application::{
-    Application, Context, Handler, NativeActivation, NativeOwner, NativeRegistry, NativeRequest,
-    NativeServices,
+    Application, Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation,
+    NativeOwner, NativeRegistry, NativeRequest, NativeServices,
 };
 use maka_plugin_core::{
     composition::InstanceId,
-    operation::{OperationOutcome, Receipt},
+    operation::{OperationOutcome, OperationResult, Receipt},
     package::Implementation,
     runtime::Published,
 };
@@ -110,7 +110,11 @@ async fn store() -> (tempfile::TempDir, Arc<RootStore>) {
         control: directory.path().join("control"),
     };
     let root = Arc::new(RootOwner::create(&directory.path().join("root"), &namespaces).unwrap());
-    let store = Arc::new(support::setup(RootStore::open(root)).await.unwrap());
+    let store = Arc::new(
+        support::setup(RootStore::open(root, maka_event_log::ROOT_MIGRATIONS))
+            .await
+            .unwrap(),
+    );
     (directory, store)
 }
 
@@ -237,13 +241,14 @@ async fn native_domain_calls_require_explicit_grants_and_ignore_public_identity_
             "write".into(),
             json!({}),
             operation,
+            serde_json::Value::Null,
             Attachments::default(),
         )
         .unwrap()
         .await
         .unwrap();
     assert!(
-        matches!(mutation.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"effects":1}))
+        matches!(mutation.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"effects":1}))
     );
     assert!(
         job.recover(mutation.reference.clone())
@@ -290,16 +295,13 @@ async fn native_domain_calls_require_explicit_grants_and_ignore_public_identity_
 
 struct Forward;
 impl Handler for Forward {
-    fn call(
-        &self,
-        _: String,
-        input: Value,
-        context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         Box::pin(async move {
             context
                 .call("next", 0, "read".into(), input, Attachments::default())?
                 .await
+                .map(HandlerValue::Json)
+                .map_err(HandlerError::from)
         })
     }
 }
@@ -421,21 +423,18 @@ async fn native_origin_survives_forwarding_but_never_grants_an_unlisted_downstre
 
 struct FailedEffect(Arc<std::sync::atomic::AtomicUsize>);
 impl Handler for FailedEffect {
-    fn call(
-        &self,
-        _: String,
-        input: Value,
-        context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
             if input["cleanup"].as_bool() == Some(true) {
                 let mut ticket = context.scope().resources.reserve().unwrap();
                 ticket.start();
                 ticket.complete(Err("original native effect cleanup unconfirmed".into()));
-                Ok(json!({"effects":1}))
+                Ok(HandlerValue::Json(json!({"effects":1})))
             } else {
-                Err("reply lost after effect".into())
+                Err(HandlerError::Unknown {
+                    diagnostic: "reply lost after effect".into(),
+                })
             }
         })
     }
@@ -520,6 +519,7 @@ async fn native_requests_preserve_unknown_receipts_and_independent_failed_cleanu
                 "write".into(),
                 json!({"cleanup":cleanup}),
                 operation,
+                serde_json::Value::Null,
                 Attachments::default(),
             )
             .unwrap()
@@ -573,6 +573,7 @@ async fn native_requests_preserve_unknown_receipts_and_independent_failed_cleanu
                     "write".into(),
                     json!({"cleanup":cleanup}),
                     operation,
+                    serde_json::Value::Null,
                     Attachments::default(),
                 )
                 .unwrap()
@@ -674,6 +675,7 @@ async fn native_resource_capture_shares_host_budget_and_cannot_cross_request_sco
                 "write".into(),
                 json!({}),
                 Uuid::new_v4(),
+                serde_json::Value::Null,
                 foreign
             )
             .err()
@@ -692,13 +694,14 @@ async fn native_resource_capture_shares_host_budget_and_cannot_cross_request_sco
             "write".into(),
             json!({}),
             Uuid::new_v4(),
+            serde_json::Value::Null,
             resources,
         )
         .unwrap()
         .await
         .unwrap();
     assert!(
-        matches!(reply.receipt, Receipt::Recorded {outcome:OperationOutcome::Returned{ref value},cleanup:maka_plugin_core::operation::OperationCleanup::Confirmed} if value==&json!({"effects":1}))
+        matches!(reply.receipt, Receipt::Recorded {outcome:OperationOutcome::Returned { result: OperationResult::Success { ref value } },cleanup:maka_plugin_core::operation::OperationCleanup::Confirmed} if value==&json!({"effects":1}))
     );
     let recovered = original
         .recover(reply.reference)

@@ -18,21 +18,21 @@
  */
 
 use futures_util::future::BoxFuture;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::Record;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
 use maka_event_log::{EventLog, StoreError as LogError};
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::Record;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use std::sync::Arc;
 
 pub struct SqlStore(pub Arc<EventLog>);
 impl Store for SqlStore {
     fn scan(
         &self,
-        query: maka_capabilities::storage::Scan,
-    ) -> BoxFuture<'_, Result<maka_capabilities::storage::Page, StoreError>> {
+        query: maka_plugin_core::storage::Scan,
+    ) -> BoxFuture<'_, Result<maka_plugin_core::storage::Page, StoreError>> {
         Box::pin(async move {
             self.0
                 .plugin_data_scan(&namespace(), query)

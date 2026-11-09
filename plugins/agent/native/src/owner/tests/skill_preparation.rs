@@ -59,7 +59,8 @@ async fn skill_input_freezes_original_admission_and_queue_edits_before_actual_ht
         let complete_instructions = format!("CAPTURED ONE {}", "完整说明".repeat(8_000));
         document(&source, "VERSION ONE", &complete_instructions);
         let original = "🦀 /skill:review inspect this";
-        assert_eq!(send(&f, &session, original, Uuid::new_v4()).await["kind"], "started");
+        let submitted = send(&f, &session, original, Uuid::new_v4()).await;
+        assert_eq!(submitted["kind"], "queued");
         let (mut first, _) = listener.accept().await.unwrap();
         let sent = request(&mut first).await;
         let prompt = model_text(&sent, "system");
@@ -69,8 +70,12 @@ async fn skill_input_freezes_original_admission_and_queue_edits_before_actual_ht
         let user = model_text(&sent, "user");
         assert!(user.contains(&complete_instructions));
         assert!(!user.contains("/skill:review"));
-        let facts = service_tools::facts(&f, &session).await;
-        let maka_agent_facts::event::Fact::InvocationOpened { input: maka_agent_facts::event::InvocationInput::Message { content, source_messages, .. }, .. } = facts.iter().find(|fact| matches!(fact, maka_agent_facts::event::Fact::InvocationOpened { .. })).unwrap() else { panic!() };
+        let run = f.delivered_run(&submitted).await;
+        let admitted = f.owner.durable.frontier(run).await.unwrap();
+        let frozen = f.owner.durable.content(admitted.run, admitted.spec.input.clone()).await.unwrap();
+        let maka_agent_facts::input::RunInput::Message { content, source_messages, .. } =
+            serde_json::from_slice::<maka_agent_facts::input::RunInput>(&frozen).unwrap()
+        else { panic!("skill preparation must retain the original admitted message") };
         assert_eq!(content.display_text.as_deref(), Some(original));
         assert_eq!(content.inline_references.as_ref().unwrap()[0].start, 3);
         assert_eq!(source_messages[0].unprepared_content.text, original);
@@ -145,7 +150,7 @@ async fn skill_input_has_no_implicit_tools_grant_or_model_fallback_for_rejection
             let session = f.create("Skill input boundary").await;
             let value = send(&f, &session, "/skill:review /skill:missing", Uuid::new_v4()).await;
             if mode == "explicit_only" {
-                assert_eq!(value["kind"], "started", "{value}");
+                assert_eq!(value["kind"], "queued", "{value}");
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let sent = request(&mut socket).await;
                 let system = model_text(&sent, "system");

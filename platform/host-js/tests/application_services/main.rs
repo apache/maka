@@ -45,8 +45,8 @@ use maka_capabilities::call::Issuer;
 use maka_capabilities::call::ReadResource;
 use maka_capabilities::call::Scope;
 use maka_host_runtime::application::{
-    Application, Context, Handler, Invocation, NativeActivation, NativeOwner, NativeRegistry,
-    Policy, Result,
+    Application, Context, Handler, HandlerError, HandlerResult, Invocation, NativeActivation,
+    NativeOwner, NativeRegistry, Policy, Result,
 };
 use maka_js_runtime::plugin::Limits;
 use maka_packages::MANIFEST_FILE;
@@ -307,22 +307,22 @@ struct Echo {
     calls: Arc<AtomicUsize>,
 }
 impl Handler for Echo {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let scope = context.scope().clone();
         let calls = self.calls.clone();
         Box::pin(async move {
             calls.fetch_add(1, Ordering::SeqCst);
             match input.as_str().unwrap() {
                 "fail" => Err("ordinary business error".into()),
-                "bad-result" => Ok(json!(false)),
+                "bad-result" => Ok(json!(false).into()),
                 "resource-fail" => {
                     let mut ticket = scope.resources.reserve().unwrap();
                     ticket.start();
                     ticket.complete(Err("actual resource cleanup failed".into()));
-                    Ok(input)
+                    Ok(input.into())
                 }
                 "panic" => panic!("query implementation panicked"),
-                _ => Ok(input),
+                _ => Ok(input.into()),
             }
         })
     }
@@ -635,7 +635,7 @@ struct Held {
     resource_release: Arc<Semaphore>,
 }
 impl Handler for Held {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let scope = context.scope().clone();
         let started = self.started.clone();
         let release = self.release.clone();
@@ -651,7 +651,7 @@ impl Handler for Held {
                 permit(&resource_release).await;
                 ticket.complete(Ok(()));
             });
-            Ok(input)
+            Ok(input.into())
         })
     }
 }
@@ -1031,7 +1031,7 @@ struct ReadAttachment {
     release: Arc<Semaphore>,
 }
 impl Handler for ReadAttachment {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let scope = context.scope().clone();
         let attachments = context.attachments().clone();
         let calls = self.calls.clone();
@@ -1051,9 +1051,7 @@ impl Handler for ReadAttachment {
             if input == "business-fail" || input == "fail-cleanup-error" {
                 return Err("ordinary leaf business error".into());
             }
-            Ok(json!(
-                String::from_utf8(attachments["text"].read(0..5)?).unwrap()
-            ))
+            Ok(json!(String::from_utf8(attachments["text"].read(0..5)?).unwrap()).into())
         })
     }
 }
@@ -1361,14 +1359,14 @@ async fn cleanup_failure_does_not_prevent_idle_shutdown_or_skip_a_running_close(
             _: String,
             input: Value,
             context: Context,
-        ) -> BoxFuture<'static, Result<Value>> {
+        ) -> BoxFuture<'static, HandlerResult> {
             Box::pin(async move {
                 if input == json!("fail") {
                     let mut ticket = context.scope().resources.reserve().unwrap();
                     ticket.start();
                     ticket.complete(Err("original cleanup failed".into()));
                 }
-                Ok(input)
+                Ok(input.into())
             })
         }
     }
@@ -1764,7 +1762,7 @@ struct HeldChild {
     calls: Arc<AtomicUsize>,
 }
 impl Handler for HeldChild {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let started = if input == "held" {
             self.started.lock().unwrap().take()
         } else {
@@ -1778,9 +1776,7 @@ impl Handler for HeldChild {
                 let _ = started.send(context.scope().cancellation.clone());
                 permit(&release).await;
             }
-            Ok(json!(
-                String::from_utf8(context.attachments()["text"].read(0..5)?).unwrap()
-            ))
+            Ok(json!(String::from_utf8(context.attachments()["text"].read(0..5)?).unwrap()).into())
         })
     }
 }

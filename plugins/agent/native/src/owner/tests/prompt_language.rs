@@ -52,20 +52,29 @@ async fn update_preferences(
     mutation: Value,
 ) -> Value {
     let client = app.client();
+    let input = json!({"expectedRevision":revision,"mutation":mutation});
     let prepared = client
         .prepare_mutation(
             settings_binding(app, consumer).await,
             "updateAssistantPreferences".into(),
-            json!({"expectedRevision":revision,"mutation":mutation}),
+            input.clone(),
             scope(issuer, true),
             Uuid::new_v4(),
             Attachments::new().into(),
         )
         .await
         .unwrap();
-    let reply = client.mutate_owned(prepared).await.unwrap().result().await;
+    let reply = client
+        .mutate_owned(prepared, input)
+        .await
+        .unwrap()
+        .result()
+        .await;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: maka_plugin_core::operation::OperationResult::Success { value },
+            },
         ..
     } = reply.receipt
     else {
@@ -101,17 +110,14 @@ pub(super) async fn select_language(fixture: &Fixture, preference: &str) -> Valu
     .await
 }
 
-fn stored_configuration(fixture: &Fixture, invocation: &str) -> Value {
-    let connection = rusqlite::Connection::open_with_flags(
-        fixture.runtime_database_containing("SELECT COUNT(*) FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'", invocation),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let raw: String = connection.query_row(
-        "SELECT json_extract(event_header, '$.fact.configuration') FROM runtime_events WHERE invocation_id=?1 AND kind='invocation_opened'",
-        [invocation], |row| row.get(0),
-    ).unwrap();
-    serde_json::from_str(&raw).unwrap()
+async fn stored_configuration(fixture: &Fixture, started: &Value) -> Value {
+    let run = fixture.delivered_run(started).await;
+    let source = fixture
+        .history(started["sessionId"].as_str().unwrap())
+        .run_source(run)
+        .await
+        .unwrap();
+    serde_json::to_value(source.spec).unwrap()
 }
 
 fn assert_delivered_language(request: &Value, configuration: &Value, language: &str, user: &str) {
@@ -138,17 +144,10 @@ fn assert_delivered_language(request: &Value, configuration: &Value, language: &
             .any(|message| message["content"].as_str().unwrap().contains(identity)),
         "selected {language} identity must reach the provider: {request}; configuration: {configuration}"
     );
-    if language == "en" {
-        assert!(
-            configuration.get("language").is_none(),
-            "English uses canonical field omission in stored opening JSON: {configuration}"
-        );
-    } else {
-        assert_eq!(
-            configuration["language"], language,
-            "full language tag must be stored in the accepted opening: {configuration}"
-        );
-    }
+    assert_eq!(
+        configuration["language"], language,
+        "the accepted Run stores its exact language, including explicit English: {configuration}"
+    );
 }
 
 #[tokio::test]
@@ -169,7 +168,7 @@ async fn two_existing_sessions_use_current_language_for_each_new_capture() {
                 let outgoing = request(&mut socket).await;
                 response(&mut socket).await;
                 fixture.drained().await;
-                let configuration = stored_configuration(&fixture, sent["invocationId"].as_str().unwrap());
+                let configuration = stored_configuration(&fixture,&sent).await;
                 captures.push((outgoing, configuration, language, original));
             }
         }

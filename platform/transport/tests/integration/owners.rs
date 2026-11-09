@@ -24,8 +24,8 @@ use maka_event_log::{
     root_store::RootStore,
 };
 use maka_host_runtime::application::{
-    Application, Context, Handler, Invocation, NativeActivation, NativeOwner, NativeRegistry,
-    Policy,
+    Application, Context, Handler, HandlerResult, HandlerValue, Invocation, NativeActivation,
+    NativeOwner, NativeRegistry, Policy,
 };
 use maka_plugin_core::runtime::Published;
 use serde_json::{Value, json};
@@ -46,8 +46,8 @@ struct FileOwner {
     release: Arc<tokio::sync::Semaphore>,
 }
 impl Handler for FileOwner {
-    fn call(&self, _: String, _: Value, _: Context) -> BoxFuture<'static, Result<Value, String>> {
-        Box::pin(async { Ok(json!({"effects":0})) })
+    fn call(&self, _: String, _: Value, _: Context) -> BoxFuture<'static, HandlerResult> {
+        Box::pin(async { Ok(HandlerValue::Json(json!({"effects":0}))) })
     }
 }
 impl NativeOwner for FileOwner {
@@ -72,7 +72,11 @@ async fn compiled_native_file_and_root_wait_for_the_original_application_and_sql
         control: directory.path().join("control"),
     };
     let original = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-    let store = Arc::new(support::setup(RootStore::open(original)).await.unwrap());
+    let store = Arc::new(
+        support::setup(RootStore::open(original, maka_event_log::ROOT_MIGRATIONS))
+            .await
+            .unwrap(),
+    );
     let deployment = uuid::Uuid::new_v4();
     let (input, packages) = support::native_host("native.File");
     store

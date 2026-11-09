@@ -21,7 +21,9 @@
 use super::Grant;
 use super::wire::Source;
 use crate::application::Result;
-use crate::application::{Binding, Caller, Invocation, Policy, RecoveryInvocation};
+use crate::application::{
+    Binding, Caller, IntentLookupInvocation, Invocation, Policy, RecoveryInvocation,
+};
 use maka_capabilities::call::Identity;
 use maka_capabilities::call::Issuer;
 use maka_capabilities::call::Scope;
@@ -379,6 +381,20 @@ impl Policy for PeerPolicy {
         }
         Ok(())
     }
+    fn lookup_intent(&self, invocation: IntentLookupInvocation<'_>) -> Result<()> {
+        // Peer/guest endpoint recovery grants do not grant access to a local
+        // consumer's caller journal. Only actual native ownership enters here.
+        if let Some(e) = self.issuer.evidence::<Evidence>(invocation.scope) {
+            e.approval.live()?;
+        }
+        let origin = invocation
+            .native_origin
+            .ok_or("caller intent lookup requires native ownership")?;
+        if origin != invocation.consumer {
+            return Err("native caller intent lookup is limited to its own consumer".into());
+        }
+        Ok(())
+    }
     fn recover(&self, invocation: RecoveryInvocation<'_>) -> Result<()> {
         if let Some(e) = self.issuer.evidence::<Evidence>(invocation.scope) {
             e.approval.live()?;
@@ -430,6 +446,252 @@ mod tests {
         )
         .unwrap()
     }
+
+    async fn native_journal_fixture() -> (
+        crate::application::Application,
+        Arc<maka_event_log::root_store::RootStore>,
+        Arc<PeerPolicy>,
+        DeploymentRef,
+        Vec<crate::application::NativeServices>,
+        tempfile::TempDir,
+    ) {
+        use maka_event_log::root::{RootNamespaces, RootOwner};
+        use maka_packages::Package;
+        let directory = tempfile::tempdir().unwrap();
+        let root = Arc::new(
+            maka_event_log::root_store::RootStore::open(
+                Arc::new(
+                    RootOwner::create(
+                        &directory.path().join("root"),
+                        &RootNamespaces {
+                            ownership: directory.path().join("ownership"),
+                            control: directory.path().join("control"),
+                        },
+                    )
+                    .unwrap(),
+                ),
+                maka_event_log::ROOT_MIGRATIONS,
+            )
+            .await
+            .unwrap(),
+        );
+        let package = Package::new(BTreeMap::from([(
+            "maka.extension.json".into(),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion":1,"id":"journal.fixture",
+                "application":{"host":{
+                    "implementation":{"kind":"native","implementation":"journal.fixture"},
+                    "configuration":{"type":"object"},"imports":{},"exports":{}
+                }}
+            }))
+            .unwrap(),
+        )]))
+        .unwrap();
+        let input = serde_json::from_value(serde_json::json!({"instances":{
+            "first":{"key":uuid::Uuid::from_u128(10),"package":{"source":"pinned","package":package.application_ref()},"usePackage":"host"},
+            "second":{"key":uuid::Uuid::from_u128(11),"package":{"source":"pinned","package":package.application_ref()},"usePackage":"host"}
+        }})).unwrap();
+        let source = root
+            .commit_application(uuid::Uuid::new_v4(), 0, input, vec![], vec![package])
+            .await
+            .unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let ready = captured.clone();
+        let mut native = crate::application::NativeRegistry::default();
+        native
+            .insert(
+                "journal.fixture".into(),
+                Arc::new(move |context, _| {
+                    ready.lock().unwrap().push(context.services());
+                    Box::pin(async {
+                        crate::application::NativeActivation {
+                            exports: Ok(BTreeMap::new()),
+                            owner: Arc::new(()),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+        let policy = Arc::new(PeerPolicy::with_native_grants(vec![]).unwrap());
+        let application = crate::application::Application::start_from_store(
+            root.clone(),
+            source.deployment,
+            native,
+            policy.issuer(),
+            policy.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        application.ready().await.unwrap();
+        let services = captured.lock().unwrap().clone();
+        assert_eq!(services.len(), 2);
+        (application, root, policy, source, services, directory)
+    }
+
+    #[tokio::test]
+    async fn actual_native_owner_can_lookup_own_journal_without_method_grants() {
+        let (application, root, _policy, _source, services, _directory) =
+            native_journal_fixture().await;
+        let request = services[0]
+            .request(
+                Identity::Remote {
+                    request_id: uuid::Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            request
+                .lookup_intent(uuid::Uuid::new_v4())
+                .unwrap()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        request.finish().await.unwrap();
+        drop(request);
+        application.shutdown().await.unwrap();
+        drop(application);
+        drop(services);
+        Arc::try_unwrap(root)
+            .unwrap_or_else(|_| panic!("native journal fixture still retains its Root"))
+            .close()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn own_journal_lookup_never_authorizes_foreign_callers_methods_or_recovery() {
+        use maka_plugin_core::operation::{RecoveryContract, RecoveryProtocol, RecoveryRef};
+        let (application, root, policy, source, services, _directory) =
+            native_journal_fixture().await;
+        let request = services[0]
+            .request(
+                Identity::Remote {
+                    request_id: uuid::Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let origin = &policy
+            .issuer
+            .evidence::<crate::application::native_context::NativeOrigin>(request.scope())
+            .unwrap()
+            .activation;
+        let foreign_request = services[1]
+            .request(
+                Identity::Remote {
+                    request_id: uuid::Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let foreign = &policy
+            .issuer
+            .evidence::<crate::application::native_context::NativeOrigin>(foreign_request.scope())
+            .unwrap()
+            .activation;
+        assert!(
+            policy
+                .lookup_intent(IntentLookupInvocation {
+                    scope: request.scope(),
+                    native_origin: Some(origin),
+                    selected_native_method: None,
+                    consumer: foreign,
+                    source: &source,
+                    operation: uuid::Uuid::new_v4(),
+                })
+                .is_err()
+        );
+        let remote = policy
+            .issuer
+            .issue(
+                Identity::Remote {
+                    request_id: uuid::Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            policy
+                .lookup_intent(IntentLookupInvocation {
+                    scope: &remote,
+                    native_origin: None,
+                    selected_native_method: None,
+                    consumer: origin,
+                    source: &source,
+                    operation: uuid::Uuid::new_v4(),
+                })
+                .is_err()
+        );
+        let contract = Contract {
+            name: "journal.Test".into(),
+            version: 1,
+            transport: Transport::Local,
+            interface: Interface::Service {
+                methods: BTreeMap::new(),
+            },
+        };
+        let input = serde_json::Value::Null;
+        let attachments = crate::application::Attachments::default();
+        assert!(
+            policy
+                .admit(Invocation {
+                    scope: request.scope(),
+                    native_origin: Some(origin),
+                    selected_native_method: None,
+                    consumer: origin,
+                    provider: foreign,
+                    export: "Service",
+                    contract: &contract,
+                    method: "change",
+                    input: &input,
+                    attachments: &attachments,
+                })
+                .is_err()
+        );
+        let reference = RecoveryRef {
+            source: source.clone(),
+            namespace: foreign.instance().clone(),
+            export: "Service".into(),
+            method: "change".into(),
+            operation: uuid::Uuid::new_v4(),
+            fingerprint: format!("sha256-{}", "a".repeat(64)),
+            contract: RecoveryContract {
+                name: contract.name.clone(),
+                version: 1,
+                transport: Transport::Local,
+                digest: format!("sha256-{}", "b".repeat(64)),
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        reference.validate().unwrap();
+        assert!(
+            policy
+                .recover(RecoveryInvocation {
+                    scope: request.scope(),
+                    native_origin: Some(origin),
+                    selected_native_method: None,
+                    consumer: origin,
+                    reference: &reference,
+                })
+                .is_err()
+        );
+        remote.finish().await.unwrap();
+        request.finish().await.unwrap();
+        foreign_request.finish().await.unwrap();
+        drop((remote, request, foreign_request));
+        application.shutdown().await.unwrap();
+        drop(application);
+        drop(services);
+        Arc::try_unwrap(root)
+            .unwrap_or_else(|_| panic!("native journal fixture still retains its Root"))
+            .close()
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn retained_ticket_is_original_and_revoked_ticket_never_revives() {
         let peers = Peers::new(peer(1, 2));

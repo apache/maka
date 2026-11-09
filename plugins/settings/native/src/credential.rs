@@ -46,6 +46,17 @@ use std::{
 /// not acquire network authority merely to satisfy the provider interface.
 struct NoNetwork;
 impl Transport for NoNetwork {
+    fn send_text(
+        &self,
+        _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+        _: maka_agent_ports::model::TextStream,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
+        Box::pin(async {
+            Err(maka_agent_ports::model::Error::LocalAuthorization(
+                "this credential exchange has no WebSocket dispatch authority".into(),
+            ))
+        })
+    }
     fn identity(&self) -> u64 {
         0
     }

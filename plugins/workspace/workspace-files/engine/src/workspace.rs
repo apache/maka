@@ -26,7 +26,7 @@ use cap_std::{
     ambient_authority,
     fs::{Dir, File, Metadata, OpenOptions},
 };
-use maka_agent_facts::execution::WorkspaceIdentity;
+use maka_sandbox::workspace::WorkspaceIdentity;
 use std::{
     ffi::OsStr,
     io::{self, Read, Write},

@@ -24,6 +24,102 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+struct DispatchGate {
+    allowed: std::sync::atomic::AtomicBool,
+    failure: Mutex<Option<Error>>,
+    replayed: AtomicUsize,
+}
+impl http::UploadCleanup for DispatchGate {
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+impl maka_agent_ports::model::FrozenPrompt for DispatchGate {
+    fn authorize(&self, cancellation: CancellationToken) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let mut failure = self.failure.lock().unwrap();
+            if !self.allowed.load(Ordering::SeqCst) {
+                failure.get_or_insert_with(|| {
+                    Error::LocalAuthorization("test dispatch gate revoked".into())
+                });
+            }
+            match failure.as_ref() {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        })
+    }
+    fn authorization_failure(&self) -> Option<Error> {
+        self.failure.lock().unwrap().clone()
+    }
+    fn open(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<maka_agent_ports::model::MaterializedPrompt, Error>> {
+        Box::pin(async move {
+            maka_agent_ports::model::FrozenPrompt::authorize(self, cancellation).await?;
+            self.replayed.fetch_add(1, Ordering::SeqCst);
+            self.allowed.store(false, Ordering::SeqCst);
+            Ok(maka_agent_ports::model::MaterializedPrompt {
+                prompt: vec![crate::prompt::Message::user("original test input")].into(),
+                cleanup: Arc::new(NoUpload),
+            })
+        })
+    }
+}
+struct NoUpload;
+impl http::UploadCleanup for NoUpload {
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+#[tokio::test]
+async fn original_required_gate_refuses_first_send_and_redirect_after_replay_without_source_failure()
+ {
+    tokio::time::timeout(Duration::from_secs(10),async{
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/start",listener.local_addr().unwrap());
+        let sends=Arc::new(AtomicUsize::new(0));let observed=sends.clone();
+        let server=tokio::spawn(async move{
+            loop{
+                let (mut socket,_)=listener.accept().await.unwrap();
+                observed.fetch_add(1,Ordering::SeqCst);
+                let headers=head(&mut socket).await;assert_eq!(payload(&mut socket,&headers).await,0);
+                redirect(&mut socket,307,"/must-not-send").await;
+            }
+        });
+        let gate=Arc::new(DispatchGate{allowed:std::sync::atomic::AtomicBool::new(false),failure:Default::default(),replayed:AtomicUsize::new(0)});
+        let source=maka_agent_ports::model::RequestSource{cleanup:gate.clone(),frozen:gate.clone()};
+        let error=network().request_http(http::Request{url:url.clone(),method:maka_plugin_core::http::Method::Post,headers:vec![],body:http::RequestBody::default()},CancellationToken::new(),Some(&source)).await.err().unwrap();
+        assert!(matches!(error,Error::LocalAuthorization(_)));assert!(error.failure_cause().is_none());assert_eq!(sends.load(Ordering::SeqCst),0);
+        let gate=Arc::new(DispatchGate{allowed:std::sync::atomic::AtomicBool::new(true),failure:Default::default(),replayed:AtomicUsize::new(0)});
+        let source=maka_agent_ports::model::RequestSource{cleanup:gate.clone(),frozen:gate.clone()};
+        let frozen=source.frozen.clone();
+        let body=http::RequestBody::with_replay(http::RequestBody::default(),move|cancellation|{
+            let frozen=frozen.clone();Box::pin(async move{
+                let fresh=frozen.open(cancellation).await.map_err(|error|http::Error::Invalid(error.to_string()))?;
+                Ok(http::RequestBody::default().with_cleanup(fresh.cleanup))
+            })
+        });
+        let error=network().request_http(http::Request{url:url.clone(),method:maka_plugin_core::http::Method::Post,headers:vec![],body},CancellationToken::new(),Some(&source)).await.err().unwrap();
+        assert!(matches!(error,Error::LocalAuthorization(_)));assert!(error.failure_cause().is_none());
+        assert_eq!(gate.replayed.load(Ordering::SeqCst),1);assert_eq!(sends.load(Ordering::SeqCst),1,"only the original admitted hop was sent; redirect after replay is refused at final send");
+        use maka_agent_ports::model::FrozenPrompt as _;
+        let first=serde_json::to_value(&error).unwrap();
+        gate.allowed.store(true,Ordering::SeqCst);
+        assert_eq!(serde_json::to_value(gate.open(CancellationToken::new()).await.err().unwrap()).unwrap(),first);
+        let retry=network().request_http(http::Request{url,method:maka_plugin_core::http::Method::Post,headers:vec![],body:http::RequestBody::default()},CancellationToken::new(),Some(&source)).await.err().unwrap();
+        assert!(matches!(retry,Error::LocalAuthorization(_)));assert!(retry.failure_cause().is_none());
+        assert_eq!(serde_json::to_value(retry).unwrap(),first);
+        assert_eq!(sends.load(Ordering::SeqCst),1,"regrant does not send the refused original request");
+        assert_eq!(gate.replayed.load(Ordering::SeqCst),1);
+        server.abort();let _=server.await;
+    }).await.unwrap();
+}
+
 fn network() -> Arc<Network> {
     Arc::new(Network {
         tls: maka_network::TlsConfigCache::default(),
@@ -134,7 +230,7 @@ async fn redirects_307_and_308_reopen_large_stream_and_preserve_bytes_and_auth()
         .request(
             http::Request {
                 url,
-                method: http::Method::Post,
+                method: maka_plugin_core::http::Method::Post,
                 headers: vec![
                     ("authorization".into(), "Bearer secret".into()),
                     ("content-type".into(), "application/json".into()),
@@ -154,10 +250,10 @@ async fn redirects_307_and_308_reopen_large_stream_and_preserve_bytes_and_auth()
 #[tokio::test]
 async fn redirect_method_conversion_drops_payload_headers_and_preserves_head() {
     for (status, method, expected) in [
-        (301, http::Method::Post, "GET"),
-        (302, http::Method::Post, "GET"),
-        (303, http::Method::Post, "GET"),
-        (303, http::Method::Head, "HEAD"),
+        (301, maka_plugin_core::http::Method::Post, "GET"),
+        (302, maka_plugin_core::http::Method::Post, "GET"),
+        (303, maka_plugin_core::http::Method::Post, "GET"),
+        (303, maka_plugin_core::http::Method::Head, "HEAD"),
     ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/start", listener.local_addr().unwrap());
@@ -212,7 +308,7 @@ async fn cross_origin_redirect_is_returned_without_forwarding_credentials() {
         .request(
             http::Request {
                 url,
-                method: http::Method::Post,
+                method: maka_plugin_core::http::Method::Post,
                 headers: vec![("authorization".into(), "Bearer secret".into())],
                 body: vec![7; 4].into(),
             },
@@ -293,7 +389,7 @@ async fn held_response_headers_release_upload_source_without_closing_connection(
     let pending = network.request(
         http::Request {
             url,
-            method: http::Method::Post,
+            method: maka_plugin_core::http::Method::Post,
             headers: Vec::new(),
             body: input,
         },
@@ -344,7 +440,7 @@ async fn tls_handshake_eof_is_retryable_but_invalid_tls_is_not() {
             let error = network()
                 .request(
                     http::Request {
-                        method: http::Method::Get,
+                        method: maka_plugin_core::http::Method::Get,
                         url,
                         headers: Vec::new(),
                         body: Default::default(),

@@ -344,7 +344,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
     }
     /// Confirm a mutation whose caller intent belongs to the authenticated
     /// public Host gateway. Private peer channels reject this control.
-    pub async fn confirm(&mut self) -> Result<Reply> {
+    pub async fn confirm(&mut self, recovery: Value) -> Result<Reply> {
         if !matches!(self.phase, Phase::Prepared)
             || self.connection.access() != Some(Access::Writable)
             || self.cancel_sent
@@ -357,7 +357,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
             unreachable!("a prepared request retains its original channel")
         };
         *access = Access::SettlementOnly;
-        wire::write(&mut channel.writer, &Control::Confirm).await?;
+        wire::write(&mut channel.writer, &Control::Confirm { recovery }).await?;
         *access = Access::Writable;
         self.receive().await
     }
@@ -603,9 +603,10 @@ mod tests {
         };
         let root =
             Arc::new(RootOwner::create(&directory.path().join("root"), &namespaces).unwrap());
-        let log = maka_event_log::root_store::RootStore::open(root)
-            .await
-            .unwrap();
+        let log =
+            maka_event_log::root_store::RootStore::open(root, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap();
         let declaration = Declaration {
             host: Some(EntryDeclaration {
                 implementation: Implementation::Native {
@@ -720,7 +721,7 @@ mod tests {
                 assert!(futures_util::poll!(&mut future).is_pending());
                 drop(future);
             } else if control == "confirm" {
-                let mut future = Box::pin(call.confirm());
+                let mut future = Box::pin(call.confirm(serde_json::Value::Null));
                 assert!(futures_util::poll!(&mut future).is_pending());
                 drop(future);
             } else {

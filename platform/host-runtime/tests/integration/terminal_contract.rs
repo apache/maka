@@ -18,10 +18,10 @@
  */
 
 //! The public plugin schemas describe the original strict PTY wire types.
-use maka_agent_facts::terminal::TerminalScreen;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
-use maka_agent_facts::terminal::input::encode_controller_actions;
+use maka_plugin_core::terminal::TerminalScreen;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
+use maka_plugin_core::terminal::input::encode_controller_actions;
 use serde_json::json;
 
 #[test]

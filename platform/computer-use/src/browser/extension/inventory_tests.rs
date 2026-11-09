@@ -229,7 +229,10 @@ fn scope(host: &mut Host, owner: uuid::Uuid, provider: &Provider) -> CallScope {
     host.extension_context(
         owner,
         provider,
-        context_operation("inventory-turn"),
+        context_operation(
+            "inventory-turn",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        ),
         crate::desktop::NativeEpochId::new(),
         CallTarget::SessionInventory,
         true,
@@ -254,7 +257,7 @@ async fn same_unpolled_scope_survives_real_reconcile_then_seal_rejects_without_i
     {
         let mut ledger = host.lock().await;
         assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
+            !bounded(ledger.reconcile_provider(owner, &provider, None))
                 .await
                 .unwrap()
         );
@@ -269,10 +272,13 @@ async fn same_unpolled_scope_survives_real_reconcile_then_seal_rejects_without_i
                 .is_empty()
         );
     }
-    let drain =
-        host.lock()
-            .await
-            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
+    let drain = host.lock().await.seal_extension_controls(
+        owner,
+        Some("inventory-turn"),
+        Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap()),
+        None,
+        None,
+    );
     bounded(drain.wait()).await.unwrap();
     assert!(matches!(bounded(unpolled).await.map_err(|error| *error),
         Err(ExtensionProviderError::Refused { kind, .. }) if kind == "retiring_scope"));
@@ -323,14 +329,17 @@ async fn empty_inventory_ack_creates_finish_obligation_until_actual_finish_ack()
     {
         let mut ledger = host.lock().await;
         assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
+            !bounded(ledger.reconcile_provider(owner, &provider, None))
                 .await
                 .unwrap()
         );
         assert!(matches!(
             ledger.extension[&(owner, browser.clone())]
                 .finish_phases
-                .get("inventory-turn"),
+                .get(&ExecutionScope::new(
+                    "inventory-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap()
+                )),
             Some(FinishPhase::Required)
         ));
         assert!(
@@ -338,15 +347,22 @@ async fn empty_inventory_ack_creates_finish_obligation_until_actual_finish_ack()
             "inventory ACK must not become Acquired"
         );
     }
-    let drain =
-        host.lock()
-            .await
-            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
+    let drain = host.lock().await.seal_extension_controls(
+        owner,
+        Some("inventory-turn"),
+        Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap()),
+        None,
+        None,
+    );
     bounded(drain.wait()).await.unwrap();
     let finish = async {
         host.lock()
             .await
-            .finish(owner, Some("inventory-turn"))
+            .finish(
+                owner,
+                Some("inventory-turn"),
+                Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap()),
+            )
             .await
     };
     let reply = async {
@@ -371,8 +387,8 @@ async fn empty_inventory_ack_creates_finish_obligation_until_actual_finish_ack()
     {
         let ledger = host.lock().await;
         let state = &ledger.extension[&(owner, browser)];
-        assert!(state.current_turn.is_none());
-        assert!(state.retiring_turn.is_none());
+        assert!(state.current_scope.is_none());
+        assert!(state.retiring_scope.is_none());
         assert!(!call.activation.load(Ordering::SeqCst));
         assert!(
             ledger.tabs.is_empty(),
@@ -401,7 +417,10 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
             .extension_context(
                 owner,
                 &provider,
-                context_operation("created-turn"),
+                context_operation(
+                    "created-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 epoch,
                 CallTarget::Tab {
                     origin: Origin::AgentCreated,
@@ -442,7 +461,7 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
     let sequence = {
         let mut ledger = host.lock().await;
         assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
+            !bounded(ledger.reconcile_provider(owner, &provider, None))
                 .await
                 .unwrap()
         );
@@ -463,7 +482,7 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
     {
         let mut ledger = host.lock().await;
         assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
+            !bounded(ledger.reconcile_provider(owner, &provider, None))
                 .await
                 .unwrap()
         );
@@ -533,7 +552,10 @@ async fn closed_transport_registers_before_zero_byte_failure_and_keeps_finish_de
     );
     assert!(
         matches!(
-            state.finish_phases.get("inventory-turn"),
+            state.finish_phases.get(&ExecutionScope::new(
+                "inventory-turn",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap()
+            )),
             Some(FinishPhase::Required)
         ),
         "zero physical bytes do not undo logical registration before transport failure"
@@ -562,7 +584,10 @@ async fn parked_page_rebinds_through_a_fresh_connection_without_changing_its_ori
             .extension_reserve(
                 owner,
                 &previous,
-                "previous-turn",
+                &context_operation(
+                    "previous-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 "17",
                 Origin::AgentCreated,
             )
@@ -575,7 +600,10 @@ async fn parked_page_rebinds_through_a_fresh_connection_without_changing_its_ori
             released: true,
             ..Default::default()
         });
-        let operation = context_operation("resume-turn");
+        let operation = context_operation(
+            "resume-turn",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        );
         let epoch = crate::desktop::NativeEpochId::new();
         let call = ledger
             .extension_context(
@@ -605,6 +633,7 @@ async fn parked_page_rebinds_through_a_fresh_connection_without_changing_its_ori
             browser_id: current.id().into(),
             generation: current.extension().unwrap().identity().generation.clone(),
             turn_id: operation.turn_id.clone(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: operation.operation_id.clone(),
             target: crate::BrowserPreparationTarget::ReservedTab {
                 tab_id: "17".into(),
@@ -655,7 +684,10 @@ async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_
             .extension_context(
                 owner,
                 &old_provider,
-                context_operation("create-turn"),
+                context_operation(
+                    "create-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 crate::desktop::NativeEpochId::new(),
                 CallTarget::Tab {
                     origin: Origin::AgentCreated,
@@ -677,7 +709,7 @@ async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_
         {
             let mut ledger = host.lock().await;
             ledger
-                .reconcile_provider(owner, &old_provider)
+                .reconcile_provider(owner, &old_provider, None)
                 .await
                 .unwrap();
             let lease = ledger.tabs.get_mut(&old_identity).unwrap();
@@ -699,9 +731,21 @@ async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_
         {
             let mut ledger = host.lock().await;
             ledger
-                .extension_reserve(owner, &provider, "resume-turn", "17", Origin::UserClaimed)
+                .extension_reserve(
+                    owner,
+                    &provider,
+                    &context_operation(
+                        "resume-turn",
+                        &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
+                    "17",
+                    Origin::UserClaimed,
+                )
                 .unwrap();
-            let operation = context_operation("resume-turn");
+            let operation = context_operation(
+                "resume-turn",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            );
             let epoch = crate::desktop::NativeEpochId::new();
             ledger
                 .extension_context(
@@ -764,11 +808,23 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     register(&host, owner, &provider).await.unwrap();
     let epoch = crate::desktop::NativeEpochId::new();
-    let operation = context_operation("recover-turn");
+    let operation = context_operation(
+        "recover-turn",
+        &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    );
     let call = {
         let mut ledger = host.lock().await;
         ledger
-            .extension_reserve(owner, &provider, "recover-turn", "17", Origin::AgentCreated)
+            .extension_reserve(
+                owner,
+                &provider,
+                &context_operation(
+                    "recover-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
+                "17",
+                Origin::AgentCreated,
+            )
             .unwrap();
         ledger
             .extension_context(
@@ -799,7 +855,7 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
     attached.unwrap();
     host.lock()
         .await
-        .reconcile_provider(owner, &provider)
+        .reconcile_provider(owner, &provider, None)
         .await
         .unwrap();
     write_frame(&mut fixture.server, json!({"kind":"controlEvent","event":{"kind":"claimUnavailable","data":{"claim":"original-claim","reason":"fixture route revoked"}}})).await;
@@ -820,7 +876,7 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
     {
         let mut ledger = host.lock().await;
         assert!(
-            matches!(ledger.extension_reserve(owner, &provider, "recover-turn", "17", Origin::UserClaimed),
+            matches!(ledger.extension_reserve(owner, &provider, &context_operation("recover-turn", &crate::ExecutionCorrelation::new("fixture-execution").unwrap()), "17", Origin::UserClaimed),
             Err(ToolError::Failed(message)) if message.contains("explicitly claim"))
         );
         let state = ledger.tabs[&identity].extension.as_ref().unwrap();
@@ -839,14 +895,17 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
         .extension_context(
             owner,
             &provider,
-            context_operation("recover-turn"),
+            context_operation(
+                "recover-turn",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             epoch,
             CallTarget::Retirement,
             false,
         )
         .unwrap();
     let retire = async {
-        drain_extension_cleanup(&host, owner, None, None, Some(&identity)).await?;
+        drain_extension_cleanup(&host, owner, None, None, None, Some(&identity)).await?;
         host.lock()
             .await
             .park_extension_tab(owner, &provider, &identity, &retirement)
@@ -857,7 +916,16 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
         assert_eq!(fence["request"]["method"], "fenceCdp");
         host.lock()
             .await
-            .extension_reserve(owner, &provider, "recover-turn", "18", Origin::UserClaimed)
+            .extension_reserve(
+                owner,
+                &provider,
+                &context_operation(
+                    "recover-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
+                "18",
+                Origin::UserClaimed,
+            )
             .expect("another page remains usable while the original drain waits");
         result(&mut fixture.server, fence["request"]["id"].as_u64().unwrap(),
             json!({"claim":"original-claim","generation":fixture.extension.identity().generation,"fenced":true,"pending":[]})).await;
@@ -883,7 +951,10 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
     bounded(async { tokio::try_join!(retire, peer) })
         .await
         .unwrap();
-    let operation = context_operation("recover-turn");
+    let operation = context_operation(
+        "recover-turn",
+        &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    );
     let replacement = {
         let mut ledger = host.lock().await;
         assert!(!ledger.extension[&(owner, identity.browser.clone())].owner_parked);
@@ -926,7 +997,10 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
     attached.unwrap();
     {
         let mut ledger = host.lock().await;
-        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger
+            .reconcile_provider(owner, &provider, None)
+            .await
+            .unwrap();
         ledger
             .apply_user_preparation(
                 owner,
@@ -959,7 +1033,10 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
             ledger.tabs[&identity.browser.tab("18")].disposition,
             Disposition::Live
         ));
-        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger
+            .reconcile_provider(owner, &provider, None)
+            .await
+            .unwrap();
         ledger.extension.clear();
     }
     fixture.assert_no_frame_and_close().await;
@@ -975,11 +1052,23 @@ async fn unknown_attachment_keeps_exact_cleanup_custody_without_current_admissio
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     register(&host, owner, &provider).await.unwrap();
     let epoch = crate::desktop::NativeEpochId::new();
-    let operation = context_operation("unknown-turn");
+    let operation = context_operation(
+        "unknown-turn",
+        &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    );
     let call = {
         let mut ledger = host.lock().await;
         ledger
-            .extension_reserve(owner, &provider, "unknown-turn", "17", Origin::UserClaimed)
+            .extension_reserve(
+                owner,
+                &provider,
+                &context_operation(
+                    "unknown-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
+                "17",
+                Origin::UserClaimed,
+            )
             .unwrap();
         ledger
             .extension_context(
@@ -1019,13 +1108,17 @@ async fn unknown_attachment_keeps_exact_cleanup_custody_without_current_admissio
     ));
     let claim = {
         let mut ledger = host.lock().await;
-        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger
+            .reconcile_provider(owner, &provider, None)
+            .await
+            .unwrap();
         let request = crate::BrowserSessionPreparation {
             native_owner: owner,
             native_epoch: epoch.to_string(),
             browser_id: provider.id().into(),
             generation: provider.extension().unwrap().identity().generation.clone(),
             turn_id: operation.turn_id.clone(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: operation.operation_id.clone(),
             target: crate::BrowserPreparationTarget::ClaimedTab {
                 tab_id: "17".into(),
@@ -1069,7 +1162,10 @@ async fn unknown_attachment_keeps_exact_cleanup_custody_without_current_admissio
     .await;
     let detached = detached.unwrap();
     let mut ledger = host.lock().await;
-    ledger.reconcile_provider(owner, &provider).await.unwrap();
+    ledger
+        .reconcile_provider(owner, &provider, None)
+        .await
+        .unwrap();
     assert!(matches!(
         ledger
             .retire_extension_cleanup(owner, &provider, &identity, &call.control)
@@ -1129,7 +1225,10 @@ async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_
             .extension_reserve(
                 owner,
                 &previous,
-                "inventory-turn",
+                &context_operation(
+                    "inventory-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 "17",
                 Origin::UserClaimed,
             )
@@ -1201,10 +1300,22 @@ async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_
     assert_eq!(inventory.unwrap()[0].id, 17);
     {
         let mut ledger = host.lock().await;
-        ledger.reconcile_provider(owner, &current).await.unwrap();
+        ledger
+            .reconcile_provider(owner, &current, None)
+            .await
+            .unwrap();
         assert!(ledger.visible(&identity, owner));
         ledger
-            .extension_reserve(owner, &current, "inventory-turn", "17", Origin::UserClaimed)
+            .extension_reserve(
+                owner,
+                &current,
+                &context_operation(
+                    "inventory-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
+                "17",
+                Origin::UserClaimed,
+            )
             .unwrap();
         assert!(matches!(
             ledger.tabs[&old_identity]
@@ -1241,7 +1352,10 @@ async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_
             .extension_context(
                 owner,
                 &current,
-                context_operation("inventory-turn"),
+                context_operation(
+                    "inventory-turn",
+                    &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 crate::desktop::NativeEpochId::new(),
                 CallTarget::Tab {
                     origin: Origin::UserClaimed,
@@ -1271,7 +1385,10 @@ async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_
     .await;
     assert_eq!(prepared.unwrap().tab.id, 17);
     let mut ledger = host.lock().await;
-    ledger.reconcile_provider(owner, &current).await.unwrap();
+    ledger
+        .reconcile_provider(owner, &current, None)
+        .await
+        .unwrap();
     assert!(ledger.acquisition(owner, &identity).is_some());
     assert!(matches!(
         ledger.tabs[&old_identity]
@@ -1300,11 +1417,20 @@ async fn separate_live_connections_cannot_bypass_physical_tab_ownership() {
     let identity = browser(&current).tab("17");
     let mut ledger = Host::default();
     ledger
-        .extension_reserve(owner, &previous, "old", "17", Origin::UserClaimed)
+        .extension_reserve(
+            owner,
+            &previous,
+            &context_operation(
+                "old",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
+            "17",
+            Origin::UserClaimed,
+        )
         .unwrap();
     assert!(!ledger.visible(&identity, foreign));
     assert!(
-        matches!(ledger.extension_reserve(foreign, &current, "new", "17", Origin::UserClaimed), Err(ToolError::Failed(reason)) if reason == "tab_owned_by_another_session")
+        matches!(ledger.extension_reserve(foreign, &current, &context_operation("new", &crate::ExecutionCorrelation::new("fixture-execution").unwrap()), "17", Origin::UserClaimed), Err(ToolError::Failed(reason)) if reason == "tab_owned_by_another_session")
     );
     extension.close().await;
     fixture.assert_no_frame_and_close().await;

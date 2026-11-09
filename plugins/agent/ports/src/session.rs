@@ -34,7 +34,7 @@ pub struct View {
     pub revision: u64,
     pub name: String,
     pub boundary_revision: u64,
-    pub workspace: maka_agent_facts::execution::WorkspaceProjection,
+    pub workspace: maka_sandbox::workspace::WorkspaceProjection,
     pub target: crate::execution::Target,
     pub sandbox_mode: maka_agent_facts::execution::SandboxMode,
     pub approval_policy: maka_agent_facts::execution::ApprovalPolicy,

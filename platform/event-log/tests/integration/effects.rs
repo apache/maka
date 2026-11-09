@@ -17,16 +17,14 @@
  * under the License.
  */
 
-use maka_capabilities::authorization::Id;
-use maka_capabilities::call::Identity;
-use maka_capabilities::filesystem;
-use maka_capabilities::storage::Namespace;
 use maka_event_log::{
     EventLog, StoreError,
     effects::{Operation, Outcome, Request},
 };
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::Namespace;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -35,9 +33,7 @@ async fn recovery_preserves_completed_effects_and_fences_uncertain_late_results(
     let path = directory.path().join("log.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let request = || Request {
-        source: Identity::Background {
-            grant: Id(Uuid::new_v4()),
-        },
+        source: json!({"fixture":"original-host-effect","requestId":Uuid::new_v4()}),
         owner: maka_event_log::effects::Owner::Resource(maka_event_log::effects::ResourceOwner {
             package_id: "example.external".into(),
             entry_id: "instance".into(),
@@ -45,18 +41,15 @@ async fn recovery_preserves_completed_effects_and_fences_uncertain_late_results(
             activation: "original".into(),
             generation: 1,
         }),
-        boundary: maka_capabilities::authorization::Boundary::Profile,
-        operation: Operation::File(filesystem::Operation::Write(filesystem::Write {
-            path: "file".into(),
-            content: "prepared".into(),
-        })),
+        boundary: maka_plugin_core::authorization::Boundary::Profile,
+        operation: Operation::File(json!({"kind":"write","path":"file","content":"prepared"})),
     };
     let uncertain = log.begin_host_effect(request()).await.unwrap();
     let complete = log.begin_host_effect(request()).await.unwrap();
     let bytes = vec![0, 255, 42];
     let outcome = || Outcome::Image {
         mime_type: "image/png".into(),
-        digest: maka_agent_facts::artifact::content_digest(&bytes),
+        digest: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
     };
     log.settle_host_effect(complete, outcome(), Some(bytes.clone()))
         .await

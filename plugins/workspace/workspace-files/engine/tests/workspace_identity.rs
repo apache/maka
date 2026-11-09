@@ -20,7 +20,7 @@
 use maka_fs_tools::workspace::{MARKER_FILE, read_identity};
 use std::{io, path::Path, process::Command};
 
-async fn prepare(path: &Path) -> io::Result<maka_agent_facts::execution::WorkspaceIdentity> {
+async fn prepare(path: &Path) -> io::Result<maka_sandbox::workspace::WorkspaceIdentity> {
     let (path, observed) = maka_fs_tools::directory::capture(path)?;
     let opened = maka_fs_tools::directory::open(&path, &observed)?;
     prepare_opened(path, opened).await
@@ -29,7 +29,7 @@ async fn prepare(path: &Path) -> io::Result<maka_agent_facts::execution::Workspa
 async fn prepare_opened(
     path: std::path::PathBuf,
     opened: cap_std::fs::Dir,
-) -> io::Result<maka_agent_facts::execution::WorkspaceIdentity> {
+) -> io::Result<maka_sandbox::workspace::WorkspaceIdentity> {
     let private = tempfile::tempdir()?;
     let control = tempfile::tempdir()?;
     maka_fs_tools::workspace::ensure_directory_identity(

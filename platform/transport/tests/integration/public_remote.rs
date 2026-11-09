@@ -24,6 +24,7 @@ use maka_event_log::{
     root::{RootNamespaces, RootOwner},
     root_store::RootStore,
 };
+use maka_host_runtime::application::{HandlerResult, HandlerValue};
 use maka_host_runtime::{
     application::{
         NativeRegistry,
@@ -167,7 +168,7 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
@@ -231,7 +232,7 @@ async fn remote_pairing_binds_client_source_and_session_and_revokes_original_cha
         serving.await.unwrap().unwrap();
         drop((host, store));
         // A changed published grant set never silently reinterprets an old credential.
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::open(&root, &namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let mut selections = selections;
         selections.get_mut("business").unwrap().grant.methods.remove("write");
         let host = Host::open(store.clone(), deployment, NativeRegistry::default(), Some(maka_host_js::factory(Default::default())), HostConfiguration::PublicHost { endpoints: selections, native: vec![], product_methods: Default::default() }).await.unwrap();
@@ -259,9 +260,9 @@ impl maka_host_runtime::application::Handler for RemoteEcho {
         _: String,
         input: Value,
         _: maka_host_runtime::application::Context,
-    ) -> futures_util::future::BoxFuture<'static, Result<Value, String>> {
+    ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         self.calls.lock().unwrap().push(input.clone());
-        Box::pin(async move { Ok(input) })
+        Box::pin(async move { Ok(HandlerValue::Json(input)) })
     }
 }
 impl maka_host_runtime::application::NativeOwner for RemoteEcho {
@@ -286,7 +287,7 @@ async fn remote_pairing_preserves_large_original_query_and_cleanup() {
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces=RootNamespaces { ownership:directory.path().join("owners"),control:directory.path().join("control") };
         let root=directory.path().join("root");
-        let store=Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()))).await.unwrap());
+        let store=Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let deployment=Uuid::new_v4();
         let (input,packages)=support::native_host("remote.echo");
         let provider=Arc::new(RemoteEcho::default());

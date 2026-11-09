@@ -17,151 +17,289 @@
  * under the License.
  */
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-
-use crate::support::store::SessionFixture;
-use maka_agent_engine::{Engine, project_model_history};
-use maka_agent_facts::event::{Fact, TerminalStatus};
-use maka_agent_facts::model::ToolInput;
-use maka_agent_facts::model::prompt::{AssistantPart, Message, ToolOutput};
-use maka_agent_facts::tool_call::ToolRejection;
-use maka_code_runtime::CellLimits;
-use maka_model::ModelExecutor;
-use maka_tools::CodeExecutor;
-use maka_tools::ToolMode;
-use serde_json::json;
-use tokio::net::TcpListener;
+use crate::support::{
+    agent_loop::respond,
+    canonical::{self, NoEffects, admitted_model, append},
+    http::read_request,
+    native::{FixtureService, NativeFixture},
+};
+use futures_util::{SinkExt, StreamExt, future::BoxFuture};
+use maka_agent_api::{
+    Configuration, ModelSelection,
+    contract::{BackendPreference, SendResult},
+};
+use maka_agent_engine::{DriverExit, Engine};
+use maka_agent_facts::{
+    cells::{CellId, CellOwner},
+    configuration::{
+        CatalogMutationResult, ConnectionCatalogEntryUpdate, ConnectionCredentialTarget,
+        ConnectionVersionBasis, ModelOverride, Patch, UpdateCatalogConnectionInput,
+    },
+    durable::*,
+    execution::ToolMode,
+    model::{ModelPart, ModelToolCall, ToolInput},
+    tool_call::ToolRejection,
+    tool_output::AcceptedToolResult,
+};
+use maka_agent_state::{Admission, Change, Store, queue::MessageResolution};
+use maka_host_runtime::application::{Context, Handler, HandlerResult, HandlerValue, NativeOwner};
+use maka_plugin_core::{
+    composition::InstanceId,
+    contract::{Contract, Interface, Method, MethodMode, Transport},
+    operation::OperationCleanup,
+};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+};
+use tokio_tungstenite::{accept_async, tungstenite::Message as Frame};
 use tokio_util::sync::CancellationToken;
-
-use crate::support::{agent_loop as fixture, http::read_request};
+use uuid::Uuid;
 
 const RAW: &str = "{\"n\":";
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn malformed_direct_arguments_are_rejected_and_corrected() {
-    malformed_arguments_are_rejected_and_corrected(ToolMode::Direct).await;
+struct Echo {
+    run: Arc<OnceLock<(Store, RunId)>>,
+    inputs: Arc<Mutex<Vec<Value>>>,
+    mode: ToolMode,
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn malformed_exec_arguments_are_rejected_and_corrected() {
-    malformed_arguments_are_rejected_and_corrected(ToolMode::CodeMode).await;
-}
-
-async fn malformed_arguments_are_rejected_and_corrected(mode: ToolMode) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let name = if mode == ToolMode::Direct { "echo" } else { "exec" };
-        let corrected = if mode == ToolMode::Direct {
-            json!({"n":7})
-        } else {
-            json!({"code":"text(await tools.echo({n:7}));"})
-        };
-        let server = tokio::spawn(async move {
-            let mut requests = Vec::new();
-            for (id, arguments) in [
-                ("malformed-call", RAW.to_owned()),
-                ("corrected-call", corrected.to_string()),
-            ] {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                requests.push(read_request(&mut socket).await);
-                crate::dynamic_tools::respond_tools(
-                    &mut socket,
-                    vec![json!({"index":0,"id":id,"type":"function",
-                        "function":{"name":name,"arguments":arguments}})],
-                    10,
-                ).await;
+impl Handler for Echo {
+    fn call(
+        &self,
+        method: String,
+        input: Value,
+        context: Context,
+    ) -> BoxFuture<'static, HandlerResult> {
+        assert_eq!(method, "echo");
+        assert!(context.operation().is_some());
+        let run = self.run.clone();
+        let inputs = self.inputs.clone();
+        let mode = self.mode;
+        Box::pin(async move {
+            let (state, run) = run
+                .get()
+                .expect("bind the actual Run before releasing provider output");
+            let view = state.frontier(*run).await.unwrap();
+            let tool = view
+                .tools
+                .values()
+                .find(|tool| tool.key.call == "corrected-call")
+                .expect("the corrected complete call must precede Echo");
+            assert!(
+                tool.admitted,
+                "Agent T1 must precede the actual service effect"
+            );
+            assert_ne!(tool.key.call, "malformed-call");
+            if mode == ToolMode::CodeMode {
+                let link = AgentStepLink {
+                    run: *run,
+                    step: view.attempts[&tool.key.attempt].step,
+                    attempt: tool.key.attempt,
+                };
+                let cell = state
+                    .cells()
+                    .read(
+                        &view.spec.session_id,
+                        CellId::for_agent(link, &tool.key.call),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    matches!(cell.owner, CellOwner::Agent { link: source, .. } if source == link)
+                );
+                assert!(
+                    cell.children
+                        .values()
+                        .any(|child| child.name == "echo" && child.admitted),
+                    "the real Cell child's T1 must precede nested Echo"
+                );
             }
-            let (mut socket, _) = listener.accept().await.unwrap();
-            requests.push(read_request(&mut socket).await);
-            fixture::respond(&mut socket, false).await;
-            requests
-        });
-        let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
-        let count = Arc::new(AtomicUsize::new(0));
-        let engine = Engine::new(
-            ModelExecutor::new(Duration::from_secs(5)).unwrap(),
-            CodeExecutor::new(CellLimits::default()).unwrap(),
-        ).unwrap();
-        let mut input = fixture::input(&base, "arguments", Arc::new(fixture::Effect {
-            log: log.clone(), count: count.clone(),
-        }));
-        input.configuration.tool_mode = mode;
-        // Await the run before joining the server: the original adapter failure
-        // must fail this assertion immediately rather than wait for another request.
-        engine.run(log.store(), input, CancellationToken::new()).await
-            .expect("malformed arguments must be a recoverable tool rejection");
-        let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 3);
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        let messages = requests[1]["messages"].as_array().unwrap();
-        let call = messages.iter().find(|message| message["role"] == "assistant")
-            .unwrap()["tool_calls"][0].clone();
-        assert_eq!(call["id"], "malformed-call");
-        assert_eq!(call["function"]["name"], name);
-        assert_eq!(call["function"]["arguments"], "{}");
-        let result = messages.iter().find(|message| message["role"] == "tool").unwrap();
-        assert_eq!(result["tool_call_id"], "malformed-call");
-        assert_diagnostic(result["content"].as_str().unwrap());
-
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        assert_eq!(prefix.project_invocation("invocation-arguments").terminal,
-            Some(TerminalStatus::Completed));
-        let rejections: Vec<_> = prefix.events.iter().filter_map(|stored| {
-            if let Fact::ToolRejected { call, name, reason, .. } = &stored.event.fact {
-                Some((call, name, reason))
-            } else { None }
-        }).collect();
-        assert_eq!(rejections.len(), 1);
-        let expected_call = |part: &maka_agent_facts::model::ModelPart| matches!(part,
-            maka_agent_facts::model::ModelPart::ToolCall { call } if call.id == "malformed-call" && call.name == name && call.input == ToolInput::InvalidJson { raw: RAW.into() });
-        assert!(prefix.events.iter().any(|stored| match &stored.event.fact {
-            Fact::ModelObserved { event: maka_agent_facts::model::recorded::ModelObservation::Part(record), .. } => expected_call(record.part.as_ref()),
-            Fact::ModelCompleted { output, .. } => crate::support::model_records::parts(output, &prefix.events).any(expected_call),
-            _ => false,
-        }));
-        let rejected_input = prefix.events.iter().find_map(|stored| {
-            if let Fact::ToolRejected { input, .. } = &stored.event.fact { Some(input) } else { None }
-        }).unwrap();
-        assert_eq!(rejected_input, &ToolInput::InvalidJson { raw: RAW.into() });
-        assert_eq!(rejections[0].0.tool_call_id, "malformed-call");
-        assert_eq!(rejections[0].1, name);
-        assert!(matches!(rejections[0].2, ToolRejection::InvalidInput { .. }));
-        let effects: Vec<_> = prefix.events.iter().filter_map(|stored| {
-            if let Fact::ToolDispatched { call, name, input, .. } = &stored.event.fact {
-                assert_ne!(call.tool_call_id, "malformed-call");
-                (name == "echo").then_some(input)
-            } else { None }
-        }).collect();
-        assert_eq!(effects, vec![&json!({"n":7})]);
-        let history = project_model_history(&prefix, "session", maka_agent_facts::language::Language::En).unwrap();
-        let rejected = history.iter().find_map(|message| {
-            if let Message::Tool { content, .. } = message {
-                content.iter().find(|result| result.tool_call_id == "malformed-call")
-            } else { None }
-        }).unwrap();
-        assert_eq!(rejected.tool_name, name);
-        let ToolOutput::ErrorText(error) = &rejected.output else {
-            panic!("rejected arguments must project as ErrorText");
-        };
-        assert_diagnostic(error);
-        assert!(history.iter().any(|message| matches!(message,
-            Message::Assistant { content, .. }
-                if content.iter().any(|part| matches!(part, AssistantPart::Text { text, .. } if text == "done")))));
-        engine.drain().await;
-        drop(engine);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap();
-        let replay = reopened.prefix(100, 128 * 1024).await.unwrap();
-        assert_eq!(project_model_history(&replay, "session", maka_agent_facts::language::Language::En).unwrap(), history);
-        assert_eq!(replay.events.iter().filter(|stored| matches!(stored.event.fact,
-            Fact::ToolRejected { .. })).count(), 1);
-    }).await.expect("argument correction must make bounded progress");
+            assert_eq!(input, json!({"n":7}));
+            inputs.lock().unwrap().push(input.clone());
+            Ok(HandlerValue::Json(input))
+        })
+    }
 }
-
+impl NativeOwner for Echo {
+    fn close(&self) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+fn service(
+    run: Arc<OnceLock<(Store, RunId)>>,
+    inputs: Arc<Mutex<Vec<Value>>>,
+    mode: ToolMode,
+) -> FixtureService {
+    FixtureService::new(
+        Contract {
+            name: "fixture.Echo".into(),
+            version: 1,
+            transport: Transport::Remote,
+            interface: Interface::Service {
+                methods: BTreeMap::from([(
+                    "echo".into(),
+                    Method {
+                        mode: MethodMode::Mutation,
+                        input: json!({"type":"object"}).into(),
+                        output: json!({"type":"object"}).into(),
+                        resources: BTreeMap::new(),
+                        progress: None,
+                    },
+                )]),
+            },
+        },
+        Arc::new(Echo { run, inputs, mode }),
+    )
+}
+fn configuration(workspace: &Path) -> Configuration {
+    serde_json::from_value(json!({
+        "locale":"en", "workspaceRoots":[{"label":"Workspace","path":workspace}],
+        "permissions":{"access":"workspace_write","requestPermissions":false},
+        "tools":[{
+            "name":"echo","description":"echo","method":"echo","nestable":true,
+            "target":{"kind":"import","name":"fixture"},"result":"json","confirmation":"preapproved",
+        }],
+    })).unwrap()
+}
+fn backend(model: &ModelSelection) -> BackendPreference {
+    BackendPreference::Model {
+        connection_id: model.connection_id.clone(),
+        model_id: model.model_id.clone(),
+        thinking_level: None,
+    }
+}
+async fn model(f: &NativeFixture, base: &str, mode: ToolMode, responses: bool) -> ModelSelection {
+    let model = if responses {
+        let provider = json!({"packageId":maka_providers::api::ID,"entryId":maka_providers::api::ID,
+            "scope":"profile","name":"openai-responses-compatible"});
+        let catalog = f.config.catalog().await.unwrap();
+        let CatalogMutationResult::Committed { connection: Some(basis), .. } =
+            f.config.create_connection(serde_json::from_value(json!({
+                "expectedCatalogRevision":catalog.revision,
+                "connection":{"slug":"responses","name":"Responses","provider":provider,
+                    "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"]},
+            })).unwrap()).await.unwrap() else { panic!("commit real Responses connection") };
+        let maka_config::oauth::enrollment::LoginPreparation::Ready(ticket) = f
+            .config
+            .prepare_oauth_login(maka_agent_facts::oauth::LoginStart {
+                expected_credential: None,
+                attempt_id: Uuid::new_v4().to_string(),
+                target: maka_agent_facts::oauth::Target::Existing {
+                    expected: ConnectionCredentialTarget {
+                        connection_id: basis.connection_id.clone(),
+                        revision: basis.revision,
+                        slug: "responses".into(),
+                        provider: serde_json::from_value(provider).unwrap(),
+                        configuration: json!({"baseUrl":base}),
+                    },
+                    configuration: json!({"baseUrl":base}),
+                },
+                authentication: maka_agent_facts::provider::AuthenticationInput {
+                    method: "api-key".into(),
+                    input: json!({"apiKey":"fixture-key"}),
+                },
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("prepare real Responses credential")
+        };
+        assert!(ticket.claim().await.unwrap());
+        assert!(matches!(
+            ticket
+                .complete(
+                    maka_agent_facts::provider::Credential {
+                        secret: "fixture-key".into(),
+                        refresh_at: None,
+                    },
+                    1
+                )
+                .await
+                .unwrap(),
+            maka_config::oauth::enrollment::LoginCompletion::Committed(_)
+        ));
+        ModelSelection {
+            connection_id: basis.connection_id,
+            model_id: "gpt-4.1".into(),
+        }
+    } else {
+        f.configure_model(base, "gpt-4.1", "fixture-key")
+            .await
+            .unwrap()
+    };
+    let row = f
+        .config
+        .catalog()
+        .await
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|row| row.connection_id == model.connection_id)
+        .unwrap();
+    assert!(matches!(
+        f.config
+            .update_connection(UpdateCatalogConnectionInput {
+                expected: ConnectionVersionBasis {
+                    connection_id: row.connection_id,
+                    revision: row.revision
+                },
+                changes: ConnectionCatalogEntryUpdate {
+                    model_overrides: Patch::Set(BTreeMap::from([(
+                        model.model_id.clone(),
+                        ModelOverride {
+                            code_mode: Some(mode == ToolMode::CodeMode),
+                            ..Default::default()
+                        }
+                    )])),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap(),
+        CatalogMutationResult::Committed { .. }
+    ));
+    model
+}
+async fn send(f: &NativeFixture, session: &str, message: &str) -> RunId {
+    let SendResult::Queued { message_id, .. } = f.send(session, message, None).await.unwrap()
+    else {
+        panic!("send must receive its actual queued receipt");
+    };
+    let mut changes = f.state.subscribe().unwrap();
+    loop {
+        changes.borrow_and_update();
+        match f
+            .state
+            .queue()
+            .resolve_message(session.into(), message_id.clone())
+            .await
+            .unwrap()
+        {
+            MessageResolution::Delivered { run, shared: false } => return run,
+            MessageResolution::Pending => changes.changed().await.unwrap(),
+            other => panic!("message was not delivered exactly once: {other:?}"),
+        }
+    }
+}
+async fn tool_response(socket: &mut TcpStream, name: &str, id: &str, arguments: String) {
+    let call =
+        json!({"index":0,"id":id,"type":"function","function":{"name":name,"arguments":arguments}});
+    let event = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"gpt-4.1",
+        "choices":[{"index":0,"delta":{"tool_calls":[call]},"finish_reason":null}]});
+    let done = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"gpt-4.1",
+        "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+        "usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}});
+    let body = format!("data: {event}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+}
 fn assert_diagnostic(error: &str) {
     assert!(
         error.contains("Invalid tool arguments JSON: "),
@@ -170,259 +308,517 @@ fn assert_diagnostic(error: &str) {
     let escaped = serde_json::to_string(RAW).unwrap();
     assert!(
         error.contains(&format!("Raw arguments: {escaped}")),
-        "original malformed argument text must reach the model: {error}"
+        "original malformed text must reach the model: {error}"
     );
+}
+fn rejected(facts: &[RecordedFact]) -> (&ToolKey, &ToolRejection) {
+    let reasons: Vec<_> = facts
+        .iter()
+        .filter_map(|record| match &record.fact {
+            Fact::ToolDecided {
+                tool,
+                decision: ToolDecision::Rejected { rejection, .. },
+            } => Some((tool, rejection)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasons.len(), 1);
+    assert_eq!(reasons[0].0.call, "malformed-call");
+    reasons[0]
+}
+fn assert_raw(facts: &[RecordedFact], name: &str) {
+    assert!(facts.iter().any(|record| matches!(&record.fact,
+        Fact::ModelObserved { part: ModelPart::ToolCall { call }, .. }
+            if call.id == "malformed-call" && call.name == name
+            && call.input == ToolInput::InvalidJson { raw: RAW.into() })));
+    assert!(!facts.iter().any(|record| matches!(&record.fact,
+        Fact::ToolAdmitted { tool } if tool.call == "malformed-call")));
+}
+async fn rejection_body(f: &NativeFixture, run: RunId, facts: &[RecordedFact]) -> String {
+    let reference = facts
+        .iter()
+        .find_map(|record| match &record.fact {
+            Fact::ToolResultAccepted {
+                tool,
+                result,
+                outcome: AcceptedResult::Rejected,
+            } if tool.call == "malformed-call" => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    let body: AcceptedToolResult =
+        serde_json::from_slice(&f.state.content(run, reference.clone()).await.unwrap()).unwrap();
+    let AcceptedToolResult::Rejected { diagnostic } = body else {
+        panic!("must remain typed rejection evidence, not a successful JSON result")
+    };
+    diagnostic
+}
+fn malformed_pair(request: &Value, name: &str) -> Vec<Value> {
+    let messages = request["messages"].as_array().unwrap();
+    let call = messages
+        .iter()
+        .find_map(|message| {
+            message["tool_calls"]
+                .as_array()
+                .and_then(|calls| calls.iter().find(|call| call["id"] == "malformed-call"))
+        })
+        .unwrap();
+    assert_eq!(call["function"]["name"], name);
+    assert_eq!(call["function"]["arguments"], "{}");
+    let result = messages
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "malformed-call")
+        .unwrap();
+    assert_diagnostic(result["content"].as_str().unwrap());
+    vec![call.clone(), result.clone()]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_direct_arguments_are_rejected_and_corrected() {
+    malformed_arguments_are_rejected_and_corrected(ToolMode::Direct).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_exec_arguments_are_rejected_and_corrected() {
+    malformed_arguments_are_rejected_and_corrected(ToolMode::CodeMode).await;
+}
+async fn malformed_arguments_are_rejected_and_corrected(mode: ToolMode) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let name = if mode == ToolMode::Direct {
+            "echo"
+        } else {
+            "exec"
+        };
+        let corrected = if mode == ToolMode::Direct {
+            json!({"n":7})
+        } else {
+            json!({"code":"text(await tools.echo({n:7}));"})
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let current = Arc::new(OnceLock::new());
+        let f = NativeFixture::open_with_service(
+            directory.path(),
+            configuration(directory.path()),
+            service(current.clone(), inputs.clone(), mode),
+        )
+        .await
+        .unwrap();
+        let selected = model(&f, &base, mode, false).await;
+        let session = f
+            .create("Arguments", directory.path(), Some(backend(&selected)))
+            .await
+            .unwrap();
+        let run = send(&f, &session, "correct the malformed arguments").await;
+        current
+            .set((f.state.clone(), run))
+            .unwrap_or_else(|_| panic!("bind actual Run once"));
+        let observed = inputs.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let first = read_request(&mut socket).await;
+            tool_response(&mut socket, name, "malformed-call", RAW.into()).await;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let second = read_request(&mut socket).await;
+            assert!(
+                observed.lock().unwrap().is_empty(),
+                "malformed arguments never reach Echo"
+            );
+            malformed_pair(&second, name);
+            tool_response(&mut socket, name, "corrected-call", corrected.to_string()).await;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let third = read_request(&mut socket).await;
+            assert_eq!(*observed.lock().unwrap(), vec![json!({"n":7})]);
+            respond(&mut socket, false).await;
+            vec![first, second, third]
+        });
+        let view = f.wait_terminal(run).await.unwrap();
+        assert_eq!(
+            view.terminal,
+            Some(Terminal::Completed),
+            "malformed arguments must be recoverable"
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(*inputs.lock().unwrap(), vec![json!({"n":7})]);
+        let facts = f.state.history(run, 0, 256).await.unwrap();
+        let (_, reason) = rejected(&facts);
+        assert!(matches!(reason, ToolRejection::InvalidInput { .. }));
+        assert_raw(&facts, name);
+        assert_diagnostic(&rejection_body(&f, run, &facts).await);
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|record| matches!(record.fact, Fact::ToolAdmitted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|record| matches!(record.fact, Fact::ToolResultAccepted { .. }))
+                .count(),
+            2
+        );
+        if mode == ToolMode::CodeMode {
+            assert_eq!(view.cells.len(), 1);
+            let cell = view.cells.values().next().unwrap();
+            assert_eq!(cell.children.len(), 1);
+            let child = cell.children.values().next().unwrap();
+            assert_eq!(child.name, "echo");
+            assert!(child.admitted && child.known());
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &f.state
+                        .cells()
+                        .content(&session, cell.id, child.input.clone())
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
+                json!({"n":7})
+            );
+        } else {
+            assert!(view.cells.is_empty());
+        }
+        assert_eq!(
+            malformed_pair(&requests[2], name),
+            malformed_pair(&requests[1], name)
+        );
+        let visible = f
+            .query(
+                "history",
+                json!({"sessionId":session,"position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            visible["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|chunk| chunk["text"] == "done")
+        );
+        f.shutdown().await.unwrap();
+        let f = NativeFixture::open_with_service(
+            directory.path(),
+            configuration(directory.path()),
+            service(Arc::new(OnceLock::new()), inputs.clone(), mode),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f.state.history(run, 0, 256).await.unwrap(), facts);
+        assert_eq!(
+            f.query(
+                "history",
+                json!({"sessionId":session,"position":{"kind":"start"}})
+            )
+            .await
+            .unwrap(),
+            visible
+        );
+        rejected(&f.state.history(run, 0, 256).await.unwrap());
+        assert_eq!(*inputs.lock().unwrap(), vec![json!({"n":7})]);
+        f.shutdown().await.unwrap();
+    })
+    .await
+    .expect("argument correction must make bounded progress");
 }
 
 #[tokio::test]
 async fn recovered_malformed_arguments_keep_raw_diagnostics_for_every_rejection_reason() {
-    use crate::support::recovery_session as recovery;
-    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelToolCall};
-    use maka_agent_facts::tool_call::ToolCallIdentity;
-
-    for reason in [
-        ToolRejection::Cancelled,
-        ToolRejection::PreparationFailed {
-            message: "model response was incomplete".into(),
-        },
-        ToolRejection::ExclusiveConflict,
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        let log = SessionFixture::open(&path).await.unwrap();
-        recovery::opening(&log).await;
-        recovery::request(&log).await;
-        recovery::append(
-            &log,
-            Fact::ModelCompleted {
-                step_id: "step".into(),
-                output: crate::support::model_records::completion(
-                    recovery::invocation(),
-                    "step",
-                    vec![ModelPart::ToolCall {
-                        call: ModelToolCall {
-                            id: "malformed-call".into(),
-                            name: "echo".into(),
-                            input: ToolInput::InvalidJson { raw: RAW.into() },
-                            provider_options: None,
-                            provider_executed: false,
-                        },
-                    }],
-                    ModelFinishReason::ToolCalls,
-                ),
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for reason in [
+            ToolRejection::Cancelled,
+            ToolRejection::PreparationFailed {
+                message: "model response was incomplete".into(),
             },
-        )
-        .await;
-        recovery::append(
-            &log,
-            Fact::ToolRejected {
-                operation_id: "step:malformed-call".into(),
-                call: ToolCallIdentity::provider("step".into(), "malformed-call".into()),
-                name: "echo".into(),
-                input: ToolInput::InvalidJson { raw: RAW.into() },
-                reason: reason.clone(),
-            },
-        )
-        .await;
-        recovery::append(
-            &log,
-            Fact::InvocationEnded {
-                outcome: maka_agent_facts::event::InvocationOutcome::Completed,
-            },
-        )
-        .await;
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        let history =
-            project_model_history(&prefix, "session", maka_agent_facts::language::Language::En)
-                .unwrap();
-        let Message::Tool { content, .. } = history.last().unwrap() else {
-            panic!("rejected tool result must remain model-visible");
-        };
-        assert_eq!(content.len(), 1);
-        assert_eq!(content[0].tool_call_id, "malformed-call");
-        let ToolOutput::ErrorText(error) = &content[0].output else {
-            panic!("rejection must project as ErrorText");
-        };
-        assert!(error.starts_with(&format!("{reason}\n")));
-        assert_diagnostic(error);
-        assert!(matches!(&prefix.events[3].event.fact,
-            Fact::ToolRejected { reason: persisted, .. } if persisted == &reason));
-        log.close().await.unwrap();
-        let reopened = SessionFixture::open(&path).await.unwrap();
-        assert_eq!(
-            project_model_history(
-                &reopened.prefix(100, 128 * 1024).await.unwrap(),
-                "session",
-                maka_agent_facts::language::Language::En
+            ToolRejection::ExclusiveConflict,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let inputs = Arc::new(Mutex::new(Vec::new()));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let f = NativeFixture::open_with_service(
+                directory.path(),
+                configuration(directory.path()),
+                service(Arc::new(OnceLock::new()), inputs.clone(), ToolMode::Direct),
             )
-            .unwrap(),
-            history
-        );
-    }
+            .await
+            .unwrap();
+            let selected = model(&f, &base, ToolMode::Direct, false).await;
+            let session = f
+                .create(
+                    "Recovered malformed arguments",
+                    directory.path(),
+                    Some(backend(&selected)),
+                )
+                .await
+                .unwrap();
+            // Join the actual Native producer before seeding old canonical
+            // data; no second driver domain or saved runtime grant is created.
+            f.app.shutdown().await.unwrap();
+            let (mut spec, contents) = canonical::spec(
+                &f,
+                directory.path(),
+                &session,
+                "original",
+                "original request",
+            );
+            spec.owner.namespace = InstanceId(vec![Uuid::from_u128(1)]);
+            let admission = Admission::new(spec, UnixMillis(1), contents);
+            let source = admission.run();
+            f.state.admit(admission).await.unwrap();
+            let link = admitted_model(&f.state, source, UnixMillis(2)).await;
+            let tool = ToolKey {
+                attempt: link.attempt,
+                call: "malformed-call".into(),
+            };
+            append(
+                &f.state,
+                source,
+                vec![
+                    Change::new(
+                        Fact::ModelObserved {
+                            attempt: link.attempt,
+                            index: 0,
+                            continuation: None,
+                            part: ModelPart::ToolCall {
+                                call: ModelToolCall {
+                                    id: tool.call.clone(),
+                                    name: "echo".into(),
+                                    input: ToolInput::InvalidJson { raw: RAW.into() },
+                                    provider_options: None,
+                                    provider_executed: false,
+                                },
+                            },
+                        },
+                        UnixMillis(3),
+                    ),
+                    Change::new(
+                        Fact::ToolDecided {
+                            tool,
+                            decision: ToolDecision::Rejected {
+                                rejection: reason.clone(),
+                                display: Default::default(),
+                            },
+                        },
+                        UnixMillis(3),
+                    ),
+                    Change::new(
+                        Fact::ModelCleanupObserved {
+                            attempt: link.attempt,
+                            cleanup: OperationCleanup::Confirmed,
+                        },
+                        UnixMillis(3),
+                    ),
+                ],
+                vec![],
+            )
+            .await
+            .unwrap();
+            let view = f.state.frontier(source).await.unwrap();
+            f.state
+                .control(
+                    source,
+                    (&view).into(),
+                    vec![Change::new(
+                        Fact::StopRequested {
+                            diagnostic: "drain original immutable recovery fixture".into(),
+                        },
+                        UnixMillis(4),
+                    )],
+                    vec![],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                Engine::new(f.state.clone())
+                    .drive(
+                        f.state.claim(source).await.unwrap(),
+                        Arc::new(NoEffects(UnixMillis(5))),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap(),
+                DriverExit::Terminal {
+                    terminal: Terminal::Cancelled,
+                    ..
+                }
+            ));
+            let original = f.state.history(source, 0, 256).await.unwrap();
+            assert_raw(&original, "echo");
+            assert_eq!(rejected(&original).1, &reason);
+            let diagnostic = rejection_body(&f, source, &original).await;
+            assert!(diagnostic.starts_with(&format!("{reason}\n")));
+            assert_diagnostic(&diagnostic);
+            assert_eq!(
+                original
+                    .iter()
+                    .filter(|record| matches!(record.fact, Fact::ToolAdmitted { .. }))
+                    .count(),
+                0
+            );
+            assert_eq!(
+                original
+                    .iter()
+                    .filter(|record| matches!(record.fact, Fact::ToolResultAccepted { .. }))
+                    .count(),
+                1
+            );
+            f.config.shutdown().await.unwrap();
+            f.root.shutdown().await.unwrap();
+            drop(f);
+            let f = NativeFixture::open_with_service(
+                directory.path(),
+                configuration(directory.path()),
+                service(Arc::new(OnceLock::new()), inputs.clone(), ToolMode::Direct),
+            )
+            .await
+            .unwrap();
+            let visible = f
+                .query(
+                    "history",
+                    json!({"sessionId":session,"position":{"kind":"start"}}),
+                )
+                .await
+                .unwrap();
+
+            let server = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    requests.push(read_request(&mut socket).await);
+                    respond(&mut socket, false).await;
+                }
+                requests
+            });
+            let next = send(&f, &session, "inspect original rejection").await;
+            assert_eq!(
+                f.wait_terminal(next).await.unwrap().terminal,
+                Some(Terminal::Completed)
+            );
+            f.shutdown().await.unwrap();
+            let f = NativeFixture::open_with_service(
+                directory.path(),
+                configuration(directory.path()),
+                service(Arc::new(OnceLock::new()), inputs.clone(), ToolMode::Direct),
+            )
+            .await
+            .unwrap();
+            assert_eq!(f.state.history(source, 0, 256).await.unwrap(), original);
+            assert_eq!(f.query("history", json!({
+                "sessionId":session,"through":visible["through"],"position":{"kind":"start"},
+            })).await.unwrap(), visible);
+            let after_reopen = send(&f, &session, "inspect original rejection again").await;
+            assert_eq!(
+                f.wait_terminal(after_reopen).await.unwrap().terminal,
+                Some(Terminal::Completed)
+            );
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 2);
+            let first = malformed_pair(&requests[0], "echo");
+            assert!(
+                first[1]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("{reason}\n"))
+            );
+            assert_eq!(malformed_pair(&requests[1], "echo"), first);
+            assert_eq!(f.state.history(source, 0, 256).await.unwrap(), original);
+            assert!(inputs.lock().unwrap().is_empty());
+            f.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .expect("original rejection diagnostics must survive replay and Root reopen");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn accepted_malformed_arguments_survive_transport_interruption_without_reexecution() {
-    use futures_util::{SinkExt, StreamExt};
-    use maka_model::ProviderKind;
-    use serde_json::Value;
-    use tokio_tungstenite::{accept_async, tungstenite::Message as Frame};
-
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            SessionFixture::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        let count = Arc::new(AtomicUsize::new(0));
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let current = Arc::new(OnceLock::new());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let observed = log.clone();
-        let mut commits = log.subscribe_commits();
+        let f = NativeFixture::open_with_service(directory.path(), configuration(directory.path()),
+            service(current.clone(), inputs.clone(), ToolMode::Direct)).await.unwrap();
+        let selected = model(&f, &base, ToolMode::Direct, true).await;
+        let session = f.create("Accepted malformed transport cut", directory.path(), Some(backend(&selected))).await.unwrap();
+        let run = send(&f, &session, "correct retained malformed arguments").await;
+        current.set((f.state.clone(), run)).unwrap_or_else(|_| panic!("bind actual Run once"));
+        let observed = f.state.clone();
+        let observed_inputs = inputs.clone();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(socket).await.unwrap();
-            socket.next().await.unwrap().unwrap();
-            let malformed = json!({"type":"function_call","id":"invalid-item",
-                "call_id":"malformed-call","name":"echo","arguments":RAW});
-            socket
-                .send(Frame::Text(
-                    json!({"type":"response.output_item.done",
-                "output_index":0,"item":malformed})
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .unwrap();
+            let first: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(first["store"], false);
+            socket.send(Frame::Text(json!({
+                "type":"response.output_item.done","output_index":0,
+                "item":{"type":"function_call","id":"invalid-item","call_id":"malformed-call",
+                    "name":"echo","arguments":RAW},
+            }).to_string().into())).await.unwrap();
+            let mut changes = observed.subscribe().unwrap();
             loop {
-                let prefix = observed.prefix(100, 128 * 1024).await.unwrap();
-                if prefix.events.iter().any(|stored| {
-                    matches!(&stored.event.fact,
-                    Fact::ToolRejected { call, .. } if call.tool_call_id == "malformed-call")
-                }) {
-                    assert!(!prefix.events.iter().any(|stored| matches!(
-                        stored.event.fact,
-                        Fact::ModelCompleted { .. } | Fact::ToolDispatched { .. }
-                    )));
+                changes.borrow_and_update();
+                let facts = observed.history(run, 0, 256).await.unwrap();
+                if facts.iter().any(|record| matches!(&record.fact,
+                    Fact::ToolDecided { tool, decision: ToolDecision::Rejected { .. } } if tool.call == "malformed-call")) {
+                    assert_raw(&facts, "echo");
+                    assert!(!facts.iter().any(|record| matches!(record.fact,
+                        Fact::ModelClosed { .. } | Fact::ToolAdmitted { .. })));
+                    assert!(observed_inputs.lock().unwrap().is_empty());
                     break;
                 }
-                commits.changed().await.unwrap();
+                changes.changed().await.unwrap();
             }
-            // The accepted invalid call and its durable rejection must survive
-            // a real connection loss before response.completed.
             socket.close(None).await.unwrap();
             drop(socket);
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(socket).await.unwrap();
-            let retry: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
+            let retry: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
             assert!(retry.get("previous_response_id").is_none());
-            let carried: Vec<_> = retry["input"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|item| item["call_id"] == "malformed-call")
-                .collect();
+            let carried: Vec<_> = retry["input"].as_array().unwrap().iter()
+                .filter(|item| item["call_id"] == "malformed-call").collect();
             assert_eq!(carried.len(), 2);
             assert_eq!(carried[0]["type"], "function_call");
             assert_eq!(carried[0]["name"], "echo");
             assert_eq!(carried[0]["arguments"], RAW);
             assert_eq!(carried[1]["type"], "function_call_output");
             assert_diagnostic(carried[1]["output"].as_str().unwrap());
-            let corrected = json!({"type":"function_call","id":"corrected-item",
-                "call_id":"corrected-call","name":"echo","arguments":"{\"n\":7}"});
-            socket
-                .send(Frame::Text(
-                    json!({"type":"response.completed",
-                "response":{"id":"corrected-response","output":[corrected]}})
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .unwrap();
-            let next: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
-            assert!(next["input"].as_array().unwrap().iter().any(|item| {
-                item["type"] == "function_call_output"
-                    && item["call_id"] == "corrected-call"
-                    && item["output"].as_str().is_some_and(|output| {
-                        serde_json::from_str::<Value>(output).unwrap() == json!({"n":7})
-                    })
-            }));
-            socket
-                .send(Frame::Text(
-                    json!({"type":"response.completed",
-                "response":{"id":"final","output":[{"type":"message","id":"answer",
-                    "content":[{"type":"output_text","text":"done"}]}]}})
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .unwrap();
+            socket.send(Frame::Text(json!({"type":"response.completed","response":{
+                "id":"corrected-response","status":"completed","model":"gpt-4.1",
+                "output":[{"type":"function_call","id":"corrected-item","call_id":"corrected-call",
+                    "name":"echo","arguments":"{\"n\":7}"}],
+                "usage":{"input_tokens":4,"output_tokens":2},
+            }}).to_string().into())).await.unwrap();
+            let next: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert!(next["input"].as_array().unwrap().iter().any(|item|
+                item["type"] == "function_call_output" && item["call_id"] == "corrected-call"
+                && item["output"].as_str().is_some_and(|output|
+                    serde_json::from_str::<Value>(output).unwrap() == json!({"n":7}))));
+            socket.send(Frame::Text(json!({"type":"response.completed","response":{
+                "id":"final","status":"completed","model":"gpt-4.1",
+                "output":[{"type":"message","id":"answer","role":"assistant",
+                    "content":[{"type":"output_text","text":"done","annotations":[]}]}],
+                "usage":{"input_tokens":4,"output_tokens":2},
+            }}).to_string().into())).await.unwrap();
         });
-        let mut input = fixture::input(
-            &base,
-            "retained-invalid",
-            Arc::new(fixture::Effect {
-                log: log.clone(),
-                count: count.clone(),
-            }),
-        );
-        input.provider.kind = ProviderKind::OpenaiResponses;
-        input.provider_options = json!({"openai":{"store":false}});
-        let engine = Engine::new(
-            ModelExecutor::new(Duration::from_secs(10)).unwrap(),
-            CodeExecutor::new(CellLimits::default()).unwrap(),
-        )
-        .unwrap();
-        engine
-            .run(log.store(), input, CancellationToken::new())
-            .await
-            .unwrap();
-        engine.drain().await;
+        assert_eq!(f.wait_terminal(run).await.unwrap().terminal, Some(Terminal::Completed));
         server.await.unwrap();
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        assert_eq!(
-            prefix
-                .events
-                .iter()
-                .filter(|stored| matches!(stored.event.fact, Fact::ToolRejected { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            prefix
-                .events
-                .iter()
-                .filter(|stored| matches!(stored.event.fact, Fact::ToolDispatched { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            prefix
-                .events
-                .iter()
-                .filter(|stored| matches!(
-                    stored.event.fact,
-                    Fact::ModelInterrupted {
-                        status: maka_agent_facts::event::ModelInterruption::RetryableFailure,
-                        ..
-                    }
-                ))
-                .count(),
-            1
-        );
-        assert_eq!(
-            prefix
-                .project_invocation("invocation-retained-invalid")
-                .terminal,
-            Some(TerminalStatus::Completed)
-        );
-    })
-    .await
-    .expect("accepted malformed call must survive reconnect and permit correction");
+        assert_eq!(*inputs.lock().unwrap(), vec![json!({"n":7})]);
+        let facts = f.state.history(run, 0, 256).await.unwrap();
+        assert_raw(&facts, "echo");
+        assert!(matches!(rejected(&facts).1, ToolRejection::InvalidInput { .. }));
+        assert_diagnostic(&rejection_body(&f, run, &facts).await);
+        assert_eq!(facts.iter().filter(|record| matches!(record.fact, Fact::ToolAdmitted { .. })).count(), 1);
+        assert_eq!(facts.iter().filter(|record| matches!(record.fact, Fact::ToolResultAccepted { .. })).count(), 2);
+        assert_eq!(facts.iter().filter(|record| matches!(record.fact, Fact::ModelInterrupted { .. })).count(), 1);
+        assert_eq!(facts.iter().filter(|record| matches!(&record.fact,
+            Fact::AttemptRecoveryRecorded { recovery: AttemptRecovery::ProjectPrefixSafe { .. }, .. })).count(), 1);
+        f.shutdown().await.unwrap();
+    }).await.expect("accepted malformed call must survive reconnect and permit correction");
 }

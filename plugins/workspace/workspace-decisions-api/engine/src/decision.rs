@@ -374,7 +374,7 @@ impl DecisionsApi {
                 scope.clone(),
                 http::Request {
                     url: settings.url.clone(),
-                    method: http::Method::Post,
+                    method: maka_plugin_core::http::Method::Post,
                     headers: secrets.request_headers().map_err(|_| Error::Input)?,
                     body: encode(settings.protocol, &settings.model, input)?.into(),
                 },

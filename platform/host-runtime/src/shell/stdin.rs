@@ -19,10 +19,10 @@
 
 use super::request::parse_ref;
 use crate::shell::ControlInput;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
-use maka_agent_facts::terminal::input::encoded_actions_byte_len;
 use maka_agent_facts::tools::ToolError;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
+use maka_plugin_core::terminal::input::encoded_actions_byte_len;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 

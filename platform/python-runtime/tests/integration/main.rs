@@ -25,3 +25,28 @@ fn python_worker() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_maka-python-worker").into())
 }
+
+// Standalone interpreter tests explicitly accept JSON drafts into this owner;
+// this fixture does not stand in for an Agent Run or Root authority.
+#[derive(Default)]
+struct SessionData(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
+
+impl SessionData {
+    fn store(self: &std::sync::Arc<Self>) -> maka_code_runtime::CellStore {
+        maka_code_runtime::CellStore::new(maka_session_state::Session::new(self.clone()))
+    }
+
+    fn accept(&self, draft: maka_code_runtime::SessionDraft) {
+        assert!(draft.loaded_tools.is_none());
+        self.0.lock().unwrap().extend(draft.values);
+    }
+}
+
+impl maka_session_state::SessionDataReader for SessionData {
+    fn load(&self, key: &str) -> maka_session_state::Result<Option<Vec<u8>>> {
+        Ok(self.0.lock().unwrap().get(key).cloned())
+    }
+    fn loaded(&self) -> maka_session_state::Result<std::collections::BTreeSet<String>> {
+        Ok(Default::default())
+    }
+}

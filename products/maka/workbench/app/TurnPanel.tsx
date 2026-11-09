@@ -109,9 +109,9 @@ export function TurnSummary(props: {
           ? tr('Stopped')
           : tr('Activity');
   };
-  const choose = (action: { turnId: string; answerKey: string | undefined; open: boolean }) => {
+  const choose = (action: { turnKey: string; answerKey: string | undefined; open: boolean }) => {
     const turn = props.turn();
-    if (turn.turnId === action.turnId && turn.answerKey === action.answerKey && props.canFold())
+    if (turn.turnKey === action.turnKey && turn.answerKey === action.answerKey && props.canFold())
       props.toggle(action.open);
   };
   return (
@@ -122,7 +122,7 @@ export function TurnSummary(props: {
         foldable={props.canFold()}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(choose, {
-          turnId: props.turn().turnId,
+          turnKey: props.turn().turnKey,
           answerKey: props.turn().answerKey,
           open: !props.expanded(),
         })}

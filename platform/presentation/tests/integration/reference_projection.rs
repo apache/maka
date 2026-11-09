@@ -17,22 +17,21 @@
  * under the License.
  */
 
+use maka_agent_facts::durable::{ExecutionIdentity, RunId};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
-use maka_agent_facts::input::InvocationInput;
 use maka_agent_facts::input::MessageInput;
-use maka_presentation::InvocationView;
+use maka_agent_facts::input::RunInput;
+use maka_presentation::RunView;
 use serde_json::json;
 
 #[test]
 fn complete_reference_text_survives_presentation() {
-    let invocation = Invocation {
+    let execution = ExecutionIdentity {
         session_id: "session".into(),
         turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
+        run_id: RunId::new(),
     };
     for (field, references) in [
         (
@@ -56,10 +55,10 @@ fn complete_reference_text_survives_presentation() {
         let event = StoredEvent {
             sequence: 1,
             event: RuntimeEvent::new(
-                invocation.clone(),
-                Fact::InvocationOpened {
+                execution.clone(),
+                Fact::RunOpened {
                     configuration: None,
-                    input: InvocationInput::Message {
+                    input: RunInput::Message {
                         source_messages: Vec::new(),
                         content: input,
                         request_fingerprint: None,
@@ -67,7 +66,7 @@ fn complete_reference_text_survives_presentation() {
                 },
             ),
         };
-        let mut view = InvocationView::new();
+        let mut view = RunView::new();
         let rows = view.push(&event).unwrap();
         let content = serde_json::to_value(&rows[0].message.content).unwrap();
         let output_field = match field {

@@ -40,6 +40,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
+[dev-dependencies]
+maka-session-state.workspace = true
+
 [build-dependencies]
 deno_core.workspace = true
 deno_webidl = "=0.260.0"

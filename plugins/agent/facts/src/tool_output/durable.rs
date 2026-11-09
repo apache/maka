@@ -19,9 +19,10 @@
 
 use super::{ImageOutput, ToolOutput};
 use crate::{
-    artifact::content_digest, attachment::StorageRef, event::Invocation,
+    artifact::content_digest, attachment::StorageRef, durable::ExecutionIdentity,
     event_write::ProjectionArtifactWrite,
 };
+use maka_plugin_core::operation::OperationResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::SystemTime;
@@ -97,12 +98,13 @@ fn validate_raw(output: &ToolOutput) -> Result<(), &'static str> {
         && !matches!(
             &reply.receipt,
             maka_plugin_core::operation::Receipt::Recorded {
-                outcome: maka_plugin_core::operation::OperationOutcome::Returned { .. },
+                outcome: maka_plugin_core::operation::OperationOutcome::Returned { .. }
+                    | maka_plugin_core::operation::OperationOutcome::NotExecuted { .. },
                 ..
             }
         )
     {
-        return Err("successful operation output requires a returned receipt");
+        return Err("operation output requires a definite original receipt");
     }
     Ok(())
 }
@@ -111,11 +113,11 @@ pub(crate) fn freeze(
     output: &ToolOutput,
     id: &str,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> (DurableToolProjection, Vec<ProjectionArtifactWrite>) {
     let prepared = match output {
-        ToolOutput::Mcp(result) => super::mcp::project(result, id, time, invocation),
-        ToolOutput::Image(image) => checked_image(image, &invocation.session_id).map(|image| {
+        ToolOutput::Mcp(result) => super::mcp::project(result, id, time, execution),
+        ToolOutput::Image(image) => checked_image(image, &execution.session_id).map(|image| {
             (
                 DurableToolProjection::Content {
                     parts: vec![
@@ -128,6 +130,12 @@ pub(crate) fn freeze(
                 Vec::new(),
             )
         }),
+        ToolOutput::Cell(reply) => Some((
+            DurableToolProjection::Json {
+                value: reply.observation.clone(),
+            },
+            Vec::new(),
+        )),
         ToolOutput::Json(value) => Some((
             match value {
                 Value::String(text) => DurableToolProjection::Text { text: text.clone() },
@@ -139,11 +147,27 @@ pub(crate) fn freeze(
         )),
         ToolOutput::Operation(reply) => match &reply.receipt {
             maka_plugin_core::operation::Receipt::Recorded {
-                outcome: maka_plugin_core::operation::OperationOutcome::Returned { value },
+                outcome:
+                    maka_plugin_core::operation::OperationOutcome::Returned {
+                        result: OperationResult::Success { value },
+                    },
                 ..
             } => Some((
                 DurableToolProjection::Json {
                     value: value.clone(),
+                },
+                Vec::new(),
+            )),
+            maka_plugin_core::operation::Receipt::Recorded {
+                outcome:
+                    maka_plugin_core::operation::OperationOutcome::Returned {
+                        result: OperationResult::Failure { .. },
+                    }
+                    | maka_plugin_core::operation::OperationOutcome::NotExecuted { .. },
+                ..
+            } => Some((
+                DurableToolProjection::Json {
+                    value: serde_json::to_value(reply).expect("typed operation reply"),
                 },
                 Vec::new(),
             )),
@@ -167,7 +191,7 @@ pub(crate) fn freeze(
         )),
     };
     prepared
-        .filter(|(projection, _)| projection.validate(&invocation.session_id).is_ok())
+        .filter(|(projection, _)| projection.validate(&execution.session_id).is_ok())
         .unwrap_or((DurableToolProjection::Failure, Vec::new()))
 }
 

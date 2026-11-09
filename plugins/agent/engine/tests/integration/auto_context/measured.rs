@@ -18,94 +18,79 @@
  */
 
 use super::*;
-use serde_json::json;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn measured_prefix_outweighs_a_large_raw_estimate_for_main_progress_and_output_capacity() {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            SessionFixture::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
+        let effects = Arc::new(Effects::default());
+        let f = open(directory.path(), effects.clone()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let model = f.configure_model(&base, "test", "fixture").await.unwrap();
+        override_model(
+            &f,
+            &model,
+            ModelOverride {
+                code_mode: Some(false),
+                max_output_tokens: Some(200_000),
+                ..Default::default()
+            },
+        )
+        .await;
+        let session = f
+            .create(
+                "Measured large prefix",
+                directory.path(),
+                Some(backend(&model)),
+            )
+            .await
+            .unwrap();
         let server = tokio::spawn(async move {
-            let (mut first, _) = listener.accept().await.unwrap();
-            fixture::read_request(&mut first).await;
-            fixture::respond_with_usage(
+            let (mut first, _) = incoming(&listener).await;
+            respond_with_usage(
                 &mut first,
                 "accepted large history",
                 "stop",
                 json!({
-                    "prompt_tokens":40_000, "completion_tokens":100,
+                    "prompt_tokens":40_000,"completion_tokens":100,
                     "prompt_tokens_details":{"cached_tokens":30_000},
                     "completion_tokens_details":{"reasoning_tokens":80}
                 }),
             )
             .await;
-            let (mut next, _) = listener.accept().await.unwrap();
-            let request = fixture::read_request(&mut next).await;
+            let (mut next, request) = incoming(&listener).await;
+            assert!(!is_summary(&request), "Main progresses without a Summary");
+            let messages = request["messages"].to_string();
             assert!(
-                request["messages"].to_string().contains("question-next"),
-                "Main must continue without waiting for a summary"
-            );
-            assert!(
-                request["messages"]
-                    .to_string()
-                    .contains("accepted large history")
+                messages.contains("question-next") && messages.contains("accepted large history")
             );
             let output = request["max_tokens"].as_u64().unwrap();
             assert!(
                 (159_000..160_000).contains(&output),
-                "the measured prefix leaves room for useful output: {output}"
+                "measured retained prefix leaves real output capacity: {output}"
             );
-            fixture::respond(&mut next, "continued", "stop").await;
+            respond(&mut next, "continued", "stop").await;
         });
-        let worker = fixture::engine();
-        let mut old = fixture::input(&base, "old", false);
-        old.context = context(None);
-        if let RunWork::Message { message, .. } = &mut old.work {
-            message.text = "large history ".repeat(70_000);
-        }
-        worker
-            .run(log.store(), old, CancellationToken::new())
-            .await
-            .unwrap();
-        let mut next = fixture::input(&base, "next", false);
-        next.context = context(Some(170_000));
-        next.main_output_limit = Some(200_000);
-        worker
-            .run(log.store(), next, CancellationToken::new())
-            .await
-            .unwrap();
-        worker.drain().await;
-        server.await.unwrap();
-        let prefix = log.prefix(100, 4 * 1024 * 1024).await.unwrap();
-        assert!(!prefix.events.iter().any(|event| matches!(
-            event.event.fact,
-            Fact::ModelRequested {
-                purpose: ModelPurpose::Summary,
-                ..
-            }
-        )));
-        let raw = prefix
-            .events
-            .iter()
-            .find_map(|event| match &event.event.fact {
-                Fact::ModelRequested {
-                    context_breakdown: Some(size),
-                    ..
-                } => Some(size.estimated_tokens()),
-                _ => None,
-            })
-            .unwrap();
+        let old = message(&f, &session, &"large history ".repeat(70_000)).await;
+        let original = requests(&f, old.run).await;
+        let raw: RequestContextEvidence = decode(&f, old.run, &original[0].provenance).await;
         assert!(
-            raw > 200_000,
-            "the fixture exercises the reported raw-estimate overrun"
+            raw.breakdown.estimated_tokens() > 200_000,
+            "real accepted history exceeds the raw capacity estimate"
         );
+        override_model(&f, &model, limits(Some(170_000), false)).await;
+        let next = message(&f, &session, "question-next").await;
+        server.await.unwrap();
+        let prepared = requests(&f, next.run).await;
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].accounting.purpose, ModelPurpose::Main);
+        let evidence: RequestContextEvidence = decode(&f, next.run, &prepared[0].provenance).await;
+        assert!(evidence.breakdown.estimated_tokens() > 200_000);
+        assert!((40_000..41_000).contains(&evidence.estimated_input_tokens));
+        assert!(next.baseline.is_none());
+        assert!(effects.inputs.lock().unwrap().is_empty());
+        f.shutdown().await.unwrap();
     })
     .await
     .expect("measured history must not trigger foreground compaction");
@@ -113,136 +98,107 @@ async fn measured_prefix_outweighs_a_large_raw_estimate_for_main_progress_and_ou
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_prepared_summary_does_not_block_compaction_after_main_progress() {
-    use crate::support::agent_loop;
-    use tokio::io::AsyncWriteExt;
-
     for reactive_overflow in [false, true] {
-        tokio::time::timeout(Duration::from_secs(20), async move {
+        tokio::time::timeout(Duration::from_secs(60), async {
             let directory = tempfile::tempdir().unwrap();
-            let log = Arc::new(
-                SessionFixture::open(&directory.path().join("events.sqlite"))
-                    .await
-                    .unwrap(),
-            );
+            let effects = Arc::new(Effects::default());
+            let f = open(directory.path(), effects.clone()).await;
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
-            let count = Arc::new(AtomicUsize::new(0));
-            let effect = Arc::new(agent_loop::Effect {
-                log: log.clone(),
-                count: count.clone(),
-            });
-            let prompt_prefix = maka_agent_facts::context::default_compaction_prompt(
-                maka_agent_facts::language::Language::En,
-            )
-            .lines()
-            .next()
-            .unwrap()
-            .to_owned();
+            let model = f.configure_model(&base, "test", "fixture").await.unwrap();
+            override_model(&f, &model, limits(Some(110_000), false)).await;
+            let session = f
+                .create("Failed prepare", directory.path(), Some(backend(&model)))
+                .await
+                .unwrap();
             let server = tokio::spawn(async move {
-                let (mut old, _) = listener.accept().await.unwrap();
-                fixture::read_request(&mut old).await;
-                fixture::respond_with_usage(
+                let (mut old, _) = incoming(&listener).await;
+                respond_with_usage(
                     &mut old,
                     "old-answer",
                     "stop",
                     json!({"prompt_tokens":100_000,"completion_tokens":50}),
                 )
                 .await;
-
-                let mut summary = None;
-                let mut main = None;
-                for _ in 0..2 {
-                    let (mut socket, _) = listener.accept().await.unwrap();
-                    let request = fixture::read_request(&mut socket).await;
-                    if request["messages"].to_string().contains(&prompt_prefix) {
-                        summary = Some(socket);
-                    } else {
-                        main = Some(socket);
-                    }
-                }
-                let mut summary = summary.unwrap();
-                let mut main = main.unwrap();
-                let bad = r#"{"error":{"message":"invalid summary request"}}"#;
+                let (mut summary, request) = incoming(&listener).await;
+                assert!(is_summary(&request));
+                failure(
+                    &mut summary,
+                    "400 Bad Request",
+                    r#"{"error":{"message":"invalid summary request"}}"#,
+                )
+                .await;
+                let (mut main, request) = incoming(&listener).await;
+                assert!(!is_summary(&request));
+                assert!(request["messages"].to_string().contains("old-answer"));
+                background::respond_tail_call_with_usage(
+                    &mut main,
+                    "step-1",
+                    7,
+                    if reactive_overflow { 90_000 } else { 110_000 },
+                )
+                .await;
                 if reactive_overflow {
-                    // Keep the failed Prepare pending across the Main step to exercise
-                    // fallback when adopt() observes the failure during overflow recovery.
-                    super::background::respond_tail_call_with_usage(&mut main, "step-1", 7, 90_000)
-                        .await;
-                    let (mut step2, _) = listener.accept().await.unwrap();
-                    let uncompacted = fixture::read_request(&mut step2).await;
-                    assert!(uncompacted["messages"].to_string().contains("old-answer"));
-                    let overflow = r#"{"error":{"code":"context_length_exceeded","message":"prompt is too long"}}"#;
-                    step2
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{overflow}",
-                                overflow.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    summary
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bad}",
-                                bad.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                } else {
-                    summary
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bad}",
-                                bad.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    super::background::respond_tail_call_with_usage(&mut main, "step-1", 7, 110_000)
-                        .await;
+                    let (mut step, request) = incoming(&listener).await;
+                    assert!(!is_summary(&request));
+                    assert!(request["messages"].to_string().contains("old-answer"));
+                    overflow(&mut step).await;
                 }
-
-                let (mut fresh_summary, _) = listener.accept().await.unwrap();
-                let fresh_request = fixture::read_request(&mut fresh_summary).await;
-                assert!(fresh_request["messages"].to_string().contains(&prompt_prefix));
-                assert!(fresh_request["messages"].to_string().contains("step-1"));
-                fixture::respond(&mut fresh_summary, fixture::SUMMARY, "stop").await;
-
-                let (mut adopted_main, _) = listener.accept().await.unwrap();
-                let adopted = fixture::read_request(&mut adopted_main).await;
-                let messages = adopted["messages"].to_string();
-                assert!(messages.contains("summary-marker"));
-                assert!(!messages.contains("old-answer"));
-                fixture::respond(&mut adopted_main, "recovered", "stop").await;
+                let (mut summary, request) = incoming(&listener).await;
+                assert!(
+                    is_summary(&request),
+                    "real Main progress renews the failed preparation budget"
+                );
+                assert!(request["messages"].to_string().contains("step-1"));
+                respond(&mut summary, SUMMARY, "stop").await;
+                let (mut adopted, request) = incoming(&listener).await;
+                let wire = request["messages"].to_string();
+                assert!(wire.contains("summary-marker") && !wire.contains("old-answer"));
+                respond(&mut adopted, "recovered", "stop").await;
             });
-
-            let worker = fixture::engine();
-            let mut old = fixture::input(&base, "old", false);
-            old.context = context(None);
-            worker
-                .run(log.store(), old, CancellationToken::new())
-                .await
-                .unwrap();
-
-            let mut next = agent_loop::input(&base, "next", effect);
-            next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
-            next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
-            next.context = context(Some(110_000));
-            worker
-                .run(log.store(), next, CancellationToken::new())
-                .await
-                .unwrap();
-            worker.drain().await;
+            message(&f, &session, "question-old").await;
+            let next = message(&f, &session, "question-next").await;
             server.await.unwrap();
-            assert_eq!(count.load(Ordering::SeqCst), 1);
-            assert!(log.read_model_view("session", None).await.unwrap().baseline.is_some());
+            assert_eq!(
+                effects.inputs.lock().unwrap().as_slice(),
+                [json!({"value":7})]
+            );
+            let prepared = requests(&f, next.run).await;
+            let summaries: Vec<_> = prepared
+                .iter()
+                .filter(|request| request.accounting.purpose == ModelPurpose::Summary)
+                .collect();
+            assert_eq!(summaries.len(), 2);
+            let failed = next
+                .attempts
+                .values()
+                .find(|attempt| attempt.step == summaries[0].step)
+                .unwrap();
+            assert!(
+                failed
+                    .closed
+                    .as_ref()
+                    .is_some_and(|closed| closed.diagnostic.is_some())
+            );
+            let fresh = next
+                .attempts
+                .values()
+                .find(|attempt| attempt.step == summaries[1].step)
+                .unwrap();
+            let protocol: ModelClosureProtocol =
+                serde_json::from_value(fresh.closed.as_ref().unwrap().protocol.clone()).unwrap();
+            assert!(matches!(protocol.summary, Some(SummaryResult::Text { .. })));
+            let body = compacted(&f, &next).await;
+            assert_eq!(body.checkpoint.summary_step_id, fresh.step);
+            assert_eq!(next.tools.len(), 1);
+            assert!(
+                next.tools
+                    .values()
+                    .all(|tool| tool.admitted && tool.accepted.is_some())
+            );
+            f.shutdown().await.unwrap();
         })
         .await
-        .expect("renewed compaction budget must survive a failed background Prepare");
+        .expect("renewed compaction budget must survive a failed Prepare");
     }
 }

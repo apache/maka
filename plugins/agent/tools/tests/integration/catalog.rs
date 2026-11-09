@@ -17,10 +17,12 @@
  * under the License.
  */
 
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::tool_call::ToolRejection;
+use super::support::preflight::Fixture as RootFixture;
+use maka_agent_facts::cells::{CellEvent, CellId, CellVmBinding};
+use maka_agent_facts::tool_call::{ToolRejection, ToolSettlement};
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
+use maka_code_runtime::{CellContext, CellLimits};
 use maka_tools::*;
 use serde_json::{Value, json};
 use std::sync::{
@@ -28,6 +30,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 #[derive(Default)]
 struct Fixture(AtomicUsize);
@@ -58,21 +61,10 @@ fn registration(name: &str, schema: Value, executor: Arc<Fixture>) -> ToolRegist
     }
 }
 
-fn context() -> ToolCallContext {
-    ToolCallContext {
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        },
-        operation_id: "step:call".into(),
-        execution: None,
-    }
-}
-
 #[tokio::test]
 async fn frozen_catalog_prevents_unadvertised_or_invalid_effects_and_direct_only_nesting() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootFixture::open(directory.path(), "catalog").await;
     let effects = Arc::new(Fixture::default());
     let schema = json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false});
     let mut direct = registration("direct", schema.clone(), effects.clone());
@@ -95,56 +87,103 @@ async fn frozen_catalog_prevents_unadvertised_or_invalid_effects_and_direct_only
     ] {
         assert!(
             scope
-                .prepare(name.into(), input, context(), CancellationToken::new())
+                .prepare(
+                    name.into(),
+                    input,
+                    root.context(Uuid::new_v4()),
+                    CancellationToken::new()
+                )
                 .await
                 .is_err()
         );
     }
     assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+    let operation = Uuid::new_v4();
     let effect = nested
         .prepare(
             "echo".into(),
             json!({"n": 2}),
-            context(),
+            root.context(operation),
             CancellationToken::new(),
         )
         .await
         .unwrap();
     assert_eq!(effects.0.load(Ordering::SeqCst), 0);
-    let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        maka_event_log::EventLog::open(&directory.path().join("tools.sqlite"))
-            .await
-            .unwrap(),
-    );
-    let invocation = context().invocation;
-    crate::support::preflight::accepted(
-        &log,
-        &invocation,
-        &[crate::support::preflight::call(
-            "call",
-            "echo",
-            json!({"n":2}),
-        )],
+    let port = root.port();
+    let cell = CellId::new();
+    let source = CellContent::new(b"// catalog admission".to_vec());
+    port.append(
+        vec![CellChange {
+            id: cell.started_fact_id(),
+            at: port.now(),
+            event: CellEvent::Started {
+                cell,
+                owner: port.owner(),
+                source: source.reference.clone(),
+            },
+        }],
+        vec![source],
     )
-    .await;
-    let output = maka_agent_facts::tools::ToolJournal::new(log.clone(), invocation.clone())
-        .invoke_prepared_call(
-            format!("{}:call", invocation.invocation_id),
-            maka_agent_facts::tool_call::ToolCallIdentity::provider(
-                invocation.invocation_id,
-                "call".into(),
-            ),
-            "echo".into(),
-            json!({"n":2}),
-            None,
+    .await
+    .unwrap();
+    let executor = CodeExecutor::new(CellLimits::default()).unwrap();
+    let context = CellContext::new(root.cell_store(), vec![]).unwrap();
+    let prepared = executor
+        .prepare_module(
+            "// catalog admission".into(),
+            effects.clone(),
             CancellationToken::new(),
-            effect,
+            context.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(output, json!({"n": 2}));
-    log.shutdown().await.unwrap();
+    let binding = prepared.binding().clone();
+    let descriptor = CellContent::json(&binding.descriptor).unwrap();
+    port.append(
+        vec![CellChange::new(
+            CellEvent::VmBound {
+                cell,
+                binding: CellVmBinding {
+                    runtime: binding.runtime.clone(),
+                    version: binding.version,
+                    descriptor: descriptor.reference.clone(),
+                },
+            },
+            port.now(),
+        )],
+        vec![descriptor],
+    )
+    .await
+    .unwrap();
+    let sequence = port
+        .admit(
+            cell,
+            operation,
+            "echo",
+            ToolSemantics::Parallel,
+            &json!({"n":2}),
+        )
+        .await
+        .unwrap();
+    let (custody, execute) = effect
+        .begin(sequence, CancellationToken::new())
+        .unwrap()
+        .execute();
+    let output = port
+        .returned(
+            cell,
+            operation,
+            execute.await.unwrap(),
+            ToolSettlement::Returned,
+        )
+        .await
+        .unwrap();
+    assert_eq!(output.into_json(), json!({"n": 2}));
+    drop(custody);
+    port.finish_prepared(cell, prepared, context, &executor)
+        .await;
+    drop(port);
+    root.close().await;
     assert_eq!(effects.0.load(Ordering::SeqCst), 1);
     assert_eq!(catalog.names(), ["direct", "echo"]); // filtering never mutates another scope
 }
@@ -188,6 +227,8 @@ fn schemas_validate_offline_without_coercion_and_catalog_rejects_ambiguous_autho
 
 #[tokio::test]
 async fn process_controls_are_resident_before_any_tool_search() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootFixture::open(directory.path(), "process-controls").await;
     let effects = Arc::new(Fixture::default());
     let catalog = ToolCatalog::new(["ProcessInput", "ProcessStop", "withheld"].map(|name| {
         registration(
@@ -198,17 +239,23 @@ async fn process_controls_are_resident_before_any_tool_search() {
     }))
     .unwrap()
     .with_discovery();
-    let available =
-        availability::Availability::new(catalog, availability::LoadedTools::temporary().unwrap())
-            .snapshot()
-            .unwrap();
+    let available = availability::Availability::new(
+        catalog,
+        availability::LoadedTools::new(
+            root.store
+                .reader(root.session.clone(), tokio::runtime::Handle::current()),
+        ),
+    )
+    .snapshot()
+    .await
+    .unwrap();
     assert_eq!(available.names(), ["ProcessInput", "ProcessStop"]);
     for (name, n) in [("ProcessInput", 1), ("ProcessStop", 2)] {
         available
             .prepare(
                 name.into(),
                 json!({"n":n}),
-                context(),
+                root.context(Uuid::new_v4()),
                 CancellationToken::new(),
             )
             .await
@@ -219,10 +266,12 @@ async fn process_controls_are_resident_before_any_tool_search() {
             .prepare(
                 "withheld".into(),
                 json!({"n":3}),
-                context(),
+                root.context(Uuid::new_v4()),
                 CancellationToken::new()
             )
             .await,
         Err(ToolRejection::Unavailable)
     ));
+    assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+    root.close().await;
 }

@@ -72,10 +72,9 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
         let deployment = fixture.app.source().unwrap().deployment;
         fixture.app.shutdown().await.unwrap();
         drop(running_socket);
-        fixture.store.recover_invocations().await.unwrap();
-        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
+        let mut commits = fixture.owner.durable.subscribe().unwrap();
         let mut native = NativeRegistry::default();
-        provide_all(&mut native).unwrap();
+        provide_all(&mut native, fixture.owner.durable.clone()).unwrap();
         maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
         fixture.app = Application::start_from_store(
             fixture.store.clone(),
@@ -89,6 +88,7 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
         .unwrap();
         fixture.app.ready().await.unwrap();
         let mut socket = loop {
+            commits.borrow_and_update();
             let work = fixture
                 .query(
                     "work",
@@ -97,10 +97,20 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
                 )
                 .await
                 .unwrap();
-            assert_ne!(
-                work["execution"]["state"], "failed",
-                "queued request failed after restart: {work}"
+            assert!(
+                matches!(work["kind"].as_str(), Some("pending" | "delivered")),
+                "queued request lost after restart: {work}"
             );
+            if work["kind"] == "delivered" {
+                assert_ne!(
+                    work["execution"]["state"]["kind"], "failed",
+                    "queued request failed after restart: {work}"
+                );
+                assert_ne!(
+                    work["execution"]["state"]["kind"], "cancelled",
+                    "queued request cancelled after restart: {work}"
+                );
+            }
             tokio::select! {
                 socket = listener.accept() => break socket.unwrap().0,
                 changed = commits.changed() => changed.unwrap(),
@@ -117,6 +127,7 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
         );
         response(&mut socket).await;
         loop {
+            commits.borrow_and_update();
             let work = fixture
                 .query(
                     "work",
@@ -125,12 +136,20 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
                 )
                 .await
                 .unwrap();
-            if work["execution"]["state"] == "completed" {
+            assert_eq!(
+                work["kind"], "delivered",
+                "the original queued message must remain delivered: {work}"
+            );
+            if work["execution"]["state"]["kind"] == "completed" {
                 break;
             }
             assert_ne!(
-                work["execution"]["state"], "failed",
+                work["execution"]["state"]["kind"], "failed",
                 "restored execution failed: {work}"
+            );
+            assert_ne!(
+                work["execution"]["state"]["kind"], "cancelled",
+                "restored execution cancelled: {work}"
             );
             commits.changed().await.unwrap();
         }
@@ -193,6 +212,7 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
             "metadata".into(),
             input.clone(),
             operation,
+            input.clone(),
             Attachments::new(),
         )
         .unwrap()
@@ -202,8 +222,9 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
         .mutate_target(
             &service,
             "metadata".into(),
-            input,
+            input.clone(),
             operation,
+            input,
             Attachments::new(),
         )
         .unwrap()
@@ -211,7 +232,10 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
         .unwrap();
     assert_eq!(first, replay);
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: maka_plugin_core::operation::OperationResult::Success { value },
+            },
         ..
     } = &first.receipt
     else {
@@ -346,7 +370,7 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
             let (mut socket, _) = listener.accept().await.unwrap();
             let sent = request(&mut socket).await;
             if sent["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool") {
-                assert!(sent["messages"].to_string().contains("started"));
+                assert!(sent["messages"].to_string().contains("queued"));
                 caller_socket = Some(socket);
             } else {
                 assert!(sent["messages"].to_string().contains("Continue the existing task"));

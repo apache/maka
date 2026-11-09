@@ -69,6 +69,7 @@ pub(crate) struct NativeKey {
     pub epoch: String,
     pub session: String,
     pub turn: String,
+    pub execution: crate::ExecutionCorrelation,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -166,6 +167,7 @@ pub(crate) struct NativeReply {
 #[derive(Clone)]
 pub(crate) struct NativeAudioCompletion {
     slot: Arc<Slot>,
+    key: NativeKey,
     output: std::path::PathBuf,
     completion: super::connection::AudioObservation,
 }
@@ -188,7 +190,7 @@ impl NativeAudioCompletion {
             .connection
             .invoke(
                 Request::NativeDiscardAudio {
-                    key: self.slot.key(),
+                    key: self.key.clone(),
                     output: Some(self.output.clone()),
                 },
                 None,
@@ -227,7 +229,13 @@ struct Slot {
     hard_stop: CancellationToken,
     exit: ExitObservation,
     observation: watch::Receiver<NativeObservation>,
-    audio: std::sync::Mutex<Option<(std::path::PathBuf, super::connection::AudioObservation)>>,
+    audio: std::sync::Mutex<
+        Option<(
+            NativeKey,
+            std::path::PathBuf,
+            super::connection::AudioObservation,
+        )>,
+    >,
     requests: Arc<Mutex<()>>,
 }
 impl Slot {
@@ -328,7 +336,11 @@ impl NativeOwner {
             return Ok((slot.clone(), admission));
         }
         if let Some(slot) = current.as_ref() {
-            if slot.key().session == key.session && slot.key().turn == key.turn && slot.escaped() {
+            if slot.key().session == key.session
+                && slot.key().turn == key.turn
+                && slot.key().execution == key.execution
+                && slot.escaped()
+            {
                 return Err(ToolError::Failed(
                     "computer_use_interrupted: native Computer Use is stopped for this turn".into(),
                 ));
@@ -412,6 +424,7 @@ impl NativeOwner {
             epoch: epoch.to_string(),
             session: invocation.session().into(),
             turn: invocation.turn().into(),
+            execution: invocation.execution_correlation().clone(),
         };
         let operation_id = invocation.operation_id().map(str::to_owned);
         let observer = invocation.native_interruption_observer();
@@ -423,6 +436,7 @@ impl NativeOwner {
         let fresh_binding = existing_binding.is_none_or(|binding| {
             binding.session() != key.session
                 || binding.turn() != key.turn
+                || binding.execution_correlation() != &key.execution
                 || binding.native_epoch() != key.epoch
         });
         let binding = if fresh_binding {
@@ -440,6 +454,7 @@ impl NativeOwner {
                     let binding = crate::NativeBindingSource::from_bound_native(
                         key.session.clone(),
                         key.turn.clone(),
+                        key.execution.clone(),
                         key.epoch.clone(),
                         slot.generation.observed(),
                         operation.clone(),
@@ -475,7 +490,7 @@ impl NativeOwner {
             .connection
             .invoke_native(
                 Request::NativeInvoke {
-                    key,
+                    key: key.clone(),
                     operation,
                     operation_id,
                     arguments: input,
@@ -500,9 +515,10 @@ impl NativeOwner {
                     })?;
                     *slot.audio.lock().map_err(|_| {
                         ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
-                    })? = Some((output.clone(), completion.clone()));
+                    })? = Some((key.clone(), output.clone(), completion.clone()));
                     Some(NativeAudioCompletion {
                         slot: slot.clone(),
+                        key: key.clone(),
                         output,
                         completion,
                     })
@@ -550,10 +566,11 @@ impl NativeOwner {
                 ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
             })?
             .clone();
-        let (output, completion) = receipt
+        let (key, output, completion) = receipt
             .ok_or_else(|| ToolError::Failed("computer audio recording is not active".into()))?;
         Ok(NativeAudioCompletion {
             slot: slot.clone(),
+            key,
             output,
             completion,
         })
@@ -589,12 +606,14 @@ impl NativeOwner {
         epoch: NativeEpochId,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
         let current = self.current.lock().await;
         if let Some(slot) = current.as_ref().filter(|slot| {
             slot.key().epoch == epoch.to_string()
                 && slot.key().session == session
                 && slot.key().turn == turn
+                && &slot.key().execution == execution
         }) {
             slot.retire_binding().await?;
         }
@@ -608,8 +627,8 @@ impl NativeOwner {
         {
             slot.retire_binding().await?;
         }
-        // Retain the observed interrupted-turn receipt until a different real
-        // Host turn arrives, including after replacement of its JS epoch.
+        // JS epoch replacement cannot erase the original interrupted source.
+        // A different admitted source may replace it through normal binding custody.
         Ok(())
     }
     pub(crate) async fn close(&self) -> Result<(), ToolError> {
@@ -898,7 +917,7 @@ async fn serve(
                                     let _ = events.send(NativeEvent::Completed { id, audio_start: matches!(operation, NativeOperation::StartAudioRecording), result });
                                 });
                             },
-                            Request::NativeDiscardAudio { key, output: expected_output } if bound.as_ref().is_some_and(|bound| bound.key == key || (expected_output.is_some() && bound.key.session == key.session)) => {
+                            Request::NativeDiscardAudio { key, output: expected_output } if bound.as_ref().is_some_and(|bound| bound.key == key || (expected_output.is_some() && bound.key.session == key.session && bound.key.epoch == key.epoch)) => {
                                 let session = bound.as_ref().expect("checked bound").session.clone();
                                 let events = events.clone();
                                 controls.insert(id);
@@ -992,6 +1011,8 @@ mod tests {
             epoch: "fixture-epoch".into(),
             session: "fixture-session".into(),
             turn: turn.into(),
+
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
         }
     }
 
@@ -1011,6 +1032,8 @@ mod tests {
             epoch: epoch.to_string(),
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
         };
         let generation = NativeGeneration(uuid::Uuid::new_v4());
         let (exit, exited) = watch::channel(None);
@@ -1400,8 +1423,12 @@ mod tests {
         operation: &'static str,
         observer: Option<Arc<RecordedObserver>>,
     ) -> Result<NativeReply, ToolError> {
-        let context = InvocationContext::new("fixture-session", "fixture-turn")
-            .with_operation_id(operation.into());
+        let context = InvocationContext::new(
+            "fixture-session",
+            "fixture-turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id(operation.into());
         let context = match observer {
             Some(observer) => context.with_native_interruption_observer(observer),
             None => context,
@@ -1451,13 +1478,18 @@ mod tests {
         } = actor_fixture();
         *owner.current.lock().await = Some(slot.clone());
         let observer = Arc::new(RecordedObserver::default());
-        let invocation = InvocationContext::new("fixture-session", "fixture-turn")
-            .with_operation_id("actual-host-operation".into())
-            .with_native_interruption_observer(observer.clone())
-            .capture();
+        let invocation = InvocationContext::new(
+            "fixture-session",
+            "fixture-turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("actual-host-operation".into())
+        .with_native_interruption_observer(observer.clone())
+        .capture();
         let arguments = serde_json::json!({
             "session": "guest-session",
             "turn": "guest-turn",
+            "execution": "guest-execution",
             "operation_id": "guest-operation",
         });
         let original = arguments.clone();
@@ -1489,6 +1521,7 @@ mod tests {
         };
         assert_eq!(key.session, "fixture-session");
         assert_eq!(key.turn, "fixture-turn");
+        assert_eq!(key.execution.as_str(), "fixture-execution");
         assert_eq!(key.epoch, epoch.to_string());
         assert_eq!(operation_id.as_deref(), Some("actual-host-operation"));
         assert_eq!(arguments, original);
@@ -1523,6 +1556,8 @@ mod tests {
             epoch: epoch.to_string(),
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
         };
         let generation = NativeGeneration(uuid::Uuid::new_v4());
         let (_exit, exit) = watch::channel(None);

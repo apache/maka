@@ -18,178 +18,35 @@
  */
 
 use super::*;
+use crate::{history::test_support as canonical, preparation};
 use base64::Engine;
 use image::{GenericImageView, ImageEncoder};
 use maka_agent_facts::{
-    artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest},
+    artifact::{
+        Artifact, ArtifactKind, ArtifactSource, PublishedArtifact, ToolReturn, content_digest,
+        upload_artifact_id,
+    },
     attachment::StorageRef,
-    event::{EventWrite, Fact, Invocation, RuntimeEvent},
-    input::InvocationInput,
+    durable::{ContentRef, ExecutionIdentity, Fact, SCHEMA_VERSION, UnixMillis},
+    input::MessageInput,
     language::Language,
     model::prompt_source::source::MediaSource,
-    tool_call::ToolCallIdentity,
     tool_output::{
-        DurableToolProjection, ImageDetail, ImageOutput, ProjectionPart, ToolOutput, ToolSuccess,
+        DurableToolProjection, ImageDetail, ProjectionPart, ReturnedToolResult, ToolSuccess,
     },
 };
-use maka_event_log::{
-    context::semantic::SemanticSelection,
-    root_store::{RootStore, SessionExecutionLease, SessionStore},
+use maka_agent_state::{
+    Change, ContentBlob, Store,
+    artifacts::{ArtifactReadScope, ArtifactScope, ArtifactStore, SessionScope, Upload},
 };
-use maka_model::{ModelPreparationResources, ModelRequest, ProviderKind};
+use maka_event_log::root_store::{RootStore, SessionStore, SessionWorkLease, WorkEffects};
+use maka_model::{ModelPreparationResources, ModelRequest, ProviderKind, prompt::Message};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
 const WIDTH: u32 = 390;
 const HEIGHT: u32 = 45480;
 
-fn invocation() -> Invocation {
-    Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    }
-}
-async fn artifact(store: &SessionStore, id: &str, mime: &str, body: Vec<u8>, tool: bool) {
-    store
-        .commit_artifact(
-            Artifact {
-                id: id.into(),
-                session_id: "session".into(),
-                turn_id: "upload".into(),
-                created_at: 1,
-                name: "display-name".into(),
-                kind: if mime.starts_with("image/") {
-                    ArtifactKind::Image
-                } else {
-                    ArtifactKind::File
-                },
-                size_bytes: body.len() as u64,
-                mime_type: Some(mime.into()),
-                source: if tool {
-                    ArtifactSource::ToolResult
-                } else {
-                    ArtifactSource::UserUpload
-                },
-                summary: Some(maka_agent_facts::artifact::content_digest(&body)),
-            },
-            body,
-        )
-        .await
-        .unwrap();
-}
-async fn append(store: &SessionStore, fact: Fact) -> u64 {
-    store
-        .append(&EventWrite::plain(RuntimeEvent::new(invocation(), fact)).unwrap())
-        .await
-        .unwrap()
-}
-async fn open_model(store: &SessionStore) {
-    append(
-        store,
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                source_messages: Vec::new(),
-                content: "prior".into(),
-                request_fingerprint: None,
-            },
-        },
-    )
-    .await;
-    append(
-        store,
-        Fact::ModelRequested {
-            source_capture: maka_agent_facts::event::SourceCapture {
-                publication_watermark: 0,
-                prior_unknown: false,
-            },
-            item_acceptance: false,
-            effective_source_digest: None,
-            purpose: maka_agent_facts::context::ModelPurpose::Main,
-            context: None,
-            context_breakdown: None,
-            checkpoint_event_id: None,
-            step_id: "step".into(),
-            model_id: "test".into(),
-            source_scope: maka_agent_facts::event::LogScope::Session {
-                id: "session".into(),
-            },
-            source_high_water: 1,
-            source_digest: "fixture".into(),
-            input_digest: "fixture".into(),
-            route_identity: "fixture".into(),
-        },
-    )
-    .await;
-}
-fn model_completion(
-    parts: Vec<maka_agent_facts::model::ModelPart>,
-) -> maka_agent_facts::model::recorded::ModelCompletion {
-    use maka_agent_facts::model::recorded::{CompletionPart, ModelCompletion, ModelPartRecord};
-    ModelCompletion {
-        compaction: None,
-        parts: parts
-            .into_iter()
-            .enumerate()
-            .map(|(ordinal, part)| {
-                CompletionPart::Own(ModelPartRecord {
-                    ordinal: ordinal as u64,
-                    message_id: match &part {
-                        maka_agent_facts::model::ModelPart::ToolCall { call } => {
-                            maka_agent_facts::tool_call::tool_use_id(
-                                "invocation",
-                                &format!("step:{}", call.id),
-                            )
-                        }
-                        _ => uuid::Uuid::new_v4().to_string(),
-                    },
-                    started_at: std::time::SystemTime::now(),
-                    provider_part_id: None,
-                    part: Arc::new(part),
-                })
-            })
-            .collect(),
-        finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-        usage: Default::default(),
-        provider_options: None,
-        response_id: None,
-        model: None,
-        timestamp: None,
-    }
-}
-async fn open_tool(store: &SessionStore) {
-    open_model(store).await;
-    append(
-        store,
-        Fact::ModelCompleted {
-            step_id: "step".into(),
-            output: model_completion(vec![maka_agent_facts::model::ModelPart::ToolCall {
-                call: maka_agent_facts::model::ModelToolCall {
-                    id: "call".into(),
-                    name: "Read".into(),
-                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
-                    provider_executed: false,
-                    provider_options: None,
-                },
-            }]),
-        },
-    )
-    .await;
-    append(
-        store,
-        Fact::ToolDispatched {
-            presentation: None,
-            title: None,
-            operation_id: "step:call".into(),
-            call: ToolCallIdentity::provider("step".into(), "call".into()),
-            name: "Read".into(),
-            input: serde_json::json!({}),
-        },
-    )
-    .await;
-}
 fn row_image(width: u32, height: u32) -> Vec<u8> {
     let mut pixels = Vec::with_capacity((width * height * 3) as usize);
     for y in 0..height {
@@ -208,8 +65,14 @@ struct Fixture {
     directory: tempfile::TempDir,
     root: RootStore,
     log: Arc<SessionStore>,
-    execution: SessionExecutionLease,
-    selection: SemanticSelection,
+    execution: SessionWorkLease,
+    effects: WorkEffects,
+    state: Store,
+    artifacts: ArtifactStore,
+    scope: SessionScope,
+    tool: Option<(ArtifactScope, ContentRef)>,
+    id: String,
+    input: MessageInput,
     original: Vec<u8>,
 }
 impl Fixture {
@@ -217,66 +80,157 @@ impl Fixture {
         Self::with_images(tool, width, height, 1).await
     }
     async fn with_images(tool: bool, width: u32, height: u32, images: usize) -> Self {
-        let (directory, root) = crate::test_support::root().await;
-        let store = crate::test_support::session(&root, "session").await;
+        let directory = tempfile::tempdir().unwrap();
+        let root = canonical::open(directory.path(), false).await;
+        root.create_session("session", "fixture", &json!({}), 1)
+            .await
+            .unwrap();
+        let (log, execution, effects) = canonical::work(&root).await;
+        let state = canonical::state(&root);
+        let artifacts = ArtifactStore::new(root.data_writer().unwrap());
+        let scope = SessionScope {
+            owner: canonical::owner(),
+            session: "session".into(),
+        };
         let original = tokio::task::spawn_blocking(move || row_image(width, height))
             .await
             .unwrap();
-        artifact(&store, "source-image", "image/png", original.clone(), tool).await;
-        let through = if tool {
-            open_tool(&store).await;
-            let event = EventWrite::tool_success(
-                "result".into(),
-                std::time::SystemTime::now(),
-                invocation(),
-                "step:call".into(),
-                ToolSuccess::projected(
-                    ToolOutput::Json(json!({"source":"immutable image"})),
-                    DurableToolProjection::Content {
-                        parts: vec![
-                            ProjectionPart::Artifact {
-                                image: ImageOutput {
-                                    detail: Some(ImageDetail::High),
-                                    mime_type: "image/png".into(),
-                                    reference: StorageRef::SessionFile {
-                                        session_id: "session".into(),
-                                        relative_path: "source-image".into(),
-                                    },
-                                },
-                            };
-                            images
-                        ],
-                    },
-                ),
+        let (id, tool) = if tool {
+            let (run, key) = canonical::admit_tool(&state).await;
+            let mut normalized = ToolSuccess::image(
+                original.clone(),
+                "image/png".into(),
+                Some(ImageDetail::High),
             )
             .unwrap()
-            .0;
-            store.append(&event).await.unwrap()
+            .into_durable(
+                "fixture-result",
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+                &ExecutionIdentity {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: run,
+                },
+            )
+            .unwrap();
+            let DurableToolProjection::Content { parts } = &mut normalized.projection else {
+                panic!("image must normalize to immutable projection")
+            };
+            let image_index = parts
+                .iter()
+                .position(|part| matches!(part, ProjectionPart::Artifact { .. }))
+                .expect("normalized image artifact");
+            let image = parts[image_index].clone();
+            parts.splice(
+                image_index..=image_index,
+                std::iter::repeat_n(image, images),
+            );
+            let id = normalized.artifacts[0].artifact().id.clone();
+            let published = normalized
+                .artifacts
+                .iter()
+                .map(|write| {
+                    let evidence = write.evidence();
+                    PublishedArtifact {
+                        artifact: write.artifact().clone(),
+                        payload: ContentRef {
+                            digest: evidence.digest,
+                            bytes: evidence.bytes,
+                        },
+                    }
+                })
+                .collect();
+            let blob = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: published,
+                body: ReturnedToolResult {
+                    output: normalized.output,
+                    projection: normalized.projection,
+                    loaded_tools: normalized.loaded_tools,
+                    is_error: normalized.is_error,
+                },
+            })
+            .unwrap();
+            let commit = state
+                .observe_artifacts(
+                    run,
+                    vec![Change::new(
+                        Fact::LocalToolReturned {
+                            tool: key,
+                            settlement: maka_agent_facts::tool_call::ToolSettlement::Returned,
+                            result: blob.reference().clone(),
+                            is_error: false,
+                        },
+                        UnixMillis(3),
+                    )],
+                    vec![blob.clone()],
+                    normalized.artifacts,
+                )
+                .await
+                .unwrap();
+            (
+                id,
+                Some((
+                    ArtifactScope {
+                        owner: scope.owner.clone(),
+                        session: scope.session.clone(),
+                        run,
+                        through: commit.head.revision,
+                    },
+                    blob.reference().clone(),
+                )),
+            )
         } else {
-            append(&store, Fact::InvocationOpened { configuration: None, input: InvocationInput::Message {
-                source_messages: Vec::new(), request_fingerprint: None,
-                content: serde_json::from_value(json!({"text":"Describe the image", "attachments":vec![json!({"kind":"image","name":"source.png","mimeType":"image/png","bytes":original.len(),"ref":{"kind":"session_file","sessionId":"session","relativePath":"source-image"}}); images]})).unwrap(),
-            }}).await
+            let id = upload_artifact_id("session", "source-image");
+            artifacts
+                .upload(Upload::new(
+                    scope.clone(),
+                    "fixture-upload".into(),
+                    "source-image".into(),
+                    Artifact {
+                        id: id.clone(),
+                        session_id: "session".into(),
+                        turn_id: id.clone(),
+                        created_at: 1,
+                        name: "source.png".into(),
+                        kind: ArtifactKind::Image,
+                        size_bytes: original.len() as u64,
+                        mime_type: Some("image/png".into()),
+                        source: ArtifactSource::UserUpload,
+                        summary: Some(content_digest(&original)),
+                    },
+                    original.clone(),
+                ))
+                .await
+                .unwrap();
+            (id, None)
         };
-        let execution = store.execution_scope(None).await.unwrap().accept();
-        let log = Arc::new(execution.store());
+        let input = serde_json::from_value(json!({"text":"Describe the image", "attachments":vec![json!({"kind":"image","name":"source.png","mimeType":"image/png","bytes":original.len(),"ref":{"kind":"session_file","sessionId":"session","relativePath":id}}); images]})).unwrap();
         Self {
             directory,
             root,
             log,
             execution,
+            effects,
+            state,
+            artifacts,
+            scope,
+            tool,
+            id,
+            input,
             original,
-            selection: SemanticSelection {
-                session: "session".into(),
-                lineage: None,
-                after: 0,
-                through,
-                before: u64::MAX,
-                captured_through: through,
-                replay: None,
-                prior_unknown: false,
-            },
         }
+    }
+    async fn returned(&self) -> ToolReturn<ReturnedToolResult> {
+        let (scope, reference) = self.tool.as_ref().expect("tool fixture");
+        let bytes = self
+            .state
+            .content(scope.run, reference.clone())
+            .await
+            .unwrap();
+        let returned: ToolReturn<ReturnedToolResult> = serde_json::from_slice(&bytes).unwrap();
+        returned.validate().unwrap();
+        returned
     }
     async fn capture(&self, provider: &ProviderConfig) -> PreparedPrompt {
         self.capture_with_resources(
@@ -287,30 +241,73 @@ impl Fixture {
     }
     async fn capture_with_resources(
         &self,
-        provider: &ProviderConfig,
+        _provider: &ProviderConfig,
         resources: ModelPreparationResources,
     ) -> PreparedPrompt {
-        let history = crate::history::prepare_view(
-            &self.log,
-            &crate::cleanup::Evidence::default(),
-            self.selection.clone(),
-            Language::En,
-            true,
-            &provider.kind,
-            &CancellationToken::new(),
-            resources,
-            0,
-        )
-        .await
-        .unwrap();
-        PreparedPrompt::from_history(history)
+        let cancellation = CancellationToken::new();
+        let messages = if let Some((scope, _)) = &self.tool {
+            let returned = self.returned().await;
+            let output = preparation::project_returned_tool(
+                &self.artifacts,
+                scope,
+                &returned.body,
+                Language::En,
+                true,
+                &resources,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+            vec![
+                Message::user("prior"),
+                Message::Assistant {
+                    content: vec![maka_model::prompt::AssistantPart::ToolCall {
+                        tool_call_id: "call".into(),
+                        tool_name: "Read".into(),
+                        input: maka_agent_facts::model::ToolInput::Json(json!({})),
+                        provider_executed: None,
+                        provider_options: None,
+                    }],
+                    provider_options: None,
+                },
+                Message::tool("call", "Read", output),
+            ]
+        } else {
+            vec![
+                preparation::project_input(
+                    &self.artifacts,
+                    &self.scope,
+                    &self.input,
+                    Language::En,
+                    true,
+                    false,
+                    None,
+                    &resources,
+                    &cancellation,
+                )
+                .await
+                .unwrap(),
+            ]
+        };
+        canonical::capture(&self.log, messages, resources).await
+    }
+    fn read_scope(&self) -> ArtifactReadScope {
+        match &self.tool {
+            Some((scope, _)) => scope.clone().into(),
+            None => self.scope.clone().into(),
+        }
     }
     async fn unchanged(&self) {
         let mut original = Vec::new();
         loop {
             let chunk = self
-                .log
-                .read_artifact_chunk("session", "source-image", original.len() as u64, 32 * 1024)
+                .artifacts
+                .chunk(
+                    self.read_scope(),
+                    self.id.clone(),
+                    original.len() as u64,
+                    32 * 1024,
+                )
                 .await
                 .unwrap()
                 .unwrap();
@@ -332,9 +329,11 @@ impl Fixture {
             root,
             log,
             execution,
+            effects,
             ..
         } = self;
         drop(log);
+        effects.settle().await.unwrap();
         execution.finish();
         root.shutdown().await.unwrap();
         drop(directory);
@@ -495,83 +494,99 @@ async fn request_size(prompt: &PreparedPrompt, provider: &ProviderConfig) -> u64
 }
 
 #[tokio::test]
-async fn canonical_tool_artifact_tokens_require_complete_original_json_strings() {
-    use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
-    use maka_event_log::context::semantic::{
-        ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult, PayloadEncoding,
-        SourcePosition,
-    };
+async fn canonical_tool_artifacts_require_the_original_run_cut_and_complete_typed_return() {
     let fixture = Fixture::new(true, 8, 8).await;
-    {
-        let source = fixture
-            .log
-            .capture_source(fixture.selection.clone())
+    let (scope, reference) = fixture.tool.as_ref().unwrap();
+    let bytes = fixture
+        .state
+        .content(scope.run, reference.clone())
+        .await
+        .unwrap();
+    let returned: ToolReturn<ReturnedToolResult> = serde_json::from_slice(&bytes).unwrap();
+    returned.validate().unwrap();
+    let captured = fixture
+        .artifacts
+        .with_content(scope.clone(), fixture.id.clone(), |_, reader| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(reader, &mut bytes).unwrap();
+            bytes
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(captured, fixture.original);
+    assert!(
+        serde_json::from_slice::<ToolReturn<ReturnedToolResult>>(&bytes[..bytes.len() - 1])
+            .is_err()
+    );
+    let mut foreign = scope.clone();
+    foreign.session = "foreign-session".into();
+    assert!(
+        fixture
+            .artifacts
+            .get(foreign, fixture.id.clone())
             .await
-            .unwrap();
-        let mut page = source
-            .directory_page(None, ChargedBuffer::new(vec![0; 4096], ()))
+            .is_err()
+    );
+    let mut earlier = scope.clone();
+    earlier.through -= 1;
+    assert!(
+        fixture
+            .artifacts
+            .get(earlier, fixture.id.clone())
             .await
-            .unwrap();
-        let mut payload = None;
-        while let Some(record) = page.next_row().unwrap() {
-            if record.row.id.source_sequence == fixture.selection.through {
-                payload = source.describe_payload(&record.row).unwrap();
-                break;
-            }
-        }
-        let payload = payload.expect("canonical tool artifact projection");
-        assert_eq!(payload.encoding(), PayloadEncoding::CanonicalProjection);
-        let mut chunk = source
-            .read_chunk(
-                &payload,
-                SourcePosition::default(),
-                ChargedBuffer::new(vec![0; 4096], ()),
-            )
-            .await
-            .unwrap();
-        let json = std::str::from_utf8(&chunk.buffer.as_mut()[..chunk.bytes_read]).unwrap();
-        let token = |literal: &str| {
-            let start = json.find(literal).expect("original identity token") as u64;
-            start..start + literal.len() as u64
-        };
-        let session = token("\"session\"");
-        let artifact = token("\"source-image\"");
-        let lookup = |artifact| {
-            ArtifactLookup::new(
-                payload.clone(),
-                session.clone(),
-                artifact,
-                ChargedBuffer::new(vec![0; 64], ()),
-            )
             .unwrap()
-        };
-        let found = source
-            .with_artifact_capture(lookup(artifact.clone()), |_, _, reader| {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(reader, &mut bytes)?;
-                Ok(bytes)
-            })
+            .is_none()
+    );
+    let mut future = scope.clone();
+    future.through += 1;
+    assert!(
+        fixture
+            .artifacts
+            .get(future, fixture.id.clone())
             .await
-            .unwrap();
-        match found {
-            ArtifactLookupResult::Captured(bytes) => assert_eq!(bytes, fixture.original),
-            _ => panic!("original canonical identity must resolve its artifact"),
-        }
-        let truncated = artifact.start..artifact.end - 1;
-        assert!(
-            source
-                .with_artifact_capture(lookup(truncated), |_, _, _| Ok(()))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            source
-                .validate_artifact_identity(lookup(artifact))
-                .await
-                .unwrap(),
-            ArtifactIdentityValidity::Valid
-        );
-    }
+            .is_err()
+    );
+    let other = canonical::admit(&fixture.state, "other Run".into()).await;
+    let mut unrelated = scope.clone();
+    unrelated.run = other;
+    unrelated.through = 1;
+    assert!(
+        fixture
+            .artifacts
+            .get(unrelated, fixture.id.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut altered = returned.body;
+    let DurableToolProjection::Content { parts } = &mut altered.projection else {
+        panic!("content projection")
+    };
+    let Some(ProjectionPart::Artifact { image }) = parts
+        .iter_mut()
+        .find(|part| matches!(part, ProjectionPart::Artifact { .. }))
+    else {
+        panic!("image projection")
+    };
+    image.reference = StorageRef::SessionFile {
+        session_id: "session".into(),
+        relative_path: "forged-artifact".into(),
+    };
+    assert!(
+        preparation::project_returned_tool(
+            &fixture.artifacts,
+            scope,
+            &altered,
+            Language::En,
+            true,
+            &ModelPreparationResources::new(Default::default()).unwrap(),
+            &CancellationToken::new()
+        )
+        .await
+        .is_err()
+    );
+    fixture.unchanged().await;
     fixture.close().await;
 }
 

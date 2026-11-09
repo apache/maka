@@ -32,6 +32,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod delete;
+mod publication;
 #[cfg(windows)]
 mod windows;
 
@@ -41,6 +42,7 @@ pub(crate) enum ReadMode {
     None,
     Required,
     Preview,
+    Permissions,
 }
 fn identity(metadata: &Metadata) -> Identity {
     (metadata.dev(), metadata.ino())
@@ -112,7 +114,9 @@ impl Target {
                 let file = parent
                     .open_with(
                         &name,
-                        file_options(false).read(!matches!(read, ReadMode::None)),
+                        file_options(false)
+                            .read(!matches!(read, ReadMode::None))
+                            .write(!matches!(read, ReadMode::Permissions)),
                     )
                     .or_else(|error| {
                         if matches!(read, ReadMode::Preview)

@@ -48,18 +48,28 @@ type AudioObservations = FuturesUnordered<BoxFuture<'static, (u64, Result<(), Fa
 #[derive(Default)]
 struct PendingInvocations {
     replies: FuturesUnordered<BoxFuture<'static, (u64, Result<Value, ToolError>)>>,
-    identities: HashMap<u64, (String, CancellationToken)>,
+    identities: HashMap<
+        u64,
+        (
+            (String, String, crate::ExecutionCorrelation),
+            CancellationToken,
+        ),
+    >,
 }
 impl PendingInvocations {
     fn insert(
         &mut self,
         id: u64,
+        session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         cancellation: CancellationToken,
         pending: BoxFuture<'static, Result<Value, ToolError>>,
     ) {
         assert!(
-            self.identities.insert(id, (turn, cancellation)).is_none(),
+            self.identities
+                .insert(id, ((session, turn, execution), cancellation))
+                .is_none(),
             "the validated desktop request {id} cannot be parked twice"
         );
         self.replies
@@ -68,9 +78,11 @@ impl PendingInvocations {
     fn is_empty(&self) -> bool {
         self.identities.is_empty()
     }
-    fn cancel(&self, turn: Option<&str>) {
-        for (owner_turn, cancellation) in self.identities.values() {
-            if turn.is_none_or(|turn| turn == owner_turn) {
+    fn cancel(&self, scope: Option<(&str, &str, &crate::ExecutionCorrelation)>) {
+        for (owner, cancellation) in self.identities.values() {
+            if scope.is_none_or(|(session, turn, execution)| {
+                owner.0 == session && owner.1 == turn && &owner.2 == execution
+            }) {
                 cancellation.cancel();
             }
         }
@@ -89,14 +101,14 @@ impl PendingInvocations {
     }
     async fn drain(
         &mut self,
-        turn: Option<&str>,
+        scope: Option<(&str, &str, &crate::ExecutionCorrelation)>,
         events: &mpsc::UnboundedSender<Event>,
     ) -> Result<(), ToolError> {
-        while self
-            .identities
-            .values()
-            .any(|(owner_turn, _)| turn.is_none_or(|turn| turn == owner_turn))
-        {
+        while self.identities.values().any(|(owner, _)| {
+            scope.is_none_or(|(session, turn, execution)| {
+                owner.0 == session && owner.1 == turn && &owner.2 == execution
+            })
+        }) {
             self.forward_next(events).await;
         }
         Ok(())
@@ -160,6 +172,7 @@ enum Operation {
         cancellation: CancellationToken,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         operation_id: Option<String>,
         native_observer_available: bool,
         browsers: Vec<BrowserConnection>,
@@ -172,6 +185,7 @@ enum Operation {
         cancellation: CancellationToken,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         operation_id: String,
         browsers: Vec<BrowserConnection>,
         preparation_policy: crate::BrowserPreparationPolicy,
@@ -184,11 +198,14 @@ enum Operation {
     FinishTurn {
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         language: Language,
         reply: oneshot::Sender<Result<(), ToolError>>,
     },
     DrainTurn {
+        session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         reply: oneshot::Sender<Result<(), ToolError>>,
     },
     Close {
@@ -267,7 +284,11 @@ impl Authorization {
                 failed("Browser session preparation requires its original invocation identity")
             })
             .and_then(|identity| {
-                preparation.check_scope(&identity.turn, &identity.operation_id)?;
+                preparation.check_scope(
+                    &identity.turn,
+                    &identity.execution,
+                    &identity.operation_id,
+                )?;
                 Ok(identity)
             });
         match identity {
@@ -416,6 +437,7 @@ impl EpochWorker {
                         cancellation,
                         session,
                         turn,
+                        execution,
                         operation_id,
                         native_observer_available,
                         browsers,
@@ -431,6 +453,7 @@ impl EpochWorker {
                                 epoch: epoch_id.clone(),
                                 session: session.clone(),
                                 turn: turn.clone(),
+                                execution: execution.clone(),
                                 operation_id: operation_id.clone(),
                             });
                         let authorization: Arc<dyn BrowserAuthorization> =
@@ -451,14 +474,15 @@ impl EpochWorker {
                                             .prepare_invoke(
                                                 *command,
                                                 &{
-                                                    let mut context =
-                                                        InvocationContext::new(&session, &turn)
-                                                            .with_browser_preparation_policy(
-                                                                preparation_policy,
-                                                            )
-                                                            .with_browser_authorization(
-                                                                authorization,
-                                                            );
+                                                    let mut context = InvocationContext::new(
+                                                        &session,
+                                                        &turn,
+                                                        execution.clone(),
+                                                    )
+                                                    .with_browser_preparation_policy(
+                                                        preparation_policy,
+                                                    )
+                                                    .with_browser_authorization(authorization);
                                                     if let Some(operation_id) = operation_id {
                                                         context =
                                                             context.with_operation_id(operation_id);
@@ -499,7 +523,9 @@ impl EpochWorker {
                             let disconnected = disconnected.clone();
                             pending.insert(
                                 id,
+                                session,
                                 turn,
+                                execution,
                                 cancellation,
                                 Box::pin(async move {
                                     let result = settle(completion.wait(), &disconnected).await;
@@ -540,6 +566,7 @@ impl EpochWorker {
                         cancellation,
                         session,
                         turn,
+                        execution,
                         operation_id,
                         browsers,
                         preparation_policy,
@@ -551,6 +578,7 @@ impl EpochWorker {
                             epoch: epoch_id.clone(),
                             session: session.clone(),
                             turn: turn.clone(),
+                            execution: execution.clone(),
                             operation_id: operation_id.clone(),
                         };
                         let authorization: Arc<dyn BrowserAuthorization> =
@@ -566,11 +594,14 @@ impl EpochWorker {
                                     return Err(failed("Computer Use cancelled before dispatch"));
                                 }
                                 local.configure_browsers(browsers, language)?;
-                                let context = InvocationContext::new(&session, &turn)
-                                    .with_browser_preparation_policy(preparation_policy)
-                                    .with_operation_id(operation_id)
-                                    .with_browser_authorization(authorization)
-                                    .with_browser_services(callbacks.scope(identity.clone(), id));
+                                let context =
+                                    InvocationContext::new(&session, &turn, execution.clone())
+                                        .with_browser_preparation_policy(preparation_policy)
+                                        .with_operation_id(operation_id)
+                                        .with_browser_authorization(authorization)
+                                        .with_browser_services(
+                                            callbacks.scope(identity.clone(), id),
+                                        );
                                 local
                                     .adopt_browser_lease_child(
                                         request,
@@ -604,19 +635,33 @@ impl EpochWorker {
                     Operation::FinishTurn {
                         session,
                         turn,
+                        execution,
                         language,
                         reply,
                     } => {
-                        pending.cancel(Some(&turn));
-                        let pending_cleanup = pending.drain(Some(&turn), &events).await;
-                        let native_cleanup =
-                            settle(local.finish_turn(&session, &turn, language), &disconnected)
-                                .await;
+                        pending.cancel(Some((&session, &turn, &execution)));
+                        let pending_cleanup = pending
+                            .drain(Some((&session, &turn, &execution)), &events)
+                            .await;
+                        let native_cleanup = settle(
+                            local.finish_turn(&session, &turn, &execution, language),
+                            &disconnected,
+                        )
+                        .await;
                         let _ = reply.send(epoch_cleanup(pending_cleanup, native_cleanup));
                     }
-                    Operation::DrainTurn { turn, reply } => {
-                        pending.cancel(Some(&turn));
-                        let _ = reply.send(pending.drain(Some(&turn), &events).await);
+                    Operation::DrainTurn {
+                        session,
+                        turn,
+                        execution,
+                        reply,
+                    } => {
+                        pending.cancel(Some((&session, &turn, &execution)));
+                        let _ = reply.send(
+                            pending
+                                .drain(Some((&session, &turn, &execution)), &events)
+                                .await,
+                        );
                     }
                     Operation::Close { reply } => {
                         pending.cancel(None);
@@ -720,7 +765,12 @@ impl Epoch {
         }
     }
 
-    fn drain_turn(&self, turn: &str) -> BoxFuture<'static, Result<(), ToolError>> {
+    fn drain_turn(
+        &self,
+        session: &str,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> BoxFuture<'static, Result<(), ToolError>> {
         let worker = match self {
             Self::Open(worker) => match &worker.closing {
                 Some(closing) => return Box::pin(observe_retirement(closing.clone())),
@@ -730,7 +780,9 @@ impl Epoch {
         };
         let (reply, completion) = oneshot::channel();
         let sent = worker.invoke(Operation::DrainTurn {
+            session: session.to_owned(),
             turn: turn.to_owned(),
+            execution: execution.clone(),
             reply,
         });
         Box::pin(async move {
@@ -1046,14 +1098,31 @@ fn dispatch(
     let disconnected = context.disconnected;
     let callbacks = context.callbacks;
     match &request {
-        Request::CloseEpoch { owner, epoch } => callbacks.seal_matching(owner, Some(epoch), None),
-        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None),
-        Request::FinishTurn {
-            owner, epoch, turn, ..
-        } => callbacks.seal_matching(owner, Some(epoch), Some(turn)),
-        Request::FinishOwnerTurn { owner, turn, .. } => {
-            callbacks.seal_matching(owner, None, Some(turn))
+        Request::CloseEpoch { owner, epoch } => {
+            callbacks.seal_matching(owner, Some(epoch), None, None, None)
         }
+        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None, None, None),
+        Request::FinishTurn {
+            owner,
+            epoch,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(
+            owner,
+            Some(epoch),
+            Some(session),
+            Some(turn),
+            Some(execution),
+        ),
+        Request::FinishOwnerTurn {
+            owner,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(owner, None, Some(session), Some(turn), Some(execution)),
         _ => {}
     }
     match request {
@@ -1062,6 +1131,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             operation_id,
             native_observer_available,
             browsers,
@@ -1108,6 +1178,7 @@ fn dispatch(
                 cancellation,
                 session,
                 turn,
+                execution,
                 operation_id,
                 native_observer_available,
                 browsers,
@@ -1121,6 +1192,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             operation_id,
             browsers,
             preparation_policy,
@@ -1160,6 +1232,7 @@ fn dispatch(
                 cancellation,
                 session,
                 turn,
+                execution,
                 operation_id,
                 browsers,
                 preparation_policy,
@@ -1201,6 +1274,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             language,
         } => {
             let Some(epoch) = owners
@@ -1217,6 +1291,7 @@ fn dispatch(
             epoch.invoke(Operation::FinishTurn {
                 session,
                 turn,
+                execution,
                 language,
                 reply,
             })?;
@@ -1236,7 +1311,9 @@ fn dispatch(
         }
         Request::FinishOwnerTurn {
             owner,
+            session,
             turn,
+            execution,
             language,
         } => {
             let Some(owner) = owners.get_mut(&owner) else {
@@ -1246,11 +1323,14 @@ fn dispatch(
             if owner.closing.is_some() {
                 return Err(failed("Computer Use Session owner is closed"));
             }
+            if owner.session != session {
+                return Err(failed("Computer Use Session identity mismatch"));
+            }
             owner.shared.retain(|task| !task.is_finished());
             let drains = owner
                 .epochs
                 .values()
-                .map(|epoch| epoch.drain_turn(&turn))
+                .map(|epoch| epoch.drain_turn(&session, &turn, &execution))
                 .collect::<Vec<_>>();
             let resources = owner.resources.clone();
             let disconnected = disconnected.clone();
@@ -1262,7 +1342,11 @@ fn dispatch(
                         failures.push(error.to_string());
                     }
                 }
-                let native = settle(resources.finish_turn(&turn, language), &disconnected).await;
+                let native = settle(
+                    resources.finish_turn(&session, &turn, &execution, language),
+                    &disconnected,
+                )
+                .await;
                 let pending = if failures.is_empty() {
                     Ok(())
                 } else {
@@ -1523,6 +1607,7 @@ mod tests {
 
     fn invoke(owner: &str, epoch: &str, command: Value) -> Request {
         Request::Invoke {
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             owner: owner.into(),
             epoch: epoch.into(),
             session: "logical-session".into(),
@@ -1708,6 +1793,7 @@ mod tests {
             &requests,
             5,
             Request::FinishTurn {
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 owner: "a".into(),
                 epoch: "replacement".into(),
                 session: "logical-session".into(),
@@ -1721,6 +1807,8 @@ mod tests {
             &requests,
             6,
             Request::FinishOwnerTurn {
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                session: "logical-session".into(),
                 owner: "a".into(),
                 turn: "logical-turn".into(),
                 language: Language::En,
@@ -1974,11 +2062,17 @@ mod tests {
         let (events, mut responses) = mpsc::unbounded_channel();
         let old = CancellationToken::new();
         let fresh = CancellationToken::new();
+        let other_execution = CancellationToken::new();
+        let original_execution = crate::ExecutionCorrelation::new("fixture-execution").unwrap();
+        let concurrent_execution =
+            crate::ExecutionCorrelation::new("another-live-execution").unwrap();
         let mut pending = PendingInvocations::default();
         let first = old.clone();
         pending.insert(
             11,
+            "logical-session".into(),
             "old-turn".into(),
+            original_execution.clone(),
             old.clone(),
             Box::pin(async move {
                 first.cancelled().await;
@@ -1988,15 +2082,35 @@ mod tests {
         let second = fresh.clone();
         pending.insert(
             12,
+            "logical-session".into(),
             "fresh-turn".into(),
+            original_execution.clone(),
             fresh.clone(),
             Box::pin(async move {
                 second.cancelled().await;
                 Err(failed("fresh wait cancelled"))
             }),
         );
-        pending.cancel(Some("old-turn"));
-        pending.drain(Some("old-turn"), &events).await.unwrap();
+        let third = other_execution.clone();
+        pending.insert(
+            13,
+            "logical-session".into(),
+            "old-turn".into(),
+            concurrent_execution.clone(),
+            other_execution.clone(),
+            Box::pin(async move {
+                third.cancelled().await;
+                Err(failed("concurrent execution cancelled"))
+            }),
+        );
+        pending.cancel(Some(("logical-session", "old-turn", &original_execution)));
+        pending
+            .drain(
+                Some(("logical-session", "old-turn", &original_execution)),
+                &events,
+            )
+            .await
+            .unwrap();
         assert!(old.is_cancelled());
         assert!(
             !fresh.is_cancelled(),
@@ -2004,8 +2118,25 @@ mod tests {
         );
         assert!(pending.identities.contains_key(&12));
         assert!(
+            !other_execution.is_cancelled(),
+            "closing one execution must not cancel another live execution sharing its presentation turn"
+        );
+        assert!(pending.identities.contains_key(&13));
+        assert!(
             matches!(responses.recv().await.unwrap(), Event::Response { id: 11, result: Err(Failure::Failed(message)), audio: None } if message == "old wait cancelled")
         );
+        pending.cancel(Some(("logical-session", "old-turn", &concurrent_execution)));
+        pending
+            .drain(
+                Some(("logical-session", "old-turn", &concurrent_execution)),
+                &events,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(responses.recv().await.unwrap(), Event::Response { id: 13, result: Err(Failure::Failed(message)), audio: None } if message == "concurrent execution cancelled")
+        );
+        assert!(!fresh.is_cancelled());
         pending.cancel(None);
         pending.drain(None, &events).await.unwrap();
         assert!(
@@ -2020,6 +2151,7 @@ mod tests {
             epoch: "transport-epoch".into(),
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "fixture-operation".into(),
         }
     }
@@ -2030,6 +2162,7 @@ mod tests {
             browser_id: "fixture-browser".into(),
             generation: "fixture-generation".into(),
             turn_id: "fixture-turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "fixture-operation".into(),
             target: crate::BrowserPreparationTarget::ReservedTab {
                 tab_id: "fixture-tab".into(),

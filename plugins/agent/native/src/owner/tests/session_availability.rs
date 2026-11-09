@@ -214,7 +214,14 @@ async fn archived_session_mark_read_acknowledges_only_the_exact_tail_without_res
             .unwrap();
         assert_eq!(observed["session"]["archived"], true);
         assert_eq!(observed["session"]["hasUnread"], false);
-        let stored = fixture.owner.session(&session).await.unwrap();
+        let stored = fixture
+            .owner
+            .canonical_catalog()
+            .unwrap()
+            .record(&session)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             stored.read_state.last_read_message_id.as_deref(),
             Some(tails[1].as_str())

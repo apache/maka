@@ -166,6 +166,7 @@ pub(super) struct Bridge {
     shared: Arc<Shared>,
     cleanup: Arc<Mutex<CleanupState>>,
     turn: String,
+    execution: crate::ExecutionCorrelation,
 }
 
 type Completion = watch::Receiver<Option<Result<(), ToolError>>>;
@@ -672,6 +673,7 @@ impl Bridge {
         authorization: Arc<dyn BrowserAttachmentAuthorization>,
         host: Arc<dyn BrowserHostEffects>,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
         let socket = tab
             .connection
@@ -738,6 +740,7 @@ impl Bridge {
                 socket: None,
             }))),
             turn: turn.into(),
+            execution: execution.clone(),
         });
         let installing = shared.clone();
         let installed = reply.clone();
@@ -782,6 +785,9 @@ impl Bridge {
         Ok(())
     }
 
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        &self.execution
+    }
     pub fn turn(&self) -> &str {
         &self.turn
     }
@@ -1130,6 +1136,7 @@ mod tests {
                     socket: None,
                 }))),
                 turn: "turn".into(),
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             },
             wire,
         )
@@ -1172,6 +1179,7 @@ mod tests {
             cursor_host: Arc::new(tokio::sync::Mutex::new(Host::default())),
             cursor_spec: None,
             last_turn: "turn".into(),
+            last_execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             dialogs: None,
             downloads: None,
             filechoosers: None,
@@ -1302,12 +1310,14 @@ mod tests {
         let mut tab = tab(socket);
         let store = tab.clipboard_store.clone();
         let host = Arc::new(HostEffects::default());
+        let execution = crate::ExecutionCorrelation::new("fixture-execution").unwrap();
         let mut installing = Box::pin(Bridge::install(
             &mut tab,
             store,
             Arc::new(Authority),
             host.clone(),
             "turn",
+            &execution,
         ));
         for method in [
             "Target.setAutoAttach",

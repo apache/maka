@@ -17,11 +17,15 @@
  * under the License.
  */
 
-use crate::input::InvocationInput;
+use crate::input::RunInput;
 use crate::model::{ModelFinishReason, ModelPart, TextKind};
 use serde::{Deserialize, Serialize};
 
 mod breakdown;
+mod closure;
+pub use closure::{
+    ModelClosureProtocol, ModelFailureProtocol, RequestContextEvidence, SummaryResult,
+};
 pub mod measure;
 pub use breakdown::{ContextBucket, ContextCounts, PreparedContextBreakdown};
 mod checkpoint_mode;
@@ -144,22 +148,7 @@ impl ModelRequestContext {
             return Err("native compaction requires ChatGPT provenance");
         }
         if let Some(codex) = &self.codex {
-            if codex.connection_id.is_empty()
-                || codex
-                    .account_id
-                    .as_ref()
-                    .is_some_and(|id| id.is_empty() || id.chars().any(char::is_control))
-            {
-                return Err("invalid Codex request provenance");
-            }
-            if let Some(proof) = &codex.compatibility
-                && (proof.comp_hash.is_empty()
-                    || proof.comp_hash.trim() != proof.comp_hash
-                    || proof.comp_hash.chars().any(char::is_control)
-                    || proof.fetched_at > 9_007_199_254_740_991)
-            {
-                return Err("invalid Codex compatibility observation");
-            }
+            codex.validate()?;
         }
         if self.provider_id.is_empty() || self.provider_id.encode_utf16().count() > 512 {
             return Err("invalid model request provider identity");
@@ -182,26 +171,28 @@ impl ModelRequestContext {
 /// The caller must first associate the request with its canonical opening.
 /// The explicit purpose must agree with the opening's execution kind.
 pub fn resolve_model_purpose(
-    opening: &crate::input::InvocationInput,
+    opening: &crate::input::RunInput,
     purpose: ModelPurpose,
 ) -> Result<ModelPurpose, &'static str> {
     match (opening, purpose) {
-        (
-            InvocationInput::Message { .. }
-            | InvocationInput::Continuation { .. }
-            | InvocationInput::Handoff { .. },
-            purpose,
-        ) => Ok(purpose),
-        (InvocationInput::ContextCompact { .. }, ModelPurpose::Summary) => {
-            Ok(ModelPurpose::Summary)
-        }
-        (InvocationInput::ContextCompact { .. }, ModelPurpose::Main) => {
+        (RunInput::Message { .. } | RunInput::Continuation { .. }, purpose) => Ok(purpose),
+        (RunInput::ContextCompact { .. }, ModelPurpose::Summary) => Ok(ModelPurpose::Summary),
+        (RunInput::ContextCompact { .. }, ModelPurpose::Main) => {
             Err("model purpose contradicts compact opening")
         }
-        (InvocationInput::Code { .. }, _) => {
+        (RunInput::Code { .. } | RunInput::HistorySource { .. }, _) => {
             Err("model request has no supported canonical opening")
         }
     }
+}
+
+/// Semantic compaction budget; a new physical driver never resets it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionBudget {
+    Available,
+    Reshaped,
+    Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,10 +213,64 @@ pub struct ContextCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_checkpoint_id: Option<String>,
     pub summary: CheckpointContent,
-    pub summary_step_id: String,
+    pub summary_step_id: crate::durable::StepId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Complete semantic compaction material. The capture reference addresses the
+/// original immutable source descriptor, not today's mutable history projection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactedContext {
+    pub source_capture: crate::durable::ContentRef,
+    pub checkpoint: ContextCheckpoint,
+    pub native: Option<NativeCheckpoint>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeCheckpoint {
+    pub item: crate::model::NativeCompaction,
+    pub producer: CodexRequestProvenance,
+}
+impl CompactedContext {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.source_capture.validate()?;
+        self.checkpoint.validate()?;
+        match (&self.checkpoint.summary, &self.native) {
+            (CheckpointContent::Text(_), None) => Ok(()),
+            (CheckpointContent::CodexNative { item_digest, .. }, Some(native)) => {
+                native.producer.validate()?;
+                if native.item.digest() != *item_digest {
+                    return Err("native checkpoint item differs from its original digest");
+                }
+                Ok(())
+            }
+            _ => Err("checkpoint content does not match its complete native material"),
+        }
+    }
+}
+impl CodexRequestProvenance {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.connection_id.is_empty()
+            || self
+                .account_id
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.chars().any(char::is_control))
+        {
+            return Err("invalid Codex request provenance");
+        }
+        if let Some(proof) = &self.compatibility
+            && (proof.comp_hash.is_empty()
+                || proof.comp_hash.trim() != proof.comp_hash
+                || proof.comp_hash.chars().any(char::is_control)
+                || proof.fetched_at > 9_007_199_254_740_991)
+        {
+            return Err("invalid Codex compatibility observation");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextSummary {
     pub text: String,
@@ -306,7 +351,6 @@ impl ContextCheckpoint {
         {
             return Err("invalid checkpoint coverage");
         }
-        crate::interaction::entity_id(&self.summary_step_id)?;
         if let Some(id) = &self.previous_checkpoint_id {
             crate::interaction::entity_id(id)?;
         }
@@ -372,7 +416,8 @@ mod tests {
 
     #[test]
     fn checkpoint_mode_is_explicit_and_rejects_contradictory_fields() {
-        let value = serde_json::json!({"mode":{"kind":"standalone"},"covered_through":1,"source_digest":"digest","summary_step_id":"step",
+        let step = crate::durable::StepId::new();
+        let value = serde_json::json!({"mode":{"kind":"standalone"},"covered_through":1,"source_digest":"digest","summary_step_id":step,
             "summary":{"text":"summary"}});
         let mut checkpoint: ContextCheckpoint = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(checkpoint.mode, CheckpointMode::Standalone);

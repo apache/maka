@@ -171,6 +171,7 @@ async fn default_facade_and_host_both_refuse_recording_without_opt_in() {
             &maka_computer_use::InvocationContext::new(
                 "disabled-audio-session",
                 "disabled-audio-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
             ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,

@@ -18,7 +18,7 @@
  */
 
 use super::{Result, ShellError};
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use std::{
     fs::File,
     io,

@@ -30,17 +30,13 @@ cap-fs-ext.workspace = true
 hex.workspace = true
 base64 = "0.23.1"
 postcard.workspace = true
-maka-agent-facts.workspace = true
 maka-packages.workspace = true
-maka-agent-ports.workspace = true
-maka-capabilities.workspace = true
 maka-sandbox.workspace = true
 maka-plugin-core.workspace = true
 libc.workspace = true
 serde.workspace = true
 schemars.workspace = true
 uuid.workspace = true
-maka-presentation.workspace = true
 rusqlite = { workspace = true, features = ["functions", "blob", "hooks"] }
 async-channel = "2.5.0"
 url = "2"
@@ -64,3 +60,15 @@ path = "tests/integration/main.rs"
 [[test]]
 name = "root_lease"
 path = "tests/root_lease.rs"
+
+[[test]]
+name = "root_retention"
+path = "tests/root_retention.rs"
+
+[[test]]
+name = "root_retirement"
+path = "tests/root_retirement.rs"
+
+[[test]]
+name = "root_workspace"
+path = "tests/root_workspace.rs"

@@ -23,7 +23,7 @@ use maka_agent_facts::tools::ToolError;
 use maka_agent_ports::llm;
 use maka_agent_ports::session::history;
 use maka_capabilities::call;
-use maka_capabilities::storage;
+use maka_plugin_core::storage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
@@ -344,9 +344,17 @@ impl Recaps {
                 after,
                 ..
             } = page;
+            let fence = fence.ok_or(Error::History)?;
             through = Some(fence);
             for chunk in chunks {
-                text.push_str(&format!("\n{:?}: ", chunk.role));
+                text.push_str(&format!("\n{:?}", chunk.role));
+                if let Some(tool) = &chunk.tool {
+                    text.push_str(&format!(" [{}]", tool.tool_use_id));
+                    if let Some(call) = &tool.call {
+                        text.push_str(&format!(" {}", call.name));
+                    }
+                }
+                text.push_str(": ");
                 text.push_str(&chunk.text);
                 if text.len() > INPUT_BYTES {
                     let mut offset = text.len() - INPUT_BYTES;
@@ -401,7 +409,7 @@ mod tests {
     use maka_agent_ports::llm;
     use maka_agent_ports::session::history;
     use maka_capabilities::call;
-    use maka_capabilities::storage;
+    use maka_plugin_core::storage;
     use std::{
         collections::BTreeMap,
         sync::{
@@ -460,6 +468,7 @@ mod tests {
     struct History {
         endless: AtomicBool,
         denied: AtomicBool,
+        missing_fence: AtomicBool,
         reads: AtomicUsize,
     }
     impl super::History for History {
@@ -475,7 +484,7 @@ mod tests {
                 }
                 if input.through == Some(0) {
                     return Ok(history::Page::Ready {
-                        through: 0,
+                        through: Some(0),
                         chunks: vec![],
                         before: None,
                         after: None,
@@ -489,7 +498,7 @@ mod tests {
                     "old history 中".repeat(6000)
                 };
                 Ok(history::Page::Ready {
-                    through: 7,
+                    through: (!self.missing_fence.load(Ordering::SeqCst)).then_some(7),
                     chunks: vec![history::Chunk {
                         model_part: None,
                         final_output: false,
@@ -498,31 +507,67 @@ mod tests {
                         origin: None,
                         compaction: None,
                         field: Default::default(),
-                        message_id: "m".into(),
-                        turn_id: "t".into(),
-                        timestamp: 1,
+                        message_id: Some("m".into()),
+                        turn_id: Some("t".into()),
+                        imported_turn: None,
+                        run_id: Some(
+                            maka_agent_facts::durable::RunId::try_from(Uuid::from_u128(1)).unwrap(),
+                        ),
+                        timestamp: Some(1),
                         timing: None,
-                        role: history::Role::Assistant,
-                        order: history::RowPosition {
-                            source_sequence: if second { 7 } else { 1 },
+                        role: if second {
+                            history::Role::ToolResult
+                        } else {
+                            history::Role::Assistant
+                        },
+                        order: history::HistoryOrder {
+                            path: vec![if second { 7 } else { 1 }],
                             item_index: 0,
                         },
-                        position: history::RowPosition {
-                            source_sequence: if second { 7 } else { 1 },
+                        position: history::HistoryRowAddress::Live {
+                            sequence: if second { 7 } else { 1 },
+                            fact: maka_agent_facts::durable::FactId::try_from(Uuid::from_u128(
+                                if second { 7 } else { 1 },
+                            ))
+                            .unwrap(),
                             item_index: 0,
                         },
                         offset: 0,
                         total_bytes: text.len() as u64,
                         text,
-                        tool: None,
+                        tool: second.then(|| history::Tool {
+                            tool_use_id: "deployment-status-call".into(),
+                            call: Some(history::ToolCall {
+                                ancestor_tool_use_ids: vec![],
+                                origin: history::ToolCallOrigin::Provider,
+                                presentation: None,
+                                position: history::HistoryRowAddress::Live {
+                                    sequence: 6,
+                                    fact: maka_agent_facts::durable::FactId::try_from(
+                                        Uuid::from_u128(6),
+                                    )
+                                    .unwrap(),
+                                    item_index: 0,
+                                },
+                                name: "deployment.status".into(),
+                                title: None,
+                                pending: false,
+                                dispatched: true,
+                            }),
+                            result: None,
+                        }),
                         attachments: vec![],
                     }],
                     before: None,
                     after: (!second || self.endless.load(Ordering::SeqCst)).then_some(
                         history::Cursor {
                             field: Default::default(),
-                            position: history::RowPosition {
-                                source_sequence: 2,
+                            position: history::HistoryRowAddress::Live {
+                                sequence: 2,
+                                fact: maka_agent_facts::durable::FactId::try_from(Uuid::from_u128(
+                                    2,
+                                ))
+                                .unwrap(),
                                 item_index: 0,
                             },
                             offset: 0,
@@ -635,6 +680,8 @@ mod tests {
         {
             let requests = models.requests.lock().unwrap();
             assert_eq!(requests[0].language, Language::ZhCn);
+            assert!(requests[0].prompt.contains("deployment-status-call"));
+            assert!(requests[0].prompt.contains("deployment.status"));
             assert!(
                 requests[0]
                     .system
@@ -660,6 +707,25 @@ mod tests {
         ));
         scope.finish().await.unwrap();
     }
+    #[tokio::test]
+    async fn missing_live_cut_refuses_before_model_dispatch() {
+        let store = Arc::new(Store::default());
+        let history = Arc::new(History::default());
+        history.missing_fence.store(true, Ordering::SeqCst);
+        let models = Arc::new(Models::default());
+        let backend = recaps(store.clone(), history, models.clone());
+        let parent = scope();
+        assert!(matches!(
+            backend
+                .generate(&parent, "session", Uuid::new_v4(), Language::En)
+                .await,
+            Err(Error::History)
+        ));
+        assert_eq!(models.calls.load(Ordering::SeqCst), 0);
+        assert!(store.0.lock().unwrap().is_empty());
+        parent.finish().await.unwrap();
+    }
+
     #[tokio::test]
     async fn oversized_history_refuses_before_model_dispatch() {
         let store = Arc::new(Store::default());

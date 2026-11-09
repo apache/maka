@@ -17,14 +17,14 @@
  * under the License.
  */
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::terminal::Screen;
 
 #[cfg(unix)]
 #[tokio::test]
 async fn real_pty_queries_and_mode_aware_input_cross_the_screen_cut() {
-    use maka_agent_facts::terminal::input::InputAction;
-    use maka_agent_facts::terminal::input::encode_actions;
+    use maka_plugin_core::terminal::input::InputAction;
+    use maka_plugin_core::terminal::input::encode_actions;
     use maka_process::pty;
     use serde_json::json;
     use std::time::Duration;
@@ -129,7 +129,7 @@ fn unicode_modes_alternate_screen_reflow_and_history_are_observable() {
     assert!(modes.input.application_cursor_keys_mode);
     assert_eq!(
         modes.input.mouse_tracking_mode,
-        maka_agent_facts::terminal::MouseTracking::Drag
+        maka_plugin_core::terminal::MouseTracking::Drag
     );
     screen.write("𝄞e\u{301}").unwrap();
     screen
@@ -288,5 +288,5 @@ fn narrowing_a_full_history_keeps_the_same_cell_allowance_through_reflow() {
     let after = screen.display();
     assert!(after.scrollback.len() > 10_000);
     assert!(after.text(2 * 1024 * 1024).scrollback.starts_with(&line));
-    assert!(after.scrollback.len() * 40 <= maka_agent_facts::terminal::HISTORY_CELLS);
+    assert!(after.scrollback.len() * 40 <= maka_plugin_core::terminal::HISTORY_CELLS);
 }

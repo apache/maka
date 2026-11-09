@@ -181,3 +181,15 @@ pub enum BackendPreference {
         selection: crate::executor::Selection,
     },
 }
+
+pub const NATIVE_TASK_PROTOCOL: &str = "maka.native-executor-task";
+
+/// Native captures the concrete selected executor before dispatch. The payload
+/// belongs to that adapter; this descriptor is not a live grant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDescriptor<T> {
+    pub protocol: String,
+    pub source: Binding,
+    pub payload: T,
+}

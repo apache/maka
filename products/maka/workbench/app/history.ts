@@ -18,8 +18,15 @@
  */
 
 import type {
+  RunId,
+  StepId,
+  ModelAttemptId,
   AgentHistoryAttachment,
   AgentHistoryPage,
+  AgentHistoryChunk,
+  HistoryRowAddress,
+  HistoryOrder,
+  HistoryTool,
   HistoryCompaction,
   HistoryModel,
   HistoryPosition,
@@ -27,7 +34,62 @@ import type {
   MessageOrigin,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
-export type Position = { sourceSequence: number; itemIndex: number };
+export function historyRowKey(position: HistoryRowAddress, field?: string): string {
+  const identity =
+    position.kind === 'live'
+      ? [position.kind, position.sequence, position.fact, position.itemIndex]
+      : position.kind === 'snapshot'
+        ? [
+            position.kind,
+            position.path,
+            position.snapshot,
+            position.sequence,
+            position.fact,
+            position.itemIndex,
+          ]
+        : [
+            position.kind,
+            position.path,
+            position.snapshot,
+            position.messageOrdinal,
+            position.partOrdinal,
+          ];
+  return JSON.stringify(field === undefined ? identity : [identity, field]);
+}
+export function sameHistoryRow(left: HistoryRowAddress, right: HistoryRowAddress): boolean {
+  return historyRowKey(left) === historyRowKey(right);
+}
+export function compareHistoryOrder(left: HistoryOrder, right: HistoryOrder): number {
+  for (let index = 0; index < Math.min(left.path.length, right.path.length); index += 1) {
+    const order = left.path[index] - right.path[index];
+    if (order !== 0) return order;
+  }
+  return left.path.length - right.path.length || left.itemIndex - right.itemIndex;
+}
+/** A UI grouping key, never a foreign or Root Turn identifier. */
+export function historyTurnKey(
+  row:
+    | { position?: HistoryRowAddress; turnId?: string | null; importedTurn?: number | null }
+    | undefined,
+): string | undefined {
+  if (row === undefined) return undefined;
+  const position = row.position;
+  if (position?.kind === 'imported')
+    return row.importedTurn == null
+      ? undefined
+      : JSON.stringify(['imported-turn', position.path, position.snapshot, row.importedTurn]);
+  if (row.turnId == null) return undefined;
+  return position?.kind === 'snapshot'
+    ? JSON.stringify(['snapshot-turn', position.path, position.snapshot, row.turnId])
+    : row.turnId;
+}
+export function rootEventSequence(row: Pick<Row, 'position' | 'sequence'>): number | undefined {
+  return row.position?.kind === 'live'
+    ? row.position.sequence
+    : row.position === undefined
+      ? row.sequence
+      : undefined;
+}
 type Fragment = { offset: number; text: string };
 export type Subscription = {
   next(): Promise<any | null>;
@@ -35,16 +97,17 @@ export type Subscription = {
 };
 export type Row = {
   key: string;
-  messageId: string;
+  messageId?: string;
   field: string;
   role: string;
   text: string;
-  position?: Position;
-  order?: Position;
+  position?: HistoryRowAddress;
+  order?: HistoryOrder;
+  importedTurn?: number;
   fragments?: Fragment[];
   prefix?: boolean;
   totalBytes?: number;
-  tool?: any;
+  tool?: HistoryTool | null;
   attachments?: AgentHistoryAttachment[];
   hasReferences?: boolean;
   /** The Host's attribution of a message it generated; absent when the user wrote it. */
@@ -55,18 +118,19 @@ export type Row = {
   model?: HistoryModel;
   finalOutput?: boolean;
   compaction?: HistoryCompaction;
-  metadataThrough?: number;
-  invocationId?: string;
-  stepId?: string;
+  metadataThrough?: number | null;
+  runId?: RunId;
+  stepId?: StepId;
+  attemptId?: ModelAttemptId;
   sequence?: number;
   startSequence?: number;
-  modelPart?: { stepId: string; ordinal: number };
+  modelPart?: { stepId: StepId; attemptId: ModelAttemptId; ordinal: number };
   preview?: { stepOrder: number; ordinal: number; revision: number };
   closedAt?: number | null;
 };
 
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
-  if (origin?.kind === 'session') return origin.invocation.session_id;
+  if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.
   return origin?.kind === 'bot_worker' ? origin.sessionId : null;
 }
@@ -101,20 +165,21 @@ export function historyFollowPosition(
 /** The opening user message, only when the loaded window proves the turn's start. */
 export function openingUserMessage(
   rows: readonly Row[],
-  turnId: string | undefined,
+  turnKey: string | undefined,
   before: AgentHistoryPage['before'] | undefined,
 ): Row | null {
-  if (turnId === undefined) return null;
+  if (turnKey === undefined) return null;
   let precedingTurnLoaded = before === null;
   for (const row of rows) {
-    if (row.turnId !== undefined && row.turnId !== turnId) precedingTurnLoaded = true;
-    if (row.role === 'user' && row.field === 'body' && row.turnId === turnId)
+    if (historyTurnKey(row) !== undefined && historyTurnKey(row) !== turnKey)
+      precedingTurnLoaded = true;
+    if (row.role === 'user' && row.field === 'body' && historyTurnKey(row) === turnKey)
       return precedingTurnLoaded ? row : null;
   }
   return null;
 }
 
-/** Whether the user wrote this message, rather than the Host generating it (a Plan execution, WorkHub). */
+/** Whether the user wrote this message, rather than the Host generating it (a scheduled execution). */
 export function userAuthored(row: Row): boolean {
   return row.origin === undefined;
 }
@@ -142,7 +207,11 @@ export function replayStartCursor(
 
 // A send receipt and canonical history refer to the same user message.
 export const messageKey = (row: Row) =>
-  row.role === 'user' ? `user/${row.messageId}/${row.field}` : row.key;
+  row.role === 'user' &&
+  row.messageId !== undefined &&
+  (row.position === undefined || row.position.kind === 'live')
+    ? `user/${row.messageId}/${row.field}`
+    : row.key;
 
 export function messageBytes(text: string): number {
   let length = 0;
@@ -164,37 +233,55 @@ export function hasTextPrefix(row: Row): boolean {
   return row.fragments.length > 0 && row.totalBytes !== undefined && offset <= row.totalBytes;
 }
 
-export function historyMetadata(chunk: any, through: number, previous?: Row) {
+export function historyMetadata(
+  chunk: AgentHistoryChunk | Row,
+  through: number | null,
+  previous?: Row,
+) {
   return {
     order: chunk.order,
     totalBytes: chunk.totalBytes,
     attachments:
-      chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
-    hasReferences: chunk.offset === 0 ? (chunk.hasReferences ?? false) : previous?.hasReferences,
+      'offset' in chunk && chunk.offset === 0
+        ? (chunk.attachments ?? [])
+        : (previous?.attachments ?? chunk.attachments),
+    hasReferences:
+      'offset' in chunk && chunk.offset === 0
+        ? (chunk.hasReferences ?? false)
+        : previous?.hasReferences,
     origin: chunk.origin ?? previous?.origin,
-    timing: chunk.timing,
-    model: chunk.model,
-    modelPart: chunk.modelPart,
+    importedTurn: chunk.importedTurn ?? undefined,
+    timing: chunk.timing ?? undefined,
+    model: chunk.model ?? undefined,
+    modelPart: chunk.modelPart ?? undefined,
+    runId: chunk.runId ?? undefined,
+    stepId: chunk.modelPart?.stepId,
+    attemptId: chunk.modelPart?.attemptId,
     finalOutput: chunk.finalOutput,
-    compaction: chunk.compaction,
+    compaction: chunk.compaction ?? undefined,
     tool: chunk.tool,
     metadataThrough: through,
   };
 }
 
-export function updateHistoryMetadata(rows: Row[], chunks: any[], through: number): Row[] {
+export function updateHistoryMetadata(
+  rows: Row[],
+  chunks: AgentHistoryChunk[],
+  through: number | null,
+): Row[] {
   if (chunks.length === 0) return rows;
   const metadata = new Map(
-    chunks.map((chunk) => [
-      `${chunk.position.sourceSequence}/${chunk.position.itemIndex}/${chunk.field}`,
-      chunk,
-    ]),
+    chunks.map((chunk) => [historyRowKey(chunk.position, chunk.field), chunk]),
   );
   let updated = rows;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     const chunk = metadata.get(row.key);
-    if (!chunk || through < (row.metadataThrough ?? 0)) continue;
+    if (
+      !chunk ||
+      (through !== null && row.metadataThrough != null && through < row.metadataThrough)
+    )
+      continue;
     const next = historyMetadata(chunk, through, row);
     // Metadata is Host JSON. Compare its complete projection so new fields are
     // not silently ignored by a display-specific list of equality checks.
@@ -212,12 +299,17 @@ export function updateHistoryMetadata(rows: Row[], chunks: any[], through: numbe
 // These are the Desktop transcript's position/fragment rules, independent of
 // either renderer. History cursors use byte offsets; JS never derives them
 // from UTF-16 string lengths.
-export function mergeChunks(rows: Row[], chunks: any[], older = false, through = 0): Row[] {
+export function mergeChunks(
+  rows: Row[],
+  chunks: AgentHistoryChunk[],
+  older = false,
+  through: number | null = null,
+): Row[] {
   if (chunks.length === 0) return rows;
   const merged = new Map(rows.map((row) => [row.key, row]));
   let changed = false;
   for (const chunk of chunks) {
-    const key = `${chunk.position.sourceSequence}/${chunk.position.itemIndex}/${chunk.field}`;
+    const key = historyRowKey(chunk.position, chunk.field);
     const previous = merged.get(key);
     const fresh = { offset: chunk.offset, text: chunk.text };
     const fragments = (
@@ -230,15 +322,17 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
     ).sort((a, b) => a.offset - b.offset);
     const next = {
       key,
-      messageId: chunk.messageId,
-      turnId: chunk.turnId,
-      timestamp: chunk.timestamp,
-      ...((previous?.metadataThrough ?? -1) > through
+      messageId: chunk.messageId ?? undefined,
+      turnId: chunk.turnId ?? undefined,
+      timestamp: chunk.timestamp ?? undefined,
+      ...(previous?.metadataThrough != null &&
+      through !== null &&
+      previous.metadataThrough > through
         ? historyMetadata(previous, previous!.metadataThrough!, previous)
         : historyMetadata(chunk, through, previous)),
       position: chunk.position,
       field: chunk.field,
-      role: chunk.field === 'thinking' ? 'thinking' : chunk.role,
+      role: chunk.role,
       fragments,
       text: fragments.map((part) => part.text).join(''),
     };
@@ -253,8 +347,7 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
   if (!changed) return rows;
   return [...merged.values()].sort(
     (a, b) =>
-      a.order!.sourceSequence - b.order!.sourceSequence ||
-      a.order!.itemIndex - b.order!.itemIndex ||
+      compareHistoryOrder(a.order!, b.order!) ||
       Number(a.field === 'body') - Number(b.field === 'body'),
   );
 }
@@ -262,11 +355,11 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
 export function acceptedSend(reply: any, sessionId: string): any | null {
   const receipt = reply?.receipt;
   if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned') return null;
-  const result = receipt.outcome.value;
+  if (receipt.outcome.result?.kind !== 'success') return null;
+  const result = receipt.outcome.result.value;
   if (result?.sessionId !== sessionId || typeof result.messageId !== 'string' || !result.messageId)
     return null;
-  if (result.kind === 'started' && typeof result.invocationId === 'string' && result.invocationId)
-    return result;
+  if (result.kind === 'started' && typeof result.runId === 'string' && result.runId) return result;
   if (result.kind === 'queued' && Number.isSafeInteger(result.revision) && result.revision >= 0)
     return result;
   return null;

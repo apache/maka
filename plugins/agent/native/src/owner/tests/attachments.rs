@@ -19,6 +19,42 @@
 
 use super::*;
 use maka_agent_facts::artifact::content_digest;
+use maka_agent_state::artifacts::SessionScope;
+
+fn uploaded_scope(f: &Fixture, session: &str) -> SessionScope {
+    SessionScope {
+        owner: f.owner.run_owner(),
+        session: session.into(),
+    }
+}
+
+async fn uploaded_artifact(
+    f: &Fixture,
+    session: &str,
+    id: &str,
+) -> Result<Option<maka_agent_facts::artifact::Artifact>, maka_event_log::StoreError> {
+    Ok(f.owner
+        .durable
+        .artifacts()
+        .get(uploaded_scope(f, session), id.into())
+        .await?
+        .map(|published| published.artifact))
+}
+
+async fn queued_source(
+    f: &Fixture,
+    session: &str,
+    request: &maka_agent_state::queue::PreparedRequest,
+) -> maka_agent_facts::message::RootSourceMessage {
+    let bytes = f
+        .owner
+        .durable
+        .queue()
+        .content(session.into(), request.id.clone(), request.source.clone())
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
 
 pub(super) async fn upload(
     f: &Fixture,
@@ -59,8 +95,8 @@ async fn large_selected_upload_keeps_complete_bytes_and_session_authority() {
             BTreeMap::from([("file".into(), snapshot as Arc<dyn maka_capabilities::call::ReadResource>)]),
         ).await?;
         let id = uploaded["attachment"]["id"].as_str().ok_or("upload did not return an attachment")?;
-        let record = f.session(&session).await.get_artifact(&session, id).await.map_err(|error| error.to_string())?.record.ok_or("upload did not retain its artifact")?;
-        let tail = f.session(&session).await.read_artifact_chunk(&session, id, 50 * 1024 * 1024, 64).await.map_err(|error| error.to_string())?.ok_or("upload lost final bytes")?;
+        let record = uploaded_artifact(&f, &session, id).await.map_err(|error| error.to_string())?.ok_or("upload did not retain its artifact")?;
+        let tail = f.owner.durable.artifacts().chunk(uploaded_scope(&f, &session), id.into(), 50 * 1024 * 1024, 64).await.map_err(|error| error.to_string())?.ok_or("upload lost final bytes")?;
         Ok::<_, String>((uploaded, record, tail))
     }.await;
     f.drained().await;
@@ -93,16 +129,16 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert_eq!(attachment["mimeType"], "text/markdown");
         assert_eq!(attachment["name"], "notes.md");
         let id = attachment["id"].as_str().unwrap();
-        let record = f.session(&session).await.get_artifact(&session, id).await.unwrap().record.unwrap();
+        let record = uploaded_artifact(&f, &session, id).await.unwrap().unwrap();
         assert_eq!(record.summary.as_deref(), Some(content_digest(text.as_bytes()).as_str()));
         assert!(upload(&f, &session, "notes.md", text.as_bytes(), operation).await.is_err(), "a recapture is not the original resource-bearing operation");
         let reference = f.store.application_intents(f.app.source().unwrap().deployment, super::id(2), 0, 16).await.unwrap().into_iter()
             .find(|intent| intent.reference.operation == operation).unwrap().reference;
         let client = f.app.client();
         let recovered = client.recover(client.activation(&super::id(2)).unwrap(), reference, scope(&f.issuer, true)).await.unwrap().unwrap();
-        assert_eq!(recovered.outcome, OperationOutcome::Returned { value: uploaded.clone() });
-        assert_eq!(f.session(&session).await.list_artifacts(&session, 0, 10).await.unwrap().records.len(), 1);
-        assert_eq!(f.session(&session).await.get_artifact(&session, id).await.unwrap().record.unwrap(), record);
+        assert_eq!(recovered.outcome, OperationOutcome::Returned { result: maka_plugin_core::operation::OperationResult::Success { value: uploaded.clone() } });
+        assert_eq!(f.artifact_count(&session), 1);
+        assert_eq!(uploaded_artifact(&f, &session, id).await.unwrap().unwrap(), record);
         f.store.create_session("foreign_session", "foreign", &json!({"foreign":true}), 1).await.unwrap();
         assert!(upload(&f, "foreign_session", "notes.md", text.as_bytes(), Uuid::new_v4()).await.is_err());
         for (target, ids) in [(&other, vec![id]), (&session, vec![id, id]), (&session, vec!["missing"])] {
@@ -123,14 +159,16 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert!(user["attachments"][0].get("ref").is_none(), "history descriptors confer no storage access");
         let queued = send("queued text").await.unwrap();
         assert_eq!(queued["kind"], "queued");
-        let queue = f.session(&session).await.message_queue(&session).await.unwrap();
-        let refs = queue.entries[0].source.unprepared_content.attachments.clone();
+        let queue = f.owner.durable.queue().read(session.clone()).await.unwrap();
+        let source = queued_source(&f, &session, &queue.entries[0].request).await;
+        let refs = source.unprepared_content.attachments.clone();
         let changed = f.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":queue.revision,"edit":{"kind":"update","messageId":queued["messageId"],"message":""}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(changed["kind"], "committed");
-        let queue = f.session(&session).await.message_queue(&session).await.unwrap();
-        assert_eq!(queue.entries[0].source.unprepared_content.attachments, refs);
-        assert_eq!(queue.entries[0].source.message.content.attachments, refs);
-        assert_eq!(queue.entries[0].source.unprepared_content.text, "");
+        let queue = f.owner.durable.queue().read(session.clone()).await.unwrap();
+        let source = queued_source(&f, &session, &queue.entries[0].request).await;
+        assert_eq!(source.unprepared_content.attachments, refs);
+        assert_eq!(source.message.content.attachments, refs);
+        assert_eq!(source.unprepared_content.text, "");
         let body = f.query("queueMessage", json!({"sessionId":session,"messageId":queued["messageId"],"expectedRevision":queue.revision})).await.unwrap();
         assert_eq!(body["hasAttachments"], true);
         assert_eq!(body["message"], "");
@@ -158,7 +196,7 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
         assert!(continued["value"]["offset"].as_u64().unwrap() > 0);
         response(&mut socket).await;
         f.drained().await;
-        assert_eq!(f.session(&session).await.read_artifact_chunk(&session, id, 0, 50 * 1024).await.unwrap().unwrap().bytes, text.as_bytes());
+        assert_eq!(f.owner.durable.artifacts().chunk(uploaded_scope(&f, &session), id.into(), 0, 50 * 1024).await.unwrap().unwrap().bytes, text.as_bytes());
         f.send(&other).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -230,7 +268,7 @@ async fn cancelled_attachment_upload_retains_resource_custody_until_worker_finis
         drop(release);
         assert!(mutation.completion().await.cleanup.is_ok());
         resources.finish().await.unwrap();
-        assert!(f.session(&session).await.list_artifacts(&session, 0, 10).await.unwrap().records.is_empty());
+        assert_eq!(f.artifact_count(&session), 0);
         assert_eq!(upload(&f, &session, "after.txt", b"after", Uuid::new_v4()).await.unwrap()["kind"], "uploaded");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();

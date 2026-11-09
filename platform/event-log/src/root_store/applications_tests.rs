@@ -140,7 +140,9 @@ fn reference(operation: u128) -> RecoveryRef {
 async fn caller_history_filters_interleaved_control_cursors_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let owner = owner(directory.path());
-    let store = RootStore::open(owner.clone()).await.unwrap();
+    let store = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let first = source(&store, Uuid::from_u128(101), 0).await;
     let other = source(&store, Uuid::from_u128(102), 0).await;
     let snapshot = store
@@ -252,7 +254,9 @@ async fn caller_history_filters_interleaved_control_cursors_and_survives_reopen(
         [expected[1].clone()]
     );
     store.close().await.unwrap();
-    let reopened = RootStore::open(owner).await.unwrap();
+    let reopened = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     assert_eq!(
         reopened
             .application_deployment_intents(first.deployment, 0, 1)

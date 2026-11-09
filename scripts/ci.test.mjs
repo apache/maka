@@ -62,10 +62,19 @@ function fixture() {
   const metadata = {
     root: workspace([
       ['maka-code-runtime', 'platform/code-runtime'],
+      ['maka-python-runtime', 'platform/python-runtime'],
+      [
+        'maka-computer-native',
+        'plugins/workspace/workspace-computer/native',
+        ['plugins/agent/native', 'plugins/agent/engine'],
+      ],
+      ['maka-files-native', 'plugins/workspace/workspace-files/native'],
+      ['maka-agent-engine', 'plugins/agent/engine', ['plugins/workspace/workspace-files/native']],
       [
         'maka-agent-native',
         'plugins/agent/native',
         [
+          'plugins/agent/engine',
           'platform/code-runtime',
           'platform/computer-use',
           'plugins/workspace/workspace-processes/native',
@@ -154,7 +163,7 @@ test('a transitive Computer Use dependency selects all native OS checks and CLI 
   );
   assert.equal(
     plan.suites.root.filter,
-    'package(=maka-agent-native) | package(=maka-cli) | package(=maka-code-runtime) | package(=maka-computer-use)',
+    'package(=maka-agent-engine) | package(=maka-agent-native) | package(=maka-cli) | package(=maka-code-runtime) | package(=maka-computer-native) | package(=maka-computer-use)',
   );
   assert.ok(plan.suites.bridge);
   assert.ok(plan.suites.desktop);
@@ -165,7 +174,10 @@ test('a path dependency affects consumers across owning workspaces', () => {
   const plan = fixture()(['third-party/nsh/crates/nsh-core/src/lib.rs']);
   assert.ok(plan.suites.nsh);
   assert.ok(plan.suites.gpui);
-  assert.equal(plan.suites.root.filter, 'package(=maka-cli) | package(=maka-desktop-shell)');
+  assert.equal(
+    plan.suites.root.filter,
+    'package(=maka-agent-engine) | package(=maka-agent-native) | package(=maka-cli) | package(=maka-computer-native) | package(=maka-desktop-shell)',
+  );
   assert.equal(plan.full, false);
 });
 
@@ -604,33 +616,137 @@ test('native terminal implementation and fixtures run the real PTY acceptance on
       input,
     );
   }
-  const calls = [];
-  const exec = executor(
-    root,
-    {},
-    {
-      run: async (executable, args) => {
-        calls.push({ executable, args });
-        return '';
+  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-terminal-helpers-'));
+  try {
+    const target = join(directory, 'configured-target');
+    const helpers = {
+      maka: join(target, 'custom-target', 'from-cargo', 'maka'),
+      'maka-python-worker': join(target, 'custom-target', 'from-cargo', 'maka-python-worker'),
+    };
+    for (const path of Object.values(helpers)) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, 'owned producer executable');
+    }
+    const calls = [];
+    let metadata = 'valid';
+    const options = {
+      env: {
+        ...process.env,
+        CARGO_TARGET_DIR: target,
+        CARGO_BUILD_TARGET: 'custom-target',
+        CARGO_BIN_EXE_maka: 'foreign cached helper',
+        'CARGO_BIN_EXE_maka-python-worker': 'foreign cached worker',
       },
-    },
-  );
-  await exec.prepare('macos-terminal');
-  await exec.verify('macos-terminal');
-  const args = [
-    'nextest',
-    'run',
-    '--locked',
-    '-p',
-    'maka-agent-native',
-    '--lib',
-    '-E',
-    'test(=owner::tests::terminal::terminal_raw_bytes_full_resize_replay_and_observer_cancellation_preserve_native_owner)',
-  ];
-  assert.deepEqual(calls, [
-    { executable: 'cargo', args: [...args, '--no-run'] },
-    { executable: 'cargo', args },
-  ]);
+      run: async (executable, args, options) => {
+        calls.push({ executable, args, options });
+        if (args[0] !== 'build') return '';
+        assert.equal(options.capture, true);
+        const name = args[args.indexOf('--bin') + 1];
+        return (
+          [
+            {
+              reason: 'compiler-artifact',
+              target: { name, kind: ['lib'] },
+              profile: { test: false },
+              executable: directory,
+            },
+            {
+              reason: 'compiler-artifact',
+              target: { name, kind: ['bin'] },
+              profile: { test: false },
+              executable:
+                metadata === 'missing'
+                  ? null
+                  : metadata === 'directory'
+                    ? directory
+                    : helpers[name],
+            },
+            { reason: 'build-finished', success: true },
+          ]
+            .map((record) => JSON.stringify(record))
+            .join('\n') + '\n'
+        );
+      },
+    };
+    const extra = ['--cargo-profile', 'consumer-custom', '--profile', 'ci'];
+    await executor(directory, {}, options).prepare('macos-terminal', undefined, extra);
+    await executor(directory, {}, options).verify('macos-terminal', undefined, extra);
+    const args = [
+      'nextest',
+      'run',
+      '--locked',
+      '-p',
+      'maka-agent-native',
+      '--lib',
+      '-E',
+      'test(=owner::tests::terminal::terminal_raw_bytes_full_resize_replay_and_observer_cancellation_preserve_native_owner)',
+    ];
+    const builds = [
+      {
+        executable: 'cargo',
+        args: [
+          'build',
+          '--locked',
+          '-p',
+          'maka-cli',
+          '--bin',
+          'maka',
+          '--no-default-features',
+          '--message-format=json-render-diagnostics',
+        ],
+      },
+      {
+        executable: 'cargo',
+        args: [
+          'build',
+          '--locked',
+          '-p',
+          'maka-python-runtime',
+          '--bin',
+          'maka-python-worker',
+          '--message-format=json-render-diagnostics',
+        ],
+      },
+    ];
+    assert.deepEqual(
+      calls.map(({ executable, args }) => ({ executable, args })),
+      [
+        ...builds,
+        { executable: 'cargo', args: [...args, '--no-run', ...extra] },
+        ...builds,
+        { executable: 'cargo', args: [...args, ...extra] },
+      ],
+    );
+    for (const call of calls) {
+      assert.equal(call.options.env.CARGO_TARGET_DIR, target);
+      assert.equal(call.options.env.CARGO_BUILD_TARGET, 'custom-target');
+      if (call.args[0] === 'nextest') {
+        assert.equal(call.options.env.CARGO_BIN_EXE_maka, helpers.maka);
+        assert.equal(
+          call.options.env['CARGO_BIN_EXE_maka-python-worker'],
+          helpers['maka-python-worker'],
+        );
+      }
+    }
+    metadata = 'missing';
+    await assert.rejects(
+      executor(directory, {}, options).verify('macos-terminal'),
+      /Expected one Cargo runtime executable/,
+    );
+    assert.equal(calls.at(-1).args[0], 'build', 'missing metadata must not reach Native tests');
+    metadata = 'directory';
+    await assert.rejects(
+      executor(directory, {}, options).verify('macos-terminal'),
+      /Cargo runtime executable is not a file/,
+    );
+    assert.equal(
+      calls.at(-1).args[0],
+      'build',
+      'wrong producer file type must not reach Native tests',
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('skill publication changes run the existing behavior tests on Windows', async () => {
@@ -673,25 +789,94 @@ test('skill publication changes run the existing behavior tests on Windows', asy
 });
 
 test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PROGRAMFILES', async () => {
-  const calls = [];
-  const exec = executor(
-    root,
-    { id: 'native-windows' },
-    {
-      env: { PROGRAMFILES: 'C:\\Program Files' },
+  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-windows-helpers-'));
+  try {
+    const target = join(directory, 'configured target');
+    const helpers = {
+      maka: join(target, 'windows-target', 'from-cargo', 'maka.exe'),
+      'maka-python-worker': join(target, 'windows-target', 'from-cargo', 'maka-python-worker.exe'),
+    };
+    for (const path of Object.values(helpers)) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, 'owned Windows executable');
+    }
+    const calls = [];
+    const options = {
+      env: {
+        PROGRAMFILES: 'C:\\Program Files',
+        CARGO_TARGET_DIR: target,
+        CARGO_BUILD_TARGET: 'windows-target',
+        CARGO_BIN_EXE_maka: 'foreign cached helper',
+        'CARGO_BIN_EXE_maka-python-worker': 'foreign cached worker',
+      },
       run: async (exe, args, options) => {
         calls.push({ exe, args, options });
+        if (args[0] === 'build') {
+          assert.equal(options.capture, true);
+          const name = args[args.indexOf('--bin') + 1];
+          return (
+            JSON.stringify({
+              reason: 'compiler-artifact',
+              target: { name, kind: ['bin'] },
+              profile: { test: false },
+              executable: helpers[name],
+            }) + '\n'
+          );
+        }
         return '';
       },
-    },
-  );
-  await exec.prepare('windows-shell');
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].options.env.LIBCLANG_PATH, join('C:\\Program Files', 'LLVM', 'bin'));
-  assert.equal(
-    calls[0].options.env.MAKA_TEST_GIT_BASH,
-    join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
-  );
+    };
+    await executor(directory, { id: 'native-windows' }, options).prepare('windows-shell');
+    await executor(directory, { id: 'native-windows' }, options).verify('windows-shell');
+    assert.equal(calls.length, 6);
+    assert.deepEqual(calls[0].args, [
+      'build',
+      '--locked',
+      '-p',
+      'maka-cli',
+      '--bin',
+      'maka',
+      '--no-default-features',
+      '--message-format=json-render-diagnostics',
+    ]);
+    assert.deepEqual(calls[1].args, [
+      'build',
+      '--locked',
+      '-p',
+      'maka-python-runtime',
+      '--bin',
+      'maka-python-worker',
+      '--message-format=json-render-diagnostics',
+    ]);
+    for (const call of calls) {
+      assert.equal(call.options.env.CARGO_TARGET_DIR, target);
+      assert.equal(call.options.env.CARGO_BUILD_TARGET, 'windows-target');
+      assert.equal(call.options.env.LIBCLANG_PATH, join('C:\\Program Files', 'LLVM', 'bin'));
+      assert.equal(
+        call.options.env.MAKA_TEST_GIT_BASH,
+        join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+      );
+      if (call.args[0] === 'nextest') {
+        assert.equal(call.options.env.CARGO_BIN_EXE_maka, helpers.maka);
+        assert.equal(
+          call.options.env['CARGO_BIN_EXE_maka-python-worker'],
+          helpers['maka-python-worker'],
+        );
+      }
+    }
+    rmSync(helpers.maka);
+    await assert.rejects(
+      executor(directory, { id: 'native-windows' }, options).verify('windows-shell'),
+      (error) => error.code === 'ENOENT',
+    );
+    assert.equal(
+      calls.at(-1).args[0],
+      'build',
+      'a missing executable must not fall back to base env',
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('local root runs consume owned artifacts after the compiler cache disappears and release them', async (t) => {
@@ -769,6 +954,17 @@ process.stdout.write(JSON.stringify([
                 assert.equal(options.cwd, directory);
                 calls.push(args);
                 const value = (option) => args[args.indexOf(option) + 1];
+                if (args[1] === 'list' && args.includes('--archive-file')) {
+                  return JSON.stringify({
+                    'rust-build-meta': {
+                      'target-directory': join(value('--extract-to'), 'target'),
+                    },
+                    'rust-suites': {
+                      cli: { 'package-name': 'maka-cli' },
+                      terminal: { 'package-name': 'maka-terminal-shell' },
+                    },
+                  });
+                }
                 if (args[1] === 'list') {
                   assert.deepEqual(args.slice(2, 2 + build.length + shared.length + 2), [
                     '--locked',
@@ -905,7 +1101,7 @@ process.stdout.write(JSON.stringify([
             false,
             'the caller must release its archive and extraction on every terminal result',
           );
-          assert.equal(calls.length, failure === 'archive' ? 2 : 3);
+          assert.equal(calls.length, failure === 'archive' ? 2 : 4);
           if (failure !== 'archive')
             assert.deepEqual(observed, ['CLI product', 'Terminal product', 'owned CLI']);
           else {
@@ -923,6 +1119,277 @@ process.stdout.write(JSON.stringify([
         }
       },
     );
+  }
+});
+
+test('product helper changes select its native runtime consumers without selecting every root package', () => {
+  const plan = fixture()(['products/maka/cli/src/main.rs']);
+  assert.equal(plan.full, false);
+  assert.equal(
+    plan.suites.root.filter,
+    'package(=maka-agent-engine) | package(=maka-agent-native) | package(=maka-cli) | package(=maka-computer-native)',
+  );
+});
+
+test('the shared Native host fixture selects the durable recovery consumer through its real package dependency', () => {
+  const plan = fixture()(['plugins/agent/engine/tests/integration/support/native.rs']);
+  assert.equal(plan.full, false);
+  assert.match(plan.suites.root.filter, /package\(=maka-agent-engine\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-agent-native\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-computer-native\)/);
+});
+
+test('the packaged Python worker selects both agent consumers outside Cargo test target edges', () => {
+  const plan = fixture()(['platform/python-runtime/src/main.rs']);
+  assert.equal(plan.full, false);
+  assert.match(plan.suites.root.filter, /package\(=maka-python-runtime\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-agent-engine\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-agent-native\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-computer-native\)/);
+});
+
+test('Workspace Files changes select the real Imported Read provider consumers', () => {
+  const plan = fixture()(['plugins/workspace/workspace-files/native/src/lib.rs']);
+  assert.equal(plan.full, false);
+  for (const name of [
+    'maka-files-native',
+    'maka-agent-engine',
+    'maka-agent-native',
+    'maka-computer-native',
+  ]) {
+    assert.ok(plan.suites.root.filter.includes(`package(=${name})`));
+  }
+});
+
+test('helper-consuming archives use non-test metadata with fork-layout tests after the build tree disappears', async () => {
+  for (const layout of ['unified', 'split']) {
+    for (const [consumer, binaryId] of [
+      ['maka-agent-native', 'maka-agent-native'],
+      ['maka-agent-native', 'maka-agent-native::durable_recovery'],
+      ['maka-agent-engine', 'maka-agent-engine::integration'],
+      ['maka-computer-native', 'maka-computer-native'],
+    ]) {
+      const directory = mkdtempSync(join(tmpdir(), 'maka-ci-native-helper-'));
+      try {
+        const target = join(directory, 'target');
+        const build = layout === 'split' ? join(directory, 'build') : target;
+        const binary = `debug/build/${consumer}/consumer-hash/out/native-test.mjs`;
+        const helper = `debug/${process.platform === 'win32' ? 'maka.exe' : 'maka'}`;
+        const pythonWorker = `debug/maka-python-worker${process.platform === 'win32' ? '.exe' : ''}`;
+        mkdirSync(dirname(join(build, binary)), { recursive: true });
+        mkdirSync(join(target, 'debug'), { recursive: true });
+        mkdirSync(join(directory, '.config'));
+        writeFileSync(join(directory, '.config/nextest.toml'), '[profile.ci]\n');
+        writeFileSync(join(target, helper), 'owned native helper');
+        writeFileSync(join(target, pythonWorker), 'owned Python worker');
+        writeFileSync(
+          join(build, binary),
+          `
+import { readFileSync } from 'node:fs';
+process.stdout.write([
+  readFileSync(process.env.CARGO_BIN_EXE_maka, 'utf8'),
+  readFileSync(process.env['CARGO_BIN_EXE_maka-python-worker'], 'utf8'),
+].join('|'));
+`,
+        );
+        const nonTestBinaries = {
+          cli: [{ name: 'maka', kind: 'bin-exe', path: helper, 'build-platform': 'target' }],
+          python: [
+            {
+              name: 'maka-python-worker',
+              kind: 'bin-exe',
+              path: pythonWorker,
+              'build-platform': 'target',
+            },
+          ],
+        };
+        const additionalSuites = {};
+        let archives = 0;
+        const replayed = [];
+        const exec = executor(
+          directory,
+          {},
+          {
+            env: {
+              ...process.env,
+              CARGO_TARGET_DIR: target,
+              CARGO_BIN_EXE_maka: join(directory, 'foreign-cached-helper'),
+              'CARGO_BIN_EXE_maka-python-worker': join(directory, 'foreign-cached-worker'),
+            },
+            run: async (_executable, args, options) => {
+              const value = (option) => args[args.indexOf(option) + 1];
+              const archived = args.includes('--archive-file') && args[1] !== 'archive';
+              const extractedTarget = archived ? join(value('--extract-to'), 'target') : target;
+              if (args[1] === 'list' && archived) {
+                assert(
+                  existsSync(value('--extract-to')),
+                  'the archive extraction root exists before nextest canonicalizes it',
+                );
+                for (const [path, text] of Object.entries(
+                  JSON.parse(readFileSync(value('--archive-file'), 'utf8')),
+                )) {
+                  const destination = join(extractedTarget, path);
+                  mkdirSync(dirname(destination), { recursive: true });
+                  writeFileSync(destination, text);
+                }
+              }
+              if (args[1] === 'list')
+                return JSON.stringify({
+                  'rust-build-meta': {
+                    'target-directory': extractedTarget,
+                    'build-directory': archived ? extractedTarget : build,
+                    'build-script-out-dirs': {},
+                    'non-test-binaries': archived ? {} : nonTestBinaries,
+                  },
+                  'rust-suites': {
+                    ...(archived
+                      ? {}
+                      : {
+                          ...additionalSuites,
+                          cli: { 'package-name': 'maka-cli', 'package-id': 'cli', testcases: {} },
+                          python: {
+                            'package-name': 'maka-python-runtime',
+                            'package-id': 'python',
+                            testcases: {},
+                          },
+                        }),
+                    native: {
+                      'package-name': consumer,
+                      'package-id': 'native',
+                      'binary-id': binaryId,
+                      'binary-path': join(archived ? extractedTarget : build, binary),
+                      testcases: { original_job: { 'filter-match': { status: 'matches' } } },
+                    },
+                  },
+                });
+              if (args[1] === 'run') {
+                assert.equal(options.env.CARGO_BIN_EXE_maka, join(extractedTarget, helper));
+                assert.equal(
+                  options.env['CARGO_BIN_EXE_maka-python-worker'],
+                  join(extractedTarget, pythonWorker),
+                );
+                replayed.push(
+                  execFileSync(process.execPath, [join(extractedTarget, binary)], {
+                    encoding: 'utf8',
+                    env: options.env,
+                  }),
+                );
+                return '';
+              }
+              assert.equal(args[1], 'archive');
+              const config = readFileSync(value('--config-file'), 'utf8');
+              const includes = Array.from(
+                config.matchAll(/\{\s*path\s*=\s*("(?:\\.|[^"\\])*")/g),
+                (match) => JSON.parse(match[1]),
+              );
+              const contents = Object.fromEntries(
+                [binary, ...includes].map((path) => [
+                  path,
+                  readFileSync(join(path === binary ? build : target, path), 'utf8'),
+                ]),
+              );
+              writeFileSync(value('--archive-file'), JSON.stringify(contents));
+              archives++;
+              return '';
+            },
+          },
+        );
+        const plan = { suites: { root: { filter: `package(=${consumer})` } } };
+        const output = join(directory, 'archives/root.json');
+        const group = consumer === 'maka-agent-native' ? 'native' : 'rest-1';
+        const partitions = await exec.archive(plan, output);
+        assert.deepEqual(partitions, [
+          {
+            group,
+            partition: 'slice:1/1',
+            helpers: [
+              {
+                package: 'maka-cli',
+                name: 'maka',
+                kind: 'bin-exe',
+                'build-platform': 'target',
+                path: helper,
+              },
+              {
+                package: 'maka-python-runtime',
+                name: 'maka-python-worker',
+                kind: 'bin-exe',
+                'build-platform': 'target',
+                path: pythonWorker,
+              },
+            ],
+          },
+        ]);
+        const replayRecord = JSON.parse(JSON.stringify(partitions[0]));
+        const archive = join(directory, `archives/root-tests-${group}.tar.zst`);
+        const originalCliBinaries = nonTestBinaries.cli;
+        nonTestBinaries.cli = [];
+        await assert.rejects(exec.archive(plan, output), /Missing native runtime binary metadata/);
+        nonTestBinaries.cli = [...originalCliBinaries, ...originalCliBinaries];
+        await assert.rejects(
+          exec.archive(plan, output),
+          /Ambiguous native runtime binary metadata/,
+        );
+        nonTestBinaries.cli = originalCliBinaries.map((binary) => ({
+          ...binary,
+          'build-platform': 'host',
+        }));
+        await assert.rejects(exec.archive(plan, output), /Missing native runtime binary metadata/);
+        nonTestBinaries.cli = originalCliBinaries.map((binary) => ({
+          ...binary,
+          path:
+            process.platform === 'win32'
+              ? `${target[0].toUpperCase() === 'D' ? 'E' : 'D'}:maka.exe`
+              : '../outside-helper',
+        }));
+        await assert.rejects(exec.archive(plan, output), /outside the archive target directory/);
+        nonTestBinaries.cli = originalCliBinaries;
+        additionalSuites.otherCli = {
+          'package-name': 'maka-cli',
+          'package-id': 'other-cli',
+          testcases: {},
+        };
+        await assert.rejects(
+          exec.archive(plan, output),
+          /Expected one native runtime package in test metadata/,
+        );
+        delete additionalSuites.otherCli;
+        assert.equal(archives, 1, 'cached helpers cannot replace missing or ambiguous metadata');
+        for (const artifact of [helper, pythonWorker]) {
+          const saved = readFileSync(join(target, artifact));
+          rmSync(join(target, artifact));
+          await assert.rejects(exec.archive(plan, output), (error) => error.code === 'ENOENT');
+          assert.equal(
+            archives,
+            1,
+            'missing runtime binary must fail before creating another archive',
+          );
+          writeFileSync(join(target, artifact), saved);
+        }
+        await exec.verify('root', `package(=${consumer})`);
+        rmSync(target, { recursive: true });
+        if (build !== target) rmSync(build, { recursive: true });
+        await assert.rejects(
+          exec.replay(archive, join(directory, 'missing-metadata')),
+          /Missing archive runtime helper metadata/,
+        );
+        await assert.rejects(
+          exec.replay(archive, join(directory, 'empty-metadata'), []),
+          /Runtime helper metadata differs from archive consumers/,
+        );
+        await exec.replay(archive, join(directory, 'independent'), replayRecord.helpers, [
+          '--profile',
+          'ci',
+        ]);
+        assert.deepEqual(
+          replayed,
+          ['owned native helper|owned Python worker', 'owned native helper|owned Python worker'],
+          'local verify and independent replay must use runner-provided helper paths',
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
   }
 });
 
@@ -950,6 +1417,12 @@ test('overlapping split archives serialize staging across local and CI consumers
           env: { ...process.env, CARGO_TARGET_DIR: join(directory, 'ignored target') },
           run: async (_executable, args) => {
             const value = (option) => args[args.indexOf(option) + 1];
+            if (args[1] === 'list' && args.includes('--archive-file')) {
+              return JSON.stringify({
+                'rust-build-meta': { 'target-directory': join(value('--extract-to'), 'target') },
+                'rust-suites': { cli: { 'package-name': 'maka-cli' } },
+              });
+            }
             if (args[1] === 'list')
               return JSON.stringify({
                 'rust-build-meta': {
@@ -1009,7 +1482,9 @@ test('overlapping split archives serialize staging across local and CI consumers
           consumer === 'local' ? ['immutable product', 'immutable product'] : ['immutable product'],
         );
         if (consumer === 'CI')
-          assert.deepEqual(results[1].value, [{ group: 'cli', partition: 'slice:1/1' }]);
+          assert.deepEqual(results[1].value, [
+            { group: 'cli', partition: 'slice:1/1', helpers: [] },
+          ]);
         assert.equal(existsSync(join(target, product)), false);
         assert.equal(readFileSync(join(build, product, 'asset.txt'), 'utf8'), 'immutable product');
         assert.equal(readFileSync(join(target, 'unrelated.txt'), 'utf8'), 'foreign sentinel');

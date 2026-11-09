@@ -50,11 +50,6 @@ pub(crate) fn store_cause(error: &StoreError) -> &'static str {
         StoreError::StartupCleanupFailed { .. } => "store_startup_cleanup_failed",
         StoreError::UnsupportedDatabase => "store_unsupported_database",
         StoreError::Initialization => "store_initialization",
-        StoreError::HistoryTurnMissing => "store_history_turn_missing",
-        StoreError::HistoryTurnSplit => "store_history_turn_split",
-        StoreError::HistoryUnsettled => "store_history_unsettled",
-        StoreError::HistoryProviderEffectUnresolved => "store_history_provider_effect_unresolved",
-        StoreError::ManagedSession => "store_session_managed",
         _ => "store_error",
     }
 }
@@ -77,8 +72,11 @@ pub(crate) fn run_cause(error: &RunError) -> &'static str {
         RunError::Commit(CommitError::Rejected(_)) => "commit_rejected",
         RunError::Commit(CommitError::OutcomeUnknown(_)) => "commit_outcome_unknown",
         RunError::Busy => "session_busy",
-        RunError::SessionState(_) => "session_state_error",
+        RunError::Blocked(_) => "execution_blocked",
+        RunError::PublicationUncertain { source, .. } => store_cause(source),
+        RunError::IsolationUnavailable(_) => "isolation_unavailable",
         RunError::ContinuationChanged => "continuation_changed",
+        RunError::CompactionFailed(_) => "compaction_failed",
         RunError::ReconciliationRequired(_) => "reconciliation_required",
         RunError::InvalidInput(_) => "invalid_input",
         RunError::Cancelled => "cancelled",
@@ -91,5 +89,6 @@ pub(crate) fn run_cause(error: &RunError) -> &'static str {
         RunError::Checkpoint(_) => "activation_checkpoint",
         RunError::Preparation(_) => "model_preparation",
         RunError::PreparationCleanup(_) => "cleanup_unconfirmed",
+        RunError::ModelUnavailable => "model_unavailable",
     }
 }

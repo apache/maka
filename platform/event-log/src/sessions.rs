@@ -17,33 +17,21 @@
  * under the License.
  */
 
-//! Durable session control metadata. Execution history remains in runtime_events.
+//! Durable, domain-independent session control metadata.
 
-mod activity;
 mod admission;
 mod catalog;
 pub(crate) use admission::retain;
 pub(crate) use catalog::{CatalogKey, CatalogPosition, Selection as CatalogQuery};
-pub(crate) mod copy;
-pub use copy::{AbandonRevision, SessionCopy, SessionCopyResult};
-mod execution;
-mod import;
-mod material;
-pub use material::MaterialCollection;
-mod metadata;
+pub(crate) mod metadata;
 mod origin;
 mod processes;
 pub(crate) mod removal;
+pub use metadata::SessionMutation;
 pub use origin::PluginSession;
 pub use removal::{
     RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionRemovalResult, SessionRetirement,
 };
-pub(crate) mod read_state;
-pub(crate) use activity::{initialize_execution, project_execution, register_functions};
-pub use execution::{CatalogMessage, SessionExecution, SessionExecutionState};
-pub(crate) use execution::{advance_revision, has_active_invocation};
-pub use metadata::SessionMutation;
-pub use read_state::SessionReadState;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -53,7 +41,7 @@ pub const MAX_SESSION_PAGE: usize = 32;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SessionRecord<T> {
+pub struct SessionRecord<T = serde_json::Value> {
     pub id: String,
     /// Effective metadata revision, including shared binding epoch changes.
     pub revision: u64,
@@ -65,22 +53,9 @@ pub struct SessionRecord<T> {
     /// Current binding captured in the same SQL snapshot as the stored configuration.
     #[serde(skip)]
     pub workspace_binding: Option<crate::workspace_bindings::WorkspaceBinding>,
-    /// Exact stored configuration basis, independent of execution-driven revision.
+    /// Digest of the exact stored configuration bytes.
     #[serde(skip)]
     pub configuration_digest: String,
-    #[serde(default)]
-    pub read_state: SessionReadState,
-    /// Bounded execution projection read in the same snapshot as metadata.
-    #[serde(skip)]
-    pub execution: Option<SessionExecution>,
-    /// Message activity does not imply a local execution (for example, imported history).
-    #[serde(skip)]
-    pub last_message: Option<CatalogMessage>,
-    /// Oldest unresolved interaction, read from canonical facts in the same snapshot.
-    #[serde(skip)]
-    pub pending_interaction_since: Option<u64>,
-    pub lineage: Option<Box<maka_agent_facts::session::Lineage>>,
-    pub copy_state: Option<maka_agent_facts::session::CopyState>,
 }
 
 impl<T> SessionRecord<T> {
@@ -94,12 +69,6 @@ impl<T> SessionRecord<T> {
             configuration: map(self.configuration),
             workspace_binding: self.workspace_binding,
             configuration_digest: self.configuration_digest,
-            read_state: self.read_state,
-            execution: self.execution,
-            last_message: self.last_message,
-            pending_interaction_since: self.pending_interaction_since,
-            lineage: self.lineage,
-            copy_state: self.copy_state,
         }
     }
 }
@@ -128,7 +97,7 @@ pub enum CatalogSelection {
     Workspace {
         /// The original owned anchor also participates in continuation identity.
         session_id: String,
-        identity: maka_agent_facts::execution::WorkspaceIdentity,
+        identity: maka_sandbox::workspace::WorkspaceIdentity,
     },
 }
 
@@ -137,15 +106,12 @@ pub struct CatalogFilter {
     pub roots_only: bool,
     pub archived_only: bool,
     pub include_archived: bool,
-    pub pending_only: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct SessionPage<T> {
     pub revision: String,
     pub sessions: Vec<SessionRecord<T>>,
-    /// All unresolved-interaction sessions in this scope, independent of page size.
-    pub pending_session_count: u64,
     pub next_cursor: Option<String>,
     pub previous_cursor: Option<String>,
 }
@@ -160,7 +126,6 @@ pub struct UnreadableSession {
 pub struct SessionOutcomePage<T> {
     pub revision: String,
     pub sessions: Vec<Result<SessionRecord<T>, UnreadableSession>>,
-    pub pending_session_count: u64,
     pub next_cursor: Option<String>,
     pub previous_cursor: Option<String>,
 }
@@ -320,7 +285,6 @@ impl EventLog {
                 roots_only: false,
                 archived_only: false,
                 include_archived: true,
-                pending_only: false,
             },
         )
         .await
@@ -378,21 +342,14 @@ pub(crate) fn insert(
     if reserved.is_some_and(|reserved| reserved != fingerprint) {
         return Err(StoreError::SessionConflict);
     }
-    let inserted = tx.execute("INSERT INTO session_control
+    let inserted = tx.execute(
+        "INSERT INTO session_control
          (id, fingerprint, revision, created_at, updated_at, archived, configuration, catalog_activity_at)
-         SELECT ?1, ?2, 1, ?3, ?4, 0, ?5, COALESCE((
-             SELECT message_at FROM catalog_messages INDEXED BY catalog_latest_message
-             WHERE session_id = ?1 ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
-         ), 0)
+         SELECT ?1, ?2, 1, ?3, ?3, 0, ?4, 0
          WHERE NOT EXISTS (SELECT 1 FROM session_control WHERE id = ?1)
-           AND NOT EXISTS (SELECT 1 FROM session_history_copies WHERE session_id = ?1)
-           AND NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id = ?1)
-           AND NOT EXISTS (SELECT 1 FROM context_source_prefixes p
-             CROSS JOIN event_log e ON e.sequence=p.sequence
-             JOIN imported_invocations i ON i.invocation_id=e.invocation_id
-             WHERE p.kind='session' AND p.owner=?1)
-           AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ?1 AND state != 'published')", params![id, fingerprint, now as i64, now as i64, configuration])
-    ?;
+           AND NOT EXISTS (SELECT 1 FROM session_retirements WHERE session_id = ?1)",
+        params![id, fingerprint, now as i64, configuration],
+    )?;
     if inserted != 1 {
         return Err(StoreError::SessionConflict);
     }
@@ -405,9 +362,7 @@ pub(crate) fn read<T: DeserializeOwned>(
 ) -> Result<Option<SessionRecord<T>>, StoreError> {
     let raw = connection
         .query_row(
-            "SELECT id, revision, created_at, updated_at, archived, configuration,
-            (SELECT lineage_json FROM session_history_copies WHERE session_id = id),
-            (SELECT state FROM session_history_copies WHERE session_id = id)
+            "SELECT id, revision, created_at, updated_at, archived, configuration
          FROM session_control WHERE id = ?",
             params![id],
             |row| {
@@ -418,16 +373,17 @@ pub(crate) fn read<T: DeserializeOwned>(
                     row.get::<_, i64>(3)?,
                     row.get::<_, bool>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
                 ))
             },
         )
         .optional()?;
     if let Some(row) = raw {
         let configuration: String = row.5;
-        let configuration_digest =
-            maka_agent_facts::artifact::content_digest(configuration.as_bytes());
+        use sha2::{Digest, Sha256};
+        let configuration_digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(configuration.as_bytes()))
+        );
         let configuration_value: serde_json::Value = serde_json::from_str(&configuration)?;
         let workspace_binding =
             crate::workspace_bindings::resolve(connection, &configuration_value)?;
@@ -437,22 +393,6 @@ pub(crate) fn read<T: DeserializeOwned>(
             workspace_binding.as_ref(),
         )?;
         let configuration = serde_json::from_value(configuration_value)?;
-        let lineage = row.6.map(|json| serde_json::from_str(&json)).transpose()?;
-        let copy_state = row
-            .7
-            .map(|state| state.parse().map_err(invalid))
-            .transpose()?;
-        let execution = execution::read(connection, id)?;
-        let last_message = execution::last_message(connection, id)?;
-        let read_state = read_state::read(connection, id)?;
-        let pending_since: Option<i64> = connection.query_row(
-            "SELECT MIN(created_at) FROM interaction_pending WHERE session_id = ?",
-            params![id],
-            |row| row.get(0),
-        )?;
-        let pending_interaction_since = pending_since
-            .map(|time| u64::try_from(time).map_err(|_| invalid("invalid interaction timestamp")))
-            .transpose()?;
         Ok(Some(SessionRecord {
             id: row.0,
             revision,
@@ -462,12 +402,6 @@ pub(crate) fn read<T: DeserializeOwned>(
             configuration,
             workspace_binding,
             configuration_digest,
-            execution,
-            last_message,
-            read_state,
-            pending_interaction_since,
-            lineage,
-            copy_state,
         }))
     } else {
         Ok(None)
@@ -530,4 +464,29 @@ fn probe<T: DeserializeOwned>(
         return Err(StoreError::SessionConflict);
     }
     read(connection, id)
+}
+
+pub(crate) fn advance_revision(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<(), StoreError> {
+    if crate::workspace_bindings::current_session_revision(connection, id)?
+        .is_some_and(|revision| revision >= MAX_SAFE_INTEGER)
+    {
+        return Err(invalid("session revision exhausted"));
+    }
+    let changed = connection.execute(
+        "UPDATE session_control SET revision = revision + 1 WHERE id = ? AND revision < ?",
+        params![id, MAX_SAFE_INTEGER as i64],
+    )?;
+    if changed == 1 {
+        advance_catalog(connection)?;
+    } else if connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
+        params![id],
+        |row| row.get(0),
+    )? {
+        return Err(invalid("session revision exhausted"));
+    }
+    Ok(())
 }

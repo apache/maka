@@ -19,7 +19,10 @@
 
 mod declarations;
 mod session;
-pub(crate) use session::Cells;
+pub use session::{
+    CellAdmission, CellChange, CellContent, CellFuture, CellObservation, CellPersistence,
+    CodeCells, ObservedCell,
+};
 pub(super) fn declarations<'a>(
     definitions: impl IntoIterator<Item = &'a ToolDefinition>,
     language: CodeLanguage,
@@ -30,21 +33,12 @@ pub(super) fn declarations<'a>(
     }
 }
 
-use crate::CodeExecutor;
 use maka_agent_facts::execution::CodeLanguage;
-use maka_agent_facts::tool_call::ToolCallIdentity;
-use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
-use maka_agent_facts::tools::ToolJournal;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
-use crate::{ToolCatalog, ToolDefinition};
-use uuid::Uuid;
+use crate::ToolDefinition;
 
 const EXEC_GRAMMAR: &str = r#"start: pragma_source | plain_source
 pragma_source: PRAGMA_LINE NEWLINE SOURCE
@@ -82,7 +76,7 @@ Helpers:
 - image(value, detail?): emit a Host image, MCP image block or base64 data URL; image_url objects are accepted. detail is auto/low/high/original; an explicit argument overrides embedded detail.
 - audio(value): emit an MCP audio block, audio_url object or base64 data URL. Audio bytes are delivered as native model input when supported; unsupported adapters receive an explicit notice. PCM WAV clips shorter than 25 ms are omitted with a text notice.
 - generatedImage({image_url, output_hint?}): emit image content and its hint.
-- store(key, value), load(key): retain JSON between exec calls in this live session, including across turns and compaction. No JS globals survive. Writes publish after settlement. Host restart/session retirement clears the store.
+- store(key, value), load(key): retain JSON between exec calls in this session, including across turns, compaction and Host restart. No JS globals survive. Writes publish only with successful canonical Cell final-result acceptance; failed/interrupted drafts are discarded.
 - notify(value): inject output into model history without wait, yielding or finishing the cell. Notifications during a model request arrive on the next step.
 - await yield_control(): return accumulated output while the cell continues.
 - exit(): end the script successfully.
@@ -133,7 +127,7 @@ pub(super) struct WaitInput {
 pub(super) fn wait_definition() -> ToolDefinition {
     ToolDefinition {
         freeform: None, output_schema: None, provider: None, name: "wait".into(),
-        description: "Observe a cell_id returned by running exec/wait. Returns new output and running/completed/terminated state. terminate requests cancellation; state stays running through cleanup. Collect final output once. IDs expire with this Run or Host restart.".into(),
+        description: "Observe a cell_id returned by running exec/wait. Returns new output and running/completed/terminated state. terminate requests cancellation; state stays running through cleanup. Completed/interrupted results remain readable after Host restart. Old interpreter heaps and handles are never restored.".into(),
         input_schema: schemars::schema_for!(WaitInput).into(),
     }
 }
@@ -177,95 +171,4 @@ pub(super) fn source(input: &Value, language: CodeLanguage) -> Result<CodeInput,
 
 pub(super) fn wait_input(input: &Value) -> Result<WaitInput, ToolRejection> {
     serde_json::from_value(input.clone()).map_err(|error| invalid(error.to_string()))
-}
-
-pub(super) struct CellTool {
-    cells: CodeExecutor,
-    input: CodeInput,
-    catalog: ToolCatalog,
-    journal: ToolJournal,
-    parent_operation_id: String,
-    parent_tool_call_id: String,
-}
-
-impl CellTool {
-    pub(super) fn new(
-        cells: CodeExecutor,
-        input: CodeInput,
-        catalog: ToolCatalog,
-        journal: ToolJournal,
-        parent_operation_id: String,
-        parent_tool_call_id: String,
-    ) -> Self {
-        Self {
-            cells,
-            input,
-            catalog,
-            journal,
-            parent_operation_id,
-            parent_tool_call_id,
-        }
-    }
-}
-
-/// Nested preflight precedes T1. The cell supplies only arguments, never its
-/// parent identity or a broader catalog. Direct-only entries were removed once.
-struct NestedTools {
-    execution: Arc<tokio::sync::RwLock<()>>,
-    catalog: ToolCatalog,
-    journal: ToolJournal,
-    origin: ToolOrigin,
-}
-
-impl ToolExecutor for NestedTools {
-    fn names(&self) -> Vec<String> {
-        self.catalog.names()
-    }
-
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let catalog = self.catalog.clone();
-        let execution = self.execution.clone();
-        let parallel = catalog.semantics(&name) == Ok(crate::ToolSemantics::Parallel);
-        let journal = self.journal.clone();
-        let call = ToolCallIdentity {
-            tool_call_id: Uuid::new_v4().to_string(),
-            origin: self.origin.clone(),
-        };
-        let operation_id = Uuid::new_v4().to_string();
-        Box::pin(async move {
-            // Nested calls share a gate across live cells, separate from the
-            // outer exec/wait envelopes to avoid recursive lock acquisition.
-            let _execution = if parallel {
-                futures_util::future::Either::Left(execution.read_owned().await)
-            } else {
-                futures_util::future::Either::Right(execution.write_owned().await)
-            };
-            let context = journal.context(operation_id.clone());
-            let prepared = catalog
-                .prepare(name.clone(), input.clone(), context, cancellation.clone())
-                .await;
-            let effect = match prepared {
-                Ok(effect) => effect,
-                Err(reason) => {
-                    return journal
-                        .reject(operation_id, call, name, input.into(), None, reason)
-                        .await;
-                }
-            };
-            let result = journal
-                .invoke_prepared_output(
-                    operation_id,
-                    call,
-                    name.clone(),
-                    input,
-                    None,
-                    cancellation,
-                    effect,
-                )
-                .await?;
-            result
-                .into_code_value()
-                .map_err(|message| maka_agent_facts::tools::ToolError::Failed(message.into()))
-        })
-    }
 }

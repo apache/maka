@@ -19,69 +19,75 @@
 
 use super::{RootStore, SessionStore};
 use crate::StoreError;
-use maka_agent_facts::{event::Invocation, tools::ExecutionCustody};
+use maka_plugin_core::work::WorkCustody;
 use std::sync::Arc;
 
-struct SelectedExecution(SessionStore);
-impl ExecutionCustody for SelectedExecution {
+// Only this module can mint a token containing the selected live SessionStore.
+struct SelectedSessionWork(SessionStore);
+impl WorkCustody for SelectedSessionWork {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
 impl SessionStore {
-    /// Carry the original selected execution through dependency boundaries.
-    /// This token grants no authority after its execution owner finishes.
-    pub fn execution_custody(&self) -> Result<Arc<dyn ExecutionCustody>, StoreError> {
+    pub fn work_custody(&self) -> Result<Arc<dyn WorkCustody>, StoreError> {
         self.owner()?;
-        if !self.execution.as_ref().is_some_and(|pins| pins.active()) {
+        self.work_lifetime()?;
+        Ok(Arc::new(SelectedSessionWork(self.clone())))
+    }
+
+    pub(super) fn require_work_custody(&self, custody: &dyn WorkCustody) -> Result<(), StoreError> {
+        let selected = selected(custody)?;
+        selected.check_session(self.id())?;
+        selected.owner()?;
+        if !Arc::ptr_eq(&self.work_lifetime()?, &selected.work_lifetime()?) {
             return Err(StoreError::InvalidTransition(
-                "Session has no active execution".into(),
+                "scope belongs to another accepted work owner".into(),
             ));
         }
-        Ok(Arc::new(SelectedExecution(self.clone())))
+        Ok(())
     }
 }
+fn selected(custody: &dyn WorkCustody) -> Result<&SessionStore, StoreError> {
+    custody
+        .as_any()
+        .downcast_ref::<SelectedSessionWork>()
+        .map(|token| &token.0)
+        .ok_or_else(|| StoreError::InvalidTransition("foreign work custody".into()))
+}
 impl RootStore {
-    /// Retain one accepted effect and its exact Run completion obligation.
-    /// Ordinary session-owned background resources use `fork_execution` instead.
-    pub fn fork_invocation_effect(
+    pub fn fork_effect(
         &self,
-        custody: &dyn ExecutionCustody,
-        invocation: &Invocation,
-    ) -> Result<super::InvocationEffectLease, StoreError> {
-        self.session_for_execution(custody, invocation)?
-            .fork_invocation_effect(invocation)
+        custody: &dyn WorkCustody,
+        session_id: &str,
+    ) -> Result<super::WorkEffectLease, StoreError> {
+        self.session_for_work(custody, session_id)?.fork_effect()
     }
 
-    /// Fork physical child work from the same original admission. The child
-    /// retains those guards independently until its own confirmed cleanup.
-    pub fn fork_execution(
+    pub fn fork_work(
         &self,
-        custody: &dyn ExecutionCustody,
-        invocation: &Invocation,
-    ) -> Result<super::SessionExecutionLease, StoreError> {
-        self.session_for_execution(custody, invocation)?
-            .fork_execution()
+        custody: &dyn WorkCustody,
+        session_id: &str,
+    ) -> Result<super::SessionWorkLease, StoreError> {
+        self.session_for_work(custody, session_id)?.fork_work()
     }
 
-    /// Recover the actual selected handle without reacquiring any binding gate.
-    pub fn session_for_execution(
+    /// Use the original selected store and guards. Another opening of the exact
+    /// same live RootOwner may inspect this token, but never replaces its gates.
+    pub fn session_for_work(
         &self,
-        custody: &dyn ExecutionCustody,
-        invocation: &Invocation,
+        custody: &dyn WorkCustody,
+        session_id: &str,
     ) -> Result<SessionStore, StoreError> {
-        let selected = custody
-            .as_any()
-            .downcast_ref::<SelectedExecution>()
-            .ok_or_else(|| StoreError::InvalidTransition("foreign execution custody".into()))?;
-        let store = &selected.0;
-        if !Arc::ptr_eq(&self.gates, &store.gates) {
+        let store = selected(custody)?;
+        store.check_session(session_id)?;
+        let owner = store.owner()?;
+        store.work_lifetime()?;
+        if !Arc::ptr_eq(&self.log.owned_root()?, &owner.owned_root()?) {
             return Err(StoreError::InvalidTransition(
-                "foreign Root execution custody".into(),
+                "foreign Root work custody".into(),
             ));
         }
-        store.check_session(&invocation.session_id)?;
-        store.owner()?;
         Ok(store.clone())
     }
 }
@@ -91,27 +97,29 @@ mod tests {
     use super::*;
     use crate::root::{RootNamespaces, RootOwner};
     use futures_util::poll;
-    use maka_agent_facts::{
-        tools::ToolJournal,
-        workspace::{BindingStamp, PermissionBasis},
-    };
+    use maka_plugin_core::work::WorkCustody;
+    use maka_sandbox::workspace::{BindingStamp, PermissionBasis};
     use serde_json::{Value, json};
     use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
-    async fn journal_carries_original_binding_pin_past_queued_writer_and_rejects_foreign_or_finished_tokens()
+    async fn original_work_custody_carries_binding_pin_past_queued_writer_and_rejects_foreign_or_finished_tokens()
      {
         let directory = tempfile::tempdir().unwrap();
-        let root = RootStore::open(Arc::new(
-            RootOwner::create(
-                &directory.path().join("root"),
-                &RootNamespaces {
-                    ownership: directory.path().join("owners"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        ))
+        let root = RootStore::open(
+            Arc::new(
+                RootOwner::create(
+                    &directory.path().join("root"),
+                    &RootNamespaces {
+                        ownership: directory.path().join("owners"),
+                        control: directory.path().join("control"),
+                    },
+                )
+                .unwrap(),
+            ),
+            crate::ROOT_MIGRATIONS,
+        )
         .await
         .unwrap();
         let reference = root
@@ -127,9 +135,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(session.execution_custody().is_err());
+        assert!(session.work_custody().is_err());
         let scope = session
-            .execution_scope(Some(PermissionBasis {
+            .work_scope(Some(PermissionBasis {
                 binding: BindingStamp {
                     id: reference.id,
                     permission_epoch: 0,
@@ -138,25 +146,14 @@ mod tests {
             }))
             .await
             .unwrap();
-        let selected = Arc::new(scope.store());
-        let lease = scope.accept();
-        let invocation = Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        let journal = ToolJournal::new(selected, invocation.clone());
-        let context = journal.context("tool".into());
-        let custody = context.execution.as_ref().unwrap();
+        let (lease, _effects) = scope.accept(CancellationToken::new());
+        let custody = lease.store().work_custody().unwrap();
         let mut writer = Box::pin(
             root.gates
                 .write([super::super::gates::Key::Binding(reference.id)]),
         );
         assert!(poll!(&mut writer).is_pending());
-        let recovered = root
-            .session_for_execution(custody.as_ref(), &context.invocation)
-            .unwrap();
+        let recovered = root.session_for_work(custody.as_ref(), "session").unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), recovered.get::<Value>())
                 .await
@@ -166,45 +163,36 @@ mod tests {
                 .id,
             "session"
         );
-        let mut foreign = invocation.clone();
-        foreign.session_id = "foreign".into();
-        assert!(
-            root.session_for_execution(custody.as_ref(), &foreign)
-                .is_err()
-        );
+        assert!(root.session_for_work(custody.as_ref(), "foreign").is_err());
         struct Forged;
-        impl ExecutionCustody for Forged {
+        impl WorkCustody for Forged {
             fn as_any(&self) -> &dyn std::any::Any {
                 self
             }
         }
-        assert!(root.session_for_execution(&Forged, &invocation).is_err());
+        assert!(root.session_for_work(&Forged, "session").is_err());
         let other_directory = tempfile::tempdir().unwrap();
-        let other = RootStore::open(Arc::new(
-            RootOwner::create(
-                &other_directory.path().join("root"),
-                &RootNamespaces {
-                    ownership: other_directory.path().join("owners"),
-                    control: other_directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        ))
+        let other = RootStore::open(
+            Arc::new(
+                RootOwner::create(
+                    &other_directory.path().join("root"),
+                    &RootNamespaces {
+                        ownership: other_directory.path().join("owners"),
+                        control: other_directory.path().join("control"),
+                    },
+                )
+                .unwrap(),
+            ),
+            crate::ROOT_MIGRATIONS,
+        )
         .await
         .unwrap();
-        assert!(
-            other
-                .session_for_execution(custody.as_ref(), &invocation)
-                .is_err()
-        );
+        assert!(other.session_for_work(custody.as_ref(), "session").is_err());
         other.close().await.unwrap();
-        let child = root.fork_execution(custody.as_ref(), &invocation).unwrap();
+        let child = root.fork_work(custody.as_ref(), "session").unwrap();
         let child_store = child.store();
         lease.finish();
-        assert!(
-            root.session_for_execution(custody.as_ref(), &invocation)
-                .is_err()
-        );
+        assert!(root.session_for_work(custody.as_ref(), "session").is_err());
         assert!(recovered.get::<Value>().await.is_err());
         assert!(poll!(&mut writer).is_pending());
         assert_eq!(
@@ -216,14 +204,14 @@ mod tests {
                 .id,
             "session"
         );
-        let child_token = child_store.execution_custody().unwrap();
+        let child_token = child_store.work_custody().unwrap();
         assert!(
-            root.session_for_execution(child_token.as_ref(), &invocation)
+            root.session_for_work(child_token.as_ref(), "session")
                 .is_ok()
         );
         child.finish();
         assert!(
-            root.session_for_execution(child_token.as_ref(), &invocation)
+            root.session_for_work(child_token.as_ref(), "session")
                 .is_err()
         );
         drop(

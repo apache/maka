@@ -22,7 +22,7 @@ use crate::{path::WorkspacePath, worktree::Binding};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use gix::bstr::ByteSlice;
-use maka_agent_facts::execution::DirectoryIdentity;
+use maka_sandbox::workspace::DirectoryIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{

@@ -18,7 +18,7 @@
  */
 
 use super::{MAX_PAGE_CHARS, ReadError, ReadPage, ReadRequest};
-use crate::shell_result::{ShellMode, ShellOutput, ShellSnapshot, ShellStatus};
+use maka_plugin_core::shell_result::{ShellMode, ShellOutput, ShellSnapshot, ShellStatus};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,36 +59,37 @@ pub struct ReadMetadata {
     redacted: Option<bool>,
 }
 
-impl ShellSnapshot {
-    /// Model-only page; the original committed snapshot remains the raw result.
-    pub fn read_page(&self, request: &ReadRequest) -> Result<ReadPage, ReadError> {
-        self.read_page_with_budget(request, MAX_PAGE_CHARS)
-    }
+/// Model-only page; the original committed snapshot remains the raw result.
+pub fn read_shell_page(
+    snapshot: &ShellSnapshot,
+    request: &ReadRequest,
+) -> Result<ReadPage, ReadError> {
+    read_page_with_budget(snapshot, request, MAX_PAGE_CHARS)
+}
 
-    fn read_page_with_budget(
-        &self,
-        request: &ReadRequest,
-        budget: usize,
-    ) -> Result<ReadPage, ReadError> {
-        let metadata = ReadMetadata {
-            kind: ReadKind::ShellRun,
-            status: self.status,
-            mode: Some(self.mode),
-            revision: Some(self.revision),
-            exit_code: self.exit_code,
-            stdout_truncated: None,
-            stderr_truncated: None,
-            truncated: None,
-            redacted: None,
-        };
-        page(
-            budget,
-            request,
-            metadata,
-            self.output.as_ref(),
-            self.failure_message.as_deref(),
-        )
-    }
+fn read_page_with_budget(
+    snapshot: &ShellSnapshot,
+    request: &ReadRequest,
+    budget: usize,
+) -> Result<ReadPage, ReadError> {
+    let metadata = ReadMetadata {
+        kind: ReadKind::ShellRun,
+        status: snapshot.status,
+        mode: Some(snapshot.mode),
+        revision: Some(snapshot.revision),
+        exit_code: snapshot.exit_code,
+        stdout_truncated: None,
+        stderr_truncated: None,
+        truncated: None,
+        redacted: None,
+    };
+    page(
+        budget,
+        request,
+        metadata,
+        snapshot.output.as_ref(),
+        snapshot.failure_message.as_deref(),
+    )
 }
 
 pub(crate) fn read_archived_shell(
@@ -99,7 +100,7 @@ pub(crate) fn read_archived_shell(
     if let Ok(snapshot) = serde_json::from_str::<ShellSnapshot>(serialized)
         && snapshot.validate().is_ok()
     {
-        return Some(snapshot.read_page_with_budget(request, budget));
+        return Some(read_page_with_budget(&snapshot, request, budget));
     }
     let snapshot: Foreground = serde_json::from_str(serialized).ok()?;
     if snapshot.kind != ReadKind::Terminal {
@@ -182,8 +183,8 @@ fn page(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell_result::SnapshotKind;
-    use crate::{read::ReadInput, terminal::TerminalCursor};
+    use crate::read::ReadInput;
+    use maka_plugin_core::{shell_result::SnapshotKind, terminal::TerminalCursor};
 
     #[test]
     fn shell_pages_bound_the_whole_envelope_and_preserve_status_and_truncation() {
@@ -238,8 +239,10 @@ mod tests {
             let raw = serde_json::to_value(&snapshot).unwrap();
             let input: ReadInput =
                 serde_json::from_value(serde_json::json!({"path":snapshot.resource_ref})).unwrap();
-            let page = serde_json::to_value(snapshot.read_page(&input.resolve().unwrap()).unwrap())
-                .unwrap();
+            let page = serde_json::to_value(
+                read_shell_page(&snapshot, &input.resolve().unwrap()).unwrap(),
+            )
+            .unwrap();
             assert!(page.to_string().encode_utf16().count() <= MAX_PAGE_CHARS);
             assert!(text.starts_with(page["content"].as_str().unwrap()));
             assert_eq!(page["metadata"]["status"], "failed");
@@ -253,7 +256,7 @@ mod tests {
             let next: ReadInput = serde_json::from_value(page["next"].clone()).unwrap();
             snapshot.failure_message = Some("changed".into());
             assert_eq!(
-                snapshot.read_page(&next.resolve().unwrap()),
+                read_shell_page(&snapshot, &next.resolve().unwrap()),
                 Err(ReadError::ContentChanged)
             );
         }

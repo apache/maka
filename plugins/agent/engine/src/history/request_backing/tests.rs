@@ -21,41 +21,34 @@ use super::*;
 use crate::history::capture_arena::CaptureArena;
 use maka_capabilities::model_preparation::{ModelPreparationResources, PreparationPolicy};
 use maka_event_log::{
-    context::semantic::SemanticSelection,
     root::{RootNamespaces, RootOwner},
-    root_store::{RootStore, SessionExecutionLease},
+    root_store::{RootStore, SessionWorkLease, WorkEffects},
 };
 
-async fn source(path: &std::path::Path) -> (RootStore, CapturedSource, SessionExecutionLease) {
+async fn source(
+    path: &std::path::Path,
+) -> (RootStore, PreparationIo, SessionWorkLease, WorkEffects) {
     let namespaces = RootNamespaces {
         ownership: path.join("owners"),
         control: path.join("control"),
     };
-    let root = RootStore::open(Arc::new(
-        RootOwner::create(&path.join("root"), &namespaces).unwrap(),
-    ))
+    let root = RootStore::open(
+        Arc::new(RootOwner::create(&path.join("root"), &namespaces).unwrap()),
+        &crate::history::test_support::catalog(),
+    )
     .await
     .unwrap();
     root.create_session("session", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
     let session = root.session("session").await.unwrap();
-    let lease = session.execution_scope(None).await.unwrap().accept();
-    let captured = lease
-        .store()
-        .capture_source(SemanticSelection {
-            session: "session".into(),
-            lineage: None,
-            after: 0,
-            through: 0,
-            before: 1,
-            captured_through: 0,
-            replay: None,
-            prior_unknown: false,
-        })
+    let (lease, effects) = session
+        .work_scope(None)
         .await
-        .unwrap();
-    (root, captured, lease)
+        .unwrap()
+        .accept(tokio_util::sync::CancellationToken::new());
+    let io = PreparationIo::new(&lease.store()).unwrap();
+    (root, io, lease, effects)
 }
 fn resources() -> ModelPreparationResources {
     ModelPreparationResources::new(PreparationPolicy {
@@ -70,7 +63,7 @@ fn resources() -> ModelPreparationResources {
 #[tokio::test]
 async fn file_regions_replay_from_native_offsets_and_close_before_the_resource_settles() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, source, execution) = source(directory.path()).await;
+    let (root, source, execution, effects) = source(directory.path()).await;
     let arena = CaptureArena::new(source.clone(), None).await.unwrap();
     let selected = arena
         .with_writer(|builder| {
@@ -115,6 +108,7 @@ async fn file_regions_replay_from_native_offsets_and_close_before_the_resource_s
             .is_err()
     );
     drop((tail, source_bytes, arena, budget, work, source));
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
 }
@@ -124,9 +118,10 @@ async fn reopen(path: &std::path::Path) {
         ownership: path.join("owners"),
         control: path.join("control"),
     };
-    let reopened = RootStore::open(Arc::new(
-        RootOwner::open(&path.join("root"), &namespaces).unwrap(),
-    ))
+    let reopened = RootStore::open(
+        Arc::new(RootOwner::open_existing(&path.join("root"), &namespaces).unwrap()),
+        &crate::history::test_support::catalog(),
+    )
     .await
     .unwrap();
     reopened.shutdown().await.unwrap();
@@ -135,7 +130,7 @@ async fn reopen(path: &std::path::Path) {
 #[tokio::test]
 async fn failed_append_and_normal_cancellation_abort_on_the_original_worker_and_permit_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, source, execution) = source(directory.path()).await;
+    let (root, source, execution, effects) = source(directory.path()).await;
     let arena = CaptureArena::new(source.clone(), None).await.unwrap();
     let readonly_path = directory.path().join("readonly");
     arena
@@ -145,7 +140,8 @@ async fn failed_append_and_normal_cancellation_abort_on_the_original_worker_and_
             let Some(Building::File { file, .. }) = builder.storage.as_mut() else {
                 unreachable!()
             };
-            close_request_file(std::mem::replace(file, readonly))?;
+            maka_event_log::root_store::close_request_file(std::mem::replace(file, readonly))
+                .map_err(io::Error::other)?;
             assert!(builder.append_bytes(b"cannot write").is_err());
             Ok(())
         })
@@ -160,6 +156,7 @@ async fn failed_append_and_normal_cancellation_abort_on_the_original_worker_and_
         .unwrap();
     arena.close().await.unwrap();
     drop((arena, source));
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
     drop(root);
@@ -167,33 +164,55 @@ async fn failed_append_and_normal_cancellation_abort_on_the_original_worker_and_
 }
 
 #[tokio::test]
-async fn abandoned_file_material_stays_owned_by_original_quarantine_instead_of_claiming_close() {
+async fn last_derived_file_owner_closes_on_the_original_worker_and_permits_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, source, execution) = source(directory.path()).await;
-    let arena = CaptureArena::new(source.clone(), None).await.unwrap();
-    arena
-        .with_writer(|builder| builder.append_bytes(b"retained material"))
+    let (root, original_io, execution, effects) = source(directory.path()).await;
+    let workers = tokio_util::task::TaskTracker::new();
+    let physical = crate::cleanup::Evidence::default();
+    let io =
+        PreparationIo::new_tracked(&execution.store(), workers.clone(), physical.clone()).unwrap();
+    drop(original_io);
+    let arena = CaptureArena::new(io.clone(), None).await.unwrap();
+    let range = arena
+        .with_writer(|builder| builder.append_bytes(b"original material"))
         .await
         .unwrap();
+    arena.seal().await.unwrap();
+    let bytes = arena.pending(range);
     drop(arena);
-    drop(source);
-    execution.finish();
-    assert!(
-        root.shutdown().await.is_err(),
-        "missing close receipt cannot acknowledge shutdown"
+    let resources = resources();
+    let work = resources.acquire_work().await.unwrap();
+    let budget = work.budget();
+    let mut cursor = bytes.open(budget.clone());
+    let read = cursor
+        .read_chunk(budget.allocate(32).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        &read.buffer.as_ref()[..read.bytes_read],
+        b"original material"
     );
+    assert!(read.eof);
+    drop((read, cursor, bytes, budget, work, io));
+    workers.close();
+    tokio::time::timeout(std::time::Duration::from_secs(5), workers.wait())
+        .await
+        .expect("original source must await its last file close");
+    assert!(physical.confirmed());
+    tokio::time::timeout(std::time::Duration::from_secs(5), effects.settle())
+        .await
+        .expect("original cleanup must settle")
+        .unwrap();
+    execution.finish();
+    root.shutdown().await.unwrap();
     drop(root);
-    let namespaces = RootNamespaces {
-        ownership: directory.path().join("owners"),
-        control: directory.path().join("control"),
-    };
-    assert!(RootOwner::open(&directory.path().join("root"), &namespaces).is_err());
+    reopen(directory.path()).await;
 }
 
 #[tokio::test]
 async fn append_session_keeps_chunked_output_contiguous_and_allows_control_reads() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, source, execution) = source(directory.path()).await;
+    let (root, source, execution, effects) = source(directory.path()).await;
     let arena = CaptureArena::new(source.clone(), None).await.unwrap();
     let append = arena.begin_append().await;
     let table = append
@@ -248,8 +267,61 @@ async fn append_session_keeps_chunked_output_contiguous_and_allows_control_reads
     drop((read, cursor, budget, work));
     arena.close().await.unwrap();
     drop((arena, source));
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
     drop(root);
     reopen(directory.path()).await;
+}
+
+#[tokio::test]
+async fn resident_limits_survive_promotion_and_read_buffers_retain_the_original_charge() {
+    let directory = tempfile::tempdir().unwrap();
+    let (root, io, execution, effects) = source(directory.path()).await;
+    let resources = resources();
+    let staged = resources.reserve_staging(32).await.unwrap();
+    let arena = CaptureArena::new(io.clone(), Some(staged.directory(32).unwrap()))
+        .await
+        .unwrap();
+    let error = arena
+        .with_writer(|builder| builder.append_bytes(&[0; 33]))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    let range = arena
+        .with_writer(|builder| builder.append_bytes(b"alpha"))
+        .await
+        .unwrap();
+    assert_eq!(range, 0..5);
+    arena.seal().await.unwrap();
+    let work = resources.acquire_work().await.unwrap();
+    let budget = work.budget();
+    let mut cursor = arena.pending(range).open(budget.clone());
+    let read = cursor
+        .read_chunk(budget.allocate(5).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(&read.buffer.as_ref()[..read.bytes_read], b"alpha");
+    drop(cursor);
+
+    arena.promote_to_file().await.unwrap();
+    assert!(staged.directory(32).is_err());
+    drop(read);
+    drop(staged.directory(32).unwrap());
+    arena
+        .with_writer(|builder| builder.append_bytes(b"beta"))
+        .await
+        .unwrap();
+    arena.seal().await.unwrap();
+    let mut cursor = arena.pending(0..9).open(budget.clone());
+    let read = cursor
+        .read_chunk(budget.allocate(9).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(&read.buffer.as_ref()[..read.bytes_read], b"alphabeta");
+    arena.close().await.unwrap();
+    drop((read, cursor, budget, work, staged, arena, io));
+    effects.settle().await.unwrap();
+    execution.finish();
+    root.shutdown().await.unwrap();
 }

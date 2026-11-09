@@ -19,17 +19,17 @@
 
 use crate::support::root;
 use maka_agent_facts::execution::SandboxMode;
-use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_capabilities::authorization::Capability;
 use maka_capabilities::authorization::Request;
-use maka_capabilities::authorization::SessionBoundary;
 use maka_capabilities::authorization::Target;
-use maka_capabilities::storage::Namespace;
 use maka_config::{
     ConfigurationStore,
-    plugin_authorization::{Approval, Boundary, Principal},
+    plugin_authorization::{Approval, Principal},
 };
+use maka_plugin_core::authorization::{Boundary, SessionBoundary};
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::Namespace;
+use maka_sandbox::workspace::WorkspaceIdentity;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -52,7 +52,7 @@ async fn consent_retries_preserve_original_boundary_and_revocation_across_restar
     };
     let boundary = |revision, sandbox_mode| Boundary::Session {
         boundary: SessionBoundary {
-            workspace_origin: maka_agent_facts::execution::WorkspaceOrigin::Selected,
+            workspace_origin: maka_sandbox::workspace::WorkspaceOrigin::Selected,
             session_id: "session".into(),
             boundary_revision: revision,
             sandbox_mode,

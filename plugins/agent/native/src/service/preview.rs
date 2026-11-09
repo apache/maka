@@ -18,11 +18,12 @@
  */
 
 use crate::contract::{ContentKind, PreviewField, PreviewPage, PreviewPart};
+use maka_agent_facts::durable::{Fact, ModelAttemptId, RunId, StepId};
 use maka_agent_facts::model::{
     assembly::{AttemptCut, PreviewPart as CutPart},
     body::TextBody,
 };
-use maka_event_log::observation::{StoreStreamEvent, StreamFact};
+use maka_agent_state::session_history::HistoryItem;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -37,16 +38,24 @@ pub(super) struct Delivery {
     pending: Option<Cursor>,
     step: Option<StepDelivery>,
     empty: bool,
+    present: bool,
 }
 
 struct StepDelivery {
-    step_id: String,
-    invocation_id: String,
+    run: RunId,
+    step_id: StepId,
+    attempt: ModelAttemptId,
     revision: Option<u64>,
-    offsets: HashMap<String, usize>,
-    replaced: HashSet<String>,
+    offsets: HashMap<PartKey, usize>,
+    accepted_prefix: u64,
     retired_inputs: HashSet<String>,
     closed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum PartKey {
+    Text(u64),
+    ToolInput(String),
 }
 
 struct Cursor {
@@ -62,30 +71,33 @@ impl Delivery {
             pending: None,
             step: None,
             empty: false,
+            present: false,
         }
     }
 
     pub(super) fn current(&mut self, cut: Option<Arc<AttemptCut>>) {
         let Some(cut) = cut else {
             self.pending = None;
-            self.step = None;
+            self.present = false;
             return;
         };
-        if self
-            .step
-            .as_ref()
-            .is_some_and(|step| step.step_id != cut.binding.step_id)
-        {
+        if self.step.as_ref().is_some_and(|step| {
+            step.run != cut.binding.execution.run_id
+                || step.step_id != cut.binding.step_id
+                || step.attempt != cut.binding.attempt_id
+        }) {
             self.pending = None;
             self.step = None;
         }
         self.empty = false;
+        self.present = true;
         let step = self.step.get_or_insert_with(|| StepDelivery {
-            step_id: cut.binding.step_id.clone(),
-            invocation_id: cut.binding.invocation.invocation_id.clone(),
+            run: cut.binding.execution.run_id,
+            step_id: cut.binding.step_id,
+            attempt: cut.binding.attempt_id,
             revision: None,
             offsets: HashMap::new(),
-            replaced: HashSet::new(),
+            accepted_prefix: 0,
             retired_inputs: HashSet::new(),
             closed: false,
         });
@@ -100,47 +112,64 @@ impl Delivery {
         });
     }
 
-    pub(super) fn committed(&mut self, events: &[StoreStreamEvent]) {
+    pub(super) fn matches(&self, cut: &AttemptCut) -> bool {
+        self.step.as_ref().is_some_and(|step| {
+            step.run == cut.binding.execution.run_id
+                && step.step_id == cut.binding.step_id
+                && step.attempt == cut.binding.attempt_id
+        })
+    }
+
+    pub(super) fn closed(&mut self, run: RunId, attempt: ModelAttemptId) {
+        if let Some(step) = self
+            .step
+            .as_mut()
+            .filter(|step| step.run == run && step.attempt == attempt)
+        {
+            step.closed = true;
+            self.pending = None;
+            self.present = false;
+            self.empty = false;
+            step.offsets.clear();
+        }
+    }
+
+    pub(super) fn committed(&mut self, events: &[HistoryItem]) {
         let Some(step) = self.step.as_mut() else {
             return;
         };
         for event in events {
-            match &event.fact {
-                StreamFact::ModelPartCommitted {
-                    step_id,
-                    message_id,
+            if event.recorded.run != step.run {
+                continue;
+            }
+            match &event.recorded.fact {
+                Fact::ModelObserved {
+                    attempt,
+                    index,
+                    part,
                     ..
-                } if step.step_id == *step_id => {
-                    step.replaced.insert(message_id.clone());
-                    step.offsets.remove(message_id);
-                }
-                StreamFact::ToolInputReady {
-                    step_id,
-                    tool_call_id,
-                    ..
-                } if step.step_id == *step_id => {
-                    step.retired_inputs.insert(tool_call_id.clone());
-                    if let Some(cursor) = &self.pending {
-                        for part in &cursor.cut.parts {
-                            if let CutPart::ToolInput(input) = part
-                                && input.id == *tool_call_id
-                            {
-                                step.replaced.insert(input.message_id.clone());
-                                step.offsets.remove(&input.message_id);
-                            }
-                        }
+                } if *attempt == step.attempt => {
+                    step.accepted_prefix = step.accepted_prefix.max(index + 1);
+                    step.offsets.remove(&PartKey::Text(*index));
+                    if let maka_agent_facts::model::ModelPart::ToolCall { call } = part {
+                        step.retired_inputs.insert(call.id.clone());
+                        step.offsets.remove(&PartKey::ToolInput(call.id.clone()));
                     }
                 }
-                StreamFact::StepEnded { step_id, .. } if step.step_id == *step_id => {
-                    step.closed = true;
-                    self.pending = None;
-                    step.offsets.clear();
-                }
-                StreamFact::InvocationEnded { .. }
-                    if step.invocation_id == event.invocation.invocation_id =>
+                Fact::ModelClosed { attempt, .. } | Fact::ModelInterrupted { attempt, .. }
+                    if *attempt == step.attempt =>
                 {
                     step.closed = true;
                     self.pending = None;
+                    self.present = false;
+                    self.empty = false;
+                    step.offsets.clear();
+                }
+                Fact::RunTerminated { .. } | Fact::StopRequested { .. } => {
+                    step.closed = true;
+                    self.pending = None;
+                    self.present = false;
+                    self.empty = false;
                     step.offsets.clear();
                 }
                 _ => {}
@@ -148,14 +177,46 @@ impl Delivery {
         }
     }
 
-    pub(super) fn initial_fence(&self) -> Option<u64> {
-        self.pending
-            .as_ref()
-            .filter(|cursor| cursor.first)
-            .map(|cursor| cursor.cut.depends_on)
+    pub(super) fn seed(&mut self, view: &maka_agent_state::fold::RunView) -> Result<(), String> {
+        let Some(step) = self.step.as_mut().filter(|step| step.run == view.run) else {
+            return Ok(());
+        };
+        let attempt = view
+            .attempts
+            .get(&step.attempt)
+            .ok_or("agent_preview_attempt_unavailable")?;
+        if attempt.step != step.step_id {
+            return Err("agent_preview_attempt_mismatch".into());
+        }
+        step.accepted_prefix = attempt.observed;
+        for tool in view
+            .tools
+            .values()
+            .filter(|tool| tool.key.attempt == step.attempt)
+        {
+            step.retired_inputs.insert(tool.key.call.clone());
+        }
+        if view.terminal.is_some()
+            || view.stopped
+            || attempt.closed.is_some()
+            || attempt.interrupted.is_some()
+        {
+            let attempt_id = step.attempt;
+            self.closed(view.run, attempt_id);
+        }
+        Ok(())
     }
 
     pub(super) fn next(&mut self, after: u64) -> Result<Option<PreviewPage>, String> {
+        if !self.present {
+            if self.empty {
+                return Ok(None);
+            }
+            self.empty = true;
+            return Ok(Some(PreviewPage::Empty {
+                host_epoch: self.epoch.clone(),
+            }));
+        }
         let Some(step) = self.step.as_mut() else {
             if self.empty {
                 return Ok(None);
@@ -175,17 +236,24 @@ impl Delivery {
         while let Some(part) = cursor.cut.parts.get(cursor.part) {
             let (mut piece, body, recorded) = descriptor(
                 part,
-                &cursor.cut.binding.step_id,
-                &cursor.cut.binding.invocation.invocation_id,
+                cursor.cut.binding.execution.run_id,
+                cursor.cut.binding.attempt_id,
             );
             let retired_input = matches!(part, CutPart::ToolInput(input) if step.retired_inputs.contains(&input.id));
-            if recorded || retired_input || step.replaced.contains(&piece.message_id) {
+            let replaced = piece
+                .ordinal
+                .is_some_and(|ordinal| ordinal < step.accepted_prefix);
+            if recorded || retired_input || replaced {
                 cursor.part += 1;
                 continue;
             }
-            let offset = step.offsets.get(&piece.message_id).copied().unwrap_or(0);
+            let key = match part {
+                CutPart::Text { ordinal, .. } => PartKey::Text(*ordinal),
+                CutPart::ToolInput(input) => PartKey::ToolInput(input.id.clone()),
+            };
+            let offset = step.offsets.get(&key).copied().unwrap_or(0);
             // The writer only appends within one attempt. Empty bodies still publish identity.
-            if offset == body.len_bytes() && step.offsets.contains_key(&piece.message_id) {
+            if offset == body.len_bytes() && step.offsets.contains_key(&key) {
                 cursor.part += 1;
                 continue;
             }
@@ -197,13 +265,16 @@ impl Delivery {
             })
             .map_err(|error| error.to_string())?
             .len();
-            let (text, end) = body_piece(&body, offset, PAGE_BYTES.saturating_sub(overhead))?;
+            let budget = PAGE_BYTES
+                .checked_sub(overhead)
+                .ok_or("agent_preview_metadata_exceeds_page")?;
+            let (text, end) = body_piece(&body, offset, budget)?;
             let PreviewPage::Cut { mut parts, .. } = base else {
                 unreachable!()
             };
             let mut piece = parts.remove(0);
             piece.text = text;
-            step.offsets.insert(piece.message_id.clone(), end);
+            step.offsets.insert(key, end);
             if end == body.len_bytes() {
                 cursor.part += 1;
             }
@@ -241,9 +312,10 @@ fn page(
 ) -> PreviewPage {
     PreviewPage::Cut {
         host_epoch: epoch.to_owned(),
-        invocation_id: cut.binding.invocation.invocation_id.clone(),
-        turn_id: cut.binding.invocation.turn_id.clone(),
-        step_id: cut.binding.step_id.clone(),
+        run_id: cut.binding.execution.run_id,
+        turn_id: cut.binding.execution.turn_id.clone(),
+        step_id: cut.binding.step_id,
+        attempt_id: cut.binding.attempt_id,
         revision: cut.revision,
         depends_on: cut.depends_on,
         first,
@@ -252,7 +324,11 @@ fn page(
     }
 }
 
-fn descriptor(part: &CutPart, step: &str, invocation: &str) -> (PreviewPart, TextBody, bool) {
+fn descriptor(
+    part: &CutPart,
+    run: RunId,
+    attempt: ModelAttemptId,
+) -> (PreviewPart, TextBody, bool) {
     let (ordinal, message_id, provider_part_id, started_at, field, text, recorded) = match part {
         CutPart::Text {
             ordinal,
@@ -288,8 +364,8 @@ fn descriptor(part: &CutPart, step: &str, invocation: &str) -> (PreviewPart, Tex
             &input.started_at,
             PreviewField::ToolInput {
                 tool_use_id: maka_agent_facts::tool_call::tool_use_id(
-                    invocation,
-                    &format!("{step}:{}", input.id),
+                    run,
+                    &format!("{attempt}:{}", input.id),
                 ),
                 name: input.name.clone(),
                 provider_executed: input.provider_executed,
@@ -329,7 +405,10 @@ fn body_piece(body: &TextBody, offset: usize, budget: usize) -> Result<(String, 
                 point if point < '\u{20}' => 6,
                 point => point.len_utf8(),
             };
-            if used + escaped > budget && !text.is_empty() {
+            if used + escaped > budget {
+                if text.is_empty() {
+                    return Err("agent_preview_metadata_exceeds_page".into());
+                }
                 let end = offset + text.len();
                 return Ok((text, end));
             }
@@ -344,89 +423,49 @@ fn body_piece(body: &TextBody, offset: usize, budget: usize) -> Result<(String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::model::{ModelEvent, assembly::AttemptWriter};
+    use maka_agent_facts::{
+        context::ModelPurpose,
+        durable::{ExecutionIdentity, FactId, RecordedFact, UnixMillis},
+        model::{
+            ModelEvent, ModelPart, TextKind,
+            assembly::{AttemptBinding, AttemptWriter},
+        },
+    };
+    use maka_agent_state::session_history::HistoryScope;
 
-    fn attempt(step_id: &str, invocation_id: &str) -> AttemptWriter {
-        use maka_agent_facts::{
-            context::ModelPurpose, event::Invocation, model::assembly::AttemptBinding,
-        };
-        AttemptWriter::new(
-            AttemptBinding {
-                invocation: Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: invocation_id.into(),
-                },
-                step_id: step_id.into(),
-                purpose: ModelPurpose::Main,
+    fn binding() -> AttemptBinding {
+        AttemptBinding {
+            execution: ExecutionIdentity {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: RunId::new(),
             },
-            true,
-        )
-        .unwrap()
-    }
-
-    fn receipt(cut: &AttemptCut, sequence: u64, fact: StreamFact) -> StoreStreamEvent {
-        StoreStreamEvent {
-            sequence,
-            id: format!("receipt-{sequence}"),
-            invocation: cut.binding.invocation.clone(),
-            root_run_id: cut.binding.invocation.run_id.clone(),
-            recorded_at: UNIX_EPOCH,
-            fact,
+            step_id: StepId::new(),
+            attempt_id: ModelAttemptId::new(),
+            purpose: ModelPurpose::Main,
         }
     }
-
-    fn drain(delivery: &mut Delivery, after: u64) -> Vec<PreviewPart> {
-        let mut parts = Vec::new();
-        while let Some(page) = delivery.next(after).unwrap() {
-            let PreviewPage::Cut { parts: next, .. } = page else {
-                panic!("missing cut")
-            };
-            parts.extend(next);
-        }
-        parts
-    }
-
-    fn writer(text: &str, provider_id: &str) -> maka_agent_facts::model::assembly::AttemptWriter {
-        text_writer(text, provider_id, maka_agent_facts::model::TextKind::Text)
-    }
-
-    fn text_writer(
-        text: &str,
-        provider_id: &str,
-        kind: maka_agent_facts::model::TextKind,
-    ) -> maka_agent_facts::model::assembly::AttemptWriter {
-        let mut writer = attempt("step", "invocation");
+    fn writer(binding: AttemptBinding, text: &str, kind: TextKind) -> AttemptWriter {
+        let mut writer = AttemptWriter::new(binding, true).unwrap();
         writer
             .push(
                 ModelEvent::PartStarted {
-                    id: provider_id.into(),
+                    id: "part".into(),
                     text_kind: kind,
                     provider_options: None,
                 },
                 UNIX_EPOCH,
             )
             .unwrap();
-        writer
-            .push(
-                ModelEvent::PartDelta {
-                    id: provider_id.into(),
-                    text: text.into(),
-                    provider_options: None,
-                },
-                UNIX_EPOCH,
-            )
-            .unwrap();
+        append(&mut writer, text);
         writer.fenced(4);
         writer
     }
-
-    fn append(writer: &mut maka_agent_facts::model::assembly::AttemptWriter, text: &str) {
+    fn append(writer: &mut AttemptWriter, text: &str) {
         writer
             .push(
-                maka_agent_facts::model::ModelEvent::PartDelta {
-                    id: "provider-part".into(),
+                ModelEvent::PartDelta {
+                    id: "part".into(),
                     text: text.into(),
                     provider_options: None,
                 },
@@ -434,359 +473,287 @@ mod tests {
             )
             .unwrap();
     }
-
-    #[test]
-    fn reasoning_preview_delivers_summary_separators_as_an_append_and_matches_history() {
-        use maka_agent_facts::model::{ModelEvent, TextKind};
-        use serde_json::json;
-        let mut writer = text_writer("**检查🙂**", "reasoning", TextKind::Thinking);
-        let mut delivery = Delivery::new("epoch");
-        delivery.current(Some(writer.snapshot()));
-        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(parts[0].text, "**检查🙂**");
-        assert_eq!(parts[0].total_bytes, 14);
-
-        writer
-            .push(
-                ModelEvent::PartDelta {
-                    id: "reasoning".into(),
-                    text: "**Build**".into(),
-                    provider_options: Some(json!({"makaSummaryBreaks":[14]})),
-                },
-                UNIX_EPOCH,
-            )
-            .unwrap();
-        delivery.current(Some(writer.snapshot()));
-        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(parts[0].offset, 14);
-        assert_eq!(parts[0].text, "\n\n**Build**");
-        assert_eq!(parts[0].total_bytes, 25);
-
-        writer.push(ModelEvent::PartFinished {
-            id: "reasoning".into(), provider_options: Some(json!({
-                "openai":{"responsesReplay":{"textField":"summary","parts":[{"bytes":14},{"bytes":9}]}}
-            })),
-        }, UNIX_EPOCH).unwrap();
-        let snapshot = writer.snapshot();
-        let CutPart::Text {
-            text,
-            provider_options,
-            ..
-        } = &snapshot.parts[0]
-        else {
-            unreachable!()
-        };
-        assert_eq!(text.to_string(), "**检查🙂****Build**");
-        assert_eq!(
-            maka_presentation::reasoning_text(text, provider_options.as_deref()).to_string(),
-            "**检查🙂**\n\n**Build**"
-        );
-        delivery.current(Some(snapshot));
-        let PreviewPage::Cut { parts, .. } = delivery.next(4).unwrap().unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(
-            parts.len(),
-            0,
-            "finalized metadata must not duplicate the displayed suffix"
-        );
+    fn receipt(cut: &AttemptCut, sequence: u64, fact: Fact) -> HistoryItem {
+        HistoryItem {
+            sequence,
+            admission_sequence: 1,
+            scope: HistoryScope {
+                step: Some(cut.binding.step_id),
+                attempt: Some(cut.binding.attempt_id),
+            },
+            recorded: RecordedFact {
+                schema_version: 1,
+                id: FactId::new(),
+                run: cut.binding.execution.run_id,
+                revision: sequence,
+                at: UnixMillis(0),
+                fact,
+            },
+        }
+    }
+    fn observed(cut: &AttemptCut, sequence: u64, index: u64, part: ModelPart) -> HistoryItem {
+        receipt(
+            cut,
+            sequence,
+            Fact::ModelObserved {
+                attempt: cut.binding.attempt_id,
+                index,
+                part,
+                continuation: None,
+            },
+        )
+    }
+    fn drain(delivery: &mut Delivery, after: u64) -> Vec<PreviewPart> {
+        let mut parts = Vec::new();
+        while let Some(page) = delivery.next(after).unwrap() {
+            if let PreviewPage::Cut { parts: next, .. } = page {
+                parts.extend(next);
+            }
+        }
+        parts
     }
 
     #[test]
-    fn slow_seed_keeps_its_cut_then_delivers_only_the_new_suffix() {
+    fn slow_consumer_keeps_its_cut_then_only_gets_the_new_suffix() {
         let original = "中文🙂\"\\\n\r\t\0".repeat(20_000);
-        let mut writer = writer(&original, "provider-part");
+        let mut writer = writer(binding(), &original, TextKind::Text);
         let first = writer.snapshot();
         let first_revision = first.revision;
-        let (published, mut reader) = tokio::sync::watch::channel(Some(first));
         let mut delivery = Delivery::new("epoch");
-        delivery.current(reader.borrow_and_update().clone());
+        delivery.current(Some(first));
         assert!(delivery.next(3).unwrap().is_none());
         let first_page = delivery.next(4).unwrap().unwrap();
-        // Publishing does not require this reader to drain its first stable cut.
         append(&mut writer, "suffix🙂");
-        let latest = writer.snapshot();
-        let latest_revision = latest.revision;
-        let _ = published.send_replace(Some(latest));
-        delivery.current(reader.borrow_and_update().clone());
+        delivery.current(Some(writer.snapshot()));
         let mut pages = vec![first_page];
         while let Some(page) = delivery.next(4).unwrap() {
             pages.push(page);
         }
-        assert!(pages.len() > 1);
         let mut restored = String::new();
         for page in &pages {
+            assert!(
+                serde_json::to_vec(&PreviewEnvelope {
+                    kind: "preview",
+                    page
+                })
+                .unwrap()
+                .len()
+                    <= PAGE_BYTES
+            );
             let PreviewPage::Cut {
                 revision, parts, ..
             } = page
             else {
-                panic!("missing cut")
+                panic!("expected cut");
             };
             assert_eq!(*revision, first_revision);
-            let encoded = serde_json::to_vec(&PreviewEnvelope {
-                kind: "preview",
-                page,
-            })
-            .unwrap();
-            assert!(encoded.len() <= PAGE_BYTES);
             for part in parts {
                 restored.push_str(&part.text);
             }
         }
         assert_eq!(restored, original);
-        delivery.current(reader.borrow_and_update().clone());
-        let PreviewPage::Cut {
-            revision,
-            first,
-            last,
-            parts,
-            ..
-        } = delivery.next(4).unwrap().unwrap()
-        else {
-            panic!("missing suffix")
-        };
-        assert_eq!(revision, latest_revision);
-        assert!(first && last);
-        assert_eq!(parts[0].offset, original.len() as u64);
-        assert_eq!(parts[0].text, "suffix🙂");
+        delivery.current(Some(writer.snapshot()));
+        let suffix = drain(&mut delivery, 4);
+        assert_eq!(suffix.len(), 1);
+        assert_eq!(suffix[0].offset, original.len() as u64);
+        assert_eq!(suffix[0].text, "suffix🙂");
     }
 
     #[test]
-    fn canonical_receipts_retire_old_text_before_and_after_pagination() {
-        for committed_before_last_page in [true, false] {
-            let original = "old prefix".repeat(20_000);
-            let mut writer = writer(&original, "provider-part");
+    fn canonical_fact_retires_draft_by_attempt_and_ordinal_not_message_id() {
+        for committed_mid_page in [true, false] {
+            let mut writer = writer(binding(), &"old".repeat(50_000), TextKind::Text);
             let cut = writer.snapshot();
-            let CutPart::Text { message_id, .. } = &cut.parts[0] else {
-                panic!("missing text")
-            };
             let mut delivery = Delivery::new("epoch");
             delivery.current(Some(cut.clone()));
-            if committed_before_last_page {
-                assert!(delivery.next(4).unwrap().is_some());
+            if committed_mid_page {
+                let _ = delivery.next(4).unwrap();
             } else {
-                let seed = drain(&mut delivery, 4);
-                let text: String = seed.iter().map(|part| part.text.as_str()).collect();
-                assert_eq!(text, original);
+                let _ = drain(&mut delivery, 4);
             }
-            delivery.committed(&[receipt(
+            let fact = observed(
                 &cut,
                 5,
-                StreamFact::ModelPartCommitted {
-                    step_id: "step".into(),
-                    message_id: message_id.clone(),
-                    ordinal: 0,
-                },
-            )]);
-            if committed_before_last_page {
-                assert!(drain(&mut delivery, 5).is_empty());
-            }
-            append(&mut writer, " obsolete tail");
-            for event in [
-                ModelEvent::PartFinished {
-                    id: "provider-part".into(),
+                0,
+                ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: "complete original".into(),
                     provider_options: None,
                 },
-                ModelEvent::PartStarted {
-                    id: "fresh-part".into(),
-                    text_kind: maka_agent_facts::model::TextKind::Text,
-                    provider_options: None,
-                },
-                ModelEvent::PartDelta {
-                    id: "fresh-part".into(),
-                    text: "fresh".into(),
-                    provider_options: None,
-                },
-            ] {
-                writer.push(event, UNIX_EPOCH).unwrap();
-            }
+            );
+            let CutPart::Text { message_id, .. } = &cut.parts[0] else {
+                panic!("missing text");
+            };
+            assert_ne!(fact.recorded.id.to_string(), *message_id);
+            delivery.committed(&[fact]);
+            assert!(drain(&mut delivery, 5).is_empty());
+            append(&mut writer, " obsolete");
+            writer
+                .push(
+                    ModelEvent::PartFinished {
+                        id: "part".into(),
+                        provider_options: None,
+                    },
+                    UNIX_EPOCH,
+                )
+                .unwrap();
+            writer
+                .push(
+                    ModelEvent::PartStarted {
+                        id: "fresh".into(),
+                        text_kind: TextKind::Text,
+                        provider_options: None,
+                    },
+                    UNIX_EPOCH,
+                )
+                .unwrap();
+            writer
+                .push(
+                    ModelEvent::PartDelta {
+                        id: "fresh".into(),
+                        text: "fresh".into(),
+                        provider_options: None,
+                    },
+                    UNIX_EPOCH,
+                )
+                .unwrap();
             delivery.current(Some(writer.snapshot()));
             let remaining = drain(&mut delivery, 5);
             assert_eq!(remaining.len(), 1);
             assert_eq!(remaining[0].text, "fresh");
-            assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
-            assert_eq!(remaining[0].offset, 0);
+            assert_eq!(remaining[0].ordinal, Some(1));
         }
     }
 
     #[test]
-    fn late_tool_input_receipt_after_last_page_retires_that_input_in_later_cuts() {
-        let mut writer = attempt("step", "invocation");
-        for event in [
-            ModelEvent::ToolInputStarted {
-                id: "call".into(),
-                name: "echo".into(),
-                provider_executed: false,
-            },
-            ModelEvent::ToolInputDelta {
-                id: "call".into(),
-                text: "{\"arg\":".into(),
-            },
-        ] {
-            writer.push(event, UNIX_EPOCH).unwrap();
-        }
-        writer.fenced(4);
-        let cut = writer.snapshot();
+    fn late_old_attempt_close_cannot_close_a_retry_or_reopen_a_closed_attempt() {
+        let first = binding();
+        let mut retry = first.clone();
+        retry.attempt_id = ModelAttemptId::new();
+        let old = writer(first, "old", TextKind::Text).snapshot();
+        let mut current = writer(retry, "retry", TextKind::Text);
+        let next = current.snapshot();
         let mut delivery = Delivery::new("epoch");
-        delivery.current(Some(cut.clone()));
-        let first = drain(&mut delivery, 4);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].text, "{\"arg\":");
-        assert!(matches!(&first[0].field, PreviewField::ToolInput { name, .. } if name == "echo"));
-
+        delivery.current(Some(old.clone()));
+        let _ = drain(&mut delivery, 4);
+        delivery.current(Some(next.clone()));
         delivery.committed(&[receipt(
-            &cut,
+            &old,
             5,
-            StreamFact::ToolInputReady {
-                step_id: "step".into(),
-                tool_call_id: "call".into(),
-                name: "echo".into(),
-                provider_executed: false,
+            Fact::ModelInterrupted {
+                attempt: old.binding.attempt_id,
+                diagnostic: "old failure".into(),
             },
         )]);
-        for event in [
-            ModelEvent::ToolInputDelta {
-                id: "call".into(),
-                text: "1}".into(),
+        assert_eq!(drain(&mut delivery, 5)[0].text, "retry");
+        delivery.committed(&[receipt(
+            &next,
+            6,
+            Fact::ModelInterrupted {
+                attempt: next.binding.attempt_id,
+                diagnostic: "closed".into(),
             },
-            ModelEvent::ToolInputFinished { id: "call".into() },
-            ModelEvent::PartStarted {
-                id: "fresh-part".into(),
-                text_kind: maka_agent_facts::model::TextKind::Text,
-                provider_options: None,
-            },
-            ModelEvent::PartDelta {
-                id: "fresh-part".into(),
-                text: "fresh".into(),
-                provider_options: None,
-            },
-        ] {
-            writer.push(event, UNIX_EPOCH).unwrap();
-        }
-        delivery.current(Some(writer.snapshot()));
-        let remaining = drain(&mut delivery, 5);
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].text, "fresh");
-        assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
-        assert!(matches!(&remaining[0].field, PreviewField::Text { .. }));
+        )]);
+        assert!(drain(&mut delivery, 6).is_empty());
+        delivery.current(None);
+        let _ = drain(&mut delivery, 6);
+        append(&mut current, " stale suffix");
+        delivery.current(Some(current.snapshot()));
+        assert!(drain(&mut delivery, 6).is_empty());
     }
 
     #[test]
-    fn late_old_terminal_does_not_close_new_step_and_closed_step_does_not_reopen() {
-        for terminal in [
-            StreamFact::StepEnded {
-                step_id: "new-step".into(),
-                completed: true,
-                failed: false,
-                interrupted: vec![],
-            },
-            StreamFact::InvocationEnded {
-                failed: false,
-                interrupted: vec![],
-            },
-        ] {
-            let mut old = attempt("old-step", "old-invocation");
-            let mut current = attempt("new-step", "new-invocation");
-            let mut third = attempt("third-step", "third-invocation");
-            for (writer, text) in [
-                (&mut old, "old"),
-                (&mut current, "new"),
-                (&mut third, "third"),
-            ] {
-                for event in [
-                    ModelEvent::PartStarted {
-                        id: "provider-part".into(),
-                        text_kind: maka_agent_facts::model::TextKind::Text,
-                        provider_options: None,
+    fn tool_input_id_is_attempt_scoped_and_canonical_call_retires_only_that_attempt() {
+        fn input(binding: AttemptBinding) -> AttemptWriter {
+            let mut writer = AttemptWriter::new(binding, true).unwrap();
+            writer
+                .push(
+                    ModelEvent::ToolInputStarted {
+                        id: "call".into(),
+                        name: "echo".into(),
+                        provider_executed: false,
                     },
-                    ModelEvent::PartDelta {
-                        id: "provider-part".into(),
-                        text: text.into(),
-                        provider_options: None,
+                    UNIX_EPOCH,
+                )
+                .unwrap();
+            writer
+                .push(
+                    ModelEvent::ToolInputDelta {
+                        id: "call".into(),
+                        text: "{\"arg\":".into(),
                     },
-                ] {
-                    writer.push(event, UNIX_EPOCH).unwrap();
-                }
-                writer.fenced(4);
-            }
-            let old = old.snapshot();
-            let mut delivery = Delivery::new("epoch");
-            delivery.current(Some(old.clone()));
-            let first = drain(&mut delivery, 4);
-            assert_eq!(first.len(), 1);
-            assert_eq!(first[0].text, "old");
-
-            let next = current.snapshot();
-            delivery.current(Some(next.clone()));
-            delivery.committed(&[
-                receipt(
-                    &old,
-                    5,
-                    StreamFact::StepEnded {
-                        step_id: "old-step".into(),
-                        completed: true,
-                        failed: false,
-                        interrupted: vec![],
-                    },
-                ),
-                receipt(
-                    &old,
-                    6,
-                    StreamFact::InvocationEnded {
-                        failed: false,
-                        interrupted: vec![],
-                    },
-                ),
-            ]);
-            let current_parts = drain(&mut delivery, 6);
-            assert_eq!(current_parts.len(), 1);
-            assert_eq!(current_parts[0].text, "new");
-            assert_eq!(current_parts[0].offset, 0);
-
-            delivery.committed(&[receipt(&next, 7, terminal)]);
-            append(&mut current, " obsolete tail");
-            delivery.current(Some(current.snapshot()));
-            assert!(delivery.next(7).unwrap().is_none());
-
-            delivery.current(Some(third.snapshot()));
-            let third_parts = drain(&mut delivery, 7);
-            assert_eq!(third_parts.len(), 1);
-            assert_eq!(third_parts[0].text, "third");
-            assert_eq!(third_parts[0].offset, 0);
+                    UNIX_EPOCH,
+                )
+                .unwrap();
+            writer.fenced(4);
+            writer
         }
+        let first = input(binding());
+        let cut = first.snapshot();
+        let mut retry_binding = cut.binding.clone();
+        retry_binding.attempt_id = ModelAttemptId::new();
+        let retry = input(retry_binding);
+        let mut delivery = Delivery::new("epoch");
+        delivery.current(Some(cut.clone()));
+        let old = drain(&mut delivery, 4);
+        let PreviewField::ToolInput {
+            tool_use_id: old_id,
+            ..
+        } = &old[0].field
+        else {
+            panic!("tool input");
+        };
+        delivery.committed(&[observed(
+            &cut,
+            5,
+            0,
+            ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: "call".into(),
+                    name: "echo".into(),
+                    input: serde_json::json!({"arg":1}).into(),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+        )]);
+        delivery.current(Some(first.snapshot()));
+        assert!(drain(&mut delivery, 5).is_empty());
+        delivery.current(Some(retry.snapshot()));
+        let new = drain(&mut delivery, 5);
+        let PreviewField::ToolInput {
+            tool_use_id: new_id,
+            ..
+        } = &new[0].field
+        else {
+            panic!("tool input");
+        };
+        assert_ne!(old_id, new_id);
+        assert_eq!(new[0].text, "{\"arg\":");
     }
 
     #[test]
-    fn oversized_metadata_does_not_prevent_body_progress() {
-        let provider_id = "provider-part".repeat(PAGE_BYTES);
-        let writer = writer("🙂中", &provider_id);
+    fn reasoning_summary_breaks_are_delivered_once_as_a_suffix() {
+        let mut writer = writer(binding(), "**检查🙂**", TextKind::Thinking);
         let mut delivery = Delivery::new("epoch");
         delivery.current(Some(writer.snapshot()));
-        let mut restored = String::new();
-        let mut offset = 0;
-        while let Some(page) = delivery.next(4).unwrap() {
-            assert!(
-                serde_json::to_vec(&PreviewEnvelope {
-                    kind: "preview",
-                    page: &page
-                })
-                .unwrap()
-                .len()
-                    > PAGE_BYTES
-            );
-            let PreviewPage::Cut { parts, .. } = page else {
-                panic!("missing cut")
-            };
-            let part = &parts[0];
-            assert_eq!(part.offset, offset);
-            assert!(!part.text.is_empty());
-            offset += part.text.len() as u64;
-            restored.push_str(&part.text);
-        }
-        assert_eq!(restored, "🙂中");
+        assert_eq!(drain(&mut delivery, 4)[0].text, "**检查🙂**");
+        writer
+            .push(
+                ModelEvent::PartDelta {
+                    id: "part".into(),
+                    text: "**Build**".into(),
+                    provider_options: Some(serde_json::json!({"makaSummaryBreaks":[14]})),
+                },
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        delivery.current(Some(writer.snapshot()));
+        let next = drain(&mut delivery, 4);
+        assert_eq!(next[0].offset, 14);
+        assert_eq!(next[0].text, "\n\n**Build**");
+        writer.push(ModelEvent::PartFinished { id: "part".into(), provider_options: Some(serde_json::json!({"openai":{"responsesReplay":{"textField":"summary","parts":[{"bytes":14},{"bytes":9}]}}})) }, UNIX_EPOCH).unwrap();
+        delivery.current(Some(writer.snapshot()));
+        assert!(drain(&mut delivery, 4).is_empty());
     }
 }

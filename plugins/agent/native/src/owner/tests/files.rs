@@ -76,12 +76,12 @@ pub(super) async fn call(
     session: &str,
     input: Value,
 ) -> Value {
-    let started = f.send(session).await.unwrap();
+    let queued = f.send(session).await.unwrap();
     let (mut socket, _) = listener.accept().await.unwrap();
     let sent = request(&mut socket).await;
     assert_eq!(sent["tools"][0]["function"]["name"], "WorkspaceFile");
     tool_response(&mut socket, input).await;
-    started
+    queued
 }
 pub(super) async fn tool_response(socket: &mut TcpStream, input: Value) {
     let delta = json!({"id":"files-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"file-call","type":"function","function":{"name":"WorkspaceFile","arguments":input.to_string()}}]},"finish_reason":null}]});
@@ -108,14 +108,15 @@ pub(super) async fn finish(listener: &TcpListener, f: &Fixture) -> Value {
     result
 }
 pub(super) async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-    let mut commits = f.session(session).await.subscribe_commits().unwrap();
+    let interactions = f.owner.durable.interactions();
+    let mut commits = interactions.subscribe().unwrap();
     loop {
-        if let Some(record) = f
-            .session(session)
-            .await
-            .pending_interactions(session)
+        commits.borrow_and_update();
+        if let Some(record) = interactions
+            .pending(session)
             .await
             .unwrap()
+            .records
             .into_iter()
             .next()
         {
@@ -125,16 +126,17 @@ pub(super) async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
             ));
             return record;
         }
-        if tokio::time::timeout(Duration::from_secs(10), commits.changed())
-            .await
-            .is_err()
-        {
-            let observed = f
-                .query("observe", json!({"sessionId":session}))
-                .await
-                .unwrap();
-            let history = f.query("history", json!({"sessionId":session,"through":observed["through"],"position":{"kind":"tail"}})).await;
-            panic!("No file permission request; observed {observed}; history {history:?}");
+        match tokio::time::timeout(Duration::from_secs(10), commits.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("file permission source subscription failed: {error}"),
+            Err(_) => {
+                let observed = f
+                    .query("observe", json!({"sessionId":session}))
+                    .await
+                    .unwrap();
+                let history=f.query("history",json!({"sessionId":session,"through":observed["through"],"position":{"kind":"tail"}})).await;
+                panic!("No file permission request; observed {observed}; history {history:?}");
+            }
         }
     }
 }
@@ -149,7 +151,7 @@ pub(super) async fn answer(f: &Fixture, record: &InteractionRecord, scope: Optio
     f.mutation(
         2,
         "respond",
-        json!({"sessionId":record.session_id,"requestId":record.request_id,
+        json!({"sessionId":record.execution.session_id,"requestId":record.request_id,
         "answer":{"kind":"permissions","decision":decision}}),
         Uuid::new_v4(),
     )
@@ -182,10 +184,12 @@ async fn native_files_reuse_actual_read_search_write_edit_and_patch_executors() 
                 "applyPatch" => assert_eq!(std::fs::read_to_string(f.workspace.join("new.txt")).unwrap(), expected),
                 _ => assert!(result.to_string().contains(expected.trim()), "{method}: {result}"),
             }
-            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
             {
-                let facts = service_tools::facts(&f, &session).await;
-                assert!(facts.iter().any(|fact| matches!(fact, maka_agent_facts::event::Fact::ToolDispatched {presentation: Some(key), name, ..} if key == &format!("maka.workspace.Files@1/{method}") && name == "WorkspaceFile")));
+                let run=f.latest_run(&session).await.run;
+                let view=f.owner.durable.frontier(run).await.unwrap();
+                assert!(view.tools.values().any(|tool|tool.call.name=="WorkspaceFile" && tool.admitted
+                    && tool.decision.as_ref().is_some_and(|decision|decision.display().presentation.as_deref()==Some(format!("maka.workspace.Files@1/{method}").as_str()))));
                 let through = f.through(&session).await;
 
                 let page = f.query("history", json!({"sessionId":session,"through":through,"position":{"kind":"start"}})).await.unwrap();
@@ -334,21 +338,21 @@ async fn revocation_and_stop_close_waiting_file_requests_without_effects() {
             let started = call(&listener, &f, &session, json!({"path":"blocked.txt","content":"never"})).await;
             let record = pending(&f, &session).await;
             if stop {
-                f.mutation(2, "stop", json!({"sessionId":session,"invocationId":started["invocationId"]}), Uuid::new_v4()).await.unwrap();
+                f.mutation(2, "stop", json!({"sessionId":session,"runId":f.delivered_run(&started).await}), Uuid::new_v4()).await.unwrap();
                 f.drained().await;
             } else {
                 // Unchanged settings preserve pending requests; explicit revoke advances the boundary.
                 let unchanged = change(&f, &session, "read_only", true, false).await;
                 assert_eq!(unchanged["session"]["boundaryRevision"], 1);
-                assert!(f.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome.is_none());
+                assert!(f.owner.durable.interactions().read(&record.execution.session_id,&record.request_id).await.unwrap().unwrap().outcome.is_none());
                 assert_eq!(change(&f, &session, "read_only", true, true).await["session"]["boundaryRevision"], 2);
                 assert_eq!(finish(&listener, &f).await["kind"], "failed");
             }
             let late = answer(&f, &record, Some("session")).await;
             assert_eq!(late["record"]["outcome"]["kind"], "closure");
-            assert!(matches!(f.session(&record.session_id).await.interaction(&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::Closure { .. })));
+            assert!(matches!(f.owner.durable.interactions().read(&record.execution.session_id,&record.request_id).await.unwrap().unwrap().outcome, Some(InteractionOutcome::Closure { .. })));
             assert!(!f.workspace.join("blocked.txt").exists());
-            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
             close(&f).await;
         }
     }).await.unwrap();
@@ -407,11 +411,13 @@ async fn native_files_external_write_requires_approval_and_once_grants_expire() 
         assert_eq!(finish(&listener, &f).await["kind"], "completed");
         assert_eq!(std::fs::read_to_string(&temporary).unwrap(), "temporary");
         assert!(
-            f.session(&session)
-                .await
-                .pending_interactions(&session)
+            f.owner
+                .durable
+                .interactions()
+                .pending(&session)
                 .await
                 .unwrap()
+                .records
                 .is_empty()
         );
         close(&f).await;

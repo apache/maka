@@ -136,7 +136,7 @@ struct Tab {
     navigation_admission: Option<origin::NavigationAdmission>,
     extension_claim: Option<cua_driver_core::browser::ExtensionPhysicalClaim>,
     extension_wire: Option<cua_driver_core::browser::ExtensionWireContext>,
-    extension_host_operation: Option<cua_driver_core::browser::ExtensionHostOperation>,
+    extension_host_operation: Option<extension::BoundHostOperation>,
     // Actual acknowledged provenance/order, never a metadata-derived grant.
     extension_acquisition: Option<extension::Acquisition>,
     fixed_presentation: Option<extension::FixedPresentationScope>,
@@ -152,6 +152,7 @@ struct Tab {
     cursor_host: std::sync::Arc<tokio::sync::Mutex<Host>>,
     cursor_spec: Option<std::sync::Arc<std::sync::Mutex<crate::cursor::Spec>>>,
     last_turn: String,
+    last_execution: crate::ExecutionCorrelation,
     dialogs: Option<dialogs::Controller>,
     downloads: Option<downloads::Controller>,
     filechoosers: Option<filechooser::Store>,
@@ -688,6 +689,7 @@ impl Browsers {
         &self,
         identity: &TabIdentity,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         cancellation: &CancellationToken,
     ) -> Result<(), ToolError> {
         let provider = self
@@ -706,7 +708,7 @@ impl Browsers {
             .await
             .lock()
             .await
-            .use_tab(identity, self.owner, turn)
+            .use_tab(identity, self.owner, turn, execution)
     }
 
     pub(crate) fn target_label(&self, id: &str) -> Option<&str> {
@@ -773,8 +775,9 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         if let Command::BrowserRelease { browser_id } = &command {
-            return self.release_browser(browser_id, turn).await;
+            return self.release_browser(browser_id, turn, execution).await;
         }
         let call = BrowserCall::new(invocation, cancellation, language);
         if matches!(
@@ -837,9 +840,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.page_assets_list(call).await
                 })
                 .await
@@ -854,9 +858,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.page_assets_bundle(options, call).await
                 })
                 .await
@@ -1070,9 +1075,10 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     tab.ensure_clipboard_bridge(turn, call).await?;
@@ -1121,19 +1127,20 @@ impl Browsers {
                 Box::pin(async move {
                     // Check actual acquisition history before use_tab can update
                     // the logical lease's recorded turn.
-                    self.check_download_tab_lease(&handle, invocation.turn())
+                    self.check_download_tab_lease(&handle, invocation.turn(), invocation.execution_correlation())
                         .await?;
                     let identity = self
                         .targets
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
                         .expect("checked browser handle");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize_download_path(invocation, cancellation, language)
                         .await?;
                     self.host()
@@ -1157,7 +1164,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
@@ -1165,6 +1172,7 @@ impl Browsers {
                     match target {
                         BrowserMediaTarget::Locator { locator } => {
                             tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                             tab.authorize(None, invocation, cancellation, language)
                                 .await?;
                             tab.verify(BrowserCall::new(invocation, cancellation, language))
@@ -1201,9 +1209,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     let document = tab.document();
@@ -1220,9 +1229,10 @@ impl Browsers {
                 }
                 let identity = self.targets.get(&handle)
                     .ok_or_else(|| failed("stale_tab: bind it again"))?.identity()?;
-                self.use_tab(&identity, turn, cancellation).await?;
+                self.use_tab(&identity, turn, execution, cancellation).await?;
                 let tab = self.targets.get_mut(&handle).expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                 let mut budget = Some(ReadBudget { remaining:options.budget()? });
                 tab.authorize_with_budget(None,invocation,cancellation,language,
                     extension::ClaimIntent::Implicit,&mut budget).await?;
@@ -1243,9 +1253,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     let mut budget = Some(ReadBudget::new(&options)?);
                     tab.authorize_with_budget(
                         None,
@@ -1292,9 +1303,10 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     if let Some(controller) = &tab.dialogs {
@@ -1330,9 +1342,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.refresh_info(call).await?;
                     if let Some(extension) = &tab.info.extension {
                         Ok(extension::tab_info(extension))
@@ -1542,6 +1555,7 @@ impl Browsers {
                 .await;
         }
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let (generation, _) = provider.inventory().await?;
         let identity = BrowserIdentity::of(&provider, &generation)?;
         check_input(cancellation)?;
@@ -1560,13 +1574,17 @@ impl Browsers {
             Ok(value) => match value["targetId"].as_str() {
                 Some(id) => id.to_owned(),
                 None => {
-                    host.creation_unknown(identity, self.owner, turn, provider, generation);
+                    host.creation_unknown(
+                        identity, self.owner, turn, execution, provider, generation,
+                    );
                     return Err(unknown("browser did not return a target ID"));
                 }
             },
             Err(error) => {
                 if matches!(error, ToolError::OutcomeUnknown(_)) {
-                    host.creation_unknown(identity, self.owner, turn, provider, generation);
+                    host.creation_unknown(
+                        identity, self.owner, turn, execution, provider, generation,
+                    );
                 }
                 return Err(error);
             }
@@ -1575,6 +1593,7 @@ impl Browsers {
             identity.tab(&id),
             self.owner,
             turn,
+            execution,
             provider.clone(),
             generation.clone(),
         )?;
@@ -1643,6 +1662,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let TabSource {
             provider,
             generation,
@@ -1652,7 +1672,8 @@ impl Browsers {
             .await?;
         let identity = BrowserIdentity::of(&provider, &generation)?.tab(&info.id);
         let api_profile = provider.api_profile();
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         if self
             .clipboards
             .get(provider.id())
@@ -1687,6 +1708,7 @@ impl Browsers {
             tab.generation = generation;
             tab.info = info;
             tab.last_turn = turn.to_owned();
+            tab.last_execution = execution.clone();
         } else {
             let cursor_host = self.host().await;
             self.targets.insert(
@@ -1716,6 +1738,7 @@ impl Browsers {
                     cursor_host,
                     cursor_spec: self.cursor_spec.clone(),
                     last_turn: turn.to_owned(),
+                    last_execution: execution.clone(),
                     dialogs: None,
                     downloads: None,
                     filechoosers: None,
@@ -1772,6 +1795,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let tab = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
                 Language::En => "stale_tab: bind it again",
@@ -1780,9 +1804,11 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
+        tab.last_execution = execution.clone();
         let prior_frame = tab.frame.clone();
         if !matches!(kind, ObservationKind::Screenshot) {
             tab.refs.clear();
@@ -1830,6 +1856,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let closing = matches!(&action, Action::Close);
         let tab = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
@@ -1839,10 +1866,12 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         let host = self.host().await;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
+        tab.last_execution = execution.clone();
         if !closing || tab.provider.extension().is_some() {
             let target = match &action {
                 Action::Navigate { url } => Some(url.as_str()),
@@ -1904,7 +1933,7 @@ impl Browsers {
             {
                 let mut host = host.lock().await;
                 check_input(cancellation)?;
-                host.begin_close(&identity, self.owner, turn)?;
+                host.begin_close(&identity, self.owner, turn, execution)?;
             }
             tab.refs.clear();
             if let Some(admission) = extension_close {
@@ -1940,33 +1969,32 @@ impl Browsers {
     pub(crate) async fn finish_turn(
         &mut self,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         cursor: &crate::cursor::Spec,
         language: Language,
     ) -> Result<(), ToolError> {
-        self.host()
-            .await
-            .lock()
-            .await
-            .check_owned_inputs(self.owner, Some(turn), None)?;
-        self.drain_extension_controls(Some(turn), None).await?;
-        for tab in self.targets.values().filter(|tab| {
-            tab.last_turn == turn
-                || tab
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|bridge| bridge.turn() == turn)
-        }) {
+        self.host().await.lock().await.check_owned_inputs(
+            self.owner,
+            Some(turn),
+            Some(execution),
+            None,
+        )?;
+        self.drain_extension_controls(Some(turn), Some(execution), None)
+            .await?;
+        for tab in self
+            .targets
+            .values()
+            .filter(|tab| tab.last_turn == turn && &tab.last_execution == execution)
+        {
             tab.begin_disconnect();
         }
         let mut failures = Vec::new();
         let mut unsettled = std::collections::HashSet::new();
         for (handle, tab) in &mut self.targets {
-            if tab.last_turn != turn {
-                if tab
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|bridge| bridge.turn() == turn)
-                    && let Err(error) = tab.cleanup_clipboard().await
+            if (tab.last_turn != turn || &tab.last_execution != execution) {
+                if tab.clipboard.as_ref().is_some_and(|bridge| {
+                    bridge.turn() == turn && bridge.execution_correlation() == execution
+                }) && let Err(error) = tab.cleanup_clipboard().await
                 {
                     failures.push(error.to_string());
                     unsettled.insert(handle.clone());
@@ -1992,14 +2020,21 @@ impl Browsers {
             tab.frame = None;
             tab.previous = None;
         }
-        extension::drain_extension_cleanup(&self.host().await, self.owner, Some(turn), None, None)
-            .await?;
+        extension::drain_extension_cleanup(
+            &self.host().await,
+            self.owner,
+            Some(turn),
+            Some(execution),
+            None,
+            None,
+        )
+        .await?;
         let finished = self
             .host()
             .await
             .lock()
             .await
-            .finish(self.owner, Some(turn))
+            .finish(self.owner, Some(turn), Some(execution))
             .await;
         let finished: std::collections::HashSet<_> = match finished {
             Ok(finished) => finished.into_iter().collect(),
@@ -2015,8 +2050,7 @@ impl Browsers {
                     .is_ok_and(|identity| !finished.contains(&identity))
         });
         if failures.is_empty() {
-            self.retire_handoff_resources(None).await?;
-            self.release_handoff_user().await
+            Ok(())
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
         }
@@ -2026,12 +2060,13 @@ impl Browsers {
         &mut self,
         cursor: &crate::cursor::Spec,
     ) -> Result<(), ToolError> {
-        self.host()
-            .await
-            .lock()
-            .await
-            .check_owned_inputs(self.owner, None, Some(self.epoch))?;
-        self.drain_extension_controls(None, Some(self.epoch))
+        self.host().await.lock().await.check_owned_inputs(
+            self.owner,
+            None,
+            None,
+            Some(self.epoch),
+        )?;
+        self.drain_extension_controls(None, None, Some(self.epoch))
             .await?;
         for tab in self.targets.values() {
             tab.begin_disconnect();
@@ -2066,17 +2101,17 @@ impl Browsers {
             .await
             .lock()
             .await
-            .check_owned_inputs(self.owner, None, None)?;
-        self.drain_extension_controls(None, None).await?;
+            .check_owned_inputs(self.owner, None, None, None)?;
+        self.drain_extension_controls(None, None, None).await?;
         let mut failures = Vec::new();
         if let Err(error) = self.retire_epoch(cursor).await {
             failures.push(error.to_string());
         }
         let host = self.host().await;
-        extension::drain_extension_cleanup(&host, self.owner, None, None, None).await?;
+        extension::drain_extension_cleanup(&host, self.owner, None, None, None, None).await?;
         let mut host = host.lock().await;
         let cursor_result = host.finalize_cursors(self.owner, cursor).await;
-        let tabs_result = host.finish(self.owner, None).await;
+        let tabs_result = host.finish(self.owner, None, None).await;
         if let Err(error) = cursor_result {
             failures.push(error.to_string());
         }
@@ -2124,16 +2159,24 @@ impl Tab {
             .clone()
             .ok_or_else(|| failed("Browser clipboard requires Host effect custody"))?;
         self.verify(call).await?;
-        if self
-            .clipboard
-            .as_ref()
-            .is_some_and(|bridge| !bridge.is_open())
-        {
+        if self.clipboard.as_ref().is_some_and(|bridge| {
+            !bridge.is_open()
+                || bridge.turn() != turn
+                || bridge.execution_correlation() != call.invocation.execution_correlation()
+        }) {
             self.cleanup_clipboard().await?;
         }
         if self.clipboard.is_none() {
             let store = self.clipboard_store.clone();
-            clipboard_bridge::Bridge::install(self, store, authorization, host, turn).await?;
+            clipboard_bridge::Bridge::install(
+                self,
+                store,
+                authorization,
+                host,
+                turn,
+                call.invocation.execution_correlation(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2410,7 +2453,10 @@ impl Tab {
         self.clipboard_authorization = services.attachment;
         self.dialog_host = services.effects;
         self.attachment_settlement = services.settlement;
-        if let Some(bridge) = &self.clipboard {
+        if let Some(bridge) = &self.clipboard
+            && bridge.turn() == invocation.turn()
+            && bridge.execution_correlation() == invocation.execution_correlation()
+        {
             bridge.update(
                 self.clipboard_authorization.clone(),
                 self.dialog_host.clone(),
@@ -3403,12 +3449,15 @@ mod tests {
     ) {
         let accesses = Arc::new(Mutex::new(Vec::new()));
         (
-            crate::InvocationContext::new("fixture", "turn").with_browser_authorization(Arc::new(
-                Decision {
-                    allow,
-                    accesses: accesses.clone(),
-                },
-            )),
+            crate::InvocationContext::new(
+                "fixture",
+                "turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_browser_authorization(Arc::new(Decision {
+                allow,
+                accesses: accesses.clone(),
+            })),
             accesses,
         )
     }
@@ -3845,6 +3894,7 @@ mod tests {
             BrowserIdentity::new(provider, generation).unwrap(),
             browsers.owner,
             "original-turn",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             provider.clone(),
             generation.into(),
         );
@@ -3896,7 +3946,11 @@ mod tests {
             };
             browsers.configure(connections, Language::En).unwrap();
             quarantine_inventory(&browsers, &unhealthy, &generation).await;
-            let context = crate::InvocationContext::new("fixture", "selection-turn");
+            let context = crate::InvocationContext::new(
+                "fixture",
+                "selection-turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            );
             let cursor = crate::cursor::Spec::default();
             let cancellation = CancellationToken::new();
             let listed = browsers
@@ -3995,7 +4049,11 @@ mod tests {
                             extension_instance_id: instance.map(str::to_owned),
                         },
                     },
-                    &crate::InvocationContext::new("fixture", "selection-turn"),
+                    &crate::InvocationContext::new(
+                        "fixture",
+                        "selection-turn",
+                        crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
                     &crate::cursor::Spec::default(),
                     &CancellationToken::new(),
                     Language::En,
@@ -4314,17 +4372,36 @@ mod tests {
         let owner = uuid::Uuid::new_v4();
         let other = uuid::Uuid::new_v4();
         let mut host = Host::default();
-        host.created(identity.clone(), owner, "turn", provider, generation)
-            .unwrap();
-        let first = host.finish(owner, Some("turn")).await;
+        host.created(
+            identity.clone(),
+            owner,
+            "turn",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            provider,
+            generation,
+        )
+        .unwrap();
+        let first = host
+            .finish(
+                owner,
+                Some("turn"),
+                Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap()),
+            )
+            .await;
         assert!(
             matches!(first, Err(ToolError::CleanupUnconfirmed(message)) if message == "the temporary tab is still present after its close request")
         );
         assert!(!host.visible(&identity, other));
         assert!(
-            matches!(host.use_tab(&identity, owner, "later"), Err(ToolError::CleanupUnconfirmed(message)) if message == "the tab's previous close has not settled")
+            matches!(host.use_tab(&identity, owner, "later", &crate::ExecutionCorrelation::new("fixture-execution").unwrap()), Err(ToolError::CleanupUnconfirmed(message)) if message == "the tab's previous close has not settled")
         );
-        let second = host.finish(owner, Some("turn")).await;
+        let second = host
+            .finish(
+                owner,
+                Some("turn"),
+                Some(&crate::ExecutionCorrelation::new("fixture-execution").unwrap()),
+            )
+            .await;
         assert!(
             matches!(second, Err(ToolError::CleanupUnconfirmed(message)) if message == "a previous tab close has not settled; close was not replayed")
         );
@@ -4347,7 +4424,11 @@ mod tests {
             session
                 .invoke(
                     serde_json::from_value(command).unwrap(),
-                    &crate::InvocationContext::new(owner, turn),
+                    &crate::InvocationContext::new(
+                        owner,
+                        turn,
+                        crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
                     &CancellationToken::new(),
                     Language::En,
                 )
@@ -4611,7 +4692,14 @@ mod tests {
         )
         .await
         .unwrap();
-        a.finish_turn("a", "first", Language::En).await.unwrap();
+        a.finish_turn(
+            "a",
+            "first",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
+        .await
+        .unwrap();
         let remaining = call(
             &mut a,
             "a",
@@ -4675,7 +4763,11 @@ mod tests {
             ("ftp://example.com/unsupported".into(), true),
             (String::new(), true),
         ] {
-            let mut context = crate::InvocationContext::new("a", "denied");
+            let mut context = crate::InvocationContext::new(
+                "a",
+                "denied",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            );
             if host {
                 context = context.with_browser_authorization(Arc::new(Decision {
                     allow: false,
@@ -4723,7 +4815,14 @@ mod tests {
             0,
             "a refused destination received network traffic"
         );
-        a.finish_turn("a", "denied", Language::En).await.unwrap();
+        a.finish_turn(
+            "a",
+            "denied",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
+        .await
+        .unwrap();
         let after_denial_cleanup = call(
             &mut a,
             "a",
@@ -4905,7 +5004,12 @@ mod tests {
             "a newer epoch reuses the retired logical marker"
         );
         newest
-            .finish_turn("a", "cursor", Language::En)
+            .finish_turn(
+                "a",
+                "cursor",
+                &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                Language::En,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -4933,7 +5037,14 @@ mod tests {
             2,
             "the next turn restores its cursor without a VM reset"
         );
-        a.finish_turn("a", "cursor", Language::En).await.unwrap();
+        a.finish_turn(
+            "a",
+            "cursor",
+            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            Language::En,
+        )
+        .await
+        .unwrap();
         cursor_state(&mut newest, "a", [35, 40]).await;
         cursor_state(&mut b, "b", [45, 50]).await;
         assert_eq!(

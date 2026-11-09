@@ -19,6 +19,7 @@
 
 //! Public IPC executes the same persisted application and owns caller intent.
 use crate::support;
+use maka_host_runtime::application::{HandlerError, HandlerResult, HandlerValue};
 mod ui_bindings;
 use maka_event_log::{
     root::{RootNamespaces, RootOwner},
@@ -32,7 +33,7 @@ use maka_host_runtime::{
     },
     ipc::LocalListener,
 };
-use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -51,7 +52,7 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let deployment = Uuid::new_v4();
         let (input, packages) = support::host();
         let source = store.commit_application(deployment, 0, input, vec![], packages).await.unwrap();
@@ -88,7 +89,7 @@ async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner(
         let reference = write.reference().unwrap().clone();
         client.refresh().await.unwrap();
         assert!(store.application_intent(deployment, support::identity(13), reference.operation).await.unwrap().is_none());
-        assert!(matches!(write.confirm().await.unwrap(), Reply::Mutation { ref reply, cleanup: Ok(()) } if matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { .. }, cleanup: OperationCleanup::Confirmed })));
+        assert!(matches!(write.confirm(serde_json::Value::Null).await.unwrap(), Reply::Mutation { ref reply, cleanup: Ok(()) } if matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { .. }, cleanup: OperationCleanup::Confirmed })));
         assert!(write.cleanup_confirmed());
         let intent = store.application_intent(deployment, support::identity(13), reference.operation).await.unwrap().unwrap();
         assert_eq!(intent.reference, reference);
@@ -131,7 +132,7 @@ impl maka_host_runtime::application::Handler for Blocked {
         _: String,
         _: Value,
         context: maka_host_runtime::application::Context,
-    ) -> futures_util::future::BoxFuture<'static, Result<Value, String>> {
+    ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         let entered = self.entered.clone();
         let cancelled = self.cancelled.clone();
         let release = self.release.clone();
@@ -140,7 +141,7 @@ impl maka_host_runtime::application::Handler for Blocked {
             context.scope().cancellation.cancelled().await;
             cancelled.add_permits(1);
             release.acquire().await.unwrap().forget();
-            Ok(Value::Null)
+            Ok(HandlerValue::Json(Value::Null))
         })
     }
 }
@@ -161,7 +162,7 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership: directory.path().join("owners"), control: directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root, &namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::host();
         let package = packages.iter_mut().find(|package| package.manifest().id == "local.business").unwrap();
@@ -188,7 +189,7 @@ async fn lost_session_close_observer_cannot_release_accepted_work_or_root_early(
         let mut call = client.call("business", "write".into(), Value::Null, Default::default()).await.unwrap();
         call.start().await.unwrap();
         assert!(matches!(call.receive().await.unwrap(), Reply::Prepared { .. }));
-        let mut confirming = Box::pin(call.confirm());
+        let mut confirming = Box::pin(call.confirm(serde_json::Value::Null));
         tokio::select! {
             permit = blocked.entered.acquire() => permit.unwrap().forget(),
             result = &mut confirming => panic!("accepted work ended before release: {result:?}"),
@@ -237,9 +238,10 @@ impl PeerHost {
             control: directory.path().join("control"),
         };
         let store = Arc::new(
-            support::setup(RootStore::open(Arc::new(
-                RootOwner::create(&directory.path().join("host"), &namespaces).unwrap(),
-            )))
+            support::setup(RootStore::open(
+                Arc::new(RootOwner::create(&directory.path().join("host"), &namespaces).unwrap()),
+                maka_event_log::ROOT_MIGRATIONS,
+            ))
             .await
             .unwrap(),
         );
@@ -315,9 +317,12 @@ impl PeerHost {
         maka_plugin_core::composition::InstanceId,
     ) {
         let store = Arc::new(
-            support::setup(RootStore::open(Arc::new(
-                RootOwner::create(&self.directory.path().join(name), &self.namespaces).unwrap(),
-            )))
+            support::setup(RootStore::open(
+                Arc::new(
+                    RootOwner::create(&self.directory.path().join(name), &self.namespaces).unwrap(),
+                ),
+                maka_event_log::ROOT_MIGRATIONS,
+            ))
             .await
             .unwrap(),
         );
@@ -463,7 +468,7 @@ async fn local_peer_sessions_preserve_ui_journals_grants_and_independent_revisio
         let mut owned_confirmation = peer_call(&client, &source, &consumer, "write").await;
         owned_confirmation.start().await.unwrap();
         assert!(matches!(owned_confirmation.receive().await.unwrap(), Reply::Prepared { .. }));
-        assert!(matches!(owned_confirmation.confirm().await.unwrap(), Reply::Aborted { cleanup: Ok(()), .. }));
+        assert!(matches!(owned_confirmation.confirm(serde_json::Value::Null).await.unwrap(), Reply::Aborted { cleanup: Ok(()), .. }));
         let mut write = peer_call(&client, &source, &consumer, "write").await;
         write.start().await.unwrap();
         assert!(matches!(write.receive().await.unwrap(), Reply::Prepared { .. }));
@@ -722,9 +727,10 @@ async fn selected_native_method_works_with_unchanged_saved_grants_after_restart(
         };
         let root = directory.path().join("host");
         let store = Arc::new(
-            support::setup(RootStore::open(Arc::new(
-                RootOwner::create(&root, &namespaces).unwrap(),
-            )))
+            support::setup(RootStore::open(
+                Arc::new(RootOwner::create(&root, &namespaces).unwrap()),
+                maka_event_log::ROOT_MIGRATIONS,
+            ))
             .await
             .unwrap(),
         );
@@ -775,9 +781,10 @@ async fn selected_native_method_works_with_unchanged_saved_grants_after_restart(
         drop(store);
         for _ in 0..2 {
             let store = Arc::new(
-                support::setup(RootStore::open(Arc::new(
-                    RootOwner::open(&root, &namespaces).unwrap(),
-                )))
+                support::setup(RootStore::open(
+                    Arc::new(RootOwner::open(&root, &namespaces).unwrap()),
+                    maka_event_log::ROOT_MIGRATIONS,
+                ))
                 .await
                 .unwrap(),
             );
@@ -824,6 +831,7 @@ async fn selected_native_method_works_with_unchanged_saved_grants_after_restart(
                     "write".into(),
                     Value::Null,
                     Uuid::new_v4(),
+                    serde_json::Value::Null,
                     maka_capabilities::call::Attachments::new(),
                 )
                 .unwrap()
@@ -876,9 +884,10 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         };
         let root = directory.path().join("host");
         let store = Arc::new(
-            support::setup(RootStore::open(Arc::new(
-                RootOwner::create(&root, &namespaces).unwrap(),
-            )))
+            support::setup(RootStore::open(
+                Arc::new(RootOwner::create(&root, &namespaces).unwrap()),
+                maka_event_log::ROOT_MIGRATIONS,
+            ))
             .await
             .unwrap(),
         );
@@ -1098,9 +1107,10 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         drop((client, services, host, store));
         // Reopen from the durable launcher selection, as a new Host process does.
         let store = Arc::new(
-            support::setup(RootStore::open(Arc::new(
-                RootOwner::open(&root, &namespaces).unwrap(),
-            )))
+            support::setup(RootStore::open(
+                Arc::new(RootOwner::open(&root, &namespaces).unwrap()),
+                maka_event_log::ROOT_MIGRATIONS,
+            ))
             .await
             .unwrap(),
         );
@@ -1155,7 +1165,7 @@ impl maka_host_runtime::application::Handler for LargeIpc {
         method: String,
         input: Value,
         context: maka_host_runtime::application::Context,
-    ) -> futures_util::future::BoxFuture<'static, Result<Value, String>> {
+    ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         self.calls
             .lock()
             .unwrap()
@@ -1167,10 +1177,13 @@ impl maka_host_runtime::application::Handler for LargeIpc {
         }
         Box::pin(async move {
             if method == "read" {
-                return Ok(input);
+                return Ok(HandlerValue::Json(input));
             }
-            context.emit(original.clone()).await?;
-            Ok(original)
+            context
+                .emit(original.clone())
+                .await
+                .map_err(|diagnostic| HandlerError::Unknown { diagnostic })?;
+            Ok(HandlerValue::Json(original))
         })
     }
 }
@@ -1196,7 +1209,7 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces { ownership:directory.path().join("owners"), control:directory.path().join("control") };
         let root = directory.path().join("root");
-        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()))).await.unwrap());
+        let store = Arc::new(support::setup(RootStore::open(Arc::new(RootOwner::create(&root,&namespaces).unwrap()), maka_event_log::ROOT_MIGRATIONS)).await.unwrap());
         let deployment = Uuid::new_v4();
         let (mut input, mut packages) = support::native_host("public.large");
         let mut contract = support::business();
@@ -1238,7 +1251,7 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
         let write_start = write.start().await;
         let prepared = if write_start.is_ok() { Some(write.receive().await) } else { None };
         let reference = write.reference().cloned();
-        let progress = if matches!(prepared,Some(Ok(Reply::Prepared { .. }))) { Some(write.confirm().await) } else { None };
+        let progress = if matches!(prepared,Some(Ok(Reply::Prepared { .. }))) { Some(write.confirm(serde_json::Value::Null).await) } else { None };
         let completion = if matches!(progress,Some(Ok(Reply::Progress { .. }))) { Some(write.receive().await) } else { None };
         let write_cleanup = write.close().await;
         let write_confirmed = write.cleanup_confirmed();
@@ -1255,11 +1268,11 @@ async fn public_ipc_preserves_large_query_progress_and_original_mutation_receipt
         assert!(matches!(progress,Some(Ok(Reply::Progress { ref value })) if value==&expected),"large mutation progress missing");
         let Some(Ok(Reply::Mutation { reply,cleanup:Ok(()) }))=completion else { panic!("large original final receipt missing") };
         assert_eq!(Some(&reply.reference),reference.as_ref());
-        let Receipt::Recorded { outcome:OperationOutcome::Returned { value },cleanup:OperationCleanup::Confirmed }=&reply.receipt else { panic!("confirmed returned receipt required") };
+        let Receipt::Recorded { outcome:OperationOutcome::Returned { result: OperationResult::Success { value } },cleanup:OperationCleanup::Confirmed }=&reply.receipt else { panic!("confirmed returned receipt required") };
         assert!(value==&expected,"original mutation outcome changed");
         assert_eq!(intent.unwrap().reference,reply.reference);
         let observed = observation.unwrap();
-        assert!(matches!(observed.outcome,OperationOutcome::Returned { ref value } if value==&expected));
+        assert!(matches!(observed.outcome,OperationOutcome::Returned { result: OperationResult::Success { ref value } } if value==&expected));
         assert_eq!(observed.cleanup,OperationCleanup::Confirmed);
         assert!(*provider.calls.lock().unwrap()==vec![("read".into(),expected),("write".into(),Value::Null)],"original call sequence or input changed");
         assert_eq!(provider.effects.load(std::sync::atomic::Ordering::SeqCst),1);

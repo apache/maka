@@ -17,10 +17,10 @@
  * under the License.
  */
 
+use maka_agent_facts::durable::{AgentStepLink, ExecutionIdentity};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::LogScope;
+use maka_agent_facts::event::RunInput;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::model::ModelFinishReason;
@@ -32,10 +32,53 @@ use maka_agent_facts::model::recorded::{
 };
 use serde_json::json;
 use std::time::{Duration, UNIX_EPOCH};
+pub(super) fn execution() -> ExecutionIdentity {
+    ExecutionIdentity {
+        session_id: "session".into(),
+        turn_id: "turn".into(),
+        run_id: serde_json::from_value(json!("00000000-0000-4000-8000-000000000001")).unwrap(),
+    }
+}
+
+pub(super) fn link(label: &str) -> AgentStepLink {
+    let (step, attempt) = match label {
+        "step" => (
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003",
+        ),
+        "first" => (
+            "00000000-0000-4000-8000-000000000004",
+            "00000000-0000-4000-8000-000000000005",
+        ),
+        "second" => (
+            "00000000-0000-4000-8000-000000000006",
+            "00000000-0000-4000-8000-000000000007",
+        ),
+        "native" => (
+            "00000000-0000-4000-8000-000000000008",
+            "00000000-0000-4000-8000-000000000009",
+        ),
+        "unknown" => (
+            "00000000-0000-4000-8000-000000000010",
+            "00000000-0000-4000-8000-000000000011",
+        ),
+        _ => panic!("unknown model fixture"),
+    };
+    AgentStepLink {
+        run: execution().run_id,
+        step: serde_json::from_value(json!(step)).unwrap(),
+        attempt: serde_json::from_value(json!(attempt)).unwrap(),
+    }
+}
+
+pub(super) fn operation(label: &str, call: &str) -> String {
+    format!("{}:{call}", link(label).attempt)
+}
+
 pub(super) fn opening() -> Fact {
-    Fact::InvocationOpened {
+    Fact::RunOpened {
         configuration: None,
-        input: InvocationInput::Message {
+        input: RunInput::Message {
             source_messages: Vec::new(),
             content: "read".into(),
             request_fingerprint: None,
@@ -54,7 +97,8 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
         purpose: maka_agent_facts::context::ModelPurpose::Main,
         context: None,
         checkpoint_event_id: None,
-        step_id: id.into(),
+        step_id: link(id).step,
+        attempt_id: link(id).attempt,
         model_id: "model".into(),
         source_scope: LogScope::Session {
             id: "session".into(),
@@ -95,7 +139,7 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
         .map(|(ordinal, part)| {
             let message_id = match &part {
                 ModelPart::ToolCall { call } => {
-                    maka_presentation::tool_message_id("invocation", &format!("{id}:{}", call.id))
+                    maka_presentation::tool_message_id(execution().run_id, &operation(id, &call.id))
                 }
                 _ => format!("{id}:part:{ordinal}"),
             };
@@ -109,7 +153,8 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
             if native && !matches!(record.part.as_ref(), ModelPart::Text { .. }) {
                 let event_id = format!("event_{}", facts.len());
                 facts.push(Fact::ModelObserved {
-                    step_id: id.into(),
+                    step_id: link(id).step,
+                    attempt_id: link(id).attempt,
                     event: ModelObservation::Part(record.clone()),
                 });
                 CompletionPart::Ref(RecordedPartRef {
@@ -122,7 +167,8 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
         })
         .collect();
     facts.push(Fact::ModelCompleted {
-        step_id: id.into(),
+        step_id: link(id).step,
+        attempt_id: link(id).attempt,
         output: ModelCompletion {
             compaction: None,
             parts,
@@ -140,15 +186,7 @@ pub(super) fn stored(facts: Vec<Fact>) -> Vec<StoredEvent> {
         .into_iter()
         .enumerate()
         .map(|(index, fact)| {
-            let mut event = RuntimeEvent::new(
-                Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
-                },
-                fact,
-            );
+            let mut event = RuntimeEvent::new(execution(), fact);
             event.id = format!("event_{index}");
             event.recorded_at = UNIX_EPOCH + Duration::from_millis(1000 + index as u64);
             StoredEvent {

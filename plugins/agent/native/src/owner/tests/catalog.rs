@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_authority::permissions::Access as _;
 use maka_agent_facts::interaction::ClosureReason;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_host_runtime::application::Subscription;
@@ -29,9 +30,208 @@ async fn next(stream: &mut Subscription) -> Value {
         .expect("live subscription")
 }
 
+// A separate actual Host namespace, sharing only this Root and its DriverDomain.
+struct ForeignAgent {
+    app: Application,
+    owner: Arc<Owner>,
+    issuer: Issuer,
+}
+impl ForeignAgent {
+    async fn open(f: &Fixture) -> Self {
+        let (input, packages) = input(&f.owner.settings);
+        let deployment = Uuid::new_v4();
+        f.store
+            .commit_application(deployment, 0, input, vec![], packages)
+            .await
+            .unwrap();
+        let captured = Arc::new(StdMutex::new(None));
+        let capture = captured.clone();
+        let state = f.owner.durable.clone();
+        let catalog = bundled_catalog();
+        let helper = native_helper();
+        let mut native = NativeRegistry::default();
+        maka_settings_native::provide(&mut native, catalog.clone()).unwrap();
+        native
+            .insert(
+                IMPLEMENTATION.into(),
+                Arc::new(move |context, configuration| {
+                    let capture = capture.clone();
+                    let state = state.clone();
+                    let catalog = catalog.clone();
+                    let helper = helper.clone();
+                    Box::pin(async move {
+                        let owner =
+                            Owner::open(context, configuration, catalog, state, helper, None)
+                                .await
+                                .unwrap();
+                        *capture.lock().unwrap() = Some(owner.clone());
+                        let service = Arc::new(Agent(owner));
+                        NativeActivation {
+                            owner: service.clone(),
+                            exports: Ok(BTreeMap::from([(
+                                EXPORT.into(),
+                                maka_plugin_core::runtime::Published {
+                                    contract: contract(),
+                                    value: service
+                                        as Arc<dyn maka_host_runtime::application::Handler>,
+                                },
+                            )])),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+        let policy = Arc::new(maka_transport::transport::PeerPolicy::default());
+        let issuer = policy.issuer();
+        let app = Application::start_from_store(
+            f.store.clone(),
+            deployment,
+            native,
+            issuer.clone(),
+            Arc::new(Grant(issuer.clone(), Some(policy))),
+            Some(maka_host_js::factory(Default::default())),
+        )
+        .await
+        .unwrap();
+        app.ready().await.unwrap();
+        let owner = captured.lock().unwrap().take().unwrap();
+        assert_ne!(owner.run_owner(), f.owner.run_owner());
+        Self { app, owner, issuer }
+    }
+}
+async fn foreign_mutation(f: &ForeignAgent, method: &str, input: Value) -> Value {
+    let client = f.app.client();
+    let binding = client
+        .bind(client.activation(&id(2)).unwrap(), EXPORT.into())
+        .await
+        .unwrap()
+        .remove(0);
+    let prepared = client
+        .prepare_mutation(
+            binding,
+            method.into(),
+            input,
+            scope(&f.issuer, true),
+            Uuid::new_v4(),
+            Attachments::new().into(),
+        )
+        .await
+        .unwrap();
+    let recovery = json!({"reference":prepared.reference()});
+    let reply = client
+        .mutate_owned(prepared, recovery)
+        .await
+        .unwrap()
+        .result()
+        .await;
+    let Receipt::Recorded {
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
+        ..
+    } = reply.receipt
+    else {
+        panic!("{reply:?}")
+    };
+    value
+}
+async fn permissions(
+    owner: &Arc<Owner>,
+    session: &str,
+    names: &[&str],
+    socket: &mut TcpStream,
+) -> (
+    Vec<maka_agent_facts::interaction::InteractionRecord>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    use maka_agent_facts::{
+        durable::AuthorizationObligation,
+        interaction::{InteractionRecord, InteractionRequest, PermissionRequest},
+    };
+    let access = owner.runs.state().await.controls[session]
+        .access
+        .upgrade()
+        .expect("actual live driver access");
+    let (release, held) = tokio::sync::oneshot::channel();
+    let (entered, entering) = tokio::sync::oneshot::channel();
+    let stop = owner.stop.clone();
+    let pause = Box::pin(async move {
+        entered.send(()).expect("actual pre-T1 worker entered");
+        tokio::select! {
+            _=stop.cancelled()=>Ok(()),
+            held=held=>held.map_err(|error|RunError::Internal(error.to_string())),
+        }
+    });
+    {
+        let mut preparation = owner.tool_preparation.lock().unwrap();
+        assert!(preparation.is_none());
+        *preparation = Some(pause);
+    }
+    let calls:Vec<_>=names.iter().enumerate().map(|(index,name)|json!({
+        "index":index,"id":name,"type":"function","function":{"name":"SessionCreate",
+        "arguments":json!({"title":format!("Catalog permission {name}"),"labels":[],"workspace":{"kind":"session","sessionId":session}}).to_string()}
+    })).collect();
+    let delta = json!({"id":"catalog-model","choices":[{"index":0,"delta":{"tool_calls":calls},"finish_reason":null}]});
+    let body = format!(
+        "data: {delta}\n\ndata: {{\"id\":\"catalog-model\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
+    );
+    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+    entering.await.unwrap();
+    let view = access.fresh().await.unwrap();
+    let configuration = access.live_configuration().await.unwrap();
+    let mut records = Vec::new();
+    for name in names {
+        let tool = view
+            .tools
+            .values()
+            .find(|tool| {
+                tool.key.call == *name
+                    && tool.call.name == "SessionCreate"
+                    && !tool.admitted
+                    && tool.accepted.is_none()
+                    && tool.decision.is_none()
+            })
+            .expect("actual Finished T0 unprepared tool");
+        let target = AuthorizationObligation::Tool {
+            tool: tool.key.clone(),
+        };
+        let record = InteractionRecord {
+            execution: access.execution().clone(),
+            request_id: (*name).into(),
+            created_at: now(),
+            outcome: None,
+            request: InteractionRequest::Permissions {
+                tool_use_id: Some(maka_agent_facts::tool_call::tool_use_id(
+                    access.execution().run_id,
+                    &maka_agent_state::fold::tool_key(&tool.key),
+                )),
+                target: target.clone(),
+                basis: configuration.permission_basis(),
+                request: PermissionRequest {
+                    reason: "Write the catalog request result.".into(),
+                    command: None,
+                    permissions: maka_sandbox::grant::Permissions {
+                        filesystem: vec![maka_sandbox::filesystem::Rule {
+                            path: std::path::PathBuf::from(&configuration.workspace.path)
+                                .join(format!("{name}.txt")),
+                            scope: maka_sandbox::filesystem::Scope::Exact,
+                            access: maka_sandbox::filesystem::Access::Write,
+                        }],
+                        network: maka_sandbox::Network::Denied,
+                    },
+                },
+            },
+        };
+        records.push(access.establish_for_target(&record, &target).await.unwrap());
+    }
+    (records, release)
+}
+
 #[tokio::test]
 async fn catalog_observes_metadata_pending_and_removal_at_its_original_location() {
-    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let model = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fixture = session_parent_authority::fixture(&model).await;
     let mut bootstrap = fixture
         .app
         .client()
@@ -183,24 +383,47 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .await
         .unwrap();
 
-    // Background pending sessions outside this page contribute to the exact count.
-    fixture
-        .session(&(catalog_interaction(&ids[0], "background")).session_id)
-        .await
-        .establish_interaction(&catalog_interaction(&ids[0], "background"))
-        .await
-        .unwrap();
-    let pending = next(&mut stream).await;
+    // Background pending Sessions outside this page contribute to the exact count.
+    let mut background_socket = session_parent_authority::start(&fixture, &model, &ids[0]).await;
+    let (background, release) = permissions(
+        &fixture.owner,
+        &ids[0],
+        &["background", "background-second"],
+        &mut background_socket,
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .owner
+            .durable
+            .interactions()
+            .pending(&ids[0])
+            .await
+            .unwrap()
+            .records
+            .len(),
+        2
+    );
+    assert_eq!(
+        fixture
+            .query("observe", json!({"sessionId":ids[0]}))
+            .await
+            .unwrap()["session"]["activity"],
+        "waiting"
+    );
+    let pending = loop {
+        let page = next(&mut stream).await;
+        if page["needsYouCount"] == 1 {
+            break page;
+        }
+    };
     assert_eq!(pending["needsYouCount"], 1);
     assert_eq!(pending["sessions"][0]["id"], ids[2]);
-    fixture
-        .session(&(catalog_interaction(&ids[0], "background-second")).session_id)
-        .await
-        .establish_interaction(&catalog_interaction(&ids[0], "background-second"))
-        .await
-        .unwrap();
     assert_eq!(
-        next(&mut stream).await["needsYouCount"],
+        fixture
+            .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+            .await
+            .unwrap()["needsYouCount"],
         1,
         "count sessions, not requests"
     );
@@ -216,25 +439,61 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .await
         .unwrap();
     assert_eq!(next(&mut stream).await["sessions"], pending["sessions"]);
-    fixture
-        .session(&(catalog_interaction("foreign", "foreign-request")).session_id)
-        .await
-        .establish_interaction(&catalog_interaction("foreign", "foreign-request"))
+    let foreign = ForeignAgent::open(&fixture).await;
+    let foreign_session = foreign_mutation(
+        &foreign,
+        "create",
+        fixture.create_input("Foreign owner pending").await,
+    )
+    .await["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!fixture.owner.owns(&foreign_session));
+    assert!(fixture.query("list",json!({"filter":"all","position":{"kind":"start"},"scope":{"kind":"workspace","sessionId":foreign_session}})).await.unwrap_err().contains("agent_session_unavailable"));
+    let queued=foreign_mutation(&foreign,"send",json!({"sessionId":foreign_session,"message":"foreign catalog source","delivery":"queue","backend":model_backend(&fixture.selection().await)})).await;
+    assert_eq!(queued["kind"], "queued");
+    let (mut foreign_socket, _) = model.accept().await.unwrap();
+    request(&mut foreign_socket).await;
+    let (foreign_records, foreign_release) = permissions(
+        &foreign.owner,
+        &foreign_session,
+        &["foreign-request"],
+        &mut foreign_socket,
+    )
+    .await;
+    assert_eq!(
+        foreign
+            .owner
+            .durable
+            .interactions()
+            .pending(&foreign_session)
+            .await
+            .unwrap()
+            .records,
+        foreign_records
+    );
+    let private = fixture
+        .query(
+            "list",
+            json!({"filter":"all","position":{"kind":"at","cursor":ids[2]}}),
+        )
         .await
         .unwrap();
-    let private = next(&mut stream).await;
     assert_eq!(private["needsYouCount"], 1);
     assert_eq!(private["sessions"], pending["sessions"]);
 
     for request in ["background", "background-second"] {
         fixture
-            .session(&ids[0])
-            .await
-            .commit_interaction_outcome(
+            .owner
+            .durable
+            .interactions()
+            .commit_outcome(
+                &ids[0],
                 request,
                 InteractionOutcome::Closure {
                     reason: ClosureReason::ProducerCancelled,
-                    committed_at: 20,
+                    committed_at: now(),
                 },
             )
             .await
@@ -252,10 +511,20 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
             if request == "background" { 1 } else { 0 }
         );
     }
+    fixture
+        .mutation(
+            2,
+            "stop",
+            json!({"sessionId":ids[0],"runId":background[0].execution.run_id}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    release.send(()).expect("original background worker held");
+    fixture.drained().await;
     for id in &ids[1..] {
         let record = fixture
-            .session(id)
-            .await
+            .store
             .get_session::<StoredSessionConfiguration>(id)
             .await
             .unwrap()
@@ -265,7 +534,19 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
             .begin_session_removal(id, record.revision)
             .await
             .unwrap();
-        let updated = next(&mut stream).await;
+        let updated = loop {
+            let page = next(&mut stream).await;
+            if page["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["id"] != *id)
+                && (id != &ids[2]
+                    || (page["sessions"][0]["id"] == ids[0] && page["before"].is_null()))
+            {
+                break page;
+            }
+        };
         assert!(
             updated["sessions"]
                 .as_array()
@@ -286,6 +567,16 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
             );
         }
     }
+    foreign_mutation(
+        &foreign,
+        "stop",
+        json!({"sessionId":foreign_session,"runId":foreign_records[0].execution.run_id}),
+    )
+    .await;
+    foreign_release
+        .send(())
+        .expect("original foreign worker held");
+    foreign.app.shutdown().await.unwrap();
     stream.cancel();
     tokio::time::timeout(Duration::from_secs(5), stream.completion())
         .await
@@ -297,7 +588,8 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
 #[tokio::test]
 async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let f = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let model = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = session_parent_authority::fixture(&model).await;
         let session = f.create("Remove this conversation").await;
         let other = f.create("Keep this conversation").await;
         let file = f.workspace.join("keep.txt");
@@ -327,14 +619,24 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(stale["kind"], "revision_conflict");
-        f.session(&(catalog_interaction(&session, "pending-delete")).session_id)
-            .await
-            .establish_interaction(&catalog_interaction(&session, "pending-delete"))
-            .await
-            .unwrap();
+        let mut socket = session_parent_authority::start(&f, &model, &session).await;
+        let (record, release) = session_parent_authority::establish_permissions(
+            &f,
+            &session,
+            "pending-delete",
+            maka_sandbox::grant::Permissions {
+                filesystem: vec![maka_sandbox::filesystem::Rule {
+                    path: f.workspace.join("pending-delete.txt"),
+                    scope: maka_sandbox::filesystem::Scope::Exact,
+                    access: maka_sandbox::filesystem::Access::Write,
+                }],
+                network: maka_sandbox::Network::Denied,
+            },
+            &mut socket,
+        )
+        .await;
         revision = f
-            .session(&session)
-            .await
+            .store
             .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
@@ -350,9 +652,11 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             .await
             .unwrap();
         assert_eq!(busy["reason"], "busy");
-        f.session(&session)
-            .await
-            .commit_interaction_outcome(
+        f.owner
+            .durable
+            .interactions()
+            .commit_outcome(
+                &session,
                 "pending-delete",
                 InteractionOutcome::Closure {
                     reason: ClosureReason::ProducerCancelled,
@@ -361,9 +665,20 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
             )
             .await
             .unwrap();
+        f.mutation(
+            2,
+            "stop",
+            json!({"sessionId":session,"runId":record.execution.run_id}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        release
+            .send(())
+            .expect("original pending deletion producer held");
+        f.drained().await;
         revision = f
-            .session(&session)
-            .await
+            .store
             .get_session::<StoredSessionConfiguration>(&session)
             .await
             .unwrap()
@@ -381,16 +696,14 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
         assert_eq!(removed["kind"], "removed");
         f.drained().await;
         assert!(
-            f.session(&session)
-                .await
+            f.store
                 .get_session::<StoredSessionConfiguration>(&session)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            f.session(&other)
-                .await
+            f.store
                 .get_session::<StoredSessionConfiguration>(&other)
                 .await
                 .unwrap()

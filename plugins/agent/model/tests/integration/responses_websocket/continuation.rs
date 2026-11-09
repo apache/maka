@@ -137,6 +137,12 @@ async fn idle_close_reconnect_and_upgrade_fallback_preserve_accepted_metadata() 
             let mut next = replay(&base);
             crate::edit_prompt(&mut next.prompt, |messages| messages[1] = serde_json::from_value(json!({"role":"assistant","content":content})).unwrap());
             assert!(lane.confirm(&next.prompt, &["call_1"], step.response_id.as_deref()).await);
+            if fallback {
+                let mut failed=replay(&base);failed.prompt=next.prompt.clone();
+                super::failures::assert_failed(executor.stream_in_conversation(failed,CancellationToken::new(),Some(lane.clone())).await.unwrap()).await;
+                assert_eq!(lane.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary);
+                assert!(lane.try_switch_fallback_transport());
+            }
             generate(&executor, &lane, next).await;
             drop(lane);
             server.await.unwrap();

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::event::{Fact, InvocationOutcome, ToolOutcome};
+use maka_agent_facts::durable::{Fact, Terminal};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| {
@@ -90,22 +90,30 @@ async fn goal_real_model_direct_and_code_mode_continue_only_after_settlement_and
             let sent = request(&mut first).await;
             // A retired record need not decode execution authority; one unreadable active record cannot block another Goal.
             {
-                use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
+                use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
                 let storage = maka_host_runtime::storage::Storage::new(
                     f.owner.store.clone(), f.owner.prefix.clone(),
                     Namespace::new("maka.agent.goal", maka_plugin_core::scope::Scope::Profile).unwrap(),
                 );
+                let retired = f.create("retired").await;
+                let unreadable = f.create("unreadable").await;
+                let gate = f.owner.goals.gate.lock().await;
                 let saved = f.owner.goals.repository.read(&session).await.unwrap().unwrap();
-                for (name, status) in [("retired", "achieved"), ("unreadable", "active")] {
-                    let neighbor = f.create(name).await;
+                let mut mutations = Vec::new();
+                for (neighbor, status) in [(retired, "achieved"), (unreadable, "active")] {
                     let mut record = serde_json::to_value(&saved.goal).unwrap();
                     record["sessionId"] = json!(neighbor);
                     record["status"] = json!(status);
                     record["pending"] = Value::Null;
                     record["arm"]["grant"] = json!({"unsupported_execution_snapshot":true});
                     let key = format!("session/{}", hex::encode(Sha256::digest(neighbor.as_bytes())));
-                    storage.batch(vec![Mutation { key, expected_revision: None, data: Data::Present(record) }]).await.unwrap();
+                    mutations.push(Mutation { key, expected_revision: None, data: Data::Present(record) });
                 }
+                let schedule = storage.read("schedule".into()).await.unwrap();
+                mutations.push(Mutation { key: "schedule".into(), expected_revision: schedule.map(|record| record.revision), data: Data::Deleted });
+                storage.batch(mutations).await.unwrap();
+                drop(gate);
+                f.owner.goals.execution_changed();
                 storage.finish().await.unwrap();
             }
             let names: Vec<_> = sent["tools"].as_array().unwrap().iter().filter_map(|tool| tool["function"]["name"].as_str()).collect();
@@ -136,10 +144,29 @@ async fn goal_real_model_direct_and_code_mode_continue_only_after_settlement_and
             assert!(achieved["consumed"]["missing"].as_u64().unwrap() > 0);
             assert!(current(&f, &other).await.is_null());
             assert!(f.query("goal", json!({"sessionId":"foreign-session"})).await.is_err());
-            let facts = service_tools::facts(&f, &session).await;
-            assert_eq!(facts.iter().filter(|fact| matches!(fact, Fact::InvocationOpened { .. })).count(), 2);
-            assert_eq!(facts.iter().filter(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "GoalStatus")).count(), 2);
-            assert!(facts.iter().any(|fact| matches!(fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })));
+            let facts = f.recorded_facts(&session).await;
+            let runs: Vec<_> = facts.iter().filter(|recorded| matches!(&recorded.fact, Fact::RunAdmitted { .. }))
+                .map(|recorded| recorded.run).collect();
+            assert_eq!(runs.len(), 2);
+            for run in runs {
+                let view = f.owner.durable.frontier(run).await.unwrap();
+                if code {
+                    let reports: Vec<_> = view.cells.values().flat_map(|cell| cell.children.values())
+                        .filter(|child| child.name == "GoalStatus").collect();
+                    assert_eq!(reports.len(), 1, "each iteration calls the actual GoalStatus child once");
+                    assert!(reports[0].admitted, "preparation alone is not the child's T1");
+                }
+                let name = if code { "exec" } else { "GoalStatus" };
+                let tools: Vec<_> = view.tools.values().filter(|tool| tool.call.name == name).collect();
+                assert_eq!(tools.len(), 1);
+                let key = &tools[0].key;
+                assert!(tools[0].admitted);
+                assert_eq!(facts.iter().filter(|recorded| recorded.run == run && matches!(&recorded.fact,
+                    Fact::ToolAdmitted { tool } if tool == key)).count(), 1);
+                assert_eq!(facts.iter().filter(|recorded| recorded.run == run && matches!(&recorded.fact,
+                    Fact::ToolResultAccepted { tool, outcome: maka_agent_facts::durable::AcceptedResult::Succeeded, .. }
+                        if tool == key)).count(), 1);
+            }
             todo_tests::reopen(&mut f).await;
             assert_eq!(current(&f, &session).await, achieved);
             assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
@@ -170,8 +197,8 @@ async fn goal_pause_stops_later_iterations_and_cancel_targets_only_the_original_
         assert_eq!(control(&f, &session, "resume").await["kind"], "committed");
         let (mut goal_run, _) = listener.accept().await.unwrap();
         request(&mut goal_run).await;
-        assert_eq!(f.send(&sibling).await.unwrap()["kind"], "started");
-        assert!(f.owner.runs.lock().await.controls.contains_key(&sibling));
+        assert_eq!(f.send(&sibling).await.unwrap()["kind"], "queued");
+        assert!(f.owner.runs.state().await.controls.contains_key(&sibling));
         assert_eq!(control(&f, &session, "cancel").await["kind"], "committed");
         let mut byte = [0];
         assert_eq!(
@@ -181,7 +208,7 @@ async fn goal_pause_stops_later_iterations_and_cancel_targets_only_the_original_
         );
         let cancelled = wait_status(&f, &session, "cancelled").await;
         assert_eq!(cancelled["iterations"], 2);
-        assert!(f.owner.runs.lock().await.controls.contains_key(&sibling));
+        assert!(f.owner.runs.state().await.controls.contains_key(&sibling));
         let (mut sibling_run, _) = listener.accept().await.unwrap();
         request(&mut sibling_run).await;
         response(&mut sibling_run).await;
@@ -192,8 +219,9 @@ async fn goal_pause_stops_later_iterations_and_cancel_targets_only_the_original_
                 .iter()
                 .any(|fact| matches!(
                     fact,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Cancelled { .. }
+                    Fact::RunTerminated {
+                        terminal: Terminal::Cancelled,
+                        ..
                     }
                 ))
         );
@@ -203,8 +231,9 @@ async fn goal_pause_stops_later_iterations_and_cancel_targets_only_the_original_
                 .iter()
                 .any(|fact| matches!(
                     fact,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Completed
+                    Fact::RunTerminated {
+                        terminal: Terminal::Completed,
+                        ..
                     }
                 ))
         );
@@ -215,7 +244,7 @@ async fn goal_pause_stops_later_iterations_and_cancel_targets_only_the_original_
 }
 
 #[tokio::test]
-async fn goal_incomplete_usage_continues_and_a_raised_budget_resumes_the_same_goal() {
+async fn goal_incomplete_usage_blocks_finite_budget_even_after_it_is_raised() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
@@ -226,11 +255,50 @@ async fn goal_incomplete_usage_continues_and_a_raised_budget_resumes_the_same_go
         report(&mut first, false, "progress").await;
         let (mut next, _) = listener.accept().await.unwrap();
         request(&mut next).await; response(&mut next).await;
+        let limited = wait_status(&f, &session, "budget_limited").await;
+        assert_eq!(limited["consumed"], json!({"known":3,"missing":2}));
+        assert_eq!(limited["remainingTokens"], Value::Null);
+        assert_eq!(limited["iterations"], 1);
+        assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
+        assert_eq!(f.mutation(2, "changeGoal", json!({"kind":"control","sessionId":session,"goalId":limited["id"],"revision":limited["revision"],"action":"resume","budget":{"tokenBudget":9}}), Uuid::new_v4()).await.unwrap()["kind"], "committed");
+        let still_limited = wait_status(&f, &session, "budget_limited").await;
+        assert_eq!(still_limited["id"], limited["id"]);
+        assert_eq!(still_limited["iterations"], 1);
+        assert_eq!(still_limited["consumed"], limited["consumed"]);
+        assert_eq!(still_limited["tokenBudget"], 9);
+        assert_eq!(still_limited["remainingTokens"], Value::Null);
+        assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
+        f.app.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+async fn known_usage_report(socket: &mut TcpStream) {
+    let delta = json!({"id":"tool-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"goal-known","type":"function","function":{"name":"GoalStatus","arguments":json!({"status":"progress","note":"Verified checkpoint progress 中😀"}).to_string()}}]},"finish_reason":null}]});
+    let end = json!({"id":"tool-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}});
+    let body = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+}
+async fn known_usage_finish(socket: &mut TcpStream) {
+    let delta = json!({"id":"goal-finish","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]});
+    let end = json!({"id":"goal-finish","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
+    let body = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+}
+#[tokio::test]
+async fn goal_known_usage_and_a_raised_budget_preserve_iterations_and_cumulative_cost() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let session = f.create("Goal with known usage").await;
+        assert_eq!(create(&f, &session, true, Some(6)).await["kind"], "committed");
+        let (mut first, _) = listener.accept().await.unwrap();
+        request(&mut first).await; known_usage_report(&mut first).await;
+        let (mut finish, _) = listener.accept().await.unwrap();
+        request(&mut finish).await; known_usage_finish(&mut finish).await;
         let (mut second, _) = listener.accept().await.unwrap();
         request(&mut second).await; response(&mut second).await;
         let limited = wait_status(&f, &session, "budget_limited").await;
-        assert_eq!(limited["consumed"]["known"], 6);
-        assert_eq!(limited["remainingTokens"], Value::Null);
+        assert_eq!(limited["consumed"], json!({"known":6,"missing":0}));
         assert_eq!(limited["iterations"], 2);
         assert_eq!(f.mutation(2, "changeGoal", json!({"kind":"control","sessionId":session,"goalId":limited["id"],"revision":limited["revision"],"action":"resume","budget":{"tokenBudget":9}}), Uuid::new_v4()).await.unwrap()["kind"], "committed");
         let (mut third, _) = listener.accept().await.unwrap();
@@ -238,7 +306,7 @@ async fn goal_incomplete_usage_continues_and_a_raised_budget_resumes_the_same_go
         let finished = wait_status(&f, &session, "budget_limited").await;
         assert_eq!(finished["id"], limited["id"]);
         assert_eq!(finished["iterations"], 3);
-        assert_eq!(finished["consumed"]["known"], 9);
+        assert_eq!(finished["consumed"], json!({"known":9,"missing":0}));
         f.app.shutdown().await.unwrap();
     }).await.unwrap();
 }
@@ -288,8 +356,8 @@ async fn a_model_created_goal_finishes_in_the_creating_turn_and_is_readable_late
 
 #[tokio::test]
 async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_without_replay() {
-    use maka_capabilities::storage::Namespace;
     use maka_goal::goal::{Control, Repository};
+    use maka_plugin_core::storage::Namespace;
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
@@ -312,7 +380,7 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
         assert_eq!(f.query("goalReceipt",json!({"reference":reference})).await.unwrap(),committed);
         f.app.shutdown().await.unwrap();
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(f.store.clone(), f.owner.prefix.clone(), Namespace::new("maka.agent.goal",maka_plugin_core::scope::Scope::Profile).unwrap()));
-        let repo: Repository<MessageBasis> = Repository::new(storage.clone());
+        let repo: Repository<crate::owner::notifications::BackgroundApproval> = Repository::new(storage.clone());
         let mut saved = repo.read(&session).await.unwrap().unwrap();
         saved.goal.control(Control::Resume).unwrap();
         saved.goal.reserve().unwrap();
@@ -332,7 +400,7 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
         f.store.set_session_archived::<StoredSessionConfiguration>(&session,true,now()).await.unwrap();
         todo_tests::reopen(&mut f).await;
         assert_eq!(wait_status(&f,&session,"budget_limited").await["iterations"],1);
-        assert_eq!(service_tools::facts(&f,&session).await.iter().filter(|fact| matches!(fact,Fact::InvocationOpened { .. })).count(),1);
+        assert_eq!(service_tools::facts(&f,&session).await.iter().filter(|fact| matches!(fact,Fact::RunAdmitted { .. })).count(),1);
         assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
         assert_eq!(f.query("goalReceipt",json!({"reference":reference})).await.unwrap(),committed);
         f.app.shutdown().await.unwrap();
@@ -342,8 +410,8 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
 
 #[tokio::test]
 async fn goal_rechecks_revoked_session_before_original_outbox_admission() {
-    use maka_capabilities::storage::Namespace;
     use maka_goal::goal::{Control, Repository};
+    use maka_plugin_core::storage::Namespace;
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = fixture(&format!("http://{}/v1",listener.local_addr().unwrap())).await;
@@ -364,7 +432,7 @@ async fn goal_rechecks_revoked_session_before_original_outbox_admission() {
         assert_eq!(create(&f,&session,false,None).await["kind"],"committed");
         f.app.shutdown().await.unwrap();
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.goal",maka_plugin_core::scope::Scope::Profile).unwrap()));
-        let repo: Repository<MessageBasis> = Repository::new(storage.clone());
+        let repo: Repository<crate::owner::notifications::BackgroundApproval> = Repository::new(storage.clone());
         let mut saved = repo.read(&session).await.unwrap().unwrap();
         saved.goal.control(Control::Resume).unwrap();
         saved.goal.reserve().unwrap();
@@ -381,58 +449,45 @@ async fn goal_rechecks_revoked_session_before_original_outbox_admission() {
 }
 
 #[tokio::test]
-async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
-    use maka_agent_facts::handoff::HandoffIntent;
-    use maka_goal::goal::Control;
+async fn goal_original_run_recovers_once_and_managed_stop_requires_a_new_iteration() {
     tokio::time::timeout(Duration::from_secs(90), async {
         for action in ["automatic", "resume", "cancel", "route_changed"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
-            let session = f.create("Handoff Goal").await;
+            let session = f.create("Goal original continuation").await;
+            let (entered, preparing) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            *f.owner.continuation_preparation.lock().unwrap() = Some(Box::pin(async move {
+                entered.send(()).expect("original preparation observer");
+                released.await.map_err(|error| RunError::Internal(error.to_string()))?;
+                Err(RunError::Cancelled)
+            }));
             create(&f, &session, true, None).await;
             let (mut first, _) = listener.accept().await.unwrap();
             request(&mut first).await;
-            let original_control = f
-                .owner
-                .runs
-                .lock()
-                .await
-                .controls
-                .get(&session)
-                .unwrap()
-                .clone();
-            let reservation = original_control
-                .handoff
-                .as_ref()
-                .unwrap()
-                .reserve(HandoffIntent {
-                    handoff_id: "goal-transfer".into(),
-                    host_epoch: "test-host".into(),
-                    root_run_id: original_control.invocation.run_id.clone(),
-                    successor_run_id: "goal-successor-run".into(),
-                    successor_invocation_id: "goal-successor-invocation".into(),
-                    claim_id: "goal-transfer-claim".into(),
-                })
-                .unwrap();
+            let original = f.latest_run(&session).await;
             report(&mut first, false, "progress").await;
-            let held = reservation.ready().await.unwrap();
-            let owner = f.owner.clone();
-            let gate = owner.goals.gate.lock().await;
-            held.commit().unwrap().wait().await.unwrap();
-            let mut saved = owner
-                .goals
-                .repository
-                .read(&session)
-                .await
-                .unwrap()
-                .unwrap();
+            preparing.await.unwrap();
             if action != "automatic" {
-                saved.goal.control(Control::Pause).unwrap();
+                assert_eq!(control(&f, &session, "pause").await["kind"], "committed");
+                let mut commits = f.store.subscribe_changes();
+                loop {
+                    commits.borrow_and_update();
+                    if f.owner.durable.frontier(original.run).await.unwrap().stopped { break; }
+                    commits.changed().await.unwrap();
+                }
             }
-            owner.goals.repository.save(saved).await.unwrap();
-            owner.stop.cancel();
-            drop(gate);
+            f.owner.stop.cancel();
+            release.send(()).unwrap();
             todo_tests::reopen(&mut f).await;
+            if action != "automatic" {
+                let paused = wait_status(&f, &session, "paused").await;
+                assert_eq!(paused["iterations"], 1);
+                let stopped = f.owner.durable.frontier(original.run).await.unwrap();
+                assert!(stopped.stopped);
+                assert!(stopped.terminal.is_some());
+                assert_eq!(stopped.spec, original.spec);
+            }
             if action == "route_changed" {
                 let replacement = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let replacement_base = format!("http://{}/v1", replacement.local_addr().unwrap());
@@ -460,12 +515,11 @@ async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
                 continue;
             }
             if action != "automatic" {
-                assert_eq!(current(&f, &session).await["status"], "paused");
                 assert_eq!(control(&f, &session, action).await["kind"], "committed");
             }
             if action == "cancel" {
                 wait_status(&f, &session, "cancelled").await;
-                assert_eq!(f.send(&session).await.unwrap()["kind"], "started");
+                assert_eq!(f.send(&session).await.unwrap()["kind"], "queued");
                 let (mut ordinary, _) = listener.accept().await.unwrap();
                 request(&mut ordinary).await;
                 response(&mut ordinary).await;
@@ -483,14 +537,22 @@ async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
                 request(&mut final_answer).await;
                 response(&mut final_answer).await;
                 let done = wait_status(&f, &session, "achieved").await;
-                assert_eq!(done["iterations"], 1);
+                assert_eq!(done["iterations"], if action == "automatic" { 1 } else { 2 });
+                let latest = f.latest_run(&session).await;
+                if action == "automatic" {
+                    assert_eq!(latest.run, original.run);
+                    assert_eq!(latest.spec, original.spec);
+                } else {
+                    assert_ne!(latest.run, original.run);
+                    assert!(f.owner.durable.frontier(original.run).await.unwrap().stopped);
+                }
                 let facts = service_tools::facts(&f, &session).await;
                 assert_eq!(
                     facts
                         .iter()
-                        .filter(|fact| matches!(fact, Fact::InvocationOpened { .. }))
+                        .filter(|fact| matches!(fact, Fact::RunAdmitted { .. }))
                         .count(),
-                    2
+                    if action == "automatic" { 1 } else { 2 }
                 );
             }
             f.app.shutdown().await.unwrap();
@@ -538,7 +600,7 @@ async fn goal_default_edits_keep_approved_settings_and_new_messages_use_new_defa
         let done = wait_status(&f, &session, "achieved").await;
         assert_eq!(done["id"], original["id"]);
         assert_eq!(done["iterations"], 2);
-        assert_eq!(f.send(&session).await.unwrap()["kind"], "started");
+        assert_eq!(f.send(&session).await.unwrap()["kind"], "queued");
         let (mut ordinary, _) = listener.accept().await.unwrap();
         assert_eq!(request(&mut ordinary).await["max_tokens"], 200);
         response(&mut ordinary).await;
@@ -552,8 +614,8 @@ async fn goal_default_edits_keep_approved_settings_and_new_messages_use_new_defa
 
 #[tokio::test]
 async fn a_completed_reserved_goal_releases_its_outbox_and_can_be_replaced() {
-    use maka_capabilities::storage::Namespace;
     use maka_goal::goal::{Control, Repository};
+    use maka_plugin_core::storage::Namespace;
     tokio::time::timeout(Duration::from_secs(45), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
@@ -565,7 +627,8 @@ async fn a_completed_reserved_goal_releases_its_outbox_and_can_be_replaced() {
             f.owner.prefix.clone(),
             Namespace::new("maka.agent.goal", maka_plugin_core::scope::Scope::Profile).unwrap(),
         ));
-        let repo: Repository<MessageBasis> = Repository::new(storage.clone());
+        let repo: Repository<crate::owner::notifications::BackgroundApproval> =
+            Repository::new(storage.clone());
         let mut saved = repo.read(&session).await.unwrap().unwrap();
         saved.goal.control(Control::Resume).unwrap();
         saved.goal.reserve().unwrap();

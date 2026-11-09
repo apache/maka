@@ -18,8 +18,8 @@
  */
 
 use crate::EventLog;
-use maka_capabilities::storage::{Data, Mutation, Namespace, Scan};
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::{Data, Mutation, Namespace, Scan};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::oneshot;

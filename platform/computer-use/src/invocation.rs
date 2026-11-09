@@ -98,8 +98,9 @@ pub struct BrowserLeaseChildRequest {
     pub native_owner: uuid::Uuid,
     pub native_epoch: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub completion_id: u64,
-    pub opener_subject: crate::BrowserLeaseSubject,
+    pub opener_subject: maka_plugin_core::computer::BrowserLeaseSubject,
     pub opener_tab_id: u64,
     pub url: String,
 }
@@ -203,17 +204,23 @@ pub struct BrowserPreparationBinding {
     pub browser_id: String,
     pub generation: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub tab_id: String,
-    pub subject: crate::BrowserLeaseSubject,
+    pub subject: maka_plugin_core::computer::BrowserLeaseSubject,
 }
 impl BrowserPreparationBinding {
-    pub fn check_turn(&self, turn: &str) -> Result<(), ToolError> {
+    pub fn check_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> Result<(), ToolError> {
         if self.native_owner.is_nil()
             || self.native_epoch.is_empty()
             || self.browser_id.is_empty()
             || self.generation.is_empty()
             || self.turn_id.is_empty()
             || self.turn_id != turn
+            || &self.execution != execution
             || self.tab_id.is_empty()
             || self.subject.routing_id().is_empty()
         {
@@ -303,6 +310,7 @@ pub struct BrowserSessionPreparation {
     pub browser_id: String,
     pub generation: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub operation_id: String,
     pub target: BrowserPreparationTarget,
 }
@@ -310,7 +318,12 @@ pub struct BrowserSessionPreparation {
 impl BrowserSessionPreparation {
     /// Validate routing shape and its captured invocation. This does not prove
     /// that the native tab/claim is owned; the backend checks that ledger.
-    pub fn check_scope(&self, turn: &str, operation: &str) -> Result<(), ToolError> {
+    pub fn check_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+        operation: &str,
+    ) -> Result<(), ToolError> {
         let target_valid = match &self.target {
             BrowserPreparationTarget::ReservedTab { tab_id } => !tab_id.is_empty(),
             BrowserPreparationTarget::ClaimedTab { tab_id, claim_id } => {
@@ -331,6 +344,7 @@ impl BrowserSessionPreparation {
             || self.turn_id.is_empty()
             || self.operation_id.is_empty()
             || self.turn_id != turn
+            || &self.execution != execution
             || self.operation_id != operation
             || !target_valid
         {
@@ -618,6 +632,7 @@ impl InvocationCompletion {
 pub struct InvocationContext<'a> {
     session: &'a str,
     turn: &'a str,
+    execution: crate::ExecutionCorrelation,
     operation_id: Option<String>,
     native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
@@ -637,6 +652,7 @@ pub struct InvocationContext<'a> {
 pub(crate) struct OwnedInvocationContext {
     session: String,
     turn: String,
+    execution: crate::ExecutionCorrelation,
     operation_id: Option<String>,
     native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
@@ -655,6 +671,7 @@ impl OwnedInvocationContext {
         InvocationContext {
             session: &self.session,
             turn: &self.turn,
+            execution: self.execution.clone(),
             operation_id: self.operation_id.clone(),
             native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
@@ -676,6 +693,7 @@ impl<'a> InvocationContext<'a> {
         OwnedInvocationContext {
             session: self.session.to_owned(),
             turn: self.turn.to_owned(),
+            execution: self.execution.clone(),
             operation_id: self.operation_id.clone(),
             native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
@@ -690,10 +708,11 @@ impl<'a> InvocationContext<'a> {
         }
     }
 
-    pub fn new(session: &'a str, turn: &'a str) -> Self {
+    pub fn new(session: &'a str, turn: &'a str, execution: crate::ExecutionCorrelation) -> Self {
         Self {
             session,
             turn,
+            execution,
             operation_id: None,
             native_interruption_observer: None,
             browser_authorization: None,
@@ -778,7 +797,7 @@ impl<'a> InvocationContext<'a> {
                 "Browser session preparation requires an original Host operation".into(),
             )
         })?;
-        preparation.check_scope(self.turn(), operation)?;
+        preparation.check_scope(self.turn(), self.execution_correlation(), operation)?;
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Browser session preparation cancelled".into(),
@@ -838,6 +857,9 @@ impl<'a> InvocationContext<'a> {
         self.operation_id.as_deref()
     }
 
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        &self.execution
+    }
     pub fn session(&self) -> &str {
         self.session
     }
@@ -1097,8 +1119,12 @@ mod origin_tests {
             }
         }
         let calls = Arc::new(AtomicUsize::new(0));
-        let invocation = InvocationContext::new("session-A", "turn-A")
-            .with_browser_authorization(Arc::new(RefusingHost(calls.clone())));
+        let invocation = InvocationContext::new(
+            "session-A",
+            "turn-A",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_browser_authorization(Arc::new(RefusingHost(calls.clone())));
         for access in [
             read_document("about:blank", BrowserAttachmentOrigin::Opaque),
             BrowserAccess::Metadata {
@@ -1112,10 +1138,14 @@ mod origin_tests {
                     .is_err()
             );
             assert!(
-                InvocationContext::new("session-A", "turn-A")
-                    .authorize_browser(access, &CancellationToken::new())
-                    .await
-                    .is_err(),
+                InvocationContext::new(
+                    "session-A",
+                    "turn-A",
+                    crate::ExecutionCorrelation::new("fixture-execution").unwrap()
+                )
+                .authorize_browser(access, &CancellationToken::new())
+                .await
+                .is_err(),
                 "new metadata and verified opaque scopes require the Host capability"
             );
         }
@@ -1129,16 +1159,20 @@ mod origin_tests {
     #[cfg(feature = "native-desktop")]
     #[tokio::test]
     async fn ordinary_blank_navigation_keeps_its_existing_no_site_behavior() {
-        InvocationContext::new("session-A", "turn-A")
-            .authorize_browser(
-                BrowserAccess::Navigate {
-                    document: document("https://source.example/private"),
-                    url: "about:blank".into(),
-                },
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        InvocationContext::new(
+            "session-A",
+            "turn-A",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .authorize_browser(
+            BrowserAccess::Navigate {
+                document: document("https://source.example/private"),
+                url: "about:blank".into(),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -1154,6 +1188,7 @@ mod session_preparation_tests {
             browser_id: "owned-native".into(),
             generation: "generation-1".into(),
             turn_id: "turn-1".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "operation-1".into(),
             target: BrowserPreparationTarget::ReservedTab {
                 tab_id: "17".into(),
@@ -1173,8 +1208,12 @@ mod session_preparation_tests {
 
     #[tokio::test]
     async fn ordinary_browser_host_and_standalone_cannot_admit_session_preparation() {
-        let invocation =
-            InvocationContext::new("session-1", "turn-1").with_operation_id("operation-1".into());
+        let invocation = InvocationContext::new(
+            "session-1",
+            "turn-1",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("operation-1".into());
         let request = request();
         assert!(
             matches!(invocation.authorize_session_preparation(&request, &CancellationToken::new()).await,
@@ -1211,9 +1250,13 @@ mod session_preparation_tests {
     #[tokio::test]
     async fn changed_capture_or_cancel_refuses_before_the_host_callback() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let invocation = InvocationContext::new("session-1", "turn-1")
-            .with_operation_id("operation-1".into())
-            .with_browser_authorization(Arc::new(CountingAuthorization(calls.clone())));
+        let invocation = InvocationContext::new(
+            "session-1",
+            "turn-1",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("operation-1".into())
+        .with_browser_authorization(Arc::new(CountingAuthorization(calls.clone())));
         let mut changed = request();
         changed.turn_id = "ended-turn".into();
         assert!(
@@ -1283,7 +1326,7 @@ mod browser_subject_wire_tests {
         let request = serde_json::from_value::<BrowserLeaseChildRequest>(old).unwrap();
         assert!(matches!(
             request.opener_subject,
-            crate::BrowserLeaseSubject::FixedSession { .. }
+            maka_plugin_core::computer::BrowserLeaseSubject::FixedSession { .. }
         ));
         // A successful decode is routing only, never an SDK-issued receipt.
         assert_eq!(request.opener_tab_id, 7);
@@ -1310,6 +1353,7 @@ mod browser_history_authorization_tests {
             browser_id: "maka:exact-instance".to_owned(),
             generation: "generation".to_owned(),
             turn_id: "turn".to_owned(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "operation".to_owned(),
             target: BrowserPreparationTarget::SessionHistory,
         }

@@ -20,7 +20,7 @@
 //! Selected Session custody for a one-shot Host browser lease-child service.
 use super::{EventLog, SessionStore, StoreError, gates};
 use crate::effects::{Outcome, Record, Request, browser_lease_session};
-use maka_capabilities::storage::Namespace;
+use maka_plugin_core::storage::Namespace;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -70,7 +70,7 @@ impl SessionStore {
         request: Request,
     ) -> Result<BrowserLeaseChildReceipt, StoreError> {
         self.check_session(browser_lease_session(&request)?)?;
-        let dependency: Option<crate::connection::custody::Custody> = if self.execution.is_some() {
+        let dependency: Option<crate::connection::custody::Custody> = if self.work.is_some() {
             None
         } else {
             self.gates.start_work()?;
@@ -111,42 +111,76 @@ mod tests {
         effects::{NativeOwner, Operation, Owner},
         root::{RootNamespaces, RootOwner},
     };
-    use maka_agent_facts::execution::{
-        ApprovalPolicy, SandboxMode, WorkspaceIdentity, WorkspaceOrigin,
+    use maka_packages::{MANIFEST_FILE, Package};
+    use maka_plugin_core::authorization::{Boundary, SessionBoundary};
+    use maka_plugin_core::{
+        composition::{Configuration, Input, Node, PackageUse},
+        deployment::DeploymentRef,
+        package::{Declaration, EntryDeclaration, Implementation},
+        scope::Scope,
     };
-    use maka_capabilities::{
-        authorization::{Boundary, SessionBoundary},
-        call::Identity,
-    };
-    use maka_plugin_core::{composition::Input, deployment::DeploymentRef, scope::Scope};
+    use maka_sandbox::workspace::{WorkspaceIdentity, WorkspaceOrigin};
+    use maka_sandbox::{Approval as ApprovalPolicy, Mode as SandboxMode};
     use serde_json::json;
     use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
     async fn fixture() -> (tempfile::TempDir, RootStore, SessionStore, DeploymentRef) {
         let directory = tempfile::tempdir().unwrap();
-        let root = RootStore::open(Arc::new(
-            RootOwner::create(
-                &directory.path().join("root"),
-                &RootNamespaces {
-                    ownership: directory.path().join("ownership"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        ))
+        let root = RootStore::open(
+            Arc::new(
+                RootOwner::create(
+                    &directory.path().join("root"),
+                    &RootNamespaces {
+                        ownership: directory.path().join("ownership"),
+                        control: directory.path().join("control"),
+                    },
+                )
+                .unwrap(),
+            ),
+            crate::ROOT_MIGRATIONS,
+        )
         .await
         .unwrap();
+        let package = Package::new(BTreeMap::from([(
+            MANIFEST_FILE.into(),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "id": "fixture.browser",
+                "application": Declaration {
+                    host: Some(EntryDeclaration {
+                        implementation: Implementation::Native { implementation: "native-entry".into() },
+                        configuration: json!({"type":"object"}).into(),
+                        imports: BTreeMap::new(),
+                        exports: BTreeMap::new(),
+                    }),
+                    ui: None,
+                    composition: None,
+                }
+            })).unwrap(),
+        )])).unwrap();
         let source = root
             .commit_application(
                 Uuid::new_v4(),
                 0,
                 Input {
                     base: None,
-                    instances: BTreeMap::new(),
                     ui: None,
+                    instances: BTreeMap::from([(
+                        "browser".into(),
+                        Node {
+                            key: Uuid::from_u128(42),
+                            package: package.application_ref().into(),
+                            use_package: PackageUse::Host,
+                            configuration: Configuration::default(),
+                            parameters: Configuration::default(),
+                            bindings: BTreeMap::new(),
+                            disabled: false,
+                            overrides: vec![],
+                        },
+                    )]),
                 },
                 Vec::new(),
-                Vec::new(),
+                vec![package],
             )
             .await
             .unwrap();
@@ -159,10 +193,7 @@ mod tests {
 
     fn request(session: &str, source: &DeploymentRef) -> Request {
         Request {
-            source: Identity::BrowserLease {
-                session_id: session.into(),
-                turn_id: "current-turn".into(),
-            },
+            source: json!({"kind":"browser_lease","sessionId":session,"turnId":"current-turn"}),
             owner: Owner::Native(NativeOwner {
                 package_id: "fixture.browser".into(),
                 entry_id: "native-entry".into(),
@@ -187,7 +218,7 @@ mod tests {
             operation: Operation::BrowserLeaseChild {
                 browser_id: "browser".into(),
                 generation: "generation".into(),
-                opener_subject: maka_capabilities::computer::BrowserLeaseSubject::PhysicalClaim {
+                opener_subject: maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim {
                     claim_id: "actual-captured-claim-fixture".into(),
                 },
                 opener_tab_id: 17,
@@ -216,9 +247,9 @@ mod tests {
             observed.outcome.is_none(),
             "durable T1 must precede service dispatch"
         );
-        assert!(
-            matches!(observed.request.source, Identity::BrowserLease { ref session_id, ref turn_id }
-            if session_id == session.id() && turn_id == "current-turn")
+        assert_eq!(
+            observed.request.source,
+            json!({"kind":"browser_lease","sessionId":session.id(),"turnId":"current-turn"})
         );
         assert!(
             matches!(
@@ -339,7 +370,7 @@ mod tests {
         };
         // Durable observation only; this string is neither an SDK receipt nor
         // a physical claim, Host grant or fresh Agent invocation.
-        *opener_subject = maka_capabilities::computer::BrowserLeaseSubject::FixedSession {
+        *opener_subject = maka_plugin_core::computer::BrowserLeaseSubject::FixedSession {
             scope_id: "captured-fixed-session-fixture".into(),
         };
         request
@@ -363,7 +394,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&before.request).unwrap(), captured);
         assert!(matches!(before.request.operation,
-            Operation::BrowserLeaseChild { opener_subject: maka_capabilities::computer::BrowserLeaseSubject::FixedSession { ref scope_id }, .. }
+            Operation::BrowserLeaseChild { opener_subject: maka_plugin_core::computer::BrowserLeaseSubject::FixedSession { ref scope_id }, .. }
                 if scope_id == "captured-fixed-session-fixture"));
         assert!(
             matches!(

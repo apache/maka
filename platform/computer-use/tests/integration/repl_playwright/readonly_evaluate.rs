@@ -122,8 +122,12 @@ async fn stopped_evaluation_preserves_unknown_after_its_original_script_started(
     let browser = Browser::open().await;
     let driver = Arc::new(Mutex::new(Driver::default()));
     let mut session = browser.session(driver.clone());
-    let context = InvocationContext::new("direct-evaluate-fixture", "fixture-turn")
-        .with_browser_authorization(browser.authority());
+    let context = InvocationContext::new(
+        "direct-evaluate-fixture",
+        "fixture-turn",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    )
+    .with_browser_authorization(browser.authority());
     let bound = session
         .invoke(
             Command::BrowserTab {

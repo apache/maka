@@ -20,10 +20,10 @@
 use super::*;
 use maka_host_runtime::application::{Binding, Client};
 
-type Callback = dyn Fn(Value, Context) -> BoxFuture<'static, Result<Value>> + Send + Sync;
+type Callback = dyn Fn(Value, Context) -> BoxFuture<'static, HandlerResult> + Send + Sync;
 struct StreamHandler(Arc<Callback>);
 impl Handler for StreamHandler {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         (self.0)(input, context)
     }
 }
@@ -42,7 +42,7 @@ fn stream_consumer() -> Package {
     )
 }
 async fn native_stream(
-    f: impl Fn(Value, Context) -> BoxFuture<'static, Result<Value>> + Send + Sync + 'static,
+    f: impl Fn(Value, Context) -> BoxFuture<'static, HandlerResult> + Send + Sync + 'static,
 ) -> (Application, Client, Binding, Issuer) {
     let provider = package(
         "stream.native",
@@ -136,7 +136,7 @@ async fn backpressure_completion_and_drop_cancel_only_their_subscription() {
                 let result = context.emit(json!("blocked")).await;
                 stops.add_permits(1);
                 result?;
-                Ok(json!("unexpected"))
+                Ok(json!("unexpected").into())
             })
         })
         .await;
@@ -213,7 +213,7 @@ async fn eof_precedes_actual_resource_cleanup_and_never_acknowledges_it() {
                     ticket.complete(Ok(()));
                 });
                 context.emit(json!("visible")).await?;
-                Ok(json!("done"))
+                Ok(json!("done").into())
             })
         })
         .await;
@@ -265,7 +265,7 @@ async fn execution_scope_cancellation_wakes_backpressure_and_revokes_new_emits()
                 context.scope().cancellation.cancel();
                 assert!(waiting.await.is_err());
                 assert!(context.emit(json!("revoked")).await.is_err());
-                Ok(json!("done"))
+                Ok(json!("done").into())
             })
         })
         .await;
@@ -354,7 +354,7 @@ async fn native_context_subscription_drop_preserves_parent_and_tracks_actual_chi
                         cancelled.add_permits(1);
                         permit(&release).await;
                     }
-                    Ok(json!("complete"))
+                    Ok(json!("complete").into())
                 })
             }))),
             contract(MethodMode::Subscription),
@@ -419,7 +419,7 @@ async fn native_context_subscription_drop_preserves_parent_and_tracks_actual_chi
                                                     !context.scope().cancellation.is_cancelled()
                                                 );
                                                 returned.add_permits(1);
-                                                Ok(json!("parent returned"))
+                                                Ok(json!("parent returned").into())
                                             })
                                         },
                                     )))

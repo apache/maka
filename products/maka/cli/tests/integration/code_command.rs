@@ -20,15 +20,14 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::TerminalStatus;
+use maka_agent_facts::cells::{CellId, CellOwner, CellReturnedResult, CellStatus};
 use maka_agent_facts::execution::SandboxMode;
-use maka_agent_facts::execution::ToolMode;
+use maka_agent_facts::tool_call::ToolSettlement;
 use maka_event_log::{EventLog, StoreError};
 use serde_json::json;
 
 #[tokio::test]
-async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_exit() {
+async fn binary_runs_journaled_file_tools_and_reconstructs_the_standalone_cell_after_exit() {
     let directory = tempfile::tempdir().unwrap();
     let log_path = directory.path().join("root");
     let file_path = directory.path().canonicalize().unwrap().join("output.txt");
@@ -59,79 +58,141 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
         String::from_utf8_lossy(&output.stderr)
     );
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(response["output"]["ok"], true);
-    assert_eq!(response["output"]["value"]["content"], "hello from Rust");
+    assert_eq!(response["output"]["result"]["ok"], true);
     assert_eq!(
-        response["content"],
+        response["output"]["result"]["value"]["content"],
+        "hello from Rust"
+    );
+    assert_eq!(
+        response["output"]["content"],
         json!([{"kind":"text","text":"writing"}])
     );
     assert_eq!(
         std::fs::read_to_string(file_path).unwrap(),
         "hello from Rust"
     );
-    let root = maka_event_log::root_store::RootStore::open(std::sync::Arc::new(
-        maka_event_log::root::RootOwner::open(
-            &log_path,
-            &maka_event_log::root::RootNamespaces::for_current_account().unwrap(),
-        )
-        .unwrap(),
-    ))
+    let root = maka_event_log::root_store::RootStore::open(
+        std::sync::Arc::new(
+            maka_event_log::root::RootOwner::open(
+                &log_path,
+                &maka_event_log::root::RootNamespaces::for_current_account().unwrap(),
+            )
+            .unwrap(),
+        ),
+        &maka_product_native::root_migrations(),
+    )
     .await
     .unwrap();
-    let session_id = response["invocation"]["session_id"].as_str().unwrap();
-    let log = root.session(session_id).await.unwrap();
-    let prefix = log
-        .scoped_prefix(
-            maka_agent_facts::event::LogScope::Session {
-                id: session_id.into(),
-            },
-            10,
-            16_384,
-        )
+    assert_eq!(response["output"]["state"], "completed");
+    assert!(response["error"].is_null());
+    assert_eq!(
+        response["settlement"],
+        json!({"cellError":null,"workError":null,"rootError":null})
+    );
+    let session_id = response["sessionId"].as_str().unwrap();
+    let cell_id: CellId = serde_json::from_value(response["cellId"].clone()).unwrap();
+    let data = root.data_writer().unwrap();
+    let cells = maka_agent_state::cells::CellsStore::new(data.clone());
+    let cell = cells.read(session_id, cell_id).await.unwrap().unwrap();
+    assert_eq!(
+        cell.owner,
+        CellOwner::Standalone {
+            session: session_id.into()
+        }
+    );
+    assert_eq!(cell.id, cell_id);
+    assert_eq!(
+        cells
+            .content(session_id, cell_id, cell.source.clone())
+            .await
+            .unwrap(),
+        source.as_bytes()
+    );
+    assert!(cell.vm.is_some());
+    assert!(cell.vm_uncertainty.is_none());
+    assert_eq!(cell.children.len(), 2);
+    let mut names = Vec::new();
+    for child in cell.children.values() {
+        names.push(child.name.as_str());
+        assert!(child.admitted);
+        assert!(child.rejected.is_none());
+        assert!(
+            child.reference.is_none(),
+            "local tools do not manufacture Host mutation references"
+        );
+        let returned = child
+            .local_result
+            .as_ref()
+            .expect("original local tool result");
+        assert_eq!(returned.settlement, ToolSettlement::Returned);
+        assert!(!returned.is_error);
+        let body = cells
+            .content(session_id, cell_id, returned.result.clone())
+            .await
+            .unwrap();
+        let manifest: maka_agent_facts::artifact::ToolReturn<CellReturnedResult> =
+            serde_json::from_slice(&body).unwrap();
+        assert!(!manifest.body.is_error);
+        assert!(
+            manifest.body.projection.is_none(),
+            "standalone tools do not create model-context acceptance"
+        );
+    }
+    names.sort_unstable();
+    assert_eq!(names, ["Read", "Write"]);
+    let CellStatus::Completed { result, .. } = &cell.status else {
+        panic!("original standalone Cell must retain its terminal result");
+    };
+    let completed = cells
+        .content(session_id, cell_id, result.clone())
         .await
         .unwrap();
     assert_eq!(
-        prefix
-            .events
-            .iter()
-            .map(|entry| entry.event.fact.kind())
-            .collect::<Vec<_>>(),
-        [
-            "invocation_opened",
-            "tool_dispatched",
-            "tool_settled",
-            "tool_dispatched",
-            "tool_settled",
-            "invocation_ended"
-        ]
+        serde_json::from_slice::<serde_json::Value>(&completed).unwrap(),
+        response["output"]["result"]
     );
-    let id = response["invocation"]["invocation_id"].as_str().unwrap();
-    let view = prefix.project_invocation(id);
-    assert_eq!(view.terminal, Some(TerminalStatus::Completed));
-    assert!(view.uncertain_operations.is_empty());
-    let Fact::InvocationOpened {
-        input: maka_agent_facts::input::InvocationInput::Code { source: recorded },
-        configuration: Some(configuration),
-    } = &prefix.events[0].event.fact
-    else {
-        panic!("code opening must retain source and configuration");
-    };
-    assert_eq!(recorded, &source);
-    let cwd = std::path::Path::new(&configuration.cwd);
+    let session = root
+        .session(session_id)
+        .await
+        .unwrap()
+        .get::<serde_json::Value>()
+        .await
+        .unwrap()
+        .unwrap();
+    let configuration = &session.configuration;
+    let binding: maka_sandbox::workspace::BindingRef =
+        serde_json::from_value(configuration["workspace"].clone()).unwrap();
+    let workspace = root
+        .workspace_binding::<serde_json::Value>(binding.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let cwd = std::path::Path::new(workspace.workspace["path"].as_str().unwrap());
     assert!(cwd.is_absolute());
-    // Windows canonicalize adds a verbatim prefix; current_dir need not do so.
     assert_eq!(
         cwd.canonicalize().unwrap(),
         directory.path().canonicalize().unwrap()
     );
-    assert_eq!(configuration.sandbox_mode, SandboxMode::WorkspaceWrite);
     assert_eq!(
-        configuration.approval_policy,
+        serde_json::from_value::<SandboxMode>(configuration["sandboxMode"].clone()).unwrap(),
+        SandboxMode::WorkspaceWrite
+    );
+    assert_eq!(
+        serde_json::from_value::<maka_agent_facts::execution::ApprovalPolicy>(
+            configuration["approvalPolicy"].clone()
+        )
+        .unwrap(),
         maka_agent_facts::execution::ApprovalPolicy::OnRequest
     );
-    assert_eq!(configuration.tool_mode, ToolMode::CodeMode);
-    assert!(configuration.workspace_binding.is_some());
-    assert!(configuration.model.is_none());
+    let inspection = maka_agent_state::session_history::inspection::read(&data, session_id)
+        .await
+        .unwrap();
+    assert!(
+        inspection.facts.is_empty(),
+        "a standalone Cell does not invent an Agent Run"
+    );
+    assert_eq!(inspection.through, None);
+    assert!(!inspection.truncated);
     root.close().await.unwrap();
     let inspect = Command::new(crate::maka_executable())
         .args(["inspect", "--root"])
@@ -141,7 +202,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
         .unwrap();
     assert!(inspect.status.success());
     let reopened: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
-    assert_eq!(reopened["digest"], prefix.digest);
+    assert_eq!(reopened, serde_json::to_value(inspection).unwrap());
 
     let foreign = directory.path().join("foreign.sqlite");
     std::fs::write(&foreign, b"not a Maka database").unwrap();

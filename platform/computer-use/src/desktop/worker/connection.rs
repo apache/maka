@@ -435,6 +435,43 @@ impl Connection {
         invocation: &crate::InvocationContext<'_>,
         cancellation: CancellationToken,
     ) -> Result<maka_agent_facts::tools::ToolFuture<Reply>, ToolError> {
+        match &request {
+            Request::Invoke {
+                session,
+                turn,
+                execution,
+                operation_id,
+                ..
+            } => {
+                if session != invocation.session()
+                    || turn != invocation.turn()
+                    || execution != invocation.execution_correlation()
+                    || operation_id.as_deref() != invocation.operation_id()
+                {
+                    return Err(failed(
+                        "desktop request changed its original invocation source",
+                    ));
+                }
+            }
+            Request::LeaseChild {
+                session,
+                turn,
+                execution,
+                operation_id,
+                ..
+            } => {
+                if session != invocation.session()
+                    || turn != invocation.turn()
+                    || execution != invocation.execution_correlation()
+                    || Some(operation_id.as_str()) != invocation.operation_id()
+                {
+                    return Err(failed(
+                        "browser lease child changed its original invocation source",
+                    ));
+                }
+            }
+            _ => {}
+        }
         // This private context field is captured from the real Host invocation,
         // never from the model Command or a previously active invocation.
         match &mut request {
@@ -759,6 +796,7 @@ impl ConnectionTask {
                 crate::NativeBindingSource::from_bound_native(
                     outer.session.clone(),
                     outer.turn.clone(),
+                    outer.execution.clone(),
                     outer.epoch.clone(),
                     inner.generation.clone(),
                     inner.operation_id.clone(),
@@ -778,6 +816,7 @@ impl ConnectionTask {
                 };
                 if inner.session != identity.session
                     || inner.turn != identity.turn
+                    || inner.execution != identity.execution
                     || inner.operation_id != identity.operation_id
                     || inner.native_epoch.is_empty()
                     || uuid::Uuid::parse_str(&inner.generation)
@@ -826,6 +865,7 @@ impl ConnectionTask {
                         && binding.identity.epoch == identity.epoch
                         && binding.identity.session == identity.session
                         && binding.identity.turn == identity.turn
+                        && binding.identity.execution == identity.execution
                 }) else {
                     return rejected(
                         "native drain does not match the retained executor generation",
@@ -980,6 +1020,7 @@ impl ConnectionTask {
                                 Some(binding.operation_id()) == operation_id.as_deref()
                                     && binding.session() == key.session
                                     && binding.turn() == key.turn
+                                    && binding.execution_correlation() == &key.execution
                                     && binding.native_epoch() == key.epoch
                                     && binding.generation() == native.generation.observed()
                             });
@@ -1183,7 +1224,7 @@ impl ConnectionTask {
                             let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native call source changed before wire admission".into()))); continue;
                         };
                         if let Some(binding) = source.binding.as_ref() {
-                            if source.observer.is_none() || binding.session() != key.session || binding.turn() != key.turn || binding.native_epoch() != key.epoch || binding.generation() != native.generation.observed() || Some(binding.operation_id()) != operation_id.as_deref() {
+                            if source.observer.is_none() || binding.session() != key.session || binding.turn() != key.turn || binding.execution_correlation() != &key.execution || binding.native_epoch() != key.epoch || binding.generation() != native.generation.observed() || Some(binding.operation_id()) != operation_id.as_deref() {
                                 drop(invocation.native_admission);
                                 let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native binding source changed before wire admission".into()))); continue;
                             }
@@ -1596,6 +1637,7 @@ mod tests {
 
     fn request(epoch: &str, command: Command) -> Request {
         Request::Invoke {
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             owner: "fixture-owner".into(),
             epoch: epoch.into(),
             session: "fixture-session".into(),
@@ -2063,7 +2105,11 @@ mod tests {
         let result = connection
             .begin_browser(
                 request("cancelled-before-poll", Command::Documentation),
-                &crate::InvocationContext::new("fixture-session", "fixture-turn"),
+                &crate::InvocationContext::new(
+                    "fixture-session",
+                    "fixture-turn",
+                    crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 cancellation.clone(),
             )
             .unwrap();
@@ -2129,6 +2175,7 @@ mod tests {
             browser_id: "fixture-browser".into(),
             generation: "fixture-generation".into(),
             turn_id: "fixture-turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: "preparation-operation".into(),
             target: crate::BrowserPreparationTarget::ClaimedTab {
                 tab_id: "owned-tab".into(),
@@ -2139,6 +2186,7 @@ mod tests {
     fn preparation_request(epoch: &str, child: bool) -> Request {
         if child {
             Request::LeaseChild {
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 owner: "fixture-owner".into(),
                 epoch: epoch.into(),
                 session: "fixture-session".into(),
@@ -2152,10 +2200,12 @@ mod tests {
                     native_owner: uuid::Uuid::from_u128(7),
                     native_epoch: "actual-child-native-epoch".into(),
                     turn_id: "fixture-turn".into(),
+                    execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                     completion_id: 1,
-                    opener_subject: crate::BrowserLeaseSubject::PhysicalClaim {
-                        claim_id: "owned-claim".into(),
-                    },
+                    opener_subject:
+                        maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim {
+                            claim_id: "owned-claim".into(),
+                        },
                     opener_tab_id: 1,
                     url: "about:blank".into(),
                 },
@@ -2222,10 +2272,14 @@ mod tests {
                     value: "captured-context".into(),
                 }],
             };
-            let invocation = crate::InvocationContext::new("fixture-session", "fixture-turn")
-                .with_operation_id("preparation-operation".into())
-                .with_browser_authorization(authority)
-                .with_browser_preparation_policy(policy.clone());
+            let invocation = crate::InvocationContext::new(
+                "fixture-session",
+                "fixture-turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_operation_id("preparation-operation".into())
+            .with_browser_authorization(authority)
+            .with_browser_preparation_policy(policy.clone());
             let future = connection
                 .begin_browser(
                     preparation_request("transport-epoch", child),
@@ -2285,7 +2339,9 @@ mod tests {
         for case in [
             "old-epoch",
             "old-operation",
+            "old-execution",
             "wrong-dto-operation",
+            "wrong-dto-execution",
             "missing-scope",
             "no-host",
             "legacy-only",
@@ -2321,12 +2377,21 @@ mod tests {
                 epoch: "current-epoch".into(),
                 session: "fixture-session".into(),
                 turn: "fixture-turn".into(),
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 operation_id: "preparation-operation".into(),
             });
             let mut dto = preparation();
             match case {
                 "old-epoch" => observed.epoch = "old-epoch".into(),
                 "old-operation" => observed.operation_id = "old-operation".into(),
+                "old-execution" => {
+                    observed.execution =
+                        crate::ExecutionCorrelation::new("another-live-execution").unwrap()
+                }
+                "wrong-dto-execution" => {
+                    dto.execution =
+                        crate::ExecutionCorrelation::new("another-live-execution").unwrap()
+                }
                 "wrong-dto-operation" => dto.operation_id = "other-operation".into(),
                 _ => {}
             }
@@ -2365,6 +2430,261 @@ mod tests {
             shutdown(&mut peer).await;
             close.await.unwrap().unwrap();
         }
+    }
+    #[tokio::test]
+    async fn native_bound_wire_refuses_forgery_without_poisoning_the_original_invocation() {
+        use super::super::callbacks::ParentMessage;
+        use crate::native_interruption::{WireNativeNotice, WireNativeSource};
+
+        #[derive(Default)]
+        struct NativeProbe {
+            bound: std::sync::Mutex<Vec<crate::NativeBindingSource>>,
+            interrupted: std::sync::Mutex<Vec<crate::NativeInterruption>>,
+        }
+        impl crate::NativeInterruptionObserver for NativeProbe {
+            fn bound(&self, source: crate::NativeBindingSource) -> crate::InterruptionFuture {
+                self.bound.lock().unwrap().push(source);
+                Box::pin(async { Ok(()) })
+            }
+            fn interrupted(&self, source: crate::NativeInterruption) -> crate::InterruptionFuture {
+                self.interrupted.lock().unwrap().push(source);
+                Box::pin(async { Ok(()) })
+            }
+        }
+        async fn bound(
+            peer: &mut DuplexStream,
+            invocation_id: u64,
+            id: u64,
+            identity: &ScopeIdentity,
+            source: WireNativeSource,
+        ) -> Result<(), Failure> {
+            write(
+                peer,
+                &WorkerFrame::BrowserCallback {
+                    message: WorkerMessage::NativeObserver {
+                        invocation_id,
+                        id,
+                        identity: identity.clone(),
+                        notice: WireNativeNotice::Bound(source),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let ParentFrame::BrowserCallback { message } = read(peer).await.unwrap() else {
+                panic!("expected framed native binding result");
+            };
+            let ParentMessage::NativeObserved {
+                id: observed_id,
+                identity: observed_identity,
+                result,
+            } = *message
+            else {
+                panic!("expected framed native binding result");
+            };
+            assert_eq!(observed_id, id);
+            assert_eq!(&observed_identity, identity);
+            result
+        }
+
+        let (connection, mut peer) = fixture();
+        let probe = Arc::new(NativeProbe::default());
+        let context = crate::InvocationContext::new(
+            "fixture-session",
+            "fixture-turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("source-A".into())
+        .with_native_interruption_observer(probe.clone());
+        let mut original_request = request("outer-epoch", Command::Documentation);
+        if let Request::Invoke { operation_id, .. } = &mut original_request {
+            *operation_id = Some("source-A".into());
+        }
+        let original = super::super::callback_identity(&original_request).unwrap();
+        let original_source = WireNativeSource {
+            session: original.session.clone(),
+            turn: original.turn.clone(),
+            execution: original.execution.clone(),
+            native_epoch: "actual-windows-local-epoch".into(),
+            generation: uuid::Uuid::from_u128(7).to_string(),
+            operation_id: original.operation_id.clone(),
+        };
+        let mut call = connection
+            .begin_browser(original_request, &context, CancellationToken::new())
+            .unwrap();
+        let invocation_id = incoming(&mut peer).await;
+        for (index, case) in [
+            "owner",
+            "epoch",
+            "session",
+            "turn",
+            "execution",
+            "operation",
+            "inner-session",
+            "inner-turn",
+            "inner-execution",
+            "inner-operation",
+            "empty-inner-epoch",
+            "empty-generation",
+            "nil-generation",
+            "invalid-generation",
+            "no-pending",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut identity = original.clone();
+            let mut source = original_source.clone();
+            let mut observed_invocation = invocation_id;
+            match case {
+                "owner" => identity.owner = "foreign-owner".into(),
+                "epoch" => identity.epoch = "foreign-epoch".into(),
+                "session" => identity.session = "foreign-session".into(),
+                "turn" => identity.turn = "foreign-turn".into(),
+                "execution" => {
+                    identity.execution =
+                        crate::ExecutionCorrelation::new("foreign-execution").unwrap()
+                }
+                "operation" => identity.operation_id = "foreign-operation".into(),
+                "inner-session" => source.session = "foreign-session".into(),
+                "inner-turn" => source.turn = "foreign-turn".into(),
+                "inner-execution" => {
+                    source.execution =
+                        crate::ExecutionCorrelation::new("foreign-execution").unwrap()
+                }
+                "inner-operation" => source.operation_id = "foreign-operation".into(),
+                "empty-inner-epoch" => source.native_epoch.clear(),
+                "empty-generation" => source.generation.clear(),
+                "nil-generation" => source.generation = uuid::Uuid::nil().to_string(),
+                "invalid-generation" => source.generation = "not-a-generation".into(),
+                "no-pending" => observed_invocation += 100,
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    bound(
+                        &mut peer,
+                        observed_invocation,
+                        index as u64 + 100,
+                        &identity,
+                        source
+                    )
+                    .await,
+                    Err(Failure::Failed(_))
+                ),
+                "{case}"
+            );
+            assert!(
+                probe.bound.lock().unwrap().is_empty(),
+                "{case} must not call the original bound observer"
+            );
+            assert!(
+                probe.interrupted.lock().unwrap().is_empty(),
+                "{case} must not publish an interruption"
+            );
+            assert!(
+                futures_util::poll!(call.as_mut()).is_pending(),
+                "{case} must preserve the actual original request"
+            );
+        }
+        bound(
+            &mut peer,
+            invocation_id,
+            200,
+            &original,
+            original_source.clone(),
+        )
+        .await
+        .unwrap();
+        {
+            let sources = probe.bound.lock().unwrap();
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].session(), original.session);
+            assert_eq!(sources[0].turn(), original.turn);
+            assert_eq!(sources[0].execution_correlation(), &original.execution);
+            assert_eq!(sources[0].operation_id(), original.operation_id);
+            assert_eq!(sources[0].native_epoch(), original.epoch);
+            assert_eq!(sources[0].generation(), original_source.generation);
+        }
+        assert!(probe.interrupted.lock().unwrap().is_empty());
+        respond(&mut peer, invocation_id, json!("original A acknowledged")).await;
+        assert_eq!(call.await.unwrap().value, json!("original A acknowledged"));
+
+        let next_probe = Arc::new(NativeProbe::default());
+        let next_context = crate::InvocationContext::new(
+            "fixture-session",
+            "fixture-turn",
+            crate::ExecutionCorrelation::new("another-live-execution").unwrap(),
+        )
+        .with_operation_id("source-B".into())
+        .with_native_interruption_observer(next_probe.clone());
+        let mut next_request = request("outer-epoch", Command::Documentation);
+        if let Request::Invoke {
+            operation_id,
+            execution,
+            ..
+        } = &mut next_request
+        {
+            *operation_id = Some("source-B".into());
+            *execution = next_context.execution_correlation().clone();
+        }
+        let next_identity = super::super::callback_identity(&next_request).unwrap();
+        let mut next_call = connection
+            .begin_browser(next_request, &next_context, CancellationToken::new())
+            .unwrap();
+        let next_id = incoming(&mut peer).await;
+        assert!(
+            matches!(
+                bound(
+                    &mut peer,
+                    invocation_id,
+                    201,
+                    &original,
+                    original_source.clone()
+                )
+                .await,
+                Err(Failure::Failed(_))
+            ),
+            "a terminal A RPC cannot bind again while B is admitted"
+        );
+        assert_eq!(probe.bound.lock().unwrap().len(), 1);
+        assert!(probe.interrupted.lock().unwrap().is_empty());
+        assert!(next_probe.bound.lock().unwrap().is_empty());
+        assert!(next_probe.interrupted.lock().unwrap().is_empty());
+        assert!(futures_util::poll!(next_call.as_mut()).is_pending());
+        let next_source = WireNativeSource {
+            session: next_identity.session.clone(),
+            turn: next_identity.turn.clone(),
+            execution: next_identity.execution.clone(),
+            operation_id: next_identity.operation_id.clone(),
+            generation: uuid::Uuid::from_u128(8).to_string(),
+            ..original_source
+        };
+        bound(&mut peer, next_id, 202, &next_identity, next_source.clone())
+            .await
+            .unwrap();
+        {
+            let sources = next_probe.bound.lock().unwrap();
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].operation_id(), "source-B");
+            assert_eq!(
+                sources[0].execution_correlation(),
+                next_context.execution_correlation()
+            );
+            assert_eq!(sources[0].native_epoch(), next_identity.epoch);
+            assert_eq!(sources[0].generation(), next_source.generation);
+        }
+        respond(&mut peer, next_id, json!("original B acknowledged")).await;
+        assert_eq!(
+            next_call.await.unwrap().value,
+            json!("original B acknowledged")
+        );
+        let closing = tokio::spawn({
+            let connection = connection.clone();
+            async move { connection.close().await }
+        });
+        shutdown(&mut peer).await;
+        closing.await.unwrap().unwrap();
     }
 }
 
@@ -2419,6 +2739,7 @@ mod native_observer_tests {
             epoch: "outer-epoch".into(),
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             operation_id: operation.into(),
         }
     }
@@ -2426,6 +2747,7 @@ mod native_observer_tests {
         WireNativeSource {
             session: "fixture-session".into(),
             turn: "fixture-turn".into(),
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             native_epoch: "actual-windows-local-epoch".into(),
             generation: uuid::Uuid::from_u128(7).to_string(),
             operation_id: operation.into(),
@@ -2433,6 +2755,7 @@ mod native_observer_tests {
     }
     fn request(operation: &str) -> Request {
         Request::Invoke {
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             owner: "fixture-owner".into(),
             epoch: "outer-epoch".into(),
             session: "fixture-session".into(),
@@ -2466,8 +2789,12 @@ mod native_observer_tests {
         for available in [false, true] {
             let (connection, mut task) = Connection::channel();
             let probe = Arc::new(Probe::default());
-            let mut invocation = crate::InvocationContext::new("fixture-session", "fixture-turn")
-                .with_operation_id("source-A".into());
+            let mut invocation = crate::InvocationContext::new(
+                "fixture-session",
+                "fixture-turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_operation_id("source-A".into());
             if available {
                 invocation = invocation.with_native_interruption_observer(probe);
             }
@@ -2498,58 +2825,325 @@ mod native_observer_tests {
 
     #[tokio::test]
     async fn retained_native_proxy_allows_idle_escape_and_maps_only_the_bound_parent_epoch() {
-        let (_connection, mut task) = Connection::channel();
-        let probe = Arc::new(Probe::default());
-        let mut pending = HashMap::new();
-        pending.insert(1, pending_request(identity("source-A"), probe.clone()));
-        task.native_notice(
-            1,
-            &identity("source-A"),
-            WireNativeNotice::Bound(source("source-A")),
-            &pending,
-        )
-        .await
-        .unwrap();
-        pending.remove(&1); // The first T1/T2/RPC has really returned; its binding remains.
-        task.native_notice(
-            1,
-            &identity("source-A"),
-            WireNativeNotice::Interrupted(source("source-A")),
-            &pending,
-        )
-        .await
-        .unwrap();
-        {
-            let events = probe.events.lock().unwrap();
-            assert_eq!(events.len(), 1);
-            assert_eq!(events[0].native_epoch(), "outer-epoch");
-            assert_eq!(events[0].operation_id(), "source-A");
-            assert_eq!(events[0].generation(), uuid::Uuid::from_u128(7).to_string());
+        use super::super::callbacks::ParentMessage;
+        use tokio::io::DuplexStream;
+
+        async fn notice(
+            peer: &mut DuplexStream,
+            invocation_id: u64,
+            id: u64,
+            identity: &ScopeIdentity,
+            notice: WireNativeNotice,
+        ) -> Result<(), Failure> {
+            write(
+                peer,
+                &WorkerFrame::BrowserCallback {
+                    message: WorkerMessage::NativeObserver {
+                        invocation_id,
+                        id,
+                        identity: identity.clone(),
+                        notice,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let ParentFrame::BrowserCallback { message } = read(peer).await.unwrap() else {
+                panic!("expected original native observation ACK");
+            };
+            let ParentMessage::NativeObserved {
+                id: observed_id,
+                identity: observed_identity,
+                result,
+            } = *message
+            else {
+                panic!("expected original native observation ACK");
+            };
+            assert_eq!(observed_id, id);
+            assert_eq!(&observed_identity, identity);
+            result
         }
+
+        let (parent, mut peer) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(parent);
+        let (connection, mut task) = Connection::channel();
+        let router = tokio::spawn(async move {
+            let result = task.run(output, input).await;
+            task.closed.send_replace(Some(CloseSettlement {
+                transport: result,
+                process: Ok(()),
+            }));
+        });
+        let gate = Arc::new(ObservationGate::default());
+        let probe = Arc::new(Probe {
+            gate: Some(gate.clone()),
+            ..Default::default()
+        });
+        let original = identity("source-A");
+        let invocation = crate::InvocationContext::new(
+            &original.session,
+            &original.turn,
+            original.execution.clone(),
+        )
+        .with_operation_id(original.operation_id.clone())
+        .with_native_interruption_observer(probe.clone());
+        let first = connection
+            .begin_browser(request("source-A"), &invocation, CancellationToken::new())
+            .unwrap();
+        let ParentFrame::Request {
+            id: first_id,
+            request: first_request,
+        } = read(&mut peer).await.unwrap()
+        else {
+            panic!("expected actual A invocation");
+        };
+        assert_eq!(
+            super::super::callback_identity(&first_request),
+            Some(original.clone())
+        );
+        notice(
+            &mut peer,
+            first_id,
+            101,
+            &original,
+            WireNativeNotice::Bound(source("source-A")),
+        )
+        .await
+        .unwrap();
+        write(
+            &mut peer,
+            &WorkerFrame::Response {
+                id: first_id,
+                result: Ok(Value::String("original A completed".into())),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            first.await.unwrap().value,
+            Value::String("original A completed".into())
+        );
+
+        write(
+            &mut peer,
+            &WorkerFrame::BrowserCallback {
+                message: WorkerMessage::NativeObserver {
+                    invocation_id: first_id,
+                    id: 102,
+                    identity: original.clone(),
+                    notice: WireNativeNotice::Interrupted(source("source-A")),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .unwrap();
+        assert!(probe.events.lock().unwrap().is_empty());
+        let mut foreign_execution = source("source-A");
+        foreign_execution.execution =
+            crate::ExecutionCorrelation::new("another-live-execution").unwrap();
+        assert!(
+            notice(
+                &mut peer,
+                first_id,
+                103,
+                &original,
+                WireNativeNotice::Interrupted(foreign_execution)
+            )
+            .await
+            .is_err()
+        );
         let mut changed = source("source-A");
         changed.generation = uuid::Uuid::from_u128(8).to_string();
         assert!(
-            task.native_notice(
-                1,
-                &identity("source-A"),
-                WireNativeNotice::Interrupted(changed),
-                &pending
+            notice(
+                &mut peer,
+                first_id,
+                104,
+                &original,
+                WireNativeNotice::Interrupted(changed)
             )
             .await
             .is_err()
         );
         assert!(
-            task.native_notice(
-                1,
-                &identity("source-A"),
-                WireNativeNotice::Bound(source("source-A")),
-                &pending
+            notice(
+                &mut peer,
+                first_id,
+                105,
+                &original,
+                WireNativeNotice::Bound(source("source-A"))
             )
             .await
             .is_err(),
             "terminal RPC cannot register a new observer"
         );
+
+        let next_probe = Arc::new(Probe::default());
+        let mut next_identity = identity("source-B");
+        next_identity.execution =
+            crate::ExecutionCorrelation::new("another-live-execution").unwrap();
+        let next_invocation = crate::InvocationContext::new(
+            &next_identity.session,
+            &next_identity.turn,
+            next_identity.execution.clone(),
+        )
+        .with_operation_id(next_identity.operation_id.clone())
+        .with_native_interruption_observer(next_probe.clone());
+        let mut next_request = request("source-B");
+        if let Request::Invoke { execution, .. } = &mut next_request {
+            *execution = next_identity.execution.clone();
+        }
+        let mut second = connection
+            .begin_browser(next_request, &next_invocation, CancellationToken::new())
+            .unwrap();
+        let ParentFrame::Request {
+            id: second_id,
+            request: second_request,
+        } = read(&mut peer).await.unwrap()
+        else {
+            panic!("expected actual B invocation");
+        };
+        assert_ne!(second_id, first_id);
+        assert_eq!(
+            super::super::callback_identity(&second_request),
+            Some(next_identity.clone())
+        );
+        let mut next_source = source("source-B");
+        next_source.execution = next_identity.execution.clone();
+        next_source.generation = uuid::Uuid::from_u128(8).to_string();
+        notice(
+            &mut peer,
+            second_id,
+            106,
+            &next_identity,
+            WireNativeNotice::Bound(next_source.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        assert!(probe.events.lock().unwrap().is_empty());
+        assert!(next_probe.events.lock().unwrap().is_empty());
+
+        gate.release.notify_one();
+        let ParentFrame::BrowserCallback { message } = read(&mut peer).await.unwrap() else {
+            panic!("expected retained A observation ACK after B binding");
+        };
+        let ParentMessage::NativeObserved {
+            id,
+            identity: observed_identity,
+            result,
+        } = *message
+        else {
+            panic!("expected retained A observation ACK after B binding");
+        };
+        assert_eq!(id, 102);
+        assert_eq!(observed_identity, original);
+        result.unwrap();
+        {
+            let events = probe.events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].native_epoch(), "outer-epoch");
+            assert_eq!(events[0].operation_id(), "source-A");
+            assert_eq!(
+                events[0].execution_correlation().as_str(),
+                "fixture-execution"
+            );
+            assert_eq!(events[0].generation(), uuid::Uuid::from_u128(7).to_string());
+        }
+        assert!(next_probe.events.lock().unwrap().is_empty());
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        notice(
+            &mut peer,
+            second_id,
+            107,
+            &next_identity,
+            WireNativeNotice::Interrupted(next_source.clone()),
+        )
+        .await
+        .unwrap();
+        {
+            let events = next_probe.events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].operation_id(), "source-B");
+            assert_eq!(events[0].native_epoch(), next_identity.epoch);
+            assert_eq!(events[0].execution_correlation(), &next_identity.execution);
+            assert_eq!(events[0].generation(), next_source.generation);
+        }
+        notice(
+            &mut peer,
+            second_id,
+            108,
+            &next_identity,
+            WireNativeNotice::Drained {
+                source: next_source.clone(),
+                affected_operation_id: next_identity.operation_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(probe.drains.lock().unwrap().is_empty());
+        {
+            let drains = next_probe.drains.lock().unwrap();
+            assert_eq!(drains.len(), 1);
+            assert_eq!(drains[0].operation_id(), "source-B");
+            assert_eq!(drains[0].affected_operation_id(), "source-B");
+            assert_eq!(drains[0].execution_correlation(), &next_identity.execution);
+            assert_eq!(drains[0].generation(), next_source.generation);
+        }
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        write(
+            &mut peer,
+            &WorkerFrame::Response {
+                id: second_id,
+                result: Ok(Value::String("original B completed".into())),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second.await.unwrap().value,
+            Value::String("original B completed".into())
+        );
+        assert!(
+            notice(
+                &mut peer,
+                second_id,
+                109,
+                &next_identity,
+                WireNativeNotice::Drained {
+                    source: next_source,
+                    affected_operation_id: next_identity.operation_id.clone(),
+                }
+            )
+            .await
+            .is_err(),
+            "late drain cannot relabel the original B result"
+        );
         assert_eq!(probe.events.lock().unwrap().len(), 1);
+        assert_eq!(next_probe.events.lock().unwrap().len(), 1);
+        assert_eq!(next_probe.drains.lock().unwrap().len(), 1);
+        let closing = tokio::spawn({
+            let connection = connection.clone();
+            async move { connection.close().await }
+        });
+        let ParentFrame::Request { id, request } = read(&mut peer).await.unwrap() else {
+            panic!("expected original shutdown");
+        };
+        assert!(matches!(*request, Request::Shutdown));
+        write(
+            &mut peer,
+            &WorkerFrame::Response {
+                id,
+                result: Ok(Value::Null),
+            },
+        )
+        .await
+        .unwrap();
+        closing.await.unwrap().unwrap();
+        router.await.unwrap();
     }
 
     #[tokio::test]
@@ -2676,9 +3270,13 @@ mod native_observer_tests {
             child,
         };
         let connection = Connection::start(process.handshake(false).await.unwrap());
-        let context = crate::InvocationContext::new("fixture-session", "fixture-turn")
-            .with_operation_id("source-A".into())
-            .with_native_interruption_observer(probe.clone());
+        let context = crate::InvocationContext::new(
+            "fixture-session",
+            "fixture-turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("source-A".into())
+        .with_native_interruption_observer(probe.clone());
         connection
             .invoke_browser(request("source-A"), &context, CancellationToken::new())
             .await

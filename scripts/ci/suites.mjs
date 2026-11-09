@@ -19,6 +19,16 @@
 
 import { readFileSync } from 'node:fs';
 
+export const taskHelperConsumers = [
+  'maka-agent-native',
+  'maka-agent-engine',
+  'maka-computer-native',
+];
+export const taskHelperBinaries = [
+  { package: 'maka-cli', binary: 'maka', cargoArgs: ['--no-default-features'] },
+  { package: 'maka-python-runtime', binary: 'maka-python-worker', cargoArgs: [] },
+];
+
 export const manifests = {
   root: 'Cargo.toml',
   termina: 'third-party/termina/Cargo.toml',

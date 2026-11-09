@@ -18,10 +18,10 @@
  */
 
 //! Private files share the KV namespace, not the Host's entire state directory.
-use super::{Namespace, StoreError};
 use crate::call::Scope;
 use cap_fs_ext::DirExt;
 use cap_std::{ambient_authority, fs::Dir};
+use maka_plugin_core::storage::{Namespace, StoreError};
 use sha2::{Digest, Sha256};
 use std::{io, path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;

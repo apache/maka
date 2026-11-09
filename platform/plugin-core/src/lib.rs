@@ -28,6 +28,10 @@ pub mod package;
 pub mod plan;
 pub mod runtime;
 mod schema;
+pub mod shell_result;
+pub mod shell_run;
+pub mod terminal;
+pub mod work;
 pub use schema::Schema;
 
 #[derive(Debug, thiserror::Error)]
@@ -141,3 +145,9 @@ pub fn identifier(value: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+
+pub mod storage;
+
+pub mod authorization;
+pub mod computer;
+pub mod http;

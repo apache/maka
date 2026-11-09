@@ -284,7 +284,7 @@ mod tests {
             outcome: Outcome::Ok,
             message: "admitted".into(),
             session_id: Some("session".into()),
-            run_id: Some("run".into()),
+            run_id: Some(maka_agent_facts::durable::RunId::default()),
         })
         .unwrap();
         assert_eq!(next.task.status, Status::Paused);

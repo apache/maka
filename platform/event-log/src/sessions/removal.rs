@@ -89,31 +89,65 @@ pub(crate) fn read(
         }))
 }
 
+pub(crate) fn preview_removal(
+    connection: &rusqlite::Connection,
+    session: &str,
+    expected: u64,
+) -> Result<(SessionRemovalResult, bool), StoreError> {
+    if let Some(state) = read(connection, session)? {
+        match state {
+            SessionRetirement::Removing | SessionRetirement::Removed => {
+                return Ok((SessionRemovalResult::Accepted(state), false));
+            }
+            SessionRetirement::Archiving => return Err(StoreError::SessionBusy),
+            SessionRetirement::Archived => {}
+        }
+    }
+    let actual = crate::workspace_bindings::current_session_revision(connection, session)?
+        .ok_or(StoreError::SessionNotFound)?;
+    if actual != expected {
+        return Ok((
+            SessionRemovalResult::RevisionConflict { expected, actual },
+            false,
+        ));
+    }
+    if actual >= MAX_SAFE_INTEGER {
+        return Err(invalid("session revision exhausted"));
+    }
+    Ok((
+        SessionRemovalResult::Accepted(SessionRetirement::Removing),
+        true,
+    ))
+}
+
+pub(crate) fn apply_removal(
+    connection: &rusqlite::Connection,
+    session: &str,
+    expected: u64,
+) -> Result<(SessionRemovalResult, bool), StoreError> {
+    let (outcome, changed) = preview_removal(connection, session, expected)?;
+    if changed {
+        plan::fence(connection, session, plan::Action::Remove)?;
+    }
+    Ok((outcome, changed))
+}
+
 impl EventLog {
     /// Check durable owners before deleting external resources, not just before
     /// deleting their metadata. The removal fence prevents new owners appearing.
     pub async fn session_retirement_ready(&self, session: &str) -> Result<bool, StoreError> {
         validate_id(session)?;
         let session = session.to_owned();
-        let commits = self.commits.session(&session);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 let tx = rusqlite::Transaction::new_unchecked(
                     connection,
-                    rusqlite::TransactionBehavior::Immediate,
+                    rusqlite::TransactionBehavior::Deferred,
                 )?;
                 if !read(&tx, &session)?.is_some_and(SessionRetirement::pending) {
                     return Ok(false);
                 }
-                let terminal = crate::native_approvals::settle_retiring_waits(&tx, &session)?;
-                let ready = settled(&tx, &session)?;
-                if let Some(sequence) = terminal {
-                    tx.commit().map_err(StoreError::CommitUnknown)?;
-                    commits.publish(sequence);
-                } else {
-                    tx.rollback()?;
-                }
-                Ok(ready)
+                settled(&tx, &session)
             })
             .await
     }
@@ -159,27 +193,12 @@ impl EventLog {
                     connection,
                     rusqlite::TransactionBehavior::Immediate,
                 )?;
-                if let Some(state) = read(&tx, &session)? {
-                    match state {
-                        SessionRetirement::Removing | SessionRetirement::Removed => {
-                            return Ok(SessionRemovalResult::Accepted(state));
-                        }
-                        SessionRetirement::Archiving => return Err(StoreError::SessionBusy),
-                        SessionRetirement::Archived => {}
-                    }
+                let (outcome, changed) = apply_removal(&tx, &session, expected)?;
+                if changed {
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
+                    commits.metadata();
                 }
-                let actual = crate::workspace_bindings::current_session_revision(&tx, &session)?
-                    .ok_or(StoreError::SessionNotFound)?;
-                if actual != expected {
-                    return Ok(SessionRemovalResult::RevisionConflict { expected, actual });
-                }
-                let approval_revoked = plan::fence(&tx, &session, plan::Action::Remove)?;
-                tx.commit().map_err(StoreError::CommitUnknown)?;
-                commits.metadata();
-                if approval_revoked {
-                    commits.activations();
-                }
-                Ok(SessionRemovalResult::Accepted(SessionRetirement::Removing))
+                Ok(outcome)
             })
             .await
     }
@@ -219,112 +238,54 @@ impl EventLog {
             .await
     }
 
-    /// The Host has drained in-memory owners and cleaned owned workspace resources.
-    /// Recheck durable settlement before dropping control metadata. Original log
-    /// evidence stays available to copies; history ownership is not execution authority.
+    /// The Host has drained live owners and released its workspace resources.
+    /// Domain owners must settle their own obligations before this call. The
+    /// base row remains as retained identity for independently owned history.
     pub async fn finish_session_retirement(
         &self,
         session: &str,
     ) -> Result<SessionRetirement, StoreError> {
         validate_id(session)?;
-        let session_id = session.to_owned();
-        let commits = self.commits.session(&session_id);
-        let observations = self.connection.observations();
-        let state = self
-            .connection
+        let session = session.to_owned();
+        let commits = self.commits.session(&session);
+        self.connection
             .run(move |connection| {
-                let session = session_id;
-                {
-                    let tx = rusqlite::Transaction::new_unchecked(
-                        connection,
-                        rusqlite::TransactionBehavior::Immediate,
-                    )?;
-                    let state = read(&tx, &session)?.ok_or(StoreError::SessionNotFound)?;
-                    if !state.pending() {
-                        tx.rollback()?;
-                        return Ok(state);
-                    }
-                    let native_terminal =
-                        crate::native_approvals::settle_retiring_waits(&tx, &session)?;
-                    if !settled(&tx, &session)? {
-                        if let Some(sequence) = native_terminal {
-                            tx.commit().map_err(StoreError::CommitUnknown)?;
-                            commits.publish(sequence);
-                        }
-                        return Ok(state);
-                    }
-                    if state == SessionRetirement::Archiving {
-                        tx.execute(
-                            "UPDATE session_retirements SET completed=1 WHERE session_id=?",
-                            params![&session],
-                        )?;
-                        advance_catalog(&tx)?;
-                        tx.commit().map_err(StoreError::CommitUnknown)?;
-                        if let Some(sequence) = native_terminal {
-                            commits.publish(sequence);
-                        } else {
-                            commits.metadata();
-                        }
-                        return Ok(SessionRetirement::Archived);
-                    }
-                    // Membership is retained proof, not a disposable UI projection:
-                    // descendants may pin an archive whose writer inherited its target.
-                    // Verifying that archive/checkpoint still needs the writer's cut.
-                    crate::context::semantic::gc::retire_owner(&tx, &session)?;
-                    for statement in [
-                        "DELETE FROM session_history_artifacts WHERE session_id=?",
-                        "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM catalog_messages WHERE session_id=?",
-                        "DELETE FROM session_read_state WHERE session_id=?",
-                        "DELETE FROM artifacts WHERE session_id=?",
-                        "DELETE FROM artifact_catalog WHERE session_id=?",
-                        "DELETE FROM shell_runs WHERE session_id=?",
-                        "DELETE FROM session_processes WHERE session_id=?",
-                        "DELETE FROM message_queue_state WHERE session_id=?",
-                        "DELETE FROM session_control WHERE id=?",
-                    ] {
-                        tx.execute(statement, params![&session])?;
-                    }
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let state = read(&tx, &session)?.ok_or(StoreError::SessionNotFound)?;
+                if !state.pending() || !settled(&tx, &session)? {
+                    return Ok(state);
+                }
+                if state == SessionRetirement::Removing {
                     tx.execute(
-                        "UPDATE session_retirements SET completed=1 WHERE session_id=?",
+                        "DELETE FROM session_processes WHERE session_id=? AND cleaned=1",
                         params![&session],
                     )?;
-                    advance_catalog(&tx)?;
-                    tx.commit().map_err(StoreError::CommitUnknown)?;
-                    commits.material_released();
-                    if let Some(sequence) = native_terminal {
-                        commits.publish(sequence);
-                    } else {
-                        commits.metadata();
-                    }
-                    Ok(SessionRetirement::Removed)
                 }
+                tx.execute(
+                    "UPDATE session_retirements SET completed=1 WHERE session_id=?",
+                    params![&session],
+                )?;
+                advance_catalog(&tx)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.metadata();
+                Ok(if state == SessionRetirement::Removing {
+                    SessionRetirement::Removed
+                } else {
+                    SessionRetirement::Archived
+                })
             })
-            .await?;
-        if state == SessionRetirement::Removed {
-            observations.purge_session(session.to_owned()).await?;
-        }
-        Ok(state)
+            .await
     }
 }
 
 fn settled(connection: &rusqlite::Connection, session: &str) -> Result<bool, StoreError> {
-    if super::has_active_invocation(connection, session)? {
-        return Ok(false);
-    }
     let unsettled: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM shell_runs WHERE session_id=?1 AND
-            (active=1 OR json_extract(record_json, '$.state.outcome.kind')='orphaned'))
-         OR EXISTS(SELECT 1 FROM session_processes WHERE session_id=?1 AND cleaned=0)
+        "SELECT EXISTS(SELECT 1 FROM session_processes WHERE session_id=?1 AND cleaned=0)
          OR EXISTS(SELECT 1 FROM host_effects WHERE outcome IS NULL
-            AND json_extract(request, '$.boundary.boundary.sessionId')=?1)
-         OR EXISTS(SELECT 1 FROM interaction_pending WHERE session_id=?1)
-         OR EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?1)
-         OR EXISTS(SELECT 1 FROM event_log a WHERE a.kind='auxiliary_model_started'
-            AND json_extract(a.event_header,'$.source.kind')='session_title'
-            AND json_extract(a.event_header,'$.session_id')=?1
-            AND NOT EXISTS(SELECT 1 FROM event_log s WHERE s.kind='auxiliary_model_settled'
-                AND json_extract(s.event_header,'$.request_id')=a.event_id))",
+            AND json_extract(request, '$.boundary.boundary.sessionId')=?1)",
         params![session],
         |row| row.get(0),
     )?;

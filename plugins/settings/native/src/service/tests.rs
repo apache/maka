@@ -68,7 +68,11 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        let log = Arc::new(RootStore::open(root).await.unwrap());
+        let log = Arc::new(
+            RootStore::open(root, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
         let package = |id, implementation, imports, exports| {
             Package::new(BTreeMap::from([(
                 "maka.extension.json".into(),

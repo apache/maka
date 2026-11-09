@@ -55,7 +55,11 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(
+            RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
         let input = Input {
             base: None,
             ui: None,
@@ -192,6 +196,8 @@ fn context(attachments: Attachments) -> Context {
     Context {
         stream: None,
         caller: None,
+        native_context: None,
+        state: Err("unit context has no provider-state dispatch".into()),
         scope: Issuer::default()
             .issue(
                 Identity::Remote {
@@ -243,6 +249,13 @@ fn subscribe(manager: Manager, method: &str, input: Value) -> (Subscription, Sco
         let result = manager
             .call(method, input, context)
             .await
+            .map_err(|error| error.to_string())
+            .map(|value| {
+                let HandlerValue::Json(value) = value else {
+                    panic!("management subscription must return JSON")
+                };
+                value
+            })
             .and_then(|value| {
                 if !value.is_null() {
                     validator
@@ -466,7 +479,10 @@ async fn replace(
         .unwrap();
     scope.finish().await.unwrap();
     assert!(scope.resources.is_idle());
-    result
+    let HandlerValue::Json(value) = result else {
+        panic!("management replacement must return JSON")
+    };
+    value
 }
 
 #[tokio::test]
@@ -713,7 +729,7 @@ async fn historical_binary_bundle_export_round_trips_and_cancels_with_cleanup() 
             )
             .unwrap(),
         );
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS).await.unwrap());
         let manager = ManagementTarget::from_source(store.clone(), source.clone())
             .await
             .unwrap()
@@ -839,6 +855,9 @@ async fn immutable_document_resource_over_two_mib_roundtrips_through_validated_p
                 .unwrap();
             scope.finish().await.unwrap();
             assert!(scope.resources.is_idle());
+            let HandlerValue::Json(value) = value else {
+                panic!("readDocument must return JSON")
+            };
             output_validator.validate(&value).unwrap();
             let chunk: DeploymentDocumentChunk = serde_json::from_value(value).unwrap();
             assert_eq!(&chunk.source, source);
@@ -914,7 +933,7 @@ async fn immutable_document_resource_over_two_mib_roundtrips_through_validated_p
                 )
                 .await
                 .unwrap_err(),
-            expected
+            HandlerError::from(expected)
         );
         scope.finish().await.unwrap();
     }
@@ -1179,14 +1198,19 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_unrel
         .await
         .unwrap();
     let query = json!({"source":source,"consumer":{"kind":"root","name":"apps"},"import":"pages","includePackages":true,"after":null});
-    let choices: BindingCandidatesPage =
-        serde_json::from_value(f.manager.binding_candidates(query.clone()).await.unwrap()).unwrap();
+    let choices: BindingCandidatesPage = serde_json::from_value(
+        f.manager
+            .binding_candidates(&maka_sandbox::Sandbox::Disabled, query.clone())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(choices.current.is_empty());
     assert_eq!(choices.configuration["entries"], json!([]));
     assert!(choices.candidates.iter().any(
         |c| matches!(c,BindingCandidate::Package {package,..} if package == &leaf.application_ref())
     ));
-    let required: BindingCandidatesPage = serde_json::from_value(f.manager.binding_candidates(json!({"source":source,"consumer":{"kind":"package","package":leaf.application_ref()},"import":"provider","includePackages":false,"after":null})).await.unwrap()).unwrap();
+    let required: BindingCandidatesPage = serde_json::from_value(f.manager.binding_candidates(&maka_sandbox::Sandbox::Disabled, json!({"source":source,"consumer":{"kind":"package","package":leaf.application_ref()},"import":"provider","includePackages":false,"after":null})).await.unwrap()).unwrap();
     let provider_target = Target::Instance {
         path: vec!["provider".into()],
         export: "Provider".into(),
@@ -1231,7 +1255,10 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_unrel
         json!({"path":"notes/local"})
     );
     assert_eq!(
-        f.manager.binding_candidates(query).await.unwrap(),
+        f.manager
+            .binding_candidates(&maka_sandbox::Sandbox::Disabled, query)
+            .await
+            .unwrap(),
         serde_json::to_value(choices).unwrap()
     );
     let stale = f.manager.edit_composition(edit).await.unwrap();
@@ -1290,6 +1317,9 @@ async fn fixed_target_factory_requires_the_original_root_owner() {
                 .call("read".into(), json!({}), context(Attachments::new()))
                 .await
                 .unwrap();
+            let HandlerValue::Json(value) = value else {
+                panic!("management read must return JSON")
+            };
             assert_eq!(
                 value["source"]["reference"],
                 serde_json::to_value(&original.source).unwrap()

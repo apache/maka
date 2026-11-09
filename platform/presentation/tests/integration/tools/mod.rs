@@ -19,17 +19,18 @@
 
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::InvocationOutcome;
+use maka_agent_facts::event::RunOutcome;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_call::HostSdkParent;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
-use maka_presentation::{InvocationView, tool_message_id};
+use maka_presentation::{RunView, tool_message_id};
 use serde_json::{Value, json};
 mod fixtures;
-use fixtures::{opening, step, stored};
+use fixtures::{execution, link, opening, operation, step, stored};
+use maka_agent_facts::cells::{CellId, CellOwner};
 mod payloads;
 
 #[test]
@@ -53,14 +54,14 @@ fn malformed_arguments_display_exact_raw_and_cannot_alias_a_parsed_dispatch() {
     }
     let mut forged = facts.clone();
     forged.push(Fact::ToolDispatched {
-        operation_id: "step:raw".into(),
-        call: ToolCallIdentity::provider("step".into(), "raw".into()),
+        operation_id: operation("step", "raw"),
+        call: ToolCallIdentity::provider(link("step"), "raw".into()),
         name: "exec".into(),
         input: json!({}),
         title: None,
         presentation: None,
     });
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     let events = stored(forged);
     for event in &events[..events.len() - 1] {
         view.push(event).unwrap();
@@ -68,15 +69,15 @@ fn malformed_arguments_display_exact_raw_and_cannot_alias_a_parsed_dispatch() {
     assert!(view.push(events.last().unwrap()).is_err());
 
     facts.push(Fact::ToolRejected {
-        operation_id: "step:raw".into(),
-        call: ToolCallIdentity::provider("step".into(), "raw".into()),
+        operation_id: operation("step", "raw"),
+        call: ToolCallIdentity::provider(link("step"), "raw".into()),
         name: "exec".into(),
         input,
         reason: ToolRejection::InvalidInput {
             message: "arguments are not valid JSON".into(),
         },
     });
-    let mut view = InvocationView::new();
+    let mut view = RunView::new();
     let rows: Vec<_> = stored(facts)
         .iter()
         .flat_map(|event| view.push(event).unwrap())
@@ -103,8 +104,8 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
         title: Some(maka_agent_facts::display::Text::plain(
             "Inspect application",
         )),
-        operation_id: "first:raw".into(),
-        call: ToolCallIdentity::provider("first".into(), "raw".into()),
+        operation_id: operation("first", "raw"),
+        call: ToolCallIdentity::provider(link("first"), "raw".into()),
         name: "exec".into(),
         input: json!({"code":"Read()"}),
     });
@@ -115,7 +116,12 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
         call: ToolCallIdentity {
             tool_call_id: "nested".into(),
             origin: ToolOrigin::CodeMode {
-                parent_operation_id: "first:raw".into(),
+                cell: CellId::for_agent(link("first"), "raw"),
+                owner: CellOwner::Agent {
+                    link: link("first"),
+                    call: "raw".into(),
+                },
+                parent_operation_id: operation("first", "raw"),
                 parent_tool_call_id: "raw".into(),
             },
         },
@@ -127,13 +133,13 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
         outcome: success(&json!({"content":"file text"}).into()),
     });
     facts.push(Fact::ToolSettled {
-        operation_id: "first:raw".into(),
+        operation_id: operation("first", "raw"),
         outcome: success(&json!({"status":"completed"}).into()),
     });
     step(&mut facts, "second", false, false);
     facts.push(Fact::ToolRejected {
-        operation_id: "second:raw".into(),
-        call: ToolCallIdentity::provider("second".into(), "raw".into()),
+        operation_id: operation("second", "raw"),
+        call: ToolCallIdentity::provider(link("second"), "raw".into()),
         name: "exec".into(),
         input: json!({"code":"Read()"}).into(),
         reason: ToolRejection::Unavailable,
@@ -143,21 +149,21 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
     facts.push(Fact::ToolDispatched {
         presentation: None,
         title: None,
-        operation_id: "unknown:raw".into(),
-        call: ToolCallIdentity::provider("unknown".into(), "raw".into()),
+        operation_id: operation("unknown", "raw"),
+        call: ToolCallIdentity::provider(link("unknown"), "raw".into()),
         name: "exec".into(),
         input: json!({"code":"Read()"}),
     });
-    facts.push(Fact::InvocationEnded {
-        outcome: InvocationOutcome::Failed {
+    facts.push(Fact::RunEnded {
+        outcome: RunOutcome::Failed {
             model_failure: None,
             class: "unknown_outcome".into(),
             message: None,
         },
     });
     let events = stored(facts);
-    let mut view = InvocationView::new();
-    let mut replay = InvocationView::new();
+    let mut view = RunView::new();
+    let mut replay = RunView::new();
     let mut rows = Vec::new();
     for stored in &events {
         let raw = match &stored.event.fact {
@@ -189,7 +195,7 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
             assert_eq!(
                 next,
                 maka_presentation::project_tool_boundary(stored, dispatch, raw.as_ref()).unwrap(),
-                "one boundary has the same rows as the full invocation reducer"
+                "one boundary has the same rows as the full Run reducer"
             );
         }
         let roundtrip = StoredEvent {
@@ -202,8 +208,17 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
                 .push_with_tool_output(&roundtrip, raw.as_ref())
                 .unwrap()
         );
-        if matches!(stored.event.fact, Fact::ModelObserved { .. }) {
-            assert!(next.is_empty());
+        if let Fact::ModelObserved {
+            event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
+            ..
+        } = &stored.event.fact
+        {
+            assert_eq!(
+                next.len(),
+                1,
+                "committed tool parts are immediately visible"
+            );
+            assert_eq!(next[0].message.id, record.message_id);
             assert!(
                 view.overlay()
                     .iter()
@@ -227,7 +242,7 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
     assert_eq!(activity["title"]["fallback"], "Inspect application");
     assert_eq!(
         activity["toolUseId"],
-        tool_message_id("invocation", "first:raw")
+        tool_message_id(execution().run_id, &operation("first", "raw"))
     );
     let calls: Vec<_> = messages
         .iter()
@@ -238,21 +253,26 @@ fn accepted_tools_replay_with_distinct_ids_parentage_rejections() {
         5,
         "dispatch never duplicates the accepted call"
     );
-    assert_eq!(calls[0]["id"], tool_message_id("invocation", "first:raw"));
     assert_eq!(
-        calls[0]["stepId"],
+        calls[0]["id"],
+        tool_message_id(execution().run_id, &operation("first", "raw"))
+    );
+    assert_eq!(
+        calls[0]["anchorMessageId"],
         messages
             .iter()
             .find(|row| row["type"] == "assistant")
             .unwrap()["id"]
     );
+    assert_eq!(calls[0]["stepId"], json!(link("first").step));
+    assert_eq!(calls[0]["attemptId"], json!(link("first").attempt));
     assert_eq!(calls[0]["modelVisibility"], "visible");
     assert_eq!(calls[1]["parentToolCallId"], calls[0]["id"]);
-    assert_eq!(calls[1]["parentOperationId"], "first:raw");
+    assert_eq!(calls[1]["parentOperationId"], operation("first", "raw"));
     assert_eq!(calls[1]["modelVisibility"], "hidden");
     assert_ne!(calls[0]["id"], calls[2]["id"]);
     assert!(
-        calls[2].get("stepId").is_none(),
+        calls[2].get("anchorMessageId").is_none(),
         "pure tool step has no empty assistant anchor"
     );
     let results: Vec<_> = messages
@@ -300,7 +320,7 @@ fn success(output: &maka_agent_facts::tool_output::ToolOutput) -> ToolOutcome {
     let write = EventWrite::tool_success(
         template.id,
         template.recorded_at,
-        template.invocation,
+        template.execution,
         "operation".into(),
         output.clone().into(),
     )
@@ -317,11 +337,21 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
     use maka_agent_facts::tool_output::ToolOutput;
     for origin in [
         ToolOrigin::CodeMode {
-            parent_operation_id: "first:raw".into(),
+            cell: CellId::for_agent(link("first"), "raw"),
+            owner: CellOwner::Agent {
+                link: link("first"),
+                call: "raw".into(),
+            },
+            parent_operation_id: operation("first", "raw"),
             parent_tool_call_id: "raw".into(),
         },
         ToolOrigin::CodeCell {
-            parent_operation_id: "first:raw".into(),
+            cell: CellId::for_agent(link("first"), "raw"),
+            owner: CellOwner::Agent {
+                link: link("first"),
+                call: "raw".into(),
+            },
+            parent_operation_id: operation("first", "raw"),
             parent_tool_call_id: "raw".into(),
         },
         ToolOrigin::HostSdk {
@@ -329,7 +359,7 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
             entry_id: "entry".into(),
             activation: "activation".into(),
             parent: Some(HostSdkParent::NestedEffect {
-                operation_id: "first:raw".into(),
+                operation_id: operation("first", "raw"),
             }),
         },
         ToolOrigin::HostSdk {
@@ -337,7 +367,7 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
             entry_id: "entry".into(),
             activation: "activation".into(),
             parent: Some(HostSdkParent::EvaluationObserver {
-                operation_id: "first:raw".into(),
+                operation_id: operation("first", "raw"),
                 epoch: "evaluation".into(),
             }),
         },
@@ -355,8 +385,8 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
             facts.push(Fact::ToolDispatched {
                 presentation: None,
                 title: None,
-                operation_id: "first:raw".into(),
-                call: ToolCallIdentity::provider("first".into(), "raw".into()),
+                operation_id: operation("first", "raw"),
+                call: ToolCallIdentity::provider(link("first"), "raw".into()),
                 name: "exec".into(),
                 input: json!({"code":"Read()"}),
             });
@@ -396,7 +426,7 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
                 });
             }
             let events = stored(facts);
-            let mut view = InvocationView::new();
+            let mut view = RunView::new();
             for stored in &events {
                 let resolved = matches!(
                     stored.event.fact,

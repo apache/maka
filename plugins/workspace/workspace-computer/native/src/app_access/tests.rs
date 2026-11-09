@@ -18,70 +18,24 @@
  */
 
 use super::*;
-use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+use maka_agent_api::contract::{WorkspaceAccess, WorkspacePermissions};
+use maka_agent_authority::computer::ComputerAppObservation;
 use maka_agent_facts::interaction::{ComputerAppDisplay, ComputerAppPlatform, Decision};
-use maka_agent_facts::workspace::BindingStamp;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup() {
     for unknown in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let owner = maka_event_log::root::RootOwner::create(
-            &dir.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: dir.path().join("ownership"),
-                control: dir.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = maka_event_log::RootStore::open(Arc::new(owner))
-            .await
-            .unwrap();
-        let reference = root
-            .attach_workspace("fixture", &serde_json::json!({"path":"/fixture"}))
-            .await
-            .unwrap();
-        let basis = PermissionBasis {
-            boundary_revision: 0,
-            binding: BindingStamp {
-                id: reference.id,
-                permission_epoch: 0,
-            },
-        };
-        let store = root
-            .create_session(
-                "session",
-                "fixture",
-                &serde_json::json!({"workspace":reference,"boundary_revision":0}),
-                1,
-            )
-            .await
-            .unwrap();
-        let invocation = Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            source_messages: Vec::new(),
-                            content: "fixture".into(),
-                            request_fingerprint: None,
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
+        let fixture =
+            crate::browser_access::tests::Fixture::with_permissions(WorkspacePermissions {
+                access: WorkspaceAccess::WorkspaceWrite,
+                request_permissions: true,
+            })
+            .await;
+        fixture
+            .decision("broad", api::target(), Decision::Allow, 2)
+            .await;
         let display = ComputerAppDisplay {
             name: "Fixture application".into(),
             app_path: "/Applications/Fixture.app".into(),
@@ -95,99 +49,70 @@ async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup()
             },
             ..api::target()
         };
-        let record = |id: &str, request| InteractionRecord {
-            session_id: invocation.session_id.clone(),
-            turn_id: invocation.turn_id.clone(),
-            run_id: invocation.run_id.clone(),
-            request_id: id.into(),
-            created_at: 2,
-            request,
-            outcome: None,
-        };
-        store
-            .establish_run_interaction(
-                &invocation,
-                &record(
-                    "broad",
-                    InteractionRequest::ClientCapability {
-                        tool_use_id: "repl".into(),
-                        target: api::target(),
-                        basis: Some(basis),
-                    },
-                ),
-            )
-            .await
-            .unwrap();
-        store
-            .commit_interaction_outcome(
-                "broad",
-                InteractionOutcome::ClientCapabilityDecision {
-                    decision: Decision::Allow,
-                    committed_at: 3,
+        let original = fixture.call.operation.as_ref().unwrap();
+        let operation = original.operation.to_string();
+        fixture
+            .call
+            .authority
+            .observe_app(
+                original,
+                ComputerAppObservation {
+                    native_operation_id: operation.clone(),
+                    target: app,
+                    display,
+                    allow_always: false,
+                    capture: serde_json::json!({"adapter":"app-stop-fixture","nativeInput":false}),
                 },
             )
             .await
             .unwrap();
-        store
-            .establish_run_interaction(
-                &invocation,
-                &record(
-                    "app",
-                    InteractionRequest::ComputerApp {
-                        tool_use_id: "repl".into(),
-                        native_operation_id: "native".into(),
-                        target: app.clone(),
-                        basis,
-                        display: display.clone(),
-                        allow_always: false,
-                        authority_revision: 0,
-                    },
-                ),
+        let record = fixture
+            .call
+            .authority
+            .request_app(&operation)
+            .await
+            .unwrap();
+        let answer = fixture
+            .host
+            .mutation_value(
+                "respond",
+                serde_json::json!({
+                    "sessionId":fixture.execution.session_id,"requestId":record.request_id,
+                    "answer":{"kind":"computer_app","decision":"once"}
+                }),
             )
             .await
             .unwrap();
-        store
-            .commit_interaction_outcome(
-                "app",
-                InteractionOutcome::ComputerAppDecision {
-                    decision: ComputerAppDecision::Once,
-                    committed_at: 3,
-                },
-            )
-            .await
-            .unwrap();
-        let dispatch = EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ToolDispatched {
-                presentation: None,
-                title: None,
-                operation_id: "native".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(
-                    "native-call".into(),
-                ),
-                name: "native-fixture".into(),
-                input: serde_json::json!({}),
-            },
-        ))
-        .unwrap();
-        store
-            .append_computer_app_dispatch(&[], &dispatch, &[api::target()], &app, &display, &basis)
-            .await
-            .unwrap();
-        let parent = CancellationToken::new();
-        let selected = Some((app.clone(), display.clone()));
+        assert_eq!(answer["kind"], "recorded");
+        assert!(
+            fixture
+                .call
+                .authority
+                .authorize_app(&operation)
+                .await
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .call
+                .authority
+                .app_status(&operation)
+                .await
+                .unwrap()
+                .granted
+        );
+        let parent = fixture.call.scope.cancellation.child_token();
         let (entered, started) = oneshot::channel();
         let (cleaning, cleanup_started) = oneshot::channel();
         let (release, released) = oneshot::channel();
-        let task_store = store.clone();
-        let task_invocation = invocation.clone();
+        let task_call = fixture.call.clone();
+        let task_operation = operation.clone();
         let task_parent = parent.clone();
-        let task_selected = selected.clone();
         let running = tokio::spawn(async move {
             settle(
-                &task_store,
-                &task_invocation,
-                task_selected.as_ref(),
+                &task_call,
+                &task_operation,
+                true,
                 task_parent,
                 move |cancellation| async move {
                     let _ = entered.send(());
@@ -206,11 +131,25 @@ async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup()
             .await
         });
         started.await.unwrap();
+        let stopped = fixture
+            .host
+            .mutation_value(
+                "stopComputerApp",
+                serde_json::json!({
+                    "sessionId":fixture.execution.session_id,"operationId":operation
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped, serde_json::json!({"requested":true}));
         assert!(
-            store
-                .stop_computer_app_operation("native", 4)
+            fixture
+                .call
+                .authority
+                .app_status(&operation)
                 .await
                 .unwrap()
+                .stopped
         );
         tokio::time::timeout(std::time::Duration::from_secs(5), cleanup_started)
             .await
@@ -237,9 +176,9 @@ async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup()
         let action_called = called.clone();
         assert!(
             settle(
-                &store,
-                &invocation,
-                selected.as_ref(),
+                &fixture.call,
+                &operation,
+                true,
                 parent.clone(),
                 move |_| async move {
                     action_called.store(true, Ordering::Release);
@@ -254,6 +193,6 @@ async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup()
             "a preexisting Stop must reject before invoking native work"
         );
         assert!(!parent.is_cancelled());
-        root.close().await.unwrap();
+        fixture.close().await;
     }
 }

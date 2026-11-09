@@ -17,8 +17,10 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 use super::{PreparedEffect, PreparedExecution, ToolError, ToolFuture};
-use crate::event::{EventSink, EventWrite, Fact, Invocation, RuntimeEvent, ToolOutcome};
+use crate::event::{EventSink, EventWrite, Fact, RuntimeEvent, ToolOutcome};
 use crate::tool_call::{ToolCallIdentity, ToolRejection};
 use crate::tool_output::{ToolOutput, ToolSuccess};
 use serde_json::Value;
@@ -37,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct ToolJournal {
     sink: Arc<dyn EventSink>,
-    invocation: Invocation,
+    execution: ExecutionIdentity,
 }
 
 /// Publication receipt and the unstarted effect/settlement continuation.
@@ -161,7 +163,7 @@ type SettlementPublisher = Box<dyn FnOnce(EventWrite) -> crate::event::CommitFut
 /// Settlement half of the original journal; this owner never writes another T1.
 pub struct AdmittedTool {
     sink: Arc<dyn EventSink>,
-    invocation: Invocation,
+    execution: ExecutionIdentity,
     operation_id: String,
     effect: PreparedEffect,
     cancellation: CancellationToken,
@@ -169,8 +171,8 @@ pub struct AdmittedTool {
 }
 
 impl ToolJournal {
-    pub fn new(sink: Arc<dyn EventSink>, invocation: Invocation) -> Self {
-        Self { sink, invocation }
+    pub fn new(sink: Arc<dyn EventSink>, execution: ExecutionIdentity) -> Self {
+        Self { sink, execution }
     }
     /// Settle a durably admitted original operation under fresh execution custody.
     /// The caller verifies the checkpoint and start fence before supplying its effect.
@@ -187,7 +189,7 @@ impl ToolJournal {
         effect.admitted(dispatch_sequence);
         AdmittedTool {
             sink: self.sink.clone(),
-            invocation: self.invocation.clone(),
+            execution: self.execution.clone(),
             operation_id,
             effect,
             cancellation,
@@ -196,18 +198,19 @@ impl ToolJournal {
         .execute(None)
     }
 
-    pub fn execution_custody(&self) -> Option<Arc<dyn super::ExecutionCustody>> {
-        self.sink.clone().execution_custody()
+    pub fn work_custody(&self) -> Option<Arc<dyn maka_plugin_core::work::WorkCustody>> {
+        self.sink.clone().work_custody()
     }
-    pub fn context(&self, operation_id: String) -> super::ToolCallContext {
+    pub fn context(&self, operation_id: String, call: ToolCallIdentity) -> super::ToolCallContext {
         super::ToolCallContext {
-            invocation: self.invocation.clone(),
+            execution: self.execution.clone(),
             operation_id,
-            execution: self.execution_custody(),
+            call,
+            custody: self.work_custody(),
         }
     }
-    pub fn invocation(&self) -> &Invocation {
-        &self.invocation
+    pub fn execution(&self) -> &ExecutionIdentity {
+        &self.execution
     }
     pub async fn notify(
         &self,
@@ -216,7 +219,7 @@ impl ToolJournal {
         model_text: String,
     ) -> Result<u64, ToolError> {
         let write = EventWrite::plain(RuntimeEvent::new(
-            self.invocation.clone(),
+            self.execution.clone(),
             Fact::ToolNotified {
                 operation_id,
                 text,
@@ -260,11 +263,11 @@ impl ToolJournal {
         reason: ToolRejection,
     ) -> ToolFuture<PublishedTool<Value>> {
         let sink = self.sink.clone();
-        let invocation = self.invocation.clone();
+        let execution = self.execution.clone();
         Box::pin(async move {
             let message = reason.to_string();
             let event = RuntimeEvent::new(
-                invocation,
+                execution,
                 Fact::ToolRejected {
                     operation_id,
                     call,
@@ -424,10 +427,10 @@ impl ToolJournal {
         mut effect: PreparedEffect,
     ) -> ToolFuture<PublishedTool<ToolOutput>> {
         let sink = self.sink.clone();
-        let invocation = self.invocation.clone();
+        let execution = self.execution.clone();
         Box::pin(async move {
             let dispatch = RuntimeEvent::new(
-                invocation.clone(),
+                execution.clone(),
                 Fact::ToolDispatched {
                     title: effect.title.clone(),
                     presentation: effect.presentation.clone(),
@@ -492,14 +495,14 @@ impl ToolJournal {
             drop(prefix);
             let prefix_sequences = sequence.prefix_sequences;
             effect.admitted(sequence.last_sequence);
-            let execution = effect.take_execution();
-            let completion = match execution {
+            let prepared = effect.take_execution();
+            let completion = match prepared {
                 PreparedExecution::Inline(execute) => {
                     effect.set_execution(execute);
                     ToolContinuation::Executing(
                         AdmittedTool {
                             sink,
-                            invocation,
+                            execution,
                             operation_id,
                             effect,
                             cancellation,
@@ -519,7 +522,7 @@ impl ToolJournal {
                     };
                     let admitted = AdmittedTool {
                         sink,
-                        invocation,
+                        execution,
                         operation_id,
                         effect,
                         cancellation,
@@ -550,7 +553,7 @@ impl AdmittedTool {
     fn execute(self, failure: Option<ToolError>) -> ToolFuture<ToolOutput> {
         let Self {
             sink,
-            invocation,
+            execution,
             operation_id,
             mut effect,
             cancellation,
@@ -574,7 +577,7 @@ impl AdmittedTool {
                 let write = EventWrite::plain(RuntimeEvent {
                     id,
                     recorded_at,
-                    invocation,
+                    execution,
                     fact: Fact::ToolOperationObserved {
                         operation_id,
                         observation,
@@ -598,7 +601,7 @@ impl AdmittedTool {
             }
             let (write, result) = match result {
                 Ok(value) => {
-                    EventWrite::tool_success(id, recorded_at, invocation, operation_id, value)
+                    EventWrite::tool_success(id, recorded_at, execution, operation_id, value)
                         .map(|(write, output)| (write, Ok(output)))
                 }
                 Err(
@@ -633,7 +636,7 @@ impl AdmittedTool {
                     EventWrite::plain(RuntimeEvent {
                         id,
                         recorded_at,
-                        invocation,
+                        execution,
                         fact: Fact::ToolSettled {
                             operation_id,
                             outcome,
@@ -741,20 +744,27 @@ mod admission_tests {
     fn journal(sink: Arc<Sink>) -> ToolJournal {
         ToolJournal::new(
             sink,
-            Invocation {
+            ExecutionIdentity {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
+                run_id: model_link().run,
             },
         )
+    }
+    fn model_link() -> crate::durable::AgentStepLink {
+        crate::durable::AgentStepLink {
+            run: crate::durable::RunId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+            step: crate::durable::StepId::try_from(uuid::Uuid::from_u128(2)).unwrap(),
+            attempt: crate::durable::ModelAttemptId::try_from(uuid::Uuid::from_u128(3)).unwrap(),
+        }
     }
 
     fn completion(sink: &Arc<Sink>) -> EventWrite {
         EventWrite::plain(RuntimeEvent::new(
-            journal(sink.clone()).invocation().clone(),
+            journal(sink.clone()).execution().clone(),
             Fact::ModelCompleted {
-                step_id: "step".into(),
+                step_id: model_link().step,
+                attempt_id: model_link().attempt,
                 output: crate::model::recorded::ModelCompletion {
                     compaction: None,
                     parts: vec![crate::model::recorded::CompletionPart::Own(
@@ -841,10 +851,7 @@ mod admission_tests {
             .unwrap()
             .clone()
             .expect("publisher owns the original T2");
-        assert_eq!(
-            write.event().invocation,
-            *journal(sink.clone()).invocation()
-        );
+        assert_eq!(write.event().execution, *journal(sink.clone()).execution());
         assert!(
             matches!(&write.event().fact, Fact::ToolSettled { operation_id, outcome: ToolOutcome::Succeeded { .. } } if operation_id == "original-operation")
         );
@@ -879,7 +886,7 @@ mod admission_tests {
             let execute_started = started.clone();
             let (answer_tx, mut answer_rx) = tokio::sync::oneshot::channel();
             let establish_sink = sink.clone();
-            let invocation = journal(sink.clone()).invocation().clone();
+            let execution = journal(sink.clone()).execution().clone();
             let effect = PreparedEffect::native_approval(
                 move |_| {
                     Box::pin(async move {
@@ -891,11 +898,21 @@ mod admission_tests {
                             .unwrap()
                             .event()
                             .clone();
-                        assert!(matches!(dispatch.fact, Fact::ToolDispatched { .. }));
+                        let (tool, operation_id) = match &dispatch.fact {
+                            Fact::ToolDispatched {
+                                call, operation_id, ..
+                            } => (
+                                call.provider_key()
+                                    .expect("original T1 carries its provider tool key"),
+                                operation_id.clone(),
+                            ),
+                            _ => panic!("approval must retain the original dispatch"),
+                        };
                         Ok(EstablishedApproval {
                             pending: NativeApprovalPending {
-                                invocation,
-                                operation_id: "operation".into(),
+                                execution,
+                                tool,
+                                operation_id,
                                 dispatch: DispatchReceipt {
                                     event_id: dispatch.id,
                                     sequence: 7,
@@ -919,8 +936,8 @@ mod admission_tests {
                 },
             );
             let mut publication = journal(sink.clone()).publish_prepared_call(
-                "operation".into(),
-                ToolCallIdentity::provider("step".into(), "call".into()),
+                format!("{}:call", model_link().attempt),
+                ToolCallIdentity::provider(model_link(), "call".into()),
                 "native".into(),
                 serde_json::json!({}),
                 vec![completion(&sink)],

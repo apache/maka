@@ -45,7 +45,10 @@ async fn snapshot(f: &Fixture) -> Value {
 async fn mutation(f: &Fixture, method: &str, input: Value, secret: Option<&str>) -> Value {
     let reply = mutation_reply(f, method, input, secret).await;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = reply.receipt
     else {
@@ -144,9 +147,9 @@ async fn native_decisions_api_evaluates_with_endpoint_credentials_and_revokes_in
         assert_eq!(credential(&f, &url, json!({"kind":"api_key"}), Some("jev-private-key")).await["kind"], "updated");
         let source = f.app.source().unwrap();
         let prefix = maka_host_runtime::storage::instance_prefix(&source.state_domain, source.deployment, &id(21));
-        let namespace = maka_capabilities::storage::Namespace::new("maka.workspace.decisions_api", maka_plugin_core::scope::Scope::Profile).unwrap();
+        let namespace = maka_plugin_core::storage::Namespace::new("maka.workspace.decisions_api", maka_plugin_core::scope::Scope::Profile).unwrap();
         let persisted = maka_host_runtime::storage::Storage::new(f.store.clone(), prefix.clone(), namespace.clone());
-        let stored = maka_capabilities::storage::Store::read(&persisted, "settings".into()).await.unwrap().unwrap();
+        let stored = maka_plugin_core::storage::Store::read(&persisted, "settings".into()).await.unwrap().unwrap();
         assert_eq!(stored.data.value().unwrap()["protocol"], "jev");
         let settings = maka_workspace_api::decisions_api::Settings { url: url.clone(), ..Default::default() };
         let stored_key = f.config.plugin_credential(namespace, format!("{prefix}{}", settings.credential_key())).await.unwrap().unwrap();
@@ -189,7 +192,7 @@ async fn native_decisions_api_evaluates_with_endpoint_credentials_and_revokes_in
             let mut buffer = [0; 1];
             assert!(matches!(socket.read(&mut buffer).await, Ok(0) | Err(_)));
         });
-        assert!(!matches!(cancelled.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } if value["kind"] == "completed"));
+        assert!(!matches!(cancelled.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if value["kind"] == "completed"));
         let current = snapshot(&f).await;
         assert_eq!(current["apiKeyConfigured"], false);
         assert_eq!(current["headerNames"], json!(["X-Tenant"]));

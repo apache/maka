@@ -17,394 +17,264 @@
  * under the License.
  */
 
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationInput;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::event::LogScope;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::import::Content;
-use maka_agent_facts::import::Record;
-use maka_agent_facts::import::Source;
-use maka_capabilities::storage::Namespace;
-use maka_event_log::{
-    EventLog, StoreError,
-    sessions::{PluginSession, SessionCopy, SessionCopyResult},
+use crate::support::native::NativeFixture;
+use maka_agent_api::{Configuration, session::StoredSessionConfiguration};
+use maka_agent_facts::{
+    durable::{BackendSpec, Fact, RunId, RunOrigin, Terminal},
+    history_snapshot::{HistoricalRole, HistoryCut, ImportedMessage, ImportedPart},
+    input::RunInput,
+    model::{ModelPart, TextKind, ToolInput},
 };
-use maka_plugin_core::scope::Scope;
+use maka_agent_state::{
+    fold::RunView,
+    session_history::{
+        snapshot::Snapshot,
+        source_tree::{SourceItem, SourceTree},
+    },
+};
+use maka_plugin_core::operation::{OperationOutcome, OperationReply, OperationResult, Receipt};
 use serde_json::{Value, json};
+use std::{path::Path, time::Duration};
+use uuid::Uuid;
 
-fn owner(id: &str) -> PluginSession {
-    PluginSession {
-        session_id: id.into(),
-        creator: Namespace::new("external.reader", Scope::Profile).unwrap(),
-        fingerprint: format!("request-{id}"),
-        managed: false,
-        authority_session_id: None,
+fn configuration(workspace: &Path, source: &Path) -> Configuration {
+    serde_json::from_value(json!({
+        "locale":"en", "tools":[], "automaticTitles":false,
+        "workspaceRoots":[{"label":"Destination","path":workspace}],
+        "importRoots":[{"label":"Original transcripts","path":source}],
+        "permissions":{"access":"workspace_write","requestPermissions":false},
+    }))
+    .unwrap()
+}
+fn returned(reply: &OperationReply) -> &Value {
+    match &reply.receipt {
+        Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
+            ..
+        } => value,
+        other => panic!("actual import did not return its original receipt: {other:?}"),
     }
 }
-fn source() -> Source {
-    Source {
-        adapter: "arbitrary-format".into(),
-        session_id: "foreign-session".into(),
+async fn imported(f: &NativeFixture, session: &str) -> (RunView, HistoryCut, Snapshot) {
+    let runs = f.state.runs(session.into(), None, 16).await.unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "one original historical publication, not a local execution"
+    );
+    let view = f.state.frontier(runs[0]).await.unwrap();
+    assert!(matches!(&view.spec.backend, BackendSpec::Historical {}));
+    assert!(matches!(&view.spec.origin, RunOrigin::Imported { .. }));
+    assert_eq!(view.terminal, Some(Terminal::Completed));
+    assert!(view.attempts.is_empty());
+    assert!(
+        view.tools.is_empty(),
+        "foreign calls are inert history, not tool dispatches"
+    );
+    assert!(view.spec.budget_basis.is_none());
+    assert!(
+        f.state
+            .queue()
+            .read(session.into())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    let input: RunInput = serde_json::from_slice(
+        &f.state
+            .content(view.run, view.spec.input.clone())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let RunInput::HistorySource { source: reference } = input else {
+        panic!("actual inert HistorySource input")
+    };
+    let history = f
+        .state
+        .session_history(view.spec.owner.clone(), session.into());
+    let cut = history.capture().await.unwrap();
+    let source = history.snapshot(&cut, view.run).await.unwrap();
+    assert_eq!(&reference, source.reference());
+    (view, cut, source)
+}
+async fn parts(source: &Snapshot) -> Vec<(ImportedMessage, Vec<ImportedPart>)> {
+    let mut after = None;
+    let mut result = Vec::new();
+    loop {
+        let page = source.imported(after, 1).await.unwrap();
+        for (ordinal, message) in page.items {
+            let mut parts = Vec::new();
+            for reference in &message.parts {
+                parts.push(
+                    source
+                        .with_imported_content(ordinal, reference, |reader| {
+                            Ok(serde_json::from_reader::<_, ImportedPart>(reader)?)
+                        })
+                        .await
+                        .unwrap(),
+                );
+            }
+            result.push((message, parts));
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return result,
+        }
     }
 }
-fn record(id: &str, content: Content) -> Record {
-    Record {
-        source_message_id: id.into(),
-        source_turn_id: "foreign-turn".into(),
-        timestamp: Some(123),
-        content,
+async fn copied_messages(source: &Snapshot) -> Vec<ImportedMessage> {
+    let tree = SourceTree::snapshot(source).await.unwrap();
+    let rows = tree.positions(None, false, false, 16).await.unwrap();
+    assert_eq!(rows.len(), 5);
+    let mut messages = Vec::new();
+    for row in rows {
+        let SourceItem::Imported {
+            message,
+            part_ordinal,
+            ..
+        } = tree.item(&row.address).await.unwrap()
+        else {
+            panic!(
+                "the copied source must contain original imported rows, not fabricated model facts"
+            )
+        };
+        assert_eq!(part_ordinal, 0);
+        messages.push(message);
     }
+    messages
 }
 
 #[tokio::test]
 async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_restart() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("import.sqlite");
-    let log = EventLog::open(&path).await.unwrap();
-    let owner = owner("imported");
-    let first = record(
-        "leading",
-        Content::Assistant {
-            text: "retained, not a prefill".into(),
-            model: None,
-            thinking: None,
-        },
-    );
-    let records = vec![
-        first,
-        record(
-            "user",
-            Content::User {
-                text: "the original question".into(),
-            },
-        ),
-        record(
-            "tool",
-            Content::ToolCall {
-                call_id: "foreign-call".into(),
-                name: "old-command".into(),
-                input: Some(json!({"command":"do not run"})),
-            },
-        ),
-        record(
-            "answer",
-            Content::Assistant {
-                text: "the original answer".into(),
-                model: Some("foreign-model".into()),
-                thinking: Some("original thought".into()),
-            },
-        ),
-        record(
-            "result",
-            Content::ToolResult {
-                call_id: "foreign-call".into(),
-                output: json!({"result":"historical"}),
-                is_error: false,
-            },
-        ),
-    ];
-    let accepted = log
-        .import_session(
-            &owner,
-            &source(),
-            &json!({"name":"Imported"}),
-            records.clone(),
-            1,
-        )
-        .await
-        .unwrap();
-    let prefix = log
-        .scoped_prefix(
-            LogScope::Session {
-                id: "imported".into(),
-            },
-            100,
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-    assert_eq!(prefix.events.len(), 5);
-    assert!(EventWrite::plain(prefix.events[0].event.clone()).is_err());
-    assert!(
-        log.unfinished_invocations(0, 100)
-            .await
-            .unwrap()
-            .invocations
-            .is_empty()
-    );
-    let accepted_digest = prefix.digest;
-    let accepted_through = prefix.high_water;
-    log.close().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let original_directory = directory.path().join("foreign");
+        let file = original_directory.join("sessions/2026/rollout-source.jsonl");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        tokio::fs::create_dir_all(file.parent().unwrap()).await.unwrap();
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":"foreign-session","cwd":"/untrusted/source","model_provider":"foreign-provider","api_key":"never-a-local-credential"}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"retained, not a prefill"}}),
+            json!({"type":"turn_context","payload":{"turn_id":"foreign-turn","model":"foreign-model"}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"the original question"}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"foreign-call","name":"old-command","arguments":"{\"command\":\"do not run\"}"}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"the original answer"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"foreign-call","output":{"result":"historical"}}}),
+        ];
+        let bytes = rows.iter().map(|row| format!("{row}\n")).collect::<String>();
+        tokio::fs::write(&file, &bytes).await.unwrap();
+        let configuration = configuration(&workspace, &original_directory);
+        let f = NativeFixture::open(directory.path(), configuration.clone()).await.unwrap();
+        let roots = f.query("importDirectories", json!({"kind":"roots"})).await.unwrap();
+        let saved = f.mutation_value("import", json!({
+            "kind":"save_source", "revision":0, "id":null, "name":"Original five messages",
+            "location":{"kind":"codex","path":roots["roots"][0]["path"]},
+        })).await.unwrap();
+        assert_eq!(saved["kind"], "sources");
+        let source = json!({"id":saved["sources"][0]["id"],"revision":saved["revision"]});
+        let catalog = f.query("imports", json!({"kind":"catalog","source":source,
+            "query":{"text":"","includeArchived":false,"cursor":null}})).await.unwrap();
+        let entries = catalog["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let preview = f.query("imports", json!({"kind":"preview","source":source,
+            "entry":{"sessionId":entries[0]["id"],"path":entries[0]["path"]},"digest":null,"after":0})).await.unwrap();
+        assert_eq!(preview["kind"], "preview");
+        assert_eq!(preview["preview"]["records"], 5);
+        assert!(!preview.to_string().contains("never-a-local-credential"));
+        let destinations = f.query("directories", json!({"kind":"roots"})).await.unwrap();
+        let canonical_workspace = tokio::fs::canonicalize(&workspace).await.unwrap();
+        let target_root = destinations["roots"].as_array().unwrap().iter()
+            .find(|root| root["path"].as_str() == canonical_workspace.to_str())
+            .expect("the configured destination is an actual current Root directory")["path"].clone();
+        let input = json!({"kind":"copy","selection":preview["preview"]["selection"],
+            "path":target_root,"title":"Imported conversation"});
+        let operation = Uuid::new_v4();
+        let receipt = f.mutation("import", input.clone(), operation).await.unwrap();
+        let accepted = returned(&receipt).clone();
+        assert_eq!(accepted["kind"], "imported");
+        let session = accepted["session"]["id"].as_str().unwrap().to_owned();
+        let (view, cut, snapshot) = imported(&f, &session).await;
+        let manifest = snapshot.reference().clone();
+        let records = parts(&snapshot).await;
+        assert_eq!(records.len(), 5);
+        assert_eq!(records.iter().map(|(message, _)| message.role).collect::<Vec<_>>(), vec![
+            HistoricalRole::Assistant, HistoricalRole::User, HistoricalRole::Assistant,
+            HistoricalRole::Assistant, HistoricalRole::Tool,
+        ]);
+        for (message, part) in &records {
+            assert_eq!(part.len(), 1);
+            assert_eq!(message.artifact_scope.owner, view.spec.owner);
+            assert_eq!(message.artifact_scope.session, session);
+            assert!(message.media.is_empty());
+        }
+        assert!(matches!(&records[0].1[0], ImportedPart::Model { part: ModelPart::Text { text_kind: TextKind::Text, text, .. } }
+            if text.chunks().collect::<String>() == "retained, not a prefill"));
+        assert!(matches!(&records[1].1[0], ImportedPart::Input { content } if content.text == "the original question"));
+        assert!(matches!(&records[2].1[0], ImportedPart::Model { part: ModelPart::ToolCall { call } }
+            if call.id == "foreign-call" && call.name == "old-command" && call.input == ToolInput::Json(json!({"command":"do not run"}))));
+        assert!(matches!(&records[3].1[0], ImportedPart::Model { part: ModelPart::Text { text_kind: TextKind::Text, text, .. } }
+            if text.chunks().collect::<String>() == "the original answer"));
+        let ImportedPart::ToolReturn { call_id, result, .. } = &records[4].1[0]
+        else { panic!("the result stays after the intervening assistant answer") };
+        assert_eq!(call_id, "foreign-call");
+        result.validate().unwrap();
+        assert!(!result.body.is_error);
+        assert_eq!(result.body.output.clone().into_json(), json!({"result":"historical"}));
+        let metadata = f.root.session(&session).await.unwrap().get::<StoredSessionConfiguration>().await.unwrap().unwrap();
+        assert!(metadata.configuration.backend.is_none());
+        assert!(metadata.configuration.parent_session_id.is_none());
+        let visible = f.query("history", json!({"sessionId":session,"position":{"kind":"start"}})).await.unwrap();
+        assert!(visible.to_string().contains("retained, not a prefill"));
+        assert!(visible.to_string().contains("the original answer"));
 
-    let log = EventLog::open(&path).await.unwrap();
-    let commits = log.subscribe_commits();
-    let retry = log
-        .import_session(
-            &owner,
-            &source(),
-            &json!({"name":"Imported"}),
-            records.clone(),
-            99,
-        )
-        .await
-        .unwrap();
-    assert_eq!(retry, accepted);
-    assert!(!commits.has_changed().unwrap());
-    let mut changed = records.clone();
-    changed[0] = record(
-        "leading",
-        Content::User {
-            text: "changed".into(),
-        },
-    );
-    assert!(matches!(
-        log.import_session(&owner, &source(), &json!({"name":"Imported"}), changed, 99)
-            .await,
-        Err(StoreError::EventConflict)
-    ));
-    let replayed = log
-        .scoped_prefix(
-            LogScope::Session {
-                id: "imported".into(),
-            },
-            100,
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-    assert_eq!(replayed.digest, accepted_digest);
-    assert_eq!(replayed.high_water, accepted_through);
-    let session = log.get_session::<Value>("imported").await.unwrap().unwrap();
-    assert!(session.execution.is_none());
-    assert_eq!(
-        session.last_message.as_ref().unwrap().preview.as_deref(),
-        Some("the original answer")
-    );
-    let source = log.read_model_view("imported", None).await.unwrap();
-    let frozen = source.source_evidence;
-    let prefix = log
-        .scoped_prefix(
-            LogScope::Session {
-                id: "imported".into(),
-            },
-            100,
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-    let history = maka_agent_engine::project_model_history(
-        &prefix,
-        "imported",
-        maka_agent_facts::language::Language::En,
-    )
-    .unwrap();
-    assert_eq!(history.len(), 2);
-    assert!(
-        serde_json::to_string(&history)
-            .unwrap()
-            .contains("the original answer")
-    );
-    assert!(
-        !serde_json::to_string(&history)
-            .unwrap()
-            .contains("do not run")
-    );
-    assert!(
-        !serde_json::to_string(&history)
-            .unwrap()
-            .contains("original thought")
-    );
+        let changed_bytes = format!("{bytes}{}\n", json!({"type":"event_msg","payload":{"type":"agent_message","message":"later unrelated source append"}}));
+        tokio::fs::write(&file, changed_bytes).await.unwrap();
+        assert_eq!(f.mutation_value("import", input.clone()).await.unwrap()["kind"], "changed");
+        assert_eq!(f.query("imports", json!({"kind":"copies","after":null})).await.unwrap()["sessions"].as_array().unwrap().len(), 1,
+            "a stale source selection cannot publish another target");
+        assert_eq!(parts(&snapshot).await, records, "a changed file cannot mutate the frozen reviewed source");
+        let revision = accepted["session"]["revision"].clone();
+        let fork = f.mutation_value("fork", json!({"sessionId":session,"expectedRevision":revision,
+            "position":{"kind":"end"},"title":"Independent copy","labels":[]})).await.unwrap();
+        assert_eq!(fork["kind"], "forked");
+        let copy = fork["session"]["id"].as_str().unwrap().to_owned();
+        assert_ne!(copy, session);
+        let (_, _, inherited) = imported(&f, &copy).await;
+        let copied = copied_messages(&inherited).await;
+        assert_eq!(copied, records.iter().map(|(message, _)| message.clone()).collect::<Vec<_>>(),
+            "copy keeps qualified original parts and artifact ownership, not target-ID aliases");
+        assert_eq!(f.state.session_history(view.spec.owner.clone(), session.clone()).capture().await.unwrap(), cut);
+        let before = f.state.history(view.run, 0, 256).await.unwrap();
+        assert!(!before.iter().any(|record| matches!(&record.fact,
+            Fact::ModelAttemptAdmitted { .. } | Fact::ToolAdmitted { .. })));
+        let original_run: RunId = view.run;
+        drop(snapshot);
+        drop(inherited);
+        f.shutdown().await.unwrap();
+        tokio::fs::remove_file(&file).await.unwrap();
 
-    let read = log
-        .history_text(
-            "imported",
-            prefix.high_water,
-            maka_agent_ports::session::history::Position::Start,
-            false,
-            maka_event_log::transcript::HistoryLimits {
-                max_bytes: 16 * 1024,
-                max_chunks: Some(8),
-                max_json_bytes: 1024 * 1024,
-            },
-        )
-        .await
-        .unwrap();
-    let text = serde_json::to_string(&read).unwrap();
-    assert!(text.contains("retained, not a prefill"));
-    assert!(text.contains("the original answer"));
-
-    let rows: Vec<_> = prefix
-        .events
-        .iter()
-        .flat_map(|event| {
-            maka_presentation::InvocationView::new()
-                .push(event)
-                .unwrap()
-        })
-        .collect();
-    assert_eq!(rows.len(), 5);
-    let call = &rows[2].message;
-    assert!(matches!(
-        rows[3].message.content,
-        maka_presentation::Content::Assistant { .. }
-    ));
-    let maka_presentation::Content::ToolResult { tool_use_id, .. } = &rows[4].message.content
-    else {
-        panic!("result must retain its position after the intervening answer");
-    };
-    assert_eq!(tool_use_id, &call.id);
-
-    let copy = log
-        .copy_session(
-            SessionCopy {
-                source_session_id: "imported".into(),
-                target_session_id: "copy".into(),
-                expected_source_revision: session.revision,
-                purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    position: maka_agent_facts::session::ForkPosition::End,
-                    side_conversation: false,
-                },
-            },
-            &json!({}),
-            2,
-        )
-        .await
-        .unwrap();
-    assert!(matches!(copy, SessionCopyResult::Committed(_)));
-    assert_eq!(
-        log.capture_model_context("copy", None, 10_000, 16 * 1024 * 1024)
-            .await
-            .unwrap()
-            .tail
-            .len(),
-        5
-    );
-
-    let invocation = Invocation {
-        session_id: "imported".into(),
-        turn_id: "new-turn".into(),
-        run_id: "new-run".into(),
-        invocation_id: "new-invocation".into(),
-    };
-    for fact in [
-        Fact::InvocationOpened {
-            input: InvocationInput::Message {
-                content: "continue".into(),
-                request_fingerprint: None,
-                source_messages: vec![],
-            },
-            configuration: None,
-        },
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    ] {
-        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        log.read_frozen_model_context(&frozen, 100, 1024 * 1024)
-            .await
-            .unwrap()
-            .tail
-            .len(),
-        5
-    );
-    let prefix = log
-        .scoped_prefix(
-            LogScope::Session {
-                id: "imported".into(),
-            },
-            100,
-            1024 * 1024,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        maka_agent_engine::project_model_history(
-            &prefix,
-            "imported",
-            maka_agent_facts::language::Language::En
-        )
-        .unwrap()
-        .len(),
-        3
-    );
-    assert!(!prefix.events.iter().any(|event| matches!(
-        event.event.fact,
-        Fact::ModelRequested { .. } | Fact::ToolDispatched { .. }
-    )));
-    log.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn atomic_import_refuses_notes_and_retiring_parent_authority_without_publication() {
-    let directory = tempfile::tempdir().unwrap();
-    let log = EventLog::open(&directory.path().join("refused-import.sqlite"))
-        .await
-        .unwrap();
-    log.create_session("parent", "parent", &json!({}), 1)
-        .await
-        .unwrap();
-    let parent = log.get_session::<Value>("parent").await.unwrap().unwrap();
-    log.begin_session_removal("parent", parent.revision)
-        .await
-        .unwrap();
-    let mut child = owner("dependent");
-    child.authority_session_id = Some("parent".into());
-    assert!(matches!(
-        log.import_session(
-            &child,
-            &source(),
-            &json!({}),
-            vec![record(
-                "user",
-                Content::User {
-                    text: "historical".into()
-                }
-            )],
-            2
-        )
-        .await,
-        Err(StoreError::SessionRetired)
-    ));
-    assert!(
-        log.import_session(
-            &owner("notes"),
-            &source(),
-            &json!({}),
-            vec![record(
-                "note",
-                Content::Note {
-                    text: "not a conversation".into()
-                }
-            )],
-            2
-        )
-        .await
-        .is_err()
-    );
-    for session in ["dependent", "notes"] {
-        assert!(log.get_session::<Value>(session).await.unwrap().is_none());
-        assert!(log.session_creator(session).await.unwrap().is_none());
-        assert!(
-            log.imported_sessions::<Value>(session, None, 16)
-                .await
-                .unwrap()
-                .0
-                .is_empty()
-        );
-        assert!(
-            log.scoped_prefix(LogScope::Session { id: session.into() }, 100, 1024 * 1024)
-                .await
-                .unwrap()
-                .events
-                .is_empty()
-        );
-    }
-    log.close().await.unwrap();
+        let f = NativeFixture::open(directory.path(), configuration).await.unwrap();
+        let retry = f.mutation("import", input, operation).await.unwrap();
+        assert_eq!(retry.reference, receipt.reference);
+        assert_eq!(returned(&retry), &accepted, "same intent returns the original receipt without reading the removed source");
+        let (reopened, reopened_cut, snapshot) = imported(&f, &session).await;
+        assert_eq!(reopened.run, original_run);
+        assert_eq!(reopened.spec, view.spec);
+        assert_eq!(reopened_cut, cut);
+        assert_eq!(snapshot.reference(), &manifest);
+        assert_eq!(parts(&snapshot).await, records);
+        assert_eq!(f.state.history(original_run, 0, 256).await.unwrap(), before);
+        let (_, _, inherited) = imported(&f, &copy).await;
+        assert_eq!(copied_messages(&inherited).await, copied);
+        assert_eq!(f.query("history", json!({"sessionId":session,"position":{"kind":"start"}})).await.unwrap(), visible);
+        drop(snapshot);
+        drop(inherited);
+        f.shutdown().await.unwrap();
+    }).await.unwrap();
 }

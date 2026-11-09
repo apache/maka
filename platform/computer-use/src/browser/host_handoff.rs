@@ -244,6 +244,7 @@ impl Browsers {
         &mut self,
         browser_id: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<Value, ToolError> {
         if self
             .connections
@@ -256,7 +257,8 @@ impl Browsers {
                 "browser.release is available for the on-demand ChatGPT connector",
             ));
         }
-        self.retire_handoff_resources(Some(turn)).await?;
+        self.retire_handoff_resources(Some(turn), Some(execution))
+            .await?;
         self.release_handoff_user().await?;
         Ok(Value::Null)
     }
@@ -264,6 +266,7 @@ impl Browsers {
     pub(super) async fn retire_handoff_resources(
         &mut self,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) -> Result<(), ToolError> {
         let host = self.host().await;
         let cell = host.lock().await.handoffs.get(&self.owner).cloned();
@@ -307,6 +310,7 @@ impl Browsers {
             &host,
             self.owner,
             None,
+            None,
             Some(ExtensionAdapterMode::Chatgpt),
             None,
         )
@@ -315,7 +319,12 @@ impl Browsers {
             let finished = host
                 .lock()
                 .await
-                .finish_extension(self.owner, Some(turn), Some(ExtensionAdapterMode::Chatgpt))
+                .finish_extension(
+                    self.owner,
+                    Some(turn),
+                    execution,
+                    Some(ExtensionAdapterMode::Chatgpt),
+                )
                 .await?;
             let finished: std::collections::HashSet<_> = finished.into_iter().collect();
             self.targets.retain(|_, tab| {

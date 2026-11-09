@@ -17,8 +17,4 @@
  * under the License.
  */
 
-#[path = "../../support/message_queue.rs"]
-pub(crate) mod message_queue;
 pub(crate) mod shell_binding;
-#[path = "../../support/transcript.rs"]
-pub(crate) mod transcript;

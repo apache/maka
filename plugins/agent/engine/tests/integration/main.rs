@@ -22,32 +22,29 @@ mod auto_context;
 mod code_mode;
 mod code_mode_lifetime;
 mod code_mode_media;
-mod codex_compaction;
 mod context_compaction;
 mod context_overflow;
 mod context_stop;
+mod continuation_recovery;
 mod dynamic_tools;
-mod handoff;
-mod handoff_compaction;
 mod image_projection;
 mod long_task_perf;
-mod model_interruption;
 mod pruning;
+mod retry_recovery;
+mod root_context_sources;
+mod root_startup_recovery;
 mod session_import;
 mod stale_pruning;
-mod startup_recovery;
 mod tool_arguments;
 mod tool_scheduling;
 
 mod support {
     pub(crate) mod agent_loop;
+    pub(crate) mod canonical;
     pub(crate) mod code_mode;
     pub(crate) mod code_mode_lifetime;
     pub(crate) mod context;
     pub(crate) mod http;
     pub(crate) mod image_projection;
-    pub(crate) mod invocation;
-    pub(crate) mod model_records;
-    pub(crate) mod recovery_session;
-    pub(crate) mod store;
+    pub(crate) mod native;
 }

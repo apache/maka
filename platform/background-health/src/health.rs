@@ -17,13 +17,14 @@
  * under the License.
  */
 
-use maka_agent_facts::shell_result::ShellOutput;
-use maka_agent_facts::shell_result::ShellSnapshot;
-use maka_agent_facts::shell_result::ShellStatus;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call;
 use maka_capabilities::filesystem;
 use maka_capabilities::http;
+use maka_plugin_core::{
+    http::Method,
+    shell_result::{ShellOutput, ShellSnapshot, ShellStatus},
+};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Instant};
 
@@ -161,9 +162,9 @@ impl Health {
             biased;
             _ = scope.cancellation.cancelled() => Err(http::Error::Failed("cancelled".into())),
             result = async {
-                let status = self.request(&scope, &target, http::Method::Head).await?;
+                let status = self.request(&scope, &target, Method::Head).await?;
                 if matches!(status, 405 | 501) {
-                    self.request(&scope, &target, http::Method::Get).await
+                    self.request(&scope, &target, Method::Get).await
                 } else {
                     Ok(status)
                 }
@@ -204,7 +205,7 @@ impl Health {
         &self,
         scope: &call::Scope,
         url: &str,
-        method: http::Method,
+        method: Method,
     ) -> Result<u16, http::Error> {
         let response = self
             .http
@@ -402,8 +403,8 @@ mod tests {
         {
             let calls = http.calls.lock().unwrap();
             assert_eq!(calls.len(), 2);
-            assert!(matches!(calls[0].method, http::Method::Head));
-            assert!(matches!(calls[1].method, http::Method::Get));
+            assert!(matches!(calls[0].method, Method::Head));
+            assert!(matches!(calls[1].method, Method::Get));
             assert!(calls.iter().all(|request| request.body.is_empty()));
         }
         assert_eq!(head.closed.load(Ordering::SeqCst), 1);

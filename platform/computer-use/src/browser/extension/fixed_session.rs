@@ -33,7 +33,7 @@ use std::sync::atomic::AtomicU8;
 
 #[derive(Clone)]
 pub(in crate::browser) struct FixedAttempt {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     policy: ExtensionPreparationPolicy,
     ui: ExtensionFixedUiRequest,
@@ -56,7 +56,7 @@ const UI_RETIRED: u8 = 2;
 
 #[derive(Clone)]
 struct FixedUiAttempt {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     request: ExtensionFixedUiRequest,
     dispatch: Arc<AtomicU8>,
@@ -64,13 +64,13 @@ struct FixedUiAttempt {
 
 #[derive(Clone)]
 struct FixedClearAttempt {
-    operation: Option<ExtensionHostOperation>,
+    operation: Option<BoundHostOperation>,
     dispatch: Arc<AtomicU8>,
 }
 
 #[derive(Clone)]
 struct FixedUiRecord {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     completion_id: u64,
     dispatch: Arc<AtomicU8>,
@@ -107,6 +107,26 @@ pub(in crate::browser) enum FixedPreparation {
 }
 
 impl FixedPreparation {
+    pub(super) fn check_execution(
+        &self,
+        execution: &crate::ExecutionCorrelation,
+    ) -> Result<(), ToolError> {
+        let original = match self {
+            Self::NotAttempted => return Ok(()),
+            Self::Pending(attempt) => &attempt.operation.execution,
+            Self::Retained(resource) if matches!(resource.phase, FixedPhase::Cleared { .. }) => {
+                return Ok(());
+            }
+            Self::Retained(resource) => &resource.attempt.operation.execution,
+        };
+        if original != execution {
+            return Err(ToolError::CleanupUnconfirmed("the original fixed preparation must receive its actual logical clear acknowledgement before another execution can reuse it".into()));
+        }
+        Ok(())
+    }
+}
+
+impl FixedPreparation {
     pub(super) fn ready(&self) -> Option<&ExtensionFixedSessionPreparedTab> {
         match self {
             Self::Retained(resource)
@@ -124,7 +144,7 @@ impl FixedPreparation {
             _ => None,
         }
     }
-    pub(super) fn operation(&self) -> Option<&ExtensionHostOperation> {
+    pub(super) fn operation(&self) -> Option<&BoundHostOperation> {
         self.attempt().map(|attempt| &attempt.operation)
     }
     pub(super) fn settled(&self) -> bool {
@@ -155,7 +175,7 @@ impl FixedPreparation {
 
 #[derive(Clone)]
 pub(in crate::browser) struct FixedPresentationScope {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     request: crate::BrowserSessionPreparation,
     authorization: Arc<dyn crate::BrowserAuthorization>,
@@ -168,7 +188,11 @@ impl FixedPresentationScope {
         invocation: &crate::InvocationContext<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, ToolError> {
-        request.check_scope(invocation.turn(), &operation(invocation)?.operation_id)?;
+        request.check_scope(
+            invocation.turn(),
+            invocation.execution_correlation(),
+            &operation(invocation)?.operation_id,
+        )?;
         if request.native_owner != scope.owner
             || request.native_epoch != scope.epoch.to_string()
             || request.browser_id != scope.provider.id()
@@ -319,7 +343,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<(TabIdentity, FixedAttempt), ToolError> {
         let ExtensionOperation::PrepareFixedSessionTab {
             tab_id,
@@ -428,7 +452,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         prepared: ExtensionFixedSessionPreparedTab,
     ) -> Result<(), ToolError> {
         let (identity, attempt) = self.fixed_attempt_for(owner, provider, operation, context)?;
@@ -444,8 +468,8 @@ impl Host {
                 .extension
                 .get(&(owner, identity.browser.clone()))
                 .is_some_and(|state| {
-                    state.current_turn.as_deref() == Some(attempt.operation.turn_id.as_str())
-                        && state.retiring_turn.is_none()
+                    state.current_scope.as_ref() == Some(&attempt.operation.scope())
+                        && state.retiring_scope.is_none()
                         && state
                             .calls
                             .get(&attempt.operation.operation_id)
@@ -490,7 +514,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         receipt: Option<ExtensionFixedSessionReceipt>,
         reason: &str,
     ) -> Result<(), ToolError> {
@@ -585,7 +609,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         proof: ExtensionFixedUiProof,
     ) -> Result<(), ToolError> {
         let ExtensionOperation::SessionUi { receipt, ui } = operation else {
@@ -679,7 +703,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         proof: ExtensionFixedSessionCleanupProof,
     ) -> Result<(), ToolError> {
         let ExtensionOperation::ClearSessionPreparation { receipt } = operation else {
@@ -777,7 +801,7 @@ impl Host {
         owner: uuid::Uuid,
         identity: &TabIdentity,
         receipt: &ExtensionFixedSessionReceipt,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<bool, ToolError> {
         self.fixed_state_mut(owner, identity)?
             .fixed_preparation
@@ -845,7 +869,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<(), ToolError> {
         if matches!(operation, ExtensionOperation::PrepareFixedSessionTab { .. }) {
             let (identity, expected) =
@@ -1078,7 +1102,7 @@ async fn retain_prepare_error(
     // asks the extension to prepare again or invents a guessed cleanup address.
     if let Ok(pending) = scope.control.pending_operations().await {
         for entry in pending.into_iter().filter(|entry| {
-            entry.host_operation.as_ref() == Some(&scope.context)
+            entry.host_operation.as_ref().is_some_and(|wire| scope.context.matches_wire(wire))
                 && matches!(&entry.operation, ExtensionOperation::PrepareFixedSessionTab { tab_id, .. }
                     if tab_id.to_string() == identity.target)
         }) {
@@ -1098,7 +1122,7 @@ async fn retain_prepare_error(
                     scope.owner,
                     &scope.provider,
                     &entry.operation,
-                    entry.host_operation.as_ref(),
+                    Some(&expected.operation),
                     Some(receipt),
                     error,
                 );
@@ -1150,7 +1174,7 @@ async fn clear_for_replacement(
     let reconciled = host
         .lock()
         .await
-        .reconcile_provider(scope.owner, &scope.provider)
+        .reconcile_provider(scope.owner, &scope.provider, None)
         .await;
     if let Err(error) = &result {
         host.lock().await.finish_fixed_clear_error(
@@ -1294,7 +1318,7 @@ pub(super) async fn prepare_fixed_tab(
     let reconciled = host
         .lock()
         .await
-        .reconcile_provider(scope.owner, &scope.provider)
+        .reconcile_provider(scope.owner, &scope.provider, None)
         .await;
     if let Err(error) = &result {
         let not_dispatched = reconciled.is_ok()
@@ -1348,11 +1372,12 @@ impl Host {
         if scope.owner != owner
             || scope.target.as_deref() != Some(identity.target.as_str())
             || provider.provider != scope.provider
-            || provider.retiring_turn.is_some()
+            || provider.retiring_scope.is_some()
             || provider.headers_unknown
             || (scope.purpose != CallPurpose::FixedConfiguration
-                && provider.current_turn.as_deref() != Some(scope.context.turn_id.as_str()))
+                && provider.current_scope.as_ref() != Some(&scope.context.scope()))
             || call.turn != scope.context.turn_id
+            || call.execution != scope.context.execution
             || call.epoch != scope.epoch
             || !call.purposes.contains(&scope.purpose)
             || !Arc::ptr_eq(&call.controls, &scope.controls)
@@ -1463,7 +1488,7 @@ impl Host {
                 .extension
                 .get(&(owner, identity.browser.clone()))
                 .is_some_and(|provider| {
-                    provider.current_turn.as_deref() == Some(scope.context.turn_id.as_str())
+                    provider.current_scope.as_ref() == Some(&scope.context.scope())
                 });
         let renew = matches!(
             completion.proof.ui,
@@ -1496,6 +1521,7 @@ impl Host {
             Some(LeaseChildScope {
                 effects,
                 turn: scope.context.turn_id.clone(),
+                execution: scope.context.execution.clone(),
                 epoch: scope.epoch,
             })
         } else {
@@ -1649,7 +1675,7 @@ impl Tab {
         let reconciled = host
             .lock()
             .await
-            .reconcile_provider(self.cursor_owner, &self.provider)
+            .reconcile_provider(self.cursor_owner, &self.provider, None)
             .await;
         reconciled?;
         let proof = result.map_err(provider::extension_error)?;
@@ -1758,7 +1784,11 @@ pub(in crate::browser) async fn configure_fixed_session_ui(
             scope.control.session_ui(receipt, &ui).await
         })
         .await;
-    let reconciled = host.lock().await.reconcile_provider(owner, &provider).await;
+    let reconciled = host
+        .lock()
+        .await
+        .reconcile_provider(owner, &provider, None)
+        .await;
     reconciled?;
     let proof = result.map_err(provider::extension_error)?;
     if matches!(proof.ui, ExtensionFixedUiAck::Unknown) {
@@ -1817,19 +1847,26 @@ pub(in crate::browser) enum FixedCleanupPurpose {
     },
     Turn {
         turn: String,
+        execution: crate::ExecutionCorrelation,
     },
     Owner,
 }
 
 impl FixedPreparation {
-    pub(in crate::browser) fn protected_from_turn(&self, turn: &str) -> bool {
+    pub(in crate::browser) fn protected_from_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> bool {
         match self {
             Self::Pending(attempt) => {
                 attempt.dispatch.load(Ordering::SeqCst) == UI_MAY_DISPATCH
-                    && attempt.operation.turn_id != turn
+                    && (attempt.operation.turn_id != turn
+                        || &attempt.operation.execution != execution)
             }
             Self::Retained(resource) if !matches!(resource.phase, FixedPhase::Cleared { .. }) => {
                 resource.latest_ui_owner().0.turn_id != turn
+                    || &resource.latest_ui_owner().0.execution != execution
             }
             _ => false,
         }
@@ -1886,7 +1923,7 @@ impl FixedPreparation {
 }
 
 impl FixedResource {
-    fn latest_ui_owner(&self) -> (&ExtensionHostOperation, crate::desktop::NativeEpochId) {
+    fn latest_ui_owner(&self) -> (&BoundHostOperation, crate::desktop::NativeEpochId) {
         let known = self
             .last_ui
             .as_ref()
@@ -1902,7 +1939,7 @@ impl FixedResource {
     }
     fn matches_ui_ack(
         &self,
-        context: &ExtensionHostOperation,
+        context: &BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
         operation: ExtensionFixedUiOperation,
         cursor_id: &str,
@@ -1975,7 +2012,9 @@ impl Host {
                         .get(&(owner, identity.clone()))
                         .is_some_and(|endpoint| endpoint.epoch() > *through)
             }
-            FixedCleanupPurpose::Turn { turn } => state.fixed_preparation.protected_from_turn(turn),
+            FixedCleanupPurpose::Turn { turn, execution } => state
+                .fixed_preparation
+                .protected_from_scope(turn, execution),
             FixedCleanupPurpose::Owner => false,
         })
     }
@@ -2077,7 +2116,7 @@ impl Host {
                 scope.control.session_ui(&receipt, &ui).await
             })
             .await;
-        self.reconcile_provider(owner, &provider).await?;
+        self.reconcile_provider(owner, &provider, None).await?;
         let proof = result.map_err(provider::extension_error)?;
         let ExtensionFixedUiAck::Attempted {
             retention: Some(ack),
@@ -2203,7 +2242,7 @@ impl Host {
                 cleanup_control.clear_session_preparation(receipt).await
             })
             .await;
-        let reconciled = self.reconcile_provider(owner, &provider).await;
+        let reconciled = self.reconcile_provider(owner, &provider, None).await;
         if let Err(error) = &result {
             self.finish_fixed_clear_error(
                 owner,
@@ -2469,13 +2508,25 @@ mod actual_call_scope_tests {
             let scope = {
                 let mut ledger = host.lock().await;
                 ledger
-                    .extension_reserve(owner, &provider, "gate-turn", "17", Origin::UserClaimed)
+                    .extension_reserve(
+                        owner,
+                        &provider,
+                        &context_operation(
+                            "gate-turn",
+                            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                        ),
+                        "17",
+                        Origin::UserClaimed,
+                    )
                     .unwrap();
                 ledger
                     .extension_context(
                         owner,
                         &provider,
-                        context_operation("gate-turn"),
+                        context_operation(
+                            "gate-turn",
+                            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                        ),
                         crate::desktop::NativeEpochId::new(),
                         CallTarget::Tab {
                             origin: Origin::UserClaimed,
@@ -2750,7 +2801,10 @@ mod actual_call_scope_tests {
                 .extension_context(
                     old.owner,
                     &old.scope.provider,
-                    context_operation("gate-turn"),
+                    context_operation(
+                        "gate-turn",
+                        &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    ),
                     crate::desktop::NativeEpochId::new(),
                     CallTarget::Tab {
                         origin: Origin::UserClaimed,
@@ -2825,7 +2879,7 @@ mod actual_call_scope_tests {
         ));
         {
             let mut ledger = old.host.lock().await;
-            bounded(ledger.reconcile_provider(old.owner, &old.scope.provider))
+            bounded(ledger.reconcile_provider(old.owner, &old.scope.provider, None))
                 .await
                 .unwrap();
             let state = &ledger
@@ -2881,7 +2935,7 @@ mod actual_call_scope_tests {
                     .get(&(pending.owner, pending.identity.browser.clone()))
                     .unwrap();
                 assert!(
-                    provider.retiring_turn.is_none(),
+                    provider.retiring_scope.is_none(),
                     "old epoch drain need not retire the turn"
                 );
                 let call = provider
@@ -2907,7 +2961,7 @@ mod actual_call_scope_tests {
         let prepared = prepared.unwrap();
         {
             let mut ledger = pending.host.lock().await;
-            bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider))
+            bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider, None))
                 .await
                 .unwrap();
             let state = ledger
@@ -2926,6 +2980,30 @@ mod actual_call_scope_tests {
                     .acquisition(pending.owner, &pending.identity)
                     .is_none()
             );
+        }
+        {
+            let mut ledger = pending.host.lock().await;
+            let foreign_execution =
+                crate::ExecutionCorrelation::new("another-live-execution").unwrap();
+            let refused = ledger.extension_context(
+                pending.owner,
+                &pending.scope.provider,
+                context_operation(&pending.scope.context.turn_id, &foreign_execution),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::FixedConfiguration { tab: "17".into() },
+                false,
+            );
+            assert!(
+                matches!(refused, Err(ToolError::CleanupUnconfirmed(_))),
+                "a retained real SDK receipt without a Clear ACK cannot become another execution's preparation"
+            );
+            let retained = ledger
+                .fixed_state(pending.owner, &pending.identity)
+                .unwrap()
+                .fixed_preparation
+                .cleanup_receipt()
+                .unwrap();
+            assert!(same_receipt(retained, &prepared.receipt));
         }
         // The actual known receipt remains retained; transport close is no Clear/T2 proof.
         fixture.assert_no_frame_and_close().await;
@@ -2956,6 +3034,7 @@ mod actual_call_scope_tests {
             browser_id: scope.provider.id().into(),
             generation: receipt.generation().into(),
             turn_id: scope.context.turn_id.clone(),
+            execution: scope.context.execution.clone(),
             operation_id: scope.context.operation_id.clone(),
             target: crate::BrowserPreparationTarget::FixedSessionTab {
                 tab_id: receipt.tab_id().to_string(),
@@ -3007,18 +3086,21 @@ mod actual_call_scope_tests {
             let prepared = prepared.unwrap();
             let owner_text = initial.owner.to_string();
             let old_factory: Arc<dyn crate::BrowserHostEffects> = Arc::new(RetentionIdentityOnly);
-            let old_invocation =
-                crate::InvocationContext::new(&owner_text, &initial.scope.context.turn_id)
-                    .with_operation_id(initial.scope.context.operation_id.clone())
-                    .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
-                        popup_enabled: true,
-                        ..Default::default()
-                    })
-                    .with_browser_host_effects(old_factory.clone());
+            let old_invocation = crate::InvocationContext::new(
+                &owner_text,
+                &initial.scope.context.turn_id,
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_operation_id(initial.scope.context.operation_id.clone())
+            .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
+                popup_enabled: true,
+                ..Default::default()
+            })
+            .with_browser_host_effects(old_factory.clone());
             let old_request = actual_retention_request(&initial.scope, &prepared.receipt);
             let (scope, ui, dispatch, initial_sequence, acquisition, creator_turn) = {
                 let mut ledger = initial.host.lock().await;
-                bounded(ledger.reconcile_provider(initial.owner, &initial.scope.provider))
+                bounded(ledger.reconcile_provider(initial.owner, &initial.scope.provider, None))
                     .await
                     .unwrap();
                 ledger
@@ -3046,7 +3128,10 @@ mod actual_call_scope_tests {
                     .extension_context(
                         initial.owner,
                         &initial.scope.provider,
-                        context_operation(turn),
+                        context_operation(
+                            turn,
+                            &crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                        ),
                         crate::desktop::NativeEpochId::new(),
                         CallTarget::FixedConfiguration { tab: "17".into() },
                         false,
@@ -3066,12 +3151,16 @@ mod actual_call_scope_tests {
                 (scope, ui, dispatch, sequence, acquisition, creator)
             };
             let fresh_factory: Arc<dyn crate::BrowserHostEffects> = Arc::new(RetentionIdentityOnly);
-            let invocation = crate::InvocationContext::new(&owner_text, &scope.context.turn_id)
-                .with_operation_id(scope.context.operation_id.clone())
-                .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
-                    popup_enabled: case != "policy_changed",
-                    ..Default::default()
-                });
+            let invocation = crate::InvocationContext::new(
+                &owner_text,
+                &scope.context.turn_id,
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_operation_id(scope.context.operation_id.clone())
+            .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
+                popup_enabled: case != "policy_changed",
+                ..Default::default()
+            });
             let invocation = if case == "missing_current_factory" {
                 invocation
             } else {
@@ -3099,13 +3188,11 @@ mod actual_call_scope_tests {
             });
             let (proof, ()) = bounded(async { tokio::join!(configure, reply) }).await;
             let proof = proof.unwrap();
-            bounded(
-                initial
-                    .host
-                    .lock()
-                    .await
-                    .reconcile_provider(initial.owner, &initial.scope.provider),
-            )
+            bounded(initial.host.lock().await.reconcile_provider(
+                initial.owner,
+                &initial.scope.provider,
+                None,
+            ))
             .await
             .unwrap();
             let replacement_attempt =
@@ -3138,13 +3225,11 @@ mod actual_call_scope_tests {
                 });
                 let (newer, ()) = bounded(async { tokio::join!(newer, reply) }).await;
                 newer.unwrap();
-                bounded(
-                    initial
-                        .host
-                        .lock()
-                        .await
-                        .reconcile_provider(initial.owner, &initial.scope.provider),
-                )
+                bounded(initial.host.lock().await.reconcile_provider(
+                    initial.owner,
+                    &initial.scope.provider,
+                    None,
+                ))
                 .await
                 .unwrap();
             }

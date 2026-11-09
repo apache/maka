@@ -342,21 +342,20 @@ pub(super) mod tests {
         let crossed=library.model("load",json!({"workspace":b,"tools":[],"input":{"name":"review","revision":a_search["revision"]}}),&call).await.unwrap();
         assert_eq!(crossed["kind"], "changed");
         assert!(matches!(
-            library
-                .preferences
-                .set(
-                    SetPreference {
-                        reference,
-                        revision: 0,
-                        preference: maka_skills::Preference {
-                            enabled: false,
-                            pinned: true
-                        }
+            crate::preferences::tests::apply(
+                &library.preferences,
+                SetPreference {
+                    reference,
+                    revision: 0,
+                    preference: maka_skills::Preference {
+                        enabled: false,
+                        pinned: true,
                     },
-                    &call
-                )
-                .await
-                .unwrap(),
+                },
+                &call,
+            )
+            .await
+            .unwrap(),
             PreferenceResult::Applied { .. }
         ));
         assert_eq!(

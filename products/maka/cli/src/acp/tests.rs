@@ -328,7 +328,7 @@ async fn scenario(fixture: support::Fixture, cancel: bool) {
         let rows = support::canonical(&native, &session).await;
         let users: Vec<_> = rows.iter().filter(|row| row.role == maka_agent_ports::session::history::Role::User).collect();
         assert_eq!(users.len(), 1, "busy rejection must not insert a second user message");
-        assert_eq!(users[0].message_id, accepted.message_id.to_string());
+        assert_eq!(users[0].message_id, Some(accepted.message_id.to_string()));
         let observed = support::query(&native, "agent", "observe", json!({"sessionId":session})).await;
         assert_eq!(observed["session"]["activity"], "idle");
         let execution = support::query(&native, "agent", "execution", json!({"sessionId":session,"invocationId":invocation})).await;
@@ -342,7 +342,8 @@ use maka_agent_ports::session::history::HistoryField;
             assert_eq!(assistant.iter().filter(|row| row.field == HistoryField::Body).map(|row| row.text.as_str()).collect::<String>(), "The fixture is correct.");
             assert_eq!(assistant.iter().filter(|row| row.field == HistoryField::Thinking).map(|row| row.text.as_str()).collect::<String>(), "Check the evidence.");
             for row in assistant {
-                let (kind, id) = match row.field { HistoryField::Body => ("agent_message", row.message_id.clone()), HistoryField::Thinking => ("agent_thought", format!("thinking:{}", row.message_id)) };
+                let message_id = row.message_id.as_ref().expect("live assistant row has its canonical message identity");
+                let (kind, id) = match row.field { HistoryField::Body => ("agent_message", message_id.clone()), HistoryField::Thinking => ("agent_thought", format!("thinking:{message_id}")) };
                 if !row.text.is_empty() { assert_eq!(live_messages.get(&(kind.into(), id)).map(String::as_str), Some(row.text.as_str())); }
             }
         }

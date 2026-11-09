@@ -18,55 +18,75 @@
  */
 
 use super::*;
-use maka_event_log::sessions::{SessionMutation, SessionRemovalResult, SessionRetirement};
+use maka_agent_state::SessionQuiescenceGuard;
+use maka_event_log::{
+    StoreError,
+    sessions::SessionRetirement,
+    writeback::{Notification, Prepared, Statement},
+};
+use maka_plugin_core::operation::RecoveryRef;
 
 impl Owner {
     pub async fn change_session(
         self: &Arc<Self>,
         input: ChangeSession,
-    ) -> Result<SessionChanged, String> {
-        let runs = self.runs.lock().await;
-        if runs.closing {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::Closed,
-            });
-        }
+        _operation: &RecoveryRef,
+    ) -> Result<NativeMutation<SessionChanged>, String> {
         if !self.owns(&input.session_id) {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(session_rejected(Rejection::SessionUnavailable));
         }
-        // Retry observes the durable deletion fence even after catalog removal.
+        let ordered = Arc::new(self.runs.ordered(&input.session_id).await);
+        {
+            let runs = self.runs.state().await;
+            if runs.closing || self.stop.is_cancelled() {
+                return Ok(session_rejected(Rejection::Closed));
+            }
+            if runs.busy(&input.session_id) || self.mcp_projects.has_any_client(&input.session_id) {
+                return Ok(session_rejected(Rejection::Busy));
+            }
+        }
         if matches!(input.action, SessionAction::Remove)
             && self
                 .store
                 .session_retirement(&input.session_id)
                 .await
-                .map_err(|_| "agent_session_unavailable")?
+                .map_err(|error| error.to_string())?
                 .is_some_and(SessionRetirement::removes)
         {
-            self.finish_removed_session(input.session_id.clone());
-            return Ok(SessionChanged::Removed {
+            self.finish_removed_session(
+                input.session_id.clone(),
+                &tokio::runtime::Handle::current(),
+            );
+            return Ok(NativeMutation::Returned(SessionChanged::Removed {
                 session_id: input.session_id,
-            });
+            }));
         }
-        let Some(session) = self
-            .store
-            .get_session::<StoredSessionConfiguration>(&input.session_id)
+        let guard = self
+            .durable
+            .quiescence_guard(self.run_owner(), input.session_id.clone())
+            .map_err(|error| error.to_string())?;
+        if !guard
+            .observe()
             .await
-            .map_err(|_| "agent_session_unavailable")?
-        else {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
-        };
-        if session.revision != input.expected_revision {
-            return Ok(SessionChanged::RevisionConflict {
-                expected: input.expected_revision,
-                actual: session.revision,
-            });
+            .map_err(|error| error.to_string())?
+            .is_quiescent()
+        {
+            return Ok(session_rejected(Rejection::Busy));
         }
-        // Managed tasks retain their owner's lifecycle authority.
+        let Some(mut record) = self
+            .canonical_catalog()?
+            .record(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(session_rejected(Rejection::SessionUnavailable));
+        };
+        if record.metadata.revision != input.expected_revision {
+            return Ok(NativeMutation::Returned(SessionChanged::RevisionConflict {
+                expected: input.expected_revision,
+                actual: record.metadata.revision,
+            }));
+        }
         if self
             .store
             .session(&input.session_id)
@@ -74,139 +94,145 @@ impl Owner {
             .map_err(|error| error.to_string())?
             .session_manager(&input.session_id)
             .await
-            .map_err(|_| "agent_session_unavailable")?
+            .map_err(|error| error.to_string())?
             .is_some()
         {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(session_rejected(Rejection::SessionUnavailable));
         }
-        if runs.busy(&input.session_id)
-            || !self
-                .store
-                .session(&input.session_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .message_queue(&input.session_id)
-                .await
-                .map_err(|_| "agent_queue_unavailable")?
-                .entries
-                .is_empty()
-            || self.graph_selected(&input.session_id).await?
-            || !matches!(
-                crate::service::summary(self, resolve_session(session)?).activity,
-                SessionActivity::Idle
-            )
-        {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::Busy,
-            });
-        }
-        if matches!(input.action, SessionAction::Archive) {
+        if !matches!(input.action, SessionAction::Restore) {
             self.titles
                 .cancel_and_wait(&input.session_id)
                 .await
-                .map_err(|_| "agent_session_change_unknown")?;
+                .map_err(|()| "agent_session_change_unknown".to_owned())?;
         }
-        match input.action {
-            SessionAction::Remove => {
-                match self
-                    .store
-                    .begin_session_removal(&input.session_id, input.expected_revision)
-                    .await
-                    .map_err(|_| "agent_session_change_unknown")?
-                {
-                    SessionRemovalResult::RevisionConflict { expected, actual } => {
-                        Ok(SessionChanged::RevisionConflict { expected, actual })
-                    }
-                    SessionRemovalResult::Accepted(_) => {
-                        // Delete the conversation only. User workspace files and
-                        // independent copies are intentionally retained.
-                        self.finish_removed_session(input.session_id.clone());
-                        Ok(SessionChanged::Removed {
-                            session_id: input.session_id,
-                        })
-                    }
-                }
-            }
-            SessionAction::Archive | SessionAction::Restore => {
-                match self
-                    .store
-                    .change_session_archived::<StoredSessionConfiguration>(
-                        &input.session_id,
-                        Some(input.expected_revision),
-                        matches!(input.action, SessionAction::Archive),
-                        now(),
-                    )
-                    .await
-                {
-                    Ok(SessionMutation::Committed(session)) => Ok(SessionChanged::Changed {
-                        session: Box::new(crate::service::summary(
-                            self,
-                            resolve_session(*session)?,
-                        )),
-                    }),
-                    Ok(SessionMutation::RevisionConflict { expected, actual }) => {
-                        Ok(SessionChanged::RevisionConflict { expected, actual })
-                    }
-                    Err(maka_event_log::StoreError::SessionBusy) => Ok(SessionChanged::Rejected {
-                        reason: Rejection::Busy,
-                    }),
-                    Err(_) => Err("agent_session_change_unknown".into()),
-                }
-            }
-        }
-    }
-
-    fn finish_removed_session(self: &Arc<Self>, session: String) {
-        let owner = self.clone();
-        self.workers.spawn(async move {
-            loop {
-                if owner.stop.is_cancelled() {
-                    return;
-                }
-                match owner.store.session_retirement(&session).await {
-                    Ok(Some(SessionRetirement::Removed)) | Ok(None) => return,
-                    Ok(Some(SessionRetirement::Removing)) => {}
-                    _ => return,
-                }
-                if !matches!(
-                    owner.store.session_retirement_ready(&session).await,
-                    Ok(true)
-                ) {
-                    tokio::select! {
-                        _ = owner.stop.cancelled() => return,
-                        _ = tokio::time::sleep(Duration::from_millis(200)) => continue,
-                    }
-                }
-                if owner
-                    .executors
-                    .remove_sessions(std::slice::from_ref(&session))
-                    .await
-                    .is_err()
-                    || owner.engine.release_session_state(&session).is_err()
-                {
-                    tokio::select! {
-                        _ = owner.stop.cancelled() => return,
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
-                    }
-                }
-                // The original deletion fence is restart recovery. Never undo it
-                // or acknowledge cleanup if durable owners are still unsettled.
-                if matches!(
-                    owner.store.finish_session_retirement(&session).await,
-                    Ok(SessionRetirement::Removed)
-                ) {
-                    return;
-                }
-                tokio::select! {
-                    _ = owner.stop.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                }
-            }
+        let writer = guard.data_writer().clone();
+        let cleanup = matches!(input.action, SessionAction::Remove).then(|| {
+            (
+                self.clone(),
+                input.session_id.clone(),
+                tokio::runtime::Handle::current(),
+            )
         });
+        let statement = SessionLifecycle {
+            guard,
+            ordered,
+            cleanup,
+        };
+        match input.action {
+            SessionAction::Remove => match self
+                .store
+                .prepare_session_removal(
+                    &input.session_id,
+                    input.expected_revision,
+                    &writer,
+                    statement,
+                )
+                .await
+            {
+                Ok((_, change)) => Ok(NativeMutation::Commit {
+                    value: SessionChanged::Removed {
+                        session_id: input.session_id,
+                    },
+                    change,
+                }),
+                Err(error) => session_change_error(error),
+            },
+            SessionAction::Archive | SessionAction::Restore => match self
+                .store
+                .prepare_session_archived::<serde_json::Value, _>(
+                    &input.session_id,
+                    input.expected_revision,
+                    matches!(input.action, SessionAction::Archive),
+                    now(),
+                    &writer,
+                    statement,
+                )
+                .await
+            {
+                Ok((metadata, change)) => {
+                    record.metadata = metadata;
+                    Ok(NativeMutation::Commit {
+                        value: SessionChanged::Changed {
+                            session: Box::new(crate::service::summary(self, record)?),
+                        },
+                        change,
+                    })
+                }
+                Err(error) => session_change_error(error),
+            },
+        }
     }
 
+    fn finish_removed_session(self: &Arc<Self>, session: String, runtime: &tokio::runtime::Handle) {
+        let owner = self.clone();
+        self.workers.spawn_on(async move {
+            if let Err(error) = owner.finish_removed_session_inner(&session).await {
+                tracing::error!(%session, %error, "Original session retirement remains unsettled");
+            }
+        }, runtime);
+    }
+    async fn finish_removed_session_inner(&self, session: &str) -> Result<(), String> {
+        let mut changed = self.store.subscribe_changes();
+        let guard = self
+            .durable
+            .quiescence_guard(self.run_owner(), session.into())
+            .map_err(|error| error.to_string())?;
+        loop {
+            changed.borrow_and_update();
+            if self.stop.is_cancelled() {
+                return Ok(());
+            }
+            match self
+                .store
+                .session_retirement(session)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                Some(SessionRetirement::Removed) | None => return Ok(()),
+                Some(SessionRetirement::Removing) => {}
+                _ => return Err("agent_session_retirement_changed".into()),
+            }
+            if guard
+                .observe()
+                .await
+                .map_err(|error| error.to_string())?
+                .is_quiescent()
+            {
+                tokio::select! {
+                    _ = self.stop.cancelled() => return Ok(()),
+                    result = self.store.wait_session_retirement_work(session) => result.map_err(|error| error.to_string())?,
+                }
+                if !guard
+                    .observe()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_quiescent()
+                {
+                    continue;
+                }
+                if self
+                    .store
+                    .session_retirement_ready(session)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    self.executors
+                        .remove_sessions(&[session.to_owned()])
+                        .await?;
+                    match self.store.finish_session_retirement(session).await {
+                        Ok(SessionRetirement::Removed) => return Ok(()),
+                        Ok(SessionRetirement::Removing) | Err(StoreError::SessionBusy) => {}
+                        Ok(_) => return Err("agent_session_retirement_changed".into()),
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+            }
+            tokio::select! {
+                _ = self.stop.cancelled() => return Ok(()),
+                result = changed.changed() => result.map_err(|error| error.to_string())?,
+            }
+        }
+    }
     pub(super) fn recover_removed_sessions(self: &Arc<Self>) {
         let owner = self.clone();
         self.workers.spawn(async move {
@@ -215,23 +241,86 @@ impl Owner {
                 if owner.stop.is_cancelled() {
                     return;
                 }
-                let Ok(sessions) = owner
+                let sessions = match owner
                     .store
                     .pending_session_retirements(after.as_deref())
                     .await
-                else {
-                    return;
+                {
+                    Ok(sessions) => sessions,
+                    Err(error) => {
+                        tracing::error!(%error, "Session retirement recovery is unavailable");
+                        return;
+                    }
                 };
                 if sessions.is_empty() {
                     return;
                 }
                 for session in &sessions {
                     if owner.owns(session) {
-                        owner.finish_removed_session(session.clone());
+                        owner.finish_removed_session(
+                            session.clone(),
+                            &tokio::runtime::Handle::current(),
+                        );
                     }
                 }
                 after = sessions.last().cloned();
             }
         });
     }
+}
+struct SessionLifecycle {
+    guard: SessionQuiescenceGuard,
+    ordered: Arc<runs::Ordered>,
+    cleanup: Option<(Arc<Owner>, String, tokio::runtime::Handle)>,
+}
+impl Statement for SessionLifecycle {
+    type Value = Option<(Arc<Owner>, String, tokio::runtime::Handle)>;
+    type Output = ();
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        vec![self.ordered.clone()]
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        let (changed, notification) = if let Some((owner, _, _)) = &self.cleanup {
+            let released = owner.durable.artifacts().retire_session_in_transaction(
+                connection,
+                &self.guard,
+                &owner.store,
+            )?;
+            (released.changed, released.notification)
+        } else {
+            self.guard.validate(connection)?;
+            (false, Notification::NONE)
+        };
+        Ok(Prepared {
+            value: self.cleanup,
+            changed,
+            notification,
+        })
+    }
+    fn committed(cleanup: Self::Value) {
+        if let Some((owner, session, runtime)) = cleanup {
+            owner.finish_removed_session(session, &runtime);
+        }
+    }
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
+    }
+}
+fn session_rejected(reason: Rejection) -> NativeMutation<SessionChanged> {
+    NativeMutation::Returned(SessionChanged::Rejected { reason })
+}
+fn session_change_error(error: StoreError) -> Result<NativeMutation<SessionChanged>, String> {
+    Ok(match error {
+        StoreError::SessionRevisionConflict { expected, actual } => {
+            NativeMutation::Returned(SessionChanged::RevisionConflict { expected, actual })
+        }
+        StoreError::SessionBusy => session_rejected(Rejection::Busy),
+        StoreError::SessionNotFound | StoreError::SessionRetired => {
+            session_rejected(Rejection::SessionUnavailable)
+        }
+        error => return Err(format!("agent_session_change_unknown: {error}")),
+    })
 }

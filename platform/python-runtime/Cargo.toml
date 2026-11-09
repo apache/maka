@@ -42,6 +42,9 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+maka-agent-state.workspace = true
+maka-plugin-core.workspace = true
+rusqlite.workspace = true
 maka-session-state.workspace = true
 maka-tools.workspace = true
 maka-event-log.workspace = true

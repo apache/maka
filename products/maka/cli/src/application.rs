@@ -246,7 +246,11 @@ pub(super) async fn open_store(
         )
     })
     .await??;
-    Ok(maka_transport::open_store(std::sync::Arc::new(owner)).await?)
+    Ok(maka_transport::open_store(
+        std::sync::Arc::new(owner),
+        &maka_product_native::root_migrations(),
+    )
+    .await?)
 }
 
 async fn open_application_inspection(root: PathBuf) -> Result<maka_event_log::EventLog, HostError> {

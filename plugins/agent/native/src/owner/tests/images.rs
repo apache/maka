@@ -21,7 +21,7 @@ use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, ImageEncoder, ImageFormat, codecs::png};
 use maka_agent_facts::artifact::content_digest;
-use maka_agent_facts::event::Fact;
+use maka_agent_facts::durable::Fact;
 
 pub(super) fn gif(minimum: usize) -> Vec<u8> {
     let mut bytes = vec![
@@ -74,12 +74,7 @@ pub(super) async fn canonical_image(
     bytes: &[u8],
     mime_type: &str,
 ) -> Value {
-    let fence = f
-        .query("observe", json!({"sessionId":session}))
-        .await
-        .unwrap()["through"]
-        .as_u64()
-        .unwrap();
+    let fence = f.through(session).await;
     let mut position = json!({"kind":"start"});
     let sequence = loop {
         let page = f
@@ -284,12 +279,13 @@ async fn image_bytes_without_producer_completion_never_reach_the_model() {
         start_image(&listener, &f, &session, json!({})).await;
         let sent = finish_image(&listener, &f).await;
         assert_eq!(model_images(&sent), Vec::<Vec<u8>>::new());
-        let facts = service_tools::facts(&f, &session).await;
+        let facts = f.recorded_facts(&session).await;
         assert!(
-            facts.iter().any(|fact| matches!(
-                fact,
-                Fact::ToolSettled {
-                    outcome: maka_agent_facts::event::ToolOutcome::Failed { .. },
+            facts.iter().any(|recorded| matches!(
+                &recorded.fact,
+                Fact::LocalToolReturned {
+                    settlement: maka_agent_facts::tool_call::ToolSettlement::Failed,
+                    is_error: true,
                     ..
                 }
             )),

@@ -395,9 +395,15 @@ async fn health_probe_reads_only_headers_without_redirects_or_repeated_fallbacks
         );
         let calls = transport.calls.lock().unwrap();
         assert_eq!(calls.len(), statuses.len());
-        assert!(matches!(calls[0].1.method, http::Method::Head));
+        assert!(matches!(
+            calls[0].1.method,
+            maka_plugin_core::http::Method::Head
+        ));
         if calls.len() == 2 {
-            assert!(matches!(calls[1].1.method, http::Method::Get));
+            assert!(matches!(
+                calls[1].1.method,
+                maka_plugin_core::http::Method::Get
+            ));
         }
         assert!(
             calls

@@ -33,7 +33,11 @@ async fn wsl_uses_windows_targets_input_cursors_and_session_cleanup() {
         session
             .invoke(
                 serde_json::from_value(command).unwrap(),
-                &maka_computer_use::InvocationContext::new(id, "fixture-turn"),
+                &maka_computer_use::InvocationContext::new(
+                    id,
+                    "fixture-turn",
+                    maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 &CancellationToken::new(),
                 maka_agent_facts::language::Language::En,
             )
@@ -121,7 +125,11 @@ async fn wsl_uses_windows_targets_input_cursors_and_session_cleanup() {
                 json!({"method":"observe","handle":app["handle"],"kind":"ax","options":{}}),
             )
             .unwrap(),
-            &maka_computer_use::InvocationContext::new("wsl-b", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "wsl-b",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -218,7 +226,11 @@ async fn closed_or_cancelled_session_cannot_start_native_work() {
             Command::ListApps {
                 options: InventoryOptions::default()
             },
-            &maka_computer_use::InvocationContext::new("cancelled", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "cancelled",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap()
+            ),
             &stop,
             maka_agent_facts::language::Language::En
         )
@@ -236,7 +248,11 @@ async fn closed_or_cancelled_session_cannot_start_native_work() {
             Command::ListApps {
                 options: InventoryOptions::default()
             },
-            &maka_computer_use::InvocationContext::new("closed", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "closed",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap()
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En
         )
@@ -259,7 +275,11 @@ async fn native_application_observation_and_shutdown() {
             Command::ListApps {
                 options: InventoryOptions::default(),
             },
-            &maka_computer_use::InvocationContext::new("maka-native-smoke", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "maka-native-smoke",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -270,7 +290,11 @@ async fn native_application_observation_and_shutdown() {
             Command::ListApps {
                 options: InventoryOptions::default(),
             },
-            &maka_computer_use::InvocationContext::new("maka-native-second", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "maka-native-second",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -283,7 +307,11 @@ async fn native_application_observation_and_shutdown() {
             Command::ListWindows {
                 options: InventoryOptions::default(),
             },
-            &maka_computer_use::InvocationContext::new("maka-native-second", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "maka-native-second",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -309,7 +337,11 @@ async fn locked_desktop_refuses_target_binding_before_app_resolution() {
                     window_id: u64::MAX,
                 },
             },
-            &maka_computer_use::InvocationContext::new("locked-fixture", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "locked-fixture",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )

@@ -19,16 +19,7 @@
 
 use super::*;
 use maka_agent_facts::executor::Output;
-use runtime::{Pipe, string};
-
-pub(super) async fn proxy(
-    config: &NativeCommand,
-    cwd: &str,
-    cancellation: CancellationToken,
-) -> Result<maka_process::Command, Error> {
-    let resolved = runtime::resolve(config, cwd).await.require()?;
-    proxy_resolved(&resolved, cwd, cancellation).await
-}
+use runtime::{Pipe, RpcError, string};
 
 pub(super) async fn proxy_resolved(
     config: &runtime::ResolvedCommand<'_>,
@@ -67,20 +58,45 @@ pub(super) async fn proxy_resolved(
     Ok(proxy)
 }
 
+pub(super) struct Protocol<'a> {
+    pub(super) request: &'a Value,
+    pub(super) journal: &'a mut journal::ProtocolSession,
+    pub(super) output: Arc<dyn OutputSink>,
+    pub(super) bridge: Arc<mcp::Bridge>,
+    pub(super) steering: &'a mut steering::Steering,
+}
+impl runtime::PipeProtocol for Protocol<'_> {
+    type Output = Outcome;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(async move {
+            execute(
+                io,
+                self.request,
+                self.journal,
+                self.output,
+                self.bridge,
+                self.steering,
+            )
+            .await
+        })
+    }
+}
+
 pub(super) async fn execute(
-    mut io: Pipe,
+    io: &mut Pipe,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     steering: &mut steering::Steering,
-) -> (Result<Outcome, Error>, Pipe) {
+) -> Result<Outcome, Error> {
     let mut custody = Custody::Preparing;
     let result = run(
-        &mut io,
+        io,
         request,
-        storage,
         journal,
         output.as_ref(),
         &bridge,
@@ -88,45 +104,69 @@ pub(super) async fn execute(
         steering,
     )
     .await;
+    // Once turn/start may have reached the app-server, a transport/protocol failure
+    // is not a native failed outcome, even if app-server cleanup later succeeds.
+    let result = if !matches!(custody, Custody::Preparing)
+        && matches!(result, Err(Error::Provider(_) | Error::Invalid(_)))
+    {
+        Err(Error::Unknown)
+    } else {
+        result
+    };
     bridge.close_admission();
-    let result = match custody {
-        Custody::Active { thread, turn }
-            if io.buffered().any(|event| terminal(event, &thread, &turn)) =>
-        {
-            result
-        }
-        Custody::Active { thread, turn } => {
-            // Proxy exit cannot settle daemon work. Interrupt only our turn and await its terminal.
+    if io.retired.is_cancelled() {
+        let result = match result {
+            Err(error @ Error::Persistence(_)) => Err(error),
+            _ => Err(Error::ObservationRetired),
+        };
+        return result;
+    }
+    match custody {
+        Custody::Active(mut state) => {
             io.cancellation = CancellationToken::new();
             io.failed = CancellationToken::new();
-            io.control(
-                "turn/interrupt",
-                serde_json::json!({"threadId":thread,"turnId":turn}),
-            )
-            .await;
-            let drained = tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    if terminal(&io.next().await?, &thread, &turn) {
-                        return Ok::<_, Error>(());
+            if !io
+                .buffered()
+                .any(|event| terminal(event, &state.thread, &state.turn))
+            {
+                io.control(
+                    "turn/interrupt",
+                    serde_json::json!({"threadId":state.thread,"turnId":state.turn}),
+                )
+                .await;
+            }
+            // Only wire reads are cancellable. A terminal record's acknowledgement
+            // is awaited after the timeout scope and cannot be dropped on retirement.
+            let deadline = tokio::time::Instant::now() + runtime::INTERRUPT_TIMEOUT;
+            loop {
+                let event = match tokio::time::timeout_at(deadline, io.next()).await {
+                    Ok(Ok(event)) => event,
+                    _ => {
+                        break Err(if io.retired.is_cancelled() {
+                            Error::ObservationRetired
+                        } else {
+                            Error::CleanupUnconfirmed
+                        });
                     }
+                };
+                match state.event(event, output.as_ref()).await {
+                    Ok(Some(outcome)) => {
+                        break journal.closed(outcome.clone()).await.map(|()| outcome);
+                    }
+                    Ok(None) => {}
+                    Err(Error::Invalid(_) | Error::Provider(_)) => break Err(Error::Unknown),
+                    Err(error) => break Err(error),
                 }
-            })
-            .await;
-            match drained {
-                Ok(Ok(())) => result,
-                _ => Err(Error::CleanupUnconfirmed),
             }
         }
-        // A partially delivered turn/start without an acknowledgement must never be replayed.
         Custody::Submitted => Err(Error::Unknown),
         Custody::Preparing | Custody::Settled => result,
-    };
-    (result, io)
+    }
 }
 enum Custody {
     Preparing,
     Submitted,
-    Active { thread: String, turn: String },
+    Active(Turn),
     Settled,
 }
 #[expect(
@@ -136,8 +176,7 @@ enum Custody {
 async fn run(
     io: &mut Pipe,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: &dyn OutputSink,
     bridge: &mcp::Bridge,
     custody: &mut Custody,
@@ -179,7 +218,7 @@ async fn run(
             "Codex did not confirm requested model".into(),
         ));
     }
-    journal.opened(storage, thread.clone()).await?;
+    journal.opened(thread.clone())?;
     if let Some(update) =
         journal.instruction_update(request.get("instructions").and_then(Value::as_str))
     {
@@ -199,7 +238,7 @@ async fn run(
                 "Codex instruction-message injection has no acknowledgement".into(),
             ));
         }
-        journal.confirm_instructions(storage, update).await?;
+        journal.confirm_instructions(update);
     }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];
@@ -221,27 +260,56 @@ async fn run(
     let cancellation = std::mem::replace(&mut io.cancellation, CancellationToken::new());
     let failed = std::mem::replace(&mut io.failed, CancellationToken::new());
     *custody = Custody::Submitted;
-    let started = io.request("turn/start", params).await?;
+    io.turn_started();
+    let started = match io.request("turn/start", params).await {
+        Ok(started) => started,
+        Err(RpcError::Rejected(message)) => {
+            io.turn_finished();
+            return Err(Error::Provider(message));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let turn = string(&started, "/turn/id")?.to_owned();
-    *custody = Custody::Active {
+    *custody = Custody::Active(Turn {
         thread: thread.clone(),
         turn: turn.clone(),
-    };
-    let mut state = Turn {
-        thread,
-        turn,
         messages: Default::default(),
         final_message_id: None,
+    });
+    journal
+        .bind_task(NativeTask::Codex {
+            thread: thread.clone(),
+            turn: turn.clone(),
+        })
+        .await?;
+    let Custody::Active(state) = custody else {
+        unreachable!("submitted native turn")
     };
+    let retired = io.retired.clone();
+    let mut stop_deadline = None;
     loop {
         let event = {
             tokio::select! {
-                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                () = retired.cancelled() => return Err(Error::ObservationRetired),
+                () = cancellation.cancelled(), if stop_deadline.is_none() => {
+                    bridge.close_admission();
+                    io.control("turn/interrupt", serde_json::json!({"threadId":state.thread,"turnId":state.turn})).await;
+                    stop_deadline = Some(tokio::time::Instant::now() + runtime::INTERRUPT_TIMEOUT);
+                    continue;
+                }
+                () = async { match stop_deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => return Err(Error::CleanupUnconfirmed),
                 () = failed.cancelled() => return Err(Error::Unknown),
                 event = io.next() => event?,
-                ready = steering.ready() => {
+                ready = steering.ready(), if stop_deadline.is_none() => {
                     ready?;
-                    if let Some(input) = steering.take().await? {
+                    let next = match steering.take().await {
+                        Err(Error::Cancelled) => {
+                            journal.observation().control_allowed(&io.stop).await?;
+                            None
+                        }
+                        result => result?,
+                    };
+                    if let Some(input) = next {
                         let mut content = vec![serde_json::json!({"type":"text","text":input["message"]})];
                         for image in input["images"].as_array().into_iter().flatten() {
                             content.push(serde_json::json!({"type":"localImage","path":image["path"]}));
@@ -259,12 +327,14 @@ async fn run(
                             Ok(accepted) => accepted,
                             Err(runtime::RpcError::Rejected(message)) => {
                                 while let Some(event) = io.pop_buffered() {
-                                    if terminal(&event, &state.thread, &state.turn) { *custody = Custody::Settled; }
-                                    state.event(event, output).await?;
+                                    if let Some(outcome) = state.event(event, output).await? {
+                                        *custody = Custody::Settled;
+                                        journal.closed(outcome.clone()).await?;
+                                        return Ok(outcome);
+                                    }
                                 }
-                                return Ok(Outcome::Failed {
-                                    message, code: Some("native_steering_rejected".into()), recoverable: false,
-                                });
+                                tracing::warn!(%message, "Codex steering rejected; settling the original active turn");
+                                return Err(Error::Provider(message));
                             }
                             Err(error) => return Err(error.into()),
                         };
@@ -276,13 +346,12 @@ async fn run(
                 }
             }
         };
-        if terminal(&event, &state.thread, &state.turn) {
-            *custody = Custody::Settled;
-        }
         if event.get("method").is_some() && event.get("id").is_some() {
             return io.unsupported(event).await;
         }
         if let Some(outcome) = state.event(event, output).await? {
+            *custody = Custody::Settled;
+            journal.closed(outcome.clone()).await?;
             return Ok(outcome);
         }
     }
@@ -538,17 +607,12 @@ impl Turn {
             "turn/completed" => {
                 return Ok(Some(
                     match p.pointer("/turn/status").and_then(Value::as_str) {
-                        Some("completed") => {
-                            if self.messages.values().any(|message| !message.ended) {
-                                return Err(Error::Invalid(
-                                    "Codex succeeded with an unfinished assistant item".into(),
-                                ));
-                            }
-                            Outcome::Completed {
-                                message_id: self.final_message_id.clone(),
-                            }
-                        }
-                        Some("interrupted") => return Err(Error::Cancelled),
+                        Some("completed") => Outcome::Completed {
+                            message_id: self.final_message_id.clone(),
+                        },
+                        Some("interrupted") => Outcome::Cancelled {
+                            reason: Some("native_interrupted".into()),
+                        },
                         Some("failed") => Outcome::Failed {
                             code: Some("native_turn_failed".into()),
                             message: p
@@ -572,7 +636,205 @@ impl Turn {
         Ok(None)
     }
 }
-
+struct Sent {
+    initialize: u64,
+    thread: u64,
+    turn: u64,
+    injected: Option<u64>,
+    interrupted: Option<u64>,
+}
+impl Sent {
+    async fn read(input: &mut replay::Stream, binding: &NativeBinding) -> Result<Self, Error> {
+        let NativeTask::Codex { thread, turn } = &binding.task else {
+            return Err(Error::Unknown);
+        };
+        let initialize = request_id(&input.required().await?, "initialize")?;
+        let initialized = input.required().await?;
+        if initialized["method"] != "initialized" || initialized.get("id").is_some() {
+            return Err(Error::Unknown);
+        }
+        let opened = input.required().await?;
+        let thread_request = request_id(&opened, "thread/start")?;
+        let cwd = runtime::string(&opened, "/params/cwd")?;
+        if std::path::Path::new(cwd) != binding.resource.resource_ref.join("workspace")
+            || opened["params"]["approvalPolicy"] != "never"
+            || opened["params"]["sandbox"] != "danger-full-access"
+        {
+            return Err(Error::Unknown);
+        }
+        let mut started = input.required().await?;
+        let injected = if started["method"] == "thread/inject_items" {
+            if started["params"]["threadId"] != *thread {
+                return Err(Error::Unknown);
+            }
+            let id = request_id(&started, "thread/inject_items")?;
+            started = input.required().await?;
+            Some(id)
+        } else {
+            None
+        };
+        let start = request_id(&started, "turn/start")?;
+        if started["params"]["threadId"] != *thread
+            || started["params"]["approvalPolicy"] != "never"
+            || started["params"]["sandboxPolicy"]["type"] != "dangerFullAccess"
+            || !started["params"]["input"].is_array()
+        {
+            return Err(Error::Unknown);
+        }
+        let mut interrupted = None;
+        while let Some(control) = input.next().await? {
+            if control["method"] == "turn/steer" {
+                return Err(Error::Invalid(
+                    "Original Codex steering response-buffer recovery is unsupported".into(),
+                ));
+            }
+            if interrupted.is_some()
+                || control["params"]["threadId"] != *thread
+                || control["params"]["turnId"] != *turn
+            {
+                return Err(Error::Unknown);
+            }
+            interrupted = Some(request_id(&control, "turn/interrupt")?);
+        }
+        let mut ids = vec![initialize, thread_request, start];
+        ids.extend(injected);
+        ids.extend(interrupted);
+        if ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != ids.len()
+        {
+            return Err(Error::Unknown);
+        }
+        Ok(Self {
+            initialize,
+            thread: thread_request,
+            turn: start,
+            injected,
+            interrupted,
+        })
+    }
+}
+fn request_id(value: &Value, method: &str) -> Result<u64, Error> {
+    if value["jsonrpc"] != "2.0" || value["method"] != method {
+        return Err(Error::Unknown);
+    }
+    value
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or(Error::Unknown)
+}
+pub(super) async fn replay(
+    request: &Request,
+    binding: &NativeBinding,
+    input: &mut replay::Stream,
+    stream: &mut replay::Stream,
+    output: &dyn OutputSink,
+) -> Result<Outcome, Error> {
+    let NativeTask::Codex { thread, turn } = &binding.task else {
+        return Err(Error::Unknown);
+    };
+    let sent = Sent::read(input, binding).await?;
+    let mut state = Turn {
+        thread: thread.clone(),
+        turn: turn.clone(),
+        messages: Default::default(),
+        final_message_id: None,
+    };
+    let mut acknowledged = std::collections::BTreeSet::new();
+    let mut outcome = None;
+    while let Some(event) = stream.next().await? {
+        if event.get("id").is_some() {
+            if event.get("method").is_some() {
+                return Err(Error::Invalid(
+                    "Original Codex server-request recovery is unsupported".into(),
+                ));
+            }
+            let id = event
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or(Error::Unknown)?;
+            if ![
+                Some(sent.initialize),
+                Some(sent.thread),
+                Some(sent.turn),
+                sent.injected,
+                sent.interrupted,
+            ]
+            .contains(&Some(id))
+                || !acknowledged.insert(id)
+            {
+                return Err(Error::Unknown);
+            }
+            if id == sent.initialize
+                || id == sent.thread
+                || id == sent.turn
+                || Some(id) == sent.injected
+            {
+                let result = event.get("result").ok_or(Error::Unknown)?;
+                if event.get("error").is_some() {
+                    return Err(Error::Unknown);
+                }
+                if id == sent.thread {
+                    if result["thread"]["id"] != *thread
+                        || result["approvalPolicy"] != "never"
+                        || result["sandbox"]["type"] != "dangerFullAccess"
+                    {
+                        return Err(Error::Unknown);
+                    }
+                    if let Some(model) = &request.settings.model
+                        && result.get("model").and_then(Value::as_str) != Some(model.as_str())
+                    {
+                        return Err(Error::Unknown);
+                    }
+                }
+                if id == sent.turn && result["turn"]["id"] != *turn {
+                    return Err(Error::Unknown);
+                }
+            }
+            continue;
+        }
+        if !event.is_object() || event.get("method").and_then(Value::as_str).is_none() {
+            return Err(Error::Unknown);
+        }
+        if outcome.is_some() {
+            // The live parser returns at terminal. Ignore only unrelated metadata,
+            // never a second terminal or more activity for this original turn.
+            if event["params"]["threadId"] == *thread
+                && (event["params"]["turnId"] == *turn || event["params"]["turn"]["id"] == *turn)
+                && matches!(
+                    event["method"].as_str(),
+                    Some(
+                        "turn/completed"
+                            | "item/agentMessage/delta"
+                            | "item/reasoning/summaryTextDelta"
+                            | "item/reasoning/textDelta"
+                            | "item/started"
+                            | "item/completed"
+                    )
+                )
+            {
+                return Err(Error::Unknown);
+            }
+            continue;
+        }
+        match state.event(event, output).await {
+            Ok(Some(result)) => outcome = Some(result),
+            Ok(None) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if !acknowledged.contains(&sent.initialize)
+        || !acknowledged.contains(&sent.thread)
+        || !acknowledged.contains(&sent.turn)
+        || sent.injected.is_some_and(|id| !acknowledged.contains(&id))
+    {
+        return Err(Error::Unknown);
+    }
+    outcome.ok_or(Error::Unknown)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,6 +1008,39 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn completed_claim_keeps_unfinished_output_for_host_validation() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        turn.event(
+            event(
+                "item/agentMessage/delta",
+                serde_json::json!({"itemId":"m","delta":"partial"}),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            turn.event(
+                event(
+                    "turn/completed",
+                    serde_json::json!({"turn":{"id":"turn","status":"completed"}})
+                ),
+                &sink
+            )
+            .await
+            .unwrap(),
+            Some(Outcome::Completed { message_id: None })
+        ));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"m"},
+                {"type":"output_delta","messageId":"m","text":"partial"}
+            ])
+        );
+    }
+    #[tokio::test]
     async fn completed_item_emits_only_unstreamed_suffix_and_interrupt_does_not_end_open_item() {
         let sink = Collect(Default::default());
         let mut turn = turn();
@@ -785,7 +1080,7 @@ mod tests {
                 &sink
             )
             .await,
-            Err(Error::Cancelled)
+            Ok(Some(Outcome::Cancelled { reason: Some(reason) })) if reason == "native_interrupted"
         ));
         assert_eq!(
             serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),

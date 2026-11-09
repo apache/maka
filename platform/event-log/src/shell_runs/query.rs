@@ -18,14 +18,14 @@
  */
 
 use crate::{EventLog, StoreError};
-use maka_presentation::shell::{ResourceUpdate, local_metadata, local_update};
+use maka_plugin_core::shell_run::{ShellRun, resource_id};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 
-/// A bounded page from one read transaction. The digest covers the projected
+/// A bounded page from one read transaction. The digest covers the canonical
 /// scope (one resource for get, the whole session for list), not OS handles.
 pub struct ShellResourcePage {
-    pub resources: Vec<ResourceUpdate>,
+    pub resources: Vec<ShellRun>,
     pub revision: String,
     pub total: u64,
     pub next_offset: Option<u64>,
@@ -38,20 +38,19 @@ impl EventLog {
         id: Option<&str>,
         offset: u64,
     ) -> Result<ShellResourcePage, StoreError> {
-        self.query_shell_page(session, id, offset, None, false)
-            .await
+        self.query_shell_page(session, id, offset, None).await
     }
 
     /// Provider filtering happens before counting, digesting and paging. The
-    /// list projects metadata only; full canonical output belongs to detail reads.
+    /// page contains canonical resource records; UI projection belongs to callers.
     pub async fn query_shell_catalog(
         &self,
         session: &str,
         provider_prefix: &str,
         offset: u64,
     ) -> Result<ShellResourcePage, StoreError> {
-        maka_agent_facts::interaction::entity_id(provider_prefix).map_err(super::invalid)?;
-        self.query_shell_page(session, None, offset, Some(provider_prefix), true)
+        resource_id(provider_prefix).map_err(super::invalid)?;
+        self.query_shell_page(session, None, offset, Some(provider_prefix))
             .await
     }
 
@@ -61,11 +60,10 @@ impl EventLog {
         id: Option<&str>,
         offset: u64,
         provider_prefix: Option<&str>,
-        compact: bool,
     ) -> Result<ShellResourcePage, StoreError> {
-        maka_agent_facts::interaction::entity_id(session).map_err(super::invalid)?;
+        resource_id(session).map_err(super::invalid)?;
         if let Some(id) = id {
-            maka_agent_facts::interaction::entity_id(id).map_err(super::invalid)?;
+            resource_id(id).map_err(super::invalid)?;
         }
         let (session, id) = (session.to_owned(), id.map(str::to_owned));
         let provider_prefix = provider_prefix.map(str::to_owned);
@@ -102,7 +100,7 @@ impl EventLog {
                     let mut total = 0_u64;
                     let mut resources = Vec::new();
                     // The page envelope (IDs, digest, cursor and keys) is <512 bytes.
-                    // JSON-escaped source tool IDs belong to each serialized resource.
+                    // Opaque call correlation belongs to each serialized resource.
                     let mut page_bytes = 512;
                     let mut page_full = false;
                     while let Some(row) = rows.next()? {
@@ -111,12 +109,7 @@ impl EventLog {
                             &session,
                             &row.get::<_, String>("id")?,
                         )?;
-                        let projected = if compact {
-                            local_metadata(record)?
-                        } else {
-                            local_update(record)?
-                        };
-                        let bytes = serde_json::to_vec(&projected)?;
+                        let bytes = serde_json::to_vec(&record)?;
                         if total != 0 {
                             hash.update(b",");
                         }
@@ -129,7 +122,7 @@ impl EventLog {
                                 page_full = true;
                             } else {
                                 page_bytes += bytes.len() + 1;
-                                resources.push(projected);
+                                resources.push(record);
                             }
                         }
                         total += 1;

@@ -18,7 +18,7 @@
  */
 
 use maka_capabilities::credentials;
-use maka_capabilities::storage;
+use maka_plugin_core::storage;
 use std::sync::Arc;
 
 const SETTINGS: &str = "settings";

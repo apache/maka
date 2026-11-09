@@ -35,11 +35,11 @@ impl Policy for Allowed {
 }
 struct Count(Arc<AtomicUsize>);
 impl Handler for Count {
-    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, HandlerResult> {
         let count = self.0.clone();
         Box::pin(async move {
             count.fetch_add(1, Ordering::SeqCst);
-            Ok(input)
+            Ok(HandlerValue::Json(input))
         })
     }
 }
@@ -425,9 +425,10 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         control: dir.path().join("control"),
     };
     let store = Arc::new(
-        maka_event_log::root_store::RootStore::open(Arc::new(
-            RootOwner::create(&dir.path().join("root"), &ns).unwrap(),
-        ))
+        maka_event_log::root_store::RootStore::open(
+            Arc::new(RootOwner::create(&dir.path().join("root"), &ns).unwrap()),
+            maka_event_log::ROOT_MIGRATIONS,
+        )
         .await
         .unwrap(),
     );
@@ -538,7 +539,7 @@ struct RetirementGate {
     cancellation: std::sync::Mutex<Option<CancellationToken>>,
 }
 impl Handler for RetirementGate {
-    fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let cleanup = self.cleanup.clone();
         let mut ticket = context.scope().resources.reserve().unwrap();
         ticket.start();
@@ -557,7 +558,7 @@ impl Handler for RetirementGate {
             context.emit(json!({"state":"watching"})).await?;
             stop.cancelled().await;
             returned.notify_one();
-            Ok(Value::Null)
+            Ok(HandlerValue::Json(Value::Null))
         })
     }
 }

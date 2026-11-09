@@ -138,7 +138,7 @@ async fn read_only_worker(command: Command, deadline: Instant) -> Result<Vec<u8>
             Ok(stdout)
         }
         failure => {
-            child.terminate()?;
+            child.terminate().await?;
             let cleanup = timeout_at(deadline, child.wait()).await;
             let cause: HostError = match failure {
                 Err(_) => "diagnostic query timed out".into(),

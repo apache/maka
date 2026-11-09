@@ -1119,26 +1119,17 @@ mod tests {
     pub(super) async fn captured_summary_source() -> (
         tempfile::TempDir,
         maka_event_log::root_store::RootStore,
-        maka_event_log::root_store::SessionExecutionLease,
-        maka_event_log::context::semantic::CapturedSource,
+        maka_event_log::root_store::SessionWorkLease,
+        crate::history::preparation_io::PreparationIo,
+        maka_event_log::root_store::WorkEffects,
     ) {
-        let (directory, root) = crate::test_support::root().await;
-        let session = crate::test_support::session(&root, "session").await;
-        let execution = session.execution_scope(None).await.unwrap().accept();
-        let captured = execution
-            .store()
-            .capture_source(maka_event_log::context::semantic::SemanticSelection {
-                session: "session".into(),
-                lineage: None,
-                after: 0,
-                through: 0,
-                before: 1,
-                captured_through: 0,
-                replay: None,
-                prior_unknown: false,
-            })
+        let directory = tempfile::tempdir().unwrap();
+        let root = crate::history::test_support::open(directory.path(), false).await;
+        root.create_session("session", "summary fixture", &serde_json::json!({}), 1)
             .await
             .unwrap();
-        (directory, root, execution, captured)
+        let (_store, work, effects) = crate::history::test_support::work(&root).await;
+        let io = crate::history::preparation_io::PreparationIo::new(&work.store()).unwrap();
+        (directory, root, work, io, effects)
     }
 }

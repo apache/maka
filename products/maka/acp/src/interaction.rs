@@ -150,9 +150,11 @@ mod tests {
     }
     pub(super) fn snapshot(request: InteractionRequest) -> InteractionRecord {
         InteractionRecord {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
+            execution: maka_agent_facts::durable::ExecutionIdentity {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: maka_agent_facts::durable::RunId::new(),
+            },
             request_id: "interaction".into(),
             created_at: 0,
             request,

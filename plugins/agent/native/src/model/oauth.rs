@@ -323,7 +323,7 @@ mod tests {
                     .request(
                         http::Request {
                             url: "https://provider.invalid/refresh".into(),
-                            method: http::Method::Post,
+                            method: maka_plugin_core::http::Method::Post,
                             headers: vec![],
                             body: credential.secret.into_bytes().into(),
                         },
@@ -357,6 +357,18 @@ mod tests {
     }
     struct Remote(Mutex<Option<Exchange>>, u16);
     impl Transport for Remote {
+        fn send_text(
+            &self,
+            _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            _: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async {
+                Err(maka_agent_ports::model::Error::LocalAuthorization(
+                    "this credential exchange has no WebSocket dispatch authority".into(),
+                ))
+            })
+        }
         fn identity(&self) -> u64 {
             self as *const Self as usize as u64
         }

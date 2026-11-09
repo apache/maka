@@ -17,27 +17,58 @@
  * under the License.
  */
 
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
+import { basename, join } from 'node:path';
 
 const control = connect(Number(process.argv[3]), '127.0.0.1');
 await once(control, 'connect');
 const v2 = process.argv[4] === '2';
 const attachments = process.argv[5] === 'attachments';
+const isolatedFixture = process.argv[1] === 'acp-fixture';
 // Mode 3 reproduces legacy peers that echo the requested version with a v1 envelope.
-const record = (value) => appendFileSync(process.argv[2], `${JSON.stringify(value)}\n`);
-const send = (value) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
-const reply = (id, result) => send({ id, result });
-const update = (value) =>
-  send({ method: 'session/update', params: { sessionId: 'acp-persistent', update: value } });
+const trace = join(process.env.TMPDIR, basename(process.argv[2]));
+const record = (value) => appendFileSync(trace, `${JSON.stringify(value)}\n`);
+const send = (value, flushed) =>
+  process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`, flushed);
+const reply = (id, result, flushed) => send({ id, result }, flushed);
+const update = (value, flushed) =>
+  send(
+    { method: 'session/update', params: { sessionId: 'acp-persistent', update: value } },
+    flushed,
+  );
+const selfExit = (phase) => {
+  record({ method: 'self_exit', phase });
+  process.exit(0);
+};
 let model = 'small';
 let callbackPrompt;
 let callbackMode;
 let authentication;
+let waitingForStop = false;
+let clientFiles;
+const requestPermission = () =>
+  send({
+    id: 'permission',
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'acp-persistent',
+      toolCall: { toolCallId: 'permission-tool', title: 'Inspect fixture', status: 'pending' },
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+      ],
+    },
+  });
 createInterface({ input: control }).on('line', (line) => {
-  if (line === 'continue' && authentication !== undefined) reply(authentication, {});
+  if (line === 'continue' && authentication !== undefined) {
+    if (isolatedFixture)
+      writeFileSync(`${process.env.HOME}/.acp-fixture-token`, 'fixture-authenticated\n');
+    reply(authentication, {}, isolatedFixture ? () => selfExit('authentication') : undefined);
+  }
+  if (line === 'continue' && waitingForStop) selfExit('wait');
   if (line === 'cancel-permission') {
     for (let index = 0; index < 64; index++) {
       update({
@@ -63,14 +94,37 @@ const options = () => [
     ],
   },
 ];
-record({ method: 'spawn', pid: process.pid });
+record({
+  method: 'spawn',
+  pid: process.pid,
+  ...(isolatedFixture ? { home: process.env.HOME, cwd: process.cwd() } : {}),
+});
 control.write(`${process.pid}\n`);
 for await (const line of createInterface({ input: process.stdin })) {
   const request = JSON.parse(line);
   record(request);
   const { id, method, params } = request;
   if (method === undefined) {
-    if (request.error) throw new Error(JSON.stringify(request.error));
+    if (request.error) {
+      if (id === 'read-file' && clientFiles?.readTextFile === false) {
+        send({
+          id: 'write-file',
+          method: 'fs/write_text_file',
+          params: {
+            sessionId: 'acp-persistent',
+            path: `${process.cwd()}/written.txt`,
+            content: 'written through Host\n',
+          },
+        });
+        continue;
+      }
+      if (id === 'write-file' && clientFiles?.writeTextFile === false) {
+        writeFileSync(join(process.env.TMPDIR, 'written.txt'), 'private fixture copy\n');
+        requestPermission();
+        continue;
+      }
+      throw new Error(JSON.stringify(request.error));
+    }
     if (id === 'read-file') {
       if (request.result.content !== 'fixture contents\n')
         throw new Error('Host read returned wrong contents');
@@ -117,6 +171,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   switch (method) {
     case 'initialize':
+      clientFiles = { readTextFile: false, writeTextFile: false, ...params.clientCapabilities?.fs };
       reply(
         id,
         v2
@@ -174,7 +229,33 @@ for await (const line of createInterface({ input: process.stdin })) {
       reply(id, { configOptions: options() });
       break;
     case 'session/prompt': {
-      const text = params.prompt.at(-1).text;
+      const text = params.prompt.filter((block) => block.type === 'text').at(-1).text;
+      if (isolatedFixture && text === 'require-login') {
+        const token = readFileSync(`${process.env.HOME}/.acp-fixture-token`, 'utf8');
+        if (token !== 'fixture-authenticated\n') throw new Error('Private profile was not seeded');
+        record({ method: 'profile_seed_read', home: process.env.HOME, authenticated: true });
+      }
+      const context = params.prompt.find(
+        (block) =>
+          block.type === 'text' &&
+          block.text.startsWith('Read the prior conversation from the read-only local file '),
+      );
+      if (context) {
+        const prefix = 'Read the prior conversation from the read-only local file ';
+        const historyFile = JSON.parse(
+          context.text.slice(
+            prefix.length,
+            context.text.indexOf(' before handling the current user message.'),
+          ),
+        );
+        record({
+          method: 'private_context',
+          cwd: process.cwd(),
+          home: process.env.HOME,
+          historyFile,
+          history: readFileSync(historyFile, 'utf8'),
+        });
+      }
       if (v2) {
         reply(id, { messageId: `user-${text}` });
         update({
@@ -213,6 +294,19 @@ for await (const line of createInterface({ input: process.stdin })) {
       }
       if (text === 'lose') process.exit(0);
       if (text === 'wait') {
+        if (isolatedFixture && v2) {
+          waitingForStop = true;
+          process.once('SIGTERM', () => selfExit('wait'));
+          for (let index = 0; index < 300; index++) {
+            update({
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'wait-progress',
+              name: 'Wait for stop',
+              status: 'in_progress',
+              rawOutput: `stop-prefix ${index}\n`,
+            });
+          }
+        }
         control.write('waiting\n');
         break;
       }
@@ -251,14 +345,21 @@ for await (const line of createInterface({ input: process.stdin })) {
           messageId: `answer-${text}`,
           content: { type: 'text', text },
         });
-        update({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+        update(
+          { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' },
+          isolatedFixture && text === 'require-login' ? () => selfExit('prompt') : undefined,
+        );
       } else {
         update({
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: 'answer ' },
         });
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
-        reply(id, { stopReason: 'end_turn' });
+        reply(
+          id,
+          { stopReason: 'end_turn' },
+          isolatedFixture && text === 'require-login' ? () => selfExit('prompt') : undefined,
+        );
       }
       break;
     }

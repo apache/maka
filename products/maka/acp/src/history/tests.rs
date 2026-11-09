@@ -24,20 +24,42 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, future::ready};
 
 fn position(sequence: u64) -> RowPosition {
-    RowPosition {
-        source_sequence: sequence,
+    // Allocate each fixture source once; fragments and retries reuse its address.
+    RowPosition::Live {
+        sequence,
+        fact: maka_agent_facts::durable::FactId::new(),
         item_index: 0,
     }
 }
 
-fn chunk(sequence: u64, role: &str, tool: &str, offset: u64, text: &str) -> HistoryChunk {
+fn chunk(
+    position: &RowPosition,
+    call: &RowPosition,
+    role: &str,
+    tool: &str,
+    offset: u64,
+    text: &str,
+) -> HistoryChunk {
+    let RowPosition::Live {
+        sequence,
+        item_index,
+        ..
+    } = position
+    else {
+        panic!("these fixtures contain only live history sources");
+    };
+    let order = maka_agent_ports::session::history::HistoryOrder {
+        path: vec![*sequence],
+        item_index: *item_index,
+    };
     serde_json::from_value(json!({
-        "field":"body", "messageId":if role == "tool_call" { tool.to_owned() } else { format!("result-{sequence}") }, "turnId":"turn", "timestamp":1,
-        "role":role, "order":position(sequence), "position":position(sequence), "offset":offset, "totalBytes":6, "text":text,
+        "field":"body", "messageId":null, "turnId":"turn", "timestamp":1,
+        "importedTurn":null, "runId":null,
+        "role":role, "order":order, "position":position, "offset":offset, "totalBytes":6, "text":text,
         "tool":{"toolUseId":tool,
-            "call":{"position":position(if role == "tool_call" { sequence } else { sequence - 1 }),"name":"Read",
+            "call":{"position":call,"name":"Read",
                 "ancestorToolUseIds":[],"origin":"provider","title":null,"pending":role == "tool_call","dispatched":role == "tool_result"},
-            "result":if role == "tool_result" { json!({"position":position(sequence),"settlement":"returned",
+            "result":if role == "tool_result" { json!({"position":position,"settlement":"returned",
                 "isError":false,"image":false,"images":0}) } else { Value::Null }
         }
     })).unwrap()
@@ -45,31 +67,36 @@ fn chunk(sequence: u64, role: &str, tool: &str, offset: u64, text: &str) -> Hist
 
 fn page(through: u64, chunks: Vec<HistoryChunk>, after: Option<Cursor>) -> HistoryPage {
     HistoryPage::Ready {
-        through,
+        through: Some(through),
         chunks,
         before: None,
         after,
     }
 }
 
-fn round_pages(after: u64, tool: &str) -> VecDeque<HistoryPage> {
+fn round_pages(
+    through: u64,
+    tool: &str,
+    call: &RowPosition,
+    result: &RowPosition,
+) -> VecDeque<HistoryPage> {
     let cursor = Cursor {
-        position: position(after + 2),
+        position: result.clone(),
         field: HistoryField::Body,
         offset: 3,
     };
     VecDeque::from([
         page(
-            after + 10,
+            through,
             vec![
-                chunk(after + 1, "tool_call", tool, 0, "intent"),
-                chunk(after + 2, "tool_result", tool, 0, "abc"),
+                chunk(call, call, "tool_call", tool, 0, "intent"),
+                chunk(result, call, "tool_result", tool, 0, "abc"),
             ],
             Some(cursor),
         ),
         page(
-            after + 10,
-            vec![chunk(after + 2, "tool_result", tool, 3, "def")],
+            through,
+            vec![chunk(result, call, "tool_result", tool, 3, "def")],
             None,
         ),
     ])
@@ -82,10 +109,12 @@ async fn subsequent_tool_rounds_read_only_new_pages_and_publish_complete_results
     let mut reads = 0;
     for round in 0..3 {
         let tool = format!("read-{round}");
-        let mut pages = round_pages(through, &tool);
+        let call = position(through + 1);
+        let result = position(through + 2);
+        let mut pages = round_pages(through + 10, &tool, &call, &result);
         let start = through + 1;
         let cursor = Cursor {
-            position: position(through + 2),
+            position: result.clone(),
             field: HistoryField::Body,
             offset: 3,
         };
@@ -140,7 +169,9 @@ async fn subsequent_tool_rounds_read_only_new_pages_and_publish_complete_results
 
 #[tokio::test]
 async fn failed_page_does_not_return_progress_and_retry_replays_every_fragment() {
-    let mut pages = round_pages(10, "read");
+    let call = position(11);
+    let result_position = position(12);
+    let mut pages = round_pages(20, "read", &call, &result_position);
     let first = pages.pop_front().unwrap();
     let mut replies = VecDeque::from([Ok(first), Err("page unavailable".into())]);
     let result = since_with(|_, _| ready(replies.pop_front().unwrap()), 20, 10).await;
@@ -148,7 +179,7 @@ async fn failed_page_does_not_return_progress_and_retry_replays_every_fragment()
         result.is_err(),
         "a partial snapshot cannot acknowledge its fence"
     );
-    let mut pages = round_pages(10, "read");
+    let mut pages = round_pages(20, "read", &call, &result_position);
     let mut positions = Vec::new();
     let snapshot = since_with(
         |_, requested| {
@@ -175,17 +206,19 @@ async fn failed_page_does_not_return_progress_and_retry_replays_every_fragment()
 #[tokio::test]
 async fn terminal_without_result_refreshes_late_dispatch_before_marking_failed() {
     let mut projection = Projection::default();
+    let call = position(1);
+    let unrelated = position(2199);
     projection
-        .chunk(&chunk(1, "tool_call", "old", 0, "intent"))
+        .chunk(&chunk(&call, &call, "tool_call", "old", 0, "intent"))
         .unwrap();
     let pending: Vec<_> = projection.unsettled_tool_positions().collect();
     assert_eq!(
         pending,
-        vec![position(1)],
+        vec![call.clone()],
         "finish must refresh a dispatched call even without its final stream frame"
     );
-    let call = pending[0];
-    let mut first = chunk(1, "tool_call", "old", 0, "int");
+    let call = pending[0].clone();
+    let mut first = chunk(&call, &call, "tool_call", "old", 0, "int");
     first.tool.as_mut().unwrap().call.as_mut().unwrap().title = Some(Box::new(
         maka_agent_facts::display::Text::plain("Read workspace"),
     ));
@@ -197,24 +230,34 @@ async fn terminal_without_result_refreshes_late_dispatch_before_marking_failed()
         .as_mut()
         .unwrap()
         .presentation = Some("workspace.read".into());
-    let mut second = chunk(1, "tool_call", "old", 3, "ent");
+    let mut second = chunk(&call, &call, "tool_call", "old", 3, "ent");
     second.tool = first.tool.clone();
     let cursor = Cursor {
-        position: call,
+        position: call.clone(),
         field: HistoryField::Body,
         offset: 3,
     };
     let mut pages = VecDeque::from([
-        page(2200, vec![first], Some(cursor)),
+        page(2200, vec![first], Some(cursor.clone())),
         page(
             2200,
-            vec![second, chunk(2199, "tool_call", "unrelated", 0, "intent")],
+            vec![
+                second,
+                chunk(
+                    &unrelated,
+                    &unrelated,
+                    "tool_call",
+                    "unrelated",
+                    0,
+                    "intent",
+                ),
+            ],
             None,
         ),
     ]);
     let mut expected = VecDeque::from([
         HistoryPosition::Row {
-            position: call,
+            position: call.clone(),
             field: HistoryField::Body,
         },
         HistoryPosition::After { cursor },
@@ -227,7 +270,7 @@ async fn terminal_without_result_refreshes_late_dispatch_before_marking_failed()
         },
         Some(2200),
         HistoryPosition::Row {
-            position: call,
+            position: call.clone(),
             field: HistoryField::Body,
         },
         Some(call),

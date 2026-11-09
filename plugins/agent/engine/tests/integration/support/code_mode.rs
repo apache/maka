@@ -17,104 +17,12 @@
  * under the License.
  */
 
-use super::invocation;
-
-use crate::support::store::SessionFixture;
-use maka_agent_engine::RunInput;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
-use maka_tools::{
-    ToolCatalog, ToolDefinition, ToolHandler, ToolMode, ToolNesting, ToolRegistration,
-    ToolSemantics,
-};
 use serde_json::{Value, json};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::sync::Barrier;
-use tokio_util::sync::CancellationToken;
 
 pub const CODE: &str =
     "text(await Promise.all([tools.left({value:21}), tools.right({value:42})]));";
-
-pub struct Effects {
-    pub log: Arc<SessionFixture>,
-    pub count: Arc<AtomicUsize>,
-    pub together: Arc<Barrier>,
-}
-impl ToolExecutor for Effects {
-    fn names(&self) -> Vec<String> {
-        vec!["left".into(), "right".into()]
-    }
-    fn invoke(&self, name: String, input: Value, _: CancellationToken) -> ToolFuture {
-        let log = self.log.clone();
-        let count = self.count.clone();
-        let together = self.together.clone();
-        Box::pin(async move {
-            let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-            let dispatches: Vec<_> =
-                prefix
-                    .events
-                    .iter()
-                    .filter_map(|event| {
-                        match &event.event.fact {
-                    Fact::ToolDispatched {
-                        operation_id,
-                        name: actual,
-                        ..
-                    } if actual == &name && !prefix.events.iter().any(|settled| matches!(
-                        &settled.event.fact, Fact::ToolSettled { operation_id: settled_id, .. }
-                        if settled_id == operation_id
-                    )) => Some((operation_id, &event.event.invocation)),
-                    _ => None,
-                }
-                    })
-                    .collect();
-            assert_eq!(
-                dispatches.len(),
-                1,
-                "effect must have exactly one unsettled committed T1"
-            );
-            assert_eq!(dispatches[0].1.invocation_id, "invocation-first");
-            assert!(!prefix.events.iter().any(|event| matches!(
-                &event.event.fact, Fact::ToolSettled { operation_id, .. }
-                if operation_id == dispatches[0].0
-            )));
-            count.fetch_add(1, Ordering::SeqCst);
-            // A serial dispatcher cannot finish: both effects must be in flight.
-            together.wait().await;
-            Ok(input)
-        })
-    }
-}
-
-pub fn input(base: &str, suffix: &str, effects: Arc<Effects>) -> RunInput {
-    let tools = ToolCatalog::new(["left", "right"].map(|name| ToolRegistration {
-        definition: ToolDefinition {
-            freeform: None, output_schema: None, provider: None,
-            name: name.into(),
-            description: format!("fixture {name}"),
-            input_schema: json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"],"additionalProperties":false}),
-        },
-        nesting: ToolNesting::Nestable,
-        semantics: ToolSemantics::Parallel,
-        handler: ToolHandler::Immediate(effects.clone()),
-    })).unwrap();
-    let mut input = invocation::input(
-        base,
-        suffix,
-        maka_agent_engine::RunWork::Message {
-            source_messages: Vec::new(),
-            message: format!("question {suffix}").into(),
-            tools,
-        },
-    );
-    input.provider.auth = maka_model::ProviderAuth::ApiKey("fixture-secret".into());
-    input.configuration.tool_mode = ToolMode::CodeMode;
-    input
-}
 
 pub async fn read_request(socket: &mut TcpStream) -> Value {
     super::http::read_request(socket).await

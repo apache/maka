@@ -85,6 +85,16 @@ pub struct HistoryCheckpointHead {
     pub revision: Uuid,
     pub manifest: HistoryCheckpointObject,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryCheckpointSnapshot")]
+pub struct HistoryCheckpointSnapshot {
+    pub object: HistoryCheckpointObject,
+    /// Exact Agent archive inventory descriptor bytes, not execution authority.
+    pub inventory: Vec<u8>,
+    /// Exact Agent source-cut descriptor bytes. Never a Root/Session capability.
+    pub cut: Vec<u8>,
+}
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryCheckpointInventory")]
@@ -157,11 +167,10 @@ pub struct HistoryCheckpointRead {
 )]
 #[schemars(rename = "AgentHistoryCheckpointFrame")]
 pub enum HistoryCheckpointFrame {
-    /// MAKA-SESSION v2 history bytes follow; Workspace objects are separate.
+    /// Versioned Agent snapshot archive bytes follow; Workspace objects are separate.
     Checkpoint {
         head: HistoryCheckpointHead,
-        inventory: HistoryCheckpointInventory,
-        bundle: HistoryCheckpointObject,
+        history: HistoryCheckpointSnapshot,
         workspace: Option<CheckpointWorkspaceSnapshot>,
     },
     Chunk {
@@ -243,12 +252,51 @@ pub struct CheckpointHistoryRead {
     pub position: super::HistoryPosition,
     #[serde(default)]
     pub include_thinking: bool,
+    #[serde(default)]
+    pub view: super::HistoryView,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointSourceRead")]
+pub struct CheckpointSourceRead {
+    pub inspection: CheckpointInspection,
+    pub address: maka_agent_ports::session::history::HistoryRowAddress,
+    pub field: maka_agent_ports::session::history::SourceField,
+    #[serde(default)]
+    pub path: Option<Vec<maka_agent_ports::session::history::SourceSegment>>,
+    pub position: maka_agent_ports::session::history::SourcePosition,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointToolImageRead")]
+pub struct CheckpointToolImageRead {
+    pub inspection: CheckpointInspection,
+    pub position: super::HistoryRowAddress,
+    #[serde(default)]
+    pub image: Option<u32>,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointAttachmentImageRead")]
+pub struct CheckpointAttachmentImageRead {
+    pub inspection: CheckpointInspection,
+    pub position: super::HistoryRowAddress,
+    pub attachment_index: u32,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCheckpointArtifactsRead")]
 pub struct CheckpointArtifactsRead {
     pub inspection: CheckpointInspection,
+    /// Original historical marker path, validated from the inspection root.
+    #[serde(default)]
+    pub path: Vec<maka_agent_facts::durable::RunId>,
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
@@ -259,6 +307,8 @@ pub struct CheckpointArtifactsRead {
 #[schemars(rename = "AgentCheckpointArtifactRead")]
 pub struct CheckpointArtifactRead {
     pub inspection: CheckpointInspection,
+    #[serde(default)]
+    pub path: Vec<maka_agent_facts::durable::RunId>,
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(length(min = 1))]

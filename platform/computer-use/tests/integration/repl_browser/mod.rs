@@ -133,7 +133,11 @@ async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement()
             .await
             .invoke(
                 serde_json::from_value(json!({"method":"listWindows","options":{}})).unwrap(),
-                &maka_computer_use::InvocationContext::new("linux-gtk-snapshot", "fixture-turn"),
+                &maka_computer_use::InvocationContext::new(
+                    "linux-gtk-snapshot",
+                    "fixture-turn",
+                    maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                ),
                 &CancellationToken::new(),
                 Language::En,
             )
@@ -256,6 +260,7 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
                     &maka_computer_use::InvocationContext::new(
                         "linux-wheel-fixture",
                         "fixture-turn",
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
                     ),
                     &CancellationToken::new(),
                     Language::En,
@@ -575,7 +580,11 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let windows = native
         .invoke(
             serde_json::from_value(json!({"method":"listWindows","options":{}})).unwrap(),
-            &maka_computer_use::InvocationContext::new("browser-fixture", "fixture-turn"),
+            &maka_computer_use::InvocationContext::new(
+                "browser-fixture",
+                "fixture-turn",
+                maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            ),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )

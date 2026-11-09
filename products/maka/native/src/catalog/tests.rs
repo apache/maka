@@ -19,7 +19,7 @@
 
 use super::*;
 use futures_util::future::BoxFuture;
-use maka_agent_ports::model::{Connect, Error, Socket};
+use maka_agent_ports::model::{Connect, Error, Socket, TextStream};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Mutex};
@@ -87,6 +87,9 @@ impl Transport for Script {
         })
     }
     fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
+        Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
+    }
+    fn send_text(&self, _: Arc<dyn Socket>, _: TextStream) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
     }
 }
@@ -522,6 +525,9 @@ impl Transport for Closing {
     fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
         Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
     }
+    fn send_text(&self, _: Arc<dyn Socket>, _: TextStream) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
+    }
 }
 struct PendingBody {
     entered: Arc<Semaphore>,
@@ -668,6 +674,9 @@ impl Transport for RawResponse {
         })
     }
     fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
+        Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
+    }
+    fn send_text(&self, _: Arc<dyn Socket>, _: TextStream) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async { Err(Error::Adapter("catalogs do not use WebSockets".into())) })
     }
 }

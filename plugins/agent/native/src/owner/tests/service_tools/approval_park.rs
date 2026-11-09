@@ -18,124 +18,138 @@
  */
 
 use super::*;
+use maka_agent_authority::permissions::Access;
 use maka_agent_engine::ModelSource;
+use maka_agent_facts::durable::{
+    AcceptedResult, AuthorizationObligation, Fact, FactId, RunId, Terminal, ToolKey, WaitReason,
+};
+use maka_agent_facts::model::ModelPart;
+use maka_agent_state::fold::RunView;
 
 async fn diagnostic_state(fixture: &Fixture, session: &str) -> String {
     let events = stored_facts(fixture, session).await;
-    let count = |kind| {
-        events
-            .iter()
-            .filter(|event| event.event.fact.kind() == kind)
-            .count()
-    };
-    let terminal = events.iter().find_map(|event| match &event.event.fact {
-        Fact::InvocationEnded { outcome } => Some(outcome),
-        _ => None,
-    });
-    let checkpoint = fixture
-        .session(session)
-        .await
-        .native_approval_checkpoint(session)
-        .await
-        .map(|checkpoint| {
-            checkpoint.map(|checkpoint| {
-                (
-                    checkpoint.checkpoint.id,
-                    checkpoint.revoked,
-                    checkpoint.stop_requested,
-                    checkpoint
-                        .pending
-                        .iter()
-                        .map(|pending| {
-                            (pending.operation_id.clone(), pending.interaction_id.clone())
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-        });
-    let kinds = events
-        .iter()
-        .take(64)
-        .map(|event| (event.sequence, event.event.fact.kind()))
-        .collect::<Vec<_>>();
-    let rejected = events
-        .iter()
-        .filter_map(|event| match &event.event.fact {
-            Fact::ToolRejected {
-                operation_id,
-                name,
-                reason,
-                ..
-            } => Some((operation_id, name, reason)),
-            _ => None,
-        })
-        .take(16)
-        .collect::<Vec<_>>();
-    let interactions = fixture
-        .session(session)
-        .await
-        .pending_interactions(session)
-        .await
-        .map(|records| {
-            records
-                .into_iter()
-                .take(16)
-                .map(|record| {
-                    let kind = match record.request {
-                        maka_agent_facts::interaction::InteractionRequest::SessionApproval {
-                            ..
-                        } => "session_approval",
-                        maka_agent_facts::interaction::InteractionRequest::ServiceApproval {
-                            ..
-                        } => "service_approval",
-                        maka_agent_facts::interaction::InteractionRequest::Permissions {
-                            ..
-                        } => "permissions",
-                        maka_agent_facts::interaction::InteractionRequest::Question { .. } => {
-                            "question"
-                        }
-                        maka_agent_facts::interaction::InteractionRequest::Form { .. } => "form",
-                        maka_agent_facts::interaction::InteractionRequest::ClientCapability {
-                            ..
-                        } => "client_capability",
-                        maka_agent_facts::interaction::InteractionRequest::ComputerApp {
-                            ..
-                        } => "computer_app",
-                        maka_agent_facts::interaction::InteractionRequest::SystemPermission {
-                            ..
-                        } => "system_permission",
-                    };
-                    (record.request_id, kind)
-                })
-                .collect::<Vec<_>>()
-        });
+    let view = fixture
+        .owner
+        .durable
+        .frontier(fixture.latest_run(session).await.run)
+        .await;
+    let interactions = fixture.owner.durable.interactions().pending(session).await;
     let runs = fixture.owner.runs.state().await;
     format!(
-        "terminal={terminal:?}, opened={}, T1={}, T2={}, requested={}, completed={}, interrupted={}, kinds={kinds:?}, rejected={rejected:?}, interactions={interactions:?}, checkpoint={checkpoint:?}, fixture_owner_closing={}, control={:?}, preparing={}, retained_cleanup={}",
-        count("invocation_opened"),
-        count("tool_dispatched"),
-        count("tool_settled"),
-        count("model_requested"),
-        count("model_completed"),
-        count("model_interrupted"),
+        "view={view:?}, facts={:?}, interactions={interactions:?}, fixture_owner_closing={}, control={:?}, preparing={}, retained_cleanup={}",
+        events
+            .iter()
+            .take(64)
+            .map(|item| (item.sequence, &item.recorded.fact))
+            .collect::<Vec<_>>(),
         runs.closing,
-        runs.controls
-            .get(session)
-            .map(|control| &control.invocation),
+        runs.controls.get(session).map(|control| &control.execution),
         runs.preparing.contains_key(session),
-        runs.retained_cleanup.contains(session)
+        runs.retained_cleanup.contains_key(session)
     )
+}
+
+#[derive(Debug)]
+struct ApprovalWait {
+    tool: ToolKey,
+    request_id: String,
+}
+
+#[derive(Debug)]
+struct ApprovalPark {
+    view: RunView,
+    pending: Vec<ApprovalWait>,
+}
+
+async fn approval_park(fixture: &Fixture, session: &str) -> Option<ApprovalPark> {
+    let source = fixture.latest_run(session).await;
+    let view = fixture.owner.durable.frontier(source.run).await.unwrap();
+    if view.terminal.is_some() {
+        return None;
+    }
+    let interactions = fixture.owner.durable.interactions();
+    let records = interactions.pending(session).await.unwrap().records;
+    let mut pending = Vec::new();
+    for record in records {
+        assert_eq!(record.execution, source.execution());
+        let binding = interactions
+            .binding(session, &record.request_id)
+            .await
+            .unwrap()
+            .expect("canonical approval retains its original binding");
+        let AuthorizationObligation::Tool { tool } = binding.target else {
+            panic!("service approval must name its original tool");
+        };
+        if view.waits.values().any(|wait| {
+            wait.satisfied.is_none()
+                && wait.cancelled.is_none()
+                && wait.reason
+                    == (WaitReason::Approval {
+                        approval: binding.approval,
+                    })
+        }) {
+            assert_eq!(view.approvals[&binding.approval].tool, tool);
+            pending.push(ApprovalWait {
+                tool,
+                request_id: record.request_id,
+            });
+        }
+    }
+    (!pending.is_empty()).then_some(ApprovalPark { view, pending })
+}
+
+async fn active_spec_refs(
+    fixture: &Fixture,
+    session: &str,
+    owner: &maka_agent_facts::durable::RunOwner,
+) -> Vec<maka_agent_facts::durable::ContentRef> {
+    let runs = fixture
+        .owner
+        .durable
+        .runs(session.to_owned(), None, 256)
+        .await
+        .unwrap();
+    let mut retained = Vec::new();
+    for run in runs {
+        let view = fixture.owner.durable.frontier(run).await.unwrap();
+        if view.spec.owner == *owner && view.terminal.is_none() {
+            retained.push(view.spec_ref.expect("admitted Run retains canonical spec"));
+        }
+    }
+    retained
+}
+
+async fn restored_model(fixture: &Fixture, view: &RunView) -> crate::model::Source {
+    let maka_agent_facts::durable::BackendSpec::Model { descriptor, .. } = &view.spec.backend
+    else {
+        panic!("fixture has a model backend");
+    };
+    let bytes = fixture
+        .owner
+        .durable
+        .content(view.run, descriptor.clone())
+        .await
+        .unwrap();
+    let accepted = crate::model::AcceptedModel::from_backend(&view.spec.backend, &bytes).unwrap();
+    crate::model::Source::restore(
+        fixture.owner.configuration.clone(),
+        fixture.owner.credentials.clone(),
+        accepted,
+        view.spec.session_id.clone(),
+        fixture.owner.revision.clone(),
+    )
+    .unwrap()
 }
 
 async fn next_model_socket(listener: &TcpListener, fixture: &Fixture, session: &str) -> TcpStream {
     eprintln!("approval fixture: waiting next model socket session={session}");
-    let store = fixture.session(session).await;
-    let mut commits = store.subscribe_commits().unwrap();
+    let store = fixture.owner.durable.clone();
+    let mut commits = store.subscribe().unwrap();
     loop {
         let events = stored_facts(fixture, session).await;
         if events
             .iter()
-            .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
+            .any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }))
         {
             panic!(
                 "invocation ended before next model request: {}",
@@ -224,14 +238,16 @@ async fn pending_approval(
     fixture: &Fixture,
     session: &str,
 ) -> maka_agent_facts::interaction::InteractionRecord {
-    let store = fixture.session(session).await;
-    let mut commits = store.subscribe_commits().unwrap();
+    let store = fixture.owner.durable.clone();
+    let mut commits = store.subscribe().unwrap();
     eprintln!("approval fixture: entering pending approval barrier session={session}");
     loop {
         if let Some(record) = store
-            .pending_interactions(session)
+            .interactions()
+            .pending(session)
             .await
             .unwrap()
+            .records
             .into_iter()
             .next()
         {
@@ -244,10 +260,10 @@ async fn pending_approval(
         let ended = stored_facts(fixture, session)
             .await
             .iter()
-            .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }));
+            .any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }));
         let failed = {
             let runs = fixture.owner.runs.state().await;
-            runs.closing || runs.retained_cleanup.contains(session)
+            runs.closing || runs.retained_cleanup.contains_key(session)
         };
         let observed = diagnostic_state(fixture, session).await;
         assert!(
@@ -259,15 +275,12 @@ async fn pending_approval(
     }
 }
 
-async fn parked(
-    fixture: &Fixture,
-    session: &str,
-) -> maka_event_log::native_approvals::NativeApprovalCheckpoint {
-    let store = fixture.session(session).await;
-    let mut commits = store.subscribe_commits().unwrap();
+async fn parked(fixture: &Fixture, session: &str) -> ApprovalPark {
+    let store = fixture.owner.durable.clone();
+    let mut commits = store.subscribe().unwrap();
     eprintln!("approval fixture: entering canonical park wait session={session}");
     loop {
-        if let Some(checkpoint) = store.native_approval_checkpoint(session).await.unwrap() {
+        if let Some(checkpoint) = approval_park(fixture, session).await {
             eprintln!("approval fixture: waiting worker drain session={session}");
             fixture.drained().await;
             eprintln!("approval fixture: worker drain confirmed session={session}");
@@ -280,13 +293,7 @@ async fn parked(
                     .controls
                     .contains_key(session)
             );
-            assert!(
-                store
-                    .native_approval_checkpoint(session)
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
+            assert!(approval_park(fixture, session).await.is_some());
             let observed = fixture
                 .query("observe", json!({"sessionId":session}))
                 .await
@@ -308,10 +315,10 @@ async fn parked(
         let ended = stored_facts(fixture, session)
             .await
             .iter()
-            .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }));
+            .any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }));
         let failed = {
             let runs = fixture.owner.runs.state().await;
-            runs.closing || runs.retained_cleanup.contains(session)
+            runs.closing || runs.retained_cleanup.contains_key(session)
         };
         let observed = diagnostic_state(fixture, session).await;
         assert!(
@@ -339,16 +346,8 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         .await;
         let session = fixture.create("Park original native approval").await;
         let accepted = fixture.send(&session).await.unwrap();
-        let accepted_basis = fixture
-            .owner
-            .runs
-            .state()
-            .await
-            .controls
-            .get(&session)
-            .expect("accepted invocation owns its immutable basis")
-            .basis
-            .clone();
+        let accepted_run = fixture.delivered_run(&accepted).await;
+        let accepted_basis = fixture.latest_run(&session).await.spec;
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         tool_response_input(&mut socket, json!({"amount":7})).await;
@@ -359,49 +358,36 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
         assert_eq!(
-            checkpoint.checkpoint.native_basis,
-            serde_json::to_value(accepted_basis.as_ref()).unwrap(),
+            checkpoint.view.spec,
+            accepted_basis,
             "persistent park must preserve the exact accepted activation basis"
         );
         assert_eq!(
-            checkpoint.checkpoint.invocation.invocation_id,
-            accepted["invocationId"]
+            checkpoint.view.run.to_string(),
+            accepted_run.to_string()
         );
         assert_eq!(checkpoint.pending.len(), 1);
-        assert_eq!(checkpoint.pending[0].interaction_id, approval.request_id);
-        let retained = fixture
-            .store
-            .accepted_execution_references(&fixture.owner.prefix, "fingerprint")
-            .await
-            .unwrap();
-        assert!(
-            retained.contains(
-                checkpoint.checkpoint.native_basis["fingerprint"]
-                    .as_str()
-                    .unwrap()
-            )
-        );
-        assert!(
-            fixture
-                .store
-                .accepted_execution_references("foreign-owner", "fingerprint")
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        let operation = checkpoint.pending[0].operation_id.clone();
+        assert_eq!(checkpoint.pending[0].request_id, approval.request_id);
+        let retained = active_spec_refs(&fixture, &session, &fixture.owner.run_owner()).await;
+        assert!(retained.contains(checkpoint.view.spec_ref.as_ref().unwrap()));
+        let mut foreign = fixture.owner.run_owner();
+        foreign.namespace = id(999);
+        assert!(active_spec_refs(&fixture, &session, &foreign).await.is_empty());
+        let operation = checkpoint.pending[0].tool.clone();
         let before = stored_facts(&fixture, &session).await;
         assert!(
             !before
                 .iter()
-                .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
+                .any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }))
         );
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+        assert!(!before.iter().any(|event| matches!(&event.recorded.fact,
+            Fact::ToolAdmitted { tool } if tool == &operation)));
         assert_eq!(
             before
                 .iter()
-                .filter(|event| matches!(&event.event.fact,
-            Fact::ToolDispatched { operation_id, .. } if operation_id == &operation))
+                .filter(|event| matches!(&event.recorded.fact,
+            Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &operation))
                 .count(),
             1
         );
@@ -417,7 +403,7 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
                 .unwrap();
         }
         for _ in 0..2 {
-            fixture.owner.schedule_activations(now()).await.unwrap();
+            fixture.owner.schedule_ready().await.unwrap();
         }
         assert!(
             fixture
@@ -447,56 +433,49 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
         let events = stored_facts(&fixture, &session).await;
         assert_eq!(counter.effects.load(Ordering::SeqCst), 7);
         assert_eq!(counter.entered.available_permits(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolAdmitted { tool } if tool == &operation)).count(), 1);
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. }))
                 .count(),
             1
         );
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(&event.event.fact,
-            Fact::ToolDispatched { operation_id, .. } if operation_id == &operation))
+                .filter(|event| matches!(&event.recorded.fact,
+            Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &operation))
                 .count(),
             1
         );
         let settlements = events
             .iter()
             .filter(|event| {
-                matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &operation)
+                matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &operation)
             })
             .collect::<Vec<_>>();
         assert_eq!(settlements.len(), 1);
         assert_eq!(
-            settlements[0].event.invocation,
-            checkpoint.checkpoint.invocation
+            settlements[0].recorded.run,
+            checkpoint.view.run
         );
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }))
                 .count(),
             1
         );
         assert!(
-            fixture
-                .session(&session)
-                .await
-                .native_approval_checkpoint(&session)
-                .await
-                .unwrap()
+            approval_park(&fixture, &session).await
                 .is_none()
         );
         assert!(!fixture.owner.runs.state().await.busy(&session));
         assert!(
-            fixture
-                .store
-                .accepted_execution_references(&fixture.owner.prefix, "fingerprint")
-                .await
-                .unwrap()
+            active_spec_refs(&fixture, &session, &fixture.owner.run_owner()).await
                 .is_empty()
         );
         eprintln!("approval fixture: waiting Host shutdown session={session}");
@@ -519,6 +498,7 @@ async fn stopped_parked_approval(disable_model: bool) {
         ).await;
         let session = fixture.create("Stop parked native approval").await;
         let accepted = fixture.send(&session).await.unwrap();
+        let accepted_run = fixture.delivered_run(&accepted).await;
         let mut socket = next_model_socket(&listener, &fixture, &session).await;
         request(&mut socket).await;
         tool_response(&mut socket).await;
@@ -530,25 +510,21 @@ async fn stopped_parked_approval(disable_model: bool) {
         eprintln!("approval fixture: physical park confirmed session={session}");
         if disable_model {
             super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
-            let basis: MessageBasis = serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).unwrap();
-            let source = crate::model::Source::restore(
-                fixture.owner.configuration.clone(), fixture.owner.credentials.clone(),
-                basis.model.unwrap(), session.clone(), fixture.owner.revision.clone(),
-            ).unwrap();
+            let source = restored_model(&fixture, &checkpoint.view).await;
             assert!(source.capture().await.is_err(), "fixture must withdraw model preparation");
         }
         let stopped = fixture.mutation(2, "stop", json!({"sessionId":session,
-            "invocationId":accepted["invocationId"]}), Uuid::new_v4()).await.unwrap();
+            "runId":accepted_run.to_string()}), Uuid::new_v4()).await.unwrap();
         assert_eq!(stopped, json!({"requested":true}));
         let late = fixture.mutation(2, "respond", json!({"sessionId":session,
             "requestId":approval.request_id,"answer":{"kind":"service_approval","decision":"allow"}}),
             Uuid::new_v4()).await.unwrap();
         assert_eq!(late["record"]["outcome"]["kind"], "closure");
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         eprintln!("approval fixture: waiting canonical terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         loop {
-            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { .. })) { break; }
+            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::RunTerminated { .. })) { break; }
             commits.changed().await.unwrap();
             eprintln!("approval fixture: terminal progress session={session}: {}", diagnostic_state(&fixture, &session).await);
         }
@@ -557,11 +533,11 @@ async fn stopped_parked_approval(disable_model: bool) {
         fixture.drained().await;
         eprintln!("approval fixture: worker drain confirmed session={session}");
         let events = stored_facts(&fixture, &session).await;
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &checkpoint.pending[0].tool)).count(), 1);
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         assert_eq!(counter.entered.available_permits(), 0);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -601,22 +577,18 @@ async fn approved_original_native_effect_settles_even_when_next_model_is_unavail
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
         super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
-        let basis: MessageBasis = serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).unwrap();
-        let source = crate::model::Source::restore(
-            fixture.owner.configuration.clone(), fixture.owner.credentials.clone(),
-            basis.model.unwrap(), session.clone(), fixture.owner.revision.clone(),
-        ).unwrap();
+        let source = restored_model(&fixture, &checkpoint.view).await;
         assert!(source.capture().await.is_err());
         fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":approval.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         eprintln!("approval fixture: waiting first physical effect session={session}");
         counter.entered.acquire().await.unwrap().forget();
         eprintln!("approval fixture: first physical effect entered session={session}");
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         eprintln!("approval fixture: waiting canonical terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         loop {
-            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { .. })) { break; }
+            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::RunTerminated { .. })) { break; }
             commits.changed().await.unwrap();
             eprintln!("approval fixture: terminal progress session={session}: {}", diagnostic_state(&fixture, &session).await);
         }
@@ -626,13 +598,13 @@ async fn approved_original_native_effect_settles_even_when_next_model_is_unavail
         eprintln!("approval fixture: worker drain confirmed session={session}");
         let events = stored_facts(&fixture, &session).await;
         assert_eq!(counter.effects.load(Ordering::SeqCst), 5);
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolDispatched { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, outcome: ToolOutcome::Succeeded { .. }, .. }
-                if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &checkpoint.pending[0].tool)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, outcome: AcceptedResult::Succeeded, .. }
+                if tool == &checkpoint.pending[0].tool)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. })).count(), 1);
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -704,8 +676,17 @@ async fn answered_native_approval_starts_while_original_provider_is_still_open()
         fixture.send(&session).await.unwrap();
         let mut socket = responses_http_socket(&listener, &fixture, &session).await;
         request(&mut socket).await;
-        assert!(facts(&fixture, &session).await.iter().any(|fact| matches!(fact,
-            Fact::ModelRequested { item_acceptance: true, .. })), "the real provider must support accepted items before physical closure");
+        let source = fixture.latest_run(&session).await;
+        let step = facts(&fixture, &session).await.into_iter().find_map(|fact| match fact {
+            Fact::ModelAttemptPrepared { step, .. } => Some(step),
+            _ => None,
+        }).expect("real provider request is prepared");
+        let request_spec = fixture.owner.durable.request(source.run, step).await.unwrap();
+        let frozen: Value = serde_json::from_slice(
+            &fixture.owner.durable.content(source.run, request_spec.request).await.unwrap()
+        ).unwrap();
+        assert_eq!(frozen["itemAcceptance"], true,
+            "the real provider must support accepted items before physical closure");
         let call = json!({"type":"function_call","id":"item_counter","call_id":"counter-call",
             "name":"Counter","arguments":json!({"amount":3}).to_string()});
         let first = responses_events(&[
@@ -727,7 +708,7 @@ async fn answered_native_approval_starts_while_original_provider_is_still_open()
         counter.entered.acquire().await.unwrap().forget();
         eprintln!("approval fixture: first physical effect entered session={session}");
         assert_eq!(counter.effects.load(Ordering::SeqCst), 3);
-        assert!(fixture.session(&session).await.native_approval_checkpoint(&session).await.unwrap().is_none());
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: releasing provider body tail session={session}");
         socket.write_all(tail.as_bytes()).await.unwrap();
         eprintln!("approval fixture: provider body tail released session={session}");
@@ -744,7 +725,7 @@ async fn answered_native_approval_starts_while_original_provider_is_still_open()
         eprintln!("approval fixture: waiting worker drain session={session}");
         fixture.drained().await;
         eprintln!("approval fixture: worker drain confirmed session={session}");
-        assert_eq!(facts(&fixture, &session).await.iter().filter(|fact| matches!(fact, Fact::InvocationOpened { .. })).count(), 1);
+        assert_eq!(facts(&fixture, &session).await.iter().filter(|fact| matches!(fact, Fact::RunAdmitted { .. })).count(), 1);
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -768,6 +749,7 @@ async fn restarted_approval(opaque_native_binding: bool) {
         ).await;
         let session = fixture.create("Restore original parked native approval").await;
         let accepted = fixture.send(&session).await.unwrap();
+        let accepted_run = fixture.delivered_run(&accepted).await;
         let mut socket = next_model_socket(&listener, &fixture, &session).await;
         request(&mut socket).await;
         tool_response_input(&mut socket, json!({"amount":7})).await;
@@ -783,16 +765,18 @@ async fn restarted_approval(opaque_native_binding: bool) {
         eprintln!("approval fixture: Host shutdown complete session={session}");
         // Use the real exclusive startup recovery, before creating the new Host.
         eprintln!("approval fixture: waiting startup recovery session={session}");
-        assert_eq!(fixture.store.recover_invocations().await.unwrap(), 0);
+        let before_recovery = fixture.recorded_facts(&session).await;
+        fixture.owner.durable.rebuild(fixture.latest_run(&session).await.run).await.unwrap();
+        assert_eq!(fixture.recorded_facts(&session).await, before_recovery);
         eprintln!("approval fixture: startup recovery complete session={session}");
-        let preserved = fixture.session(&session).await.native_approval_checkpoint(&session).await.unwrap().unwrap();
-        assert_eq!(preserved.checkpoint, checkpoint.checkpoint);
-        assert_eq!(preserved.receipt, checkpoint.receipt);
-        assert_eq!(fixture.session(&session).await.interaction(&approval.request_id).await.unwrap().unwrap().outcome, None);
+        let preserved = approval_park(&fixture, &session).await.unwrap();
+        assert_eq!(preserved.view, checkpoint.view);
+        assert_eq!(preserved.view.revision, checkpoint.view.revision);
+        assert_eq!(fixture.owner.durable.interactions().read(&session, &approval.request_id).await.unwrap().unwrap().outcome, None);
 
         eprintln!("approval fixture: constructing fresh Host session={session}");
         let mut native = NativeRegistry::default();
-        provide_all(&mut native).unwrap();
+        provide_all(&mut native, fixture.owner.durable.clone()).unwrap();
         maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
         if opaque_native_binding {
             Setup::native(counter.clone(), true).provide(&mut native);
@@ -809,9 +793,9 @@ async fn restarted_approval(opaque_native_binding: bool) {
         assert_eq!(pending["entries"].as_array().unwrap().len(), 1);
         assert_eq!(pending["entries"][0]["requestId"], approval.request_id);
         let before = stored_facts(&fixture, &session).await;
-        assert_eq!(before.iter().filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. })).count(), 1);
-        assert_eq!(before.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert!(!before.iter().any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })));
+        assert_eq!(before.iter().filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. })).count(), 1);
+        assert_eq!(before.iter().filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. })).count(), 1);
+        assert!(!before.iter().any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })));
 
         let answer = json!({"sessionId":session,"requestId":approval.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}});
@@ -829,29 +813,29 @@ async fn restarted_approval(opaque_native_binding: bool) {
         } else {
             assert_eq!(serde_json::from_str::<Value>(tool_result).unwrap(), json!({"effects":7}));
         }
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         response(&mut socket).await;
         eprintln!("approval fixture: waiting original terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         eprintln!("approval fixture: waiting canonical terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         loop {
-            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { .. })) { break; }
+            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::RunTerminated { .. })) { break; }
             commits.changed().await.unwrap();
             eprintln!("approval fixture: terminal progress session={session}: {}", diagnostic_state(&fixture, &session).await);
         }
         eprintln!("approval fixture: canonical terminal confirmed session={session}");
         let events = stored_facts(&fixture, &session).await;
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. })).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolDispatched { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        let settled = events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).collect::<Vec<_>>();
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. })).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &checkpoint.pending[0].tool)).count(), 1);
+        let settled = events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &checkpoint.pending[0].tool)).collect::<Vec<_>>();
         assert_eq!(settled.len(), 1);
-        assert_eq!(settled[0].event.invocation, checkpoint.checkpoint.invocation);
-        assert_eq!(settled[0].event.invocation.invocation_id, accepted["invocationId"]);
-        assert!(matches!(settled[0].event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. }) != opaque_native_binding);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })).count(), 1);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
+        assert_eq!(settled[0].recorded.run, checkpoint.view.run);
+        assert_eq!(settled[0].recorded.run.to_string(), accepted_run.to_string());
+        assert!(matches!(settled[0].recorded.fact, Fact::ToolResultAccepted { outcome: AcceptedResult::Succeeded, .. }) != opaque_native_binding);
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })).count(), 1);
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -871,20 +855,20 @@ async fn actual_host_restart_rejects_opaque_stale_binding_without_original_effec
 
 struct RejectedPublication {
     rejected: Arc<Semaphore>,
-    event_id: Arc<StdMutex<Option<String>>>,
+    fact_id: Arc<StdMutex<Option<String>>>,
 }
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RejectedPublication {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         #[derive(Default)]
         struct Fields {
             stage: Option<String>,
-            event_id: Option<String>,
+            fact_id: Option<String>,
         }
         impl tracing::field::Visit for Fields {
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
                 match field.name() {
                     "stage" => self.stage = Some(value.into()),
-                    "event_id" => self.event_id = Some(value.into()),
+                    "fact_id" => self.fact_id = Some(value.into()),
                     _ => {}
                 }
             }
@@ -894,8 +878,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RejectedPublicatio
         }
         let mut fields = Fields::default();
         event.record(&mut fields);
-        if fields.stage.as_deref() == Some("native_approval_t2_unconfirmed") {
-            *self.event_id.lock().unwrap() = fields.event_id;
+        if fields.stage.as_deref() == Some("canonical_publication_unconfirmed") {
+            *self.fact_id.lock().unwrap() = fields.fact_id;
             self.rejected.add_permits(1);
         }
     }
@@ -907,9 +891,9 @@ async fn rejected_original_t2_retains_real_custody_and_retries_same_event_withou
 
     tokio::time::timeout(Duration::from_secs(60), async {
         let rejected = Arc::new(Semaphore::new(0));
-        let event_id = Arc::new(StdMutex::new(None));
+        let fact_id = Arc::new(StdMutex::new(None));
         let subscriber = tracing_subscriber::registry().with(RejectedPublication {
-            rejected: rejected.clone(), event_id: event_id.clone(),
+            rejected: rejected.clone(), fact_id: fact_id.clone(),
         });
         // Tokio's current-thread test keeps the actual worker under this dispatcher.
         let _capture = tracing::subscriber::set_default(subscriber);
@@ -932,20 +916,20 @@ async fn rejected_original_t2_retains_real_custody_and_retries_same_event_withou
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
         let raw = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
-        raw.execute_batch("CREATE TRIGGER reject_native_t2 BEFORE INSERT ON event_log WHEN NEW.kind='tool_settled' BEGIN SELECT RAISE(ABORT, 'fixture original T2 unavailable'); END;").unwrap();
+        raw.execute_batch("CREATE TRIGGER reject_native_t2 BEFORE INSERT ON agent_facts WHEN json_extract((SELECT payload FROM contents WHERE id=NEW.body_content_id), '$.fact.kind')='tool_result_accepted' BEGIN SELECT RAISE(ABORT, 'fixture original T2 unavailable'); END;").unwrap();
         fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":approval.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         rejected.acquire().await.unwrap().forget();
-        let original_t2 = event_id.lock().unwrap().clone().expect("failed exact original T2 identity");
+        let original_t2 = fact_id.lock().unwrap().clone().expect("failed exact original T2 identity");
         assert_eq!(counter.effects.load(Ordering::SeqCst), 3);
         assert_eq!(counter.entered.available_permits(), 1);
         let before = stored_facts(&fixture, &session).await;
-        assert!(!before.iter().any(|event| matches!(event.event.fact, Fact::ToolSettled { .. } | Fact::InvocationEnded { .. })));
+        assert!(!before.iter().any(|event| matches!(event.recorded.fact, Fact::ToolResultAccepted { .. } | Fact::RunTerminated { .. })));
         {
             let runs = fixture.owner.runs.state().await;
-            assert_eq!(runs.controls[&session].invocation, checkpoint.checkpoint.invocation);
+            assert_eq!(runs.controls[&session].execution.run_id, checkpoint.view.run);
             assert!(!runs.closing);
-            assert!(!runs.retained_cleanup.contains(&session));
+            assert!(!runs.retained_cleanup.contains_key(&session));
         }
         assert!(matches!(fixture.store.finish_session_retirement(&session).await,
             Err(maka_event_log::StoreError::SessionBusy)), "actual exclusive Work gate must reject retirement while original T2 is retained");
@@ -959,15 +943,19 @@ async fn rejected_original_t2_retains_real_custody_and_retries_same_event_withou
         fixture.drained().await;
         eprintln!("approval fixture: worker drain confirmed session={session}");
         let events = stored_facts(&fixture, &session).await;
-        let settlements = events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).collect::<Vec<_>>();
+        let settlements = events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &checkpoint.pending[0].tool)).collect::<Vec<_>>();
         assert_eq!(settlements.len(), 1);
-        assert_eq!(settlements[0].event.id, original_t2);
+        assert_eq!(settlements[0].recorded.id.to_string(), original_t2);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::HostToolResultRecorded { tool, .. } if tool == &checkpoint.pending[0].tool)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolAdmitted { tool } if tool == &checkpoint.pending[0].tool)).count(), 1);
         assert_eq!(counter.effects.load(Ordering::SeqCst), 3);
         assert_eq!(counter.entered.available_permits(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolDispatched { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &checkpoint.pending[0].tool)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })).count(), 1);
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -1029,9 +1017,9 @@ async fn permission_revocation_after_park_fences_late_allow_and_settles_original
         assert_eq!(
             observed
                 .iter()
-                .filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, outcome: ToolOutcome::Failed { .. } }
-                if operation_id == &checkpoint.pending[0].operation_id))
+                .filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, outcome: AcceptedResult::Rejected, .. }
+                if tool == &checkpoint.pending[0].tool))
                 .count(),
             1
         );
@@ -1045,7 +1033,7 @@ async fn permission_revocation_after_park_fences_late_allow_and_settles_original
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. }))
                 .count(),
             1
         );
@@ -1053,23 +1041,16 @@ async fn permission_revocation_after_park_fences_late_allow_and_settles_original
             events
                 .iter()
                 .filter(|event| matches!(
-                    event.event.fact,
-                    Fact::InvocationEnded {
-                        outcome: maka_agent_facts::event::InvocationOutcome::Completed
+                    event.recorded.fact,
+                    Fact::RunTerminated {
+                        terminal: Terminal::Completed,
+                        ..
                     }
                 ))
                 .count(),
             1
         );
-        assert!(
-            fixture
-                .session(&session)
-                .await
-                .native_approval_checkpoint(&session)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -1112,21 +1093,21 @@ async fn partial_approval_batch_executes_ready_original_call_and_reparks_remaini
         assert_eq!(original.pending.len(), 2);
         assert_eq!(counter.entered.available_permits(), 0);
         let first = &original.pending[0];
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         fixture
             .mutation(
                 2,
                 "respond",
-                json!({"sessionId":session,"requestId":first.interaction_id,
+                json!({"sessionId":session,"requestId":first.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}),
                 Uuid::new_v4(),
             )
             .await
             .unwrap();
         let remaining = loop {
-            if let Some(checkpoint) = store.native_approval_checkpoint(&session).await.unwrap()
-                && checkpoint.receipt != original.receipt
+            if let Some(checkpoint) = approval_park(&fixture, &session).await
+                && checkpoint.view.revision != original.view.revision
                 && checkpoint.pending.len() == 1
             {
                 break checkpoint;
@@ -1146,43 +1127,42 @@ async fn partial_approval_batch_executes_ready_original_call_and_reparks_remaini
                 .contains_key(&session)
         );
         assert_eq!(
-            remaining.checkpoint.invocation,
-            original.checkpoint.invocation
+            remaining.view.run,
+            original.view.run
         );
-        assert_ne!(remaining.pending[0].operation_id, first.operation_id);
+        assert_ne!(remaining.pending[0].tool, first.tool);
         assert_eq!(counter.entered.available_permits(), 1);
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         let partial = stored_facts(&fixture, &session).await;
         assert_eq!(
             partial
                 .iter()
-                .filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &first.operation_id))
+                .filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &first.tool))
                 .count(),
             1
         );
         assert_eq!(
             partial
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::ToolResultAccepted { .. }))
                 .count(),
             1
         );
         assert_eq!(
             partial
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. }))
                 .count(),
             1
         );
         assert!(
             !partial
                 .iter()
-                .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
+                .any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }))
         );
         assert!(
-            store
-                .interaction(&remaining.pending[0].interaction_id)
+            store.interactions().read(&session, &remaining.pending[0].request_id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1194,7 +1174,7 @@ async fn partial_approval_batch_executes_ready_original_call_and_reparks_remaini
             .mutation(
                 2,
                 "respond",
-                json!({"sessionId":session,"requestId":remaining.pending[0].interaction_id,
+                json!({"sessionId":session,"requestId":remaining.pending[0].request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}),
                 Uuid::new_v4(),
             )
@@ -1221,7 +1201,7 @@ async fn partial_approval_batch_executes_ready_original_call_and_reparks_remaini
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. }))
                 .count(),
             1
         );
@@ -1229,33 +1209,30 @@ async fn partial_approval_batch_executes_ready_original_call_and_reparks_remaini
             assert_eq!(
                 events
                     .iter()
-                    .filter(|event| matches!(&event.event.fact,
-                Fact::ToolDispatched { operation_id, .. } if operation_id == &pending.operation_id))
+                    .filter(|event| matches!(&event.recorded.fact,
+                Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &pending.tool))
                     .count(),
                 1
             );
             let settled = events
                 .iter()
                 .filter(|event| {
-                    matches!(&event.event.fact,
-                Fact::ToolSettled { operation_id, .. } if operation_id == &pending.operation_id)
+                    matches!(&event.recorded.fact,
+                Fact::ToolResultAccepted { tool, .. } if tool == &pending.tool)
                 })
                 .collect::<Vec<_>>();
             assert_eq!(settled.len(), 1);
-            assert_eq!(settled[0].event.invocation, original.checkpoint.invocation);
+            assert_eq!(settled[0].recorded.run, original.view.run);
         }
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
+                .filter(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. }))
                 .count(),
             1
         );
         assert!(
-            store
-                .native_approval_checkpoint(&session)
-                .await
-                .unwrap()
+            approval_park(&fixture, &session).await
                 .is_none()
         );
         eprintln!("approval fixture: waiting Host shutdown session={session}");
@@ -1275,9 +1252,15 @@ async fn missing_workspace_marker_after_park_settles_failure_before_effect_or_ne
         let mut setup = Setup::native(counter.clone(), true);
         setup.confirmation = contract::ToolConfirmation::Required;
         let fixture = Fixture::with_services(
-            &format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup),
-        ).await;
-        let session = fixture.create("Reject stale workspace action boundaries").await;
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(setup),
+        )
+        .await;
+        let session = fixture
+            .create("Reject stale workspace action boundaries")
+            .await;
         fixture.send(&session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -1288,18 +1271,40 @@ async fn missing_workspace_marker_after_park_settles_failure_before_effect_or_ne
         eprintln!("approval fixture: waiting physical park session={session}");
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
-        let marker = fixture.workspace.join(maka_fs_tools::workspace::MARKER_FILE);
+        let marker = fixture
+            .workspace
+            .join(maka_fs_tools::workspace::MARKER_FILE);
         let original_marker = std::fs::read(&marker).unwrap();
         std::fs::remove_file(&marker).unwrap();
-        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":approval.request_id,
-            "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
-        eprintln!("approval fixture: waiting canonical terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
+        fixture
+            .mutation(
+                2,
+                "respond",
+                json!({"sessionId":session,"requestId":approval.request_id,
+            "answer":{"kind":"service_approval","decision":"allow"}}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
+        eprintln!(
+            "approval fixture: waiting canonical terminal session={session}: {}",
+            diagnostic_state(&fixture, &session).await
+        );
         loop {
-            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { .. })) { break; }
+            if facts(&fixture, &session)
+                .await
+                .iter()
+                .any(|fact| matches!(fact, Fact::RunTerminated { .. }))
+            {
+                break;
+            }
             commits.changed().await.unwrap();
-            eprintln!("approval fixture: terminal progress session={session}: {}", diagnostic_state(&fixture, &session).await);
+            eprintln!(
+                "approval fixture: terminal progress session={session}: {}",
+                diagnostic_state(&fixture, &session).await
+            );
         }
         eprintln!("approval fixture: canonical terminal confirmed session={session}");
         eprintln!("approval fixture: waiting worker drain session={session}");
@@ -1308,19 +1313,59 @@ async fn missing_workspace_marker_after_park_settles_failure_before_effect_or_ne
         let events = stored_facts(&fixture, &session).await;
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         assert_eq!(counter.entered.available_permits(), 0);
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, outcome: ToolOutcome::Failed { message } }
-                if operation_id == &checkpoint.pending[0].operation_id && message.contains("workspace_unavailable"))).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationEnded {
-            outcome: maka_agent_facts::event::InvocationOutcome::Failed { .. } })).count(), 1);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
+        let failures = events
+            .iter()
+            .filter_map(|event| match &event.recorded.fact {
+                Fact::ToolResultAccepted {
+                    tool,
+                    result,
+                    outcome: AcceptedResult::Rejected,
+                } if tool == &checkpoint.pending[0].tool => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 1);
+        let failure = fixture
+            .owner
+            .durable
+            .content(checkpoint.view.run, failures[0].clone())
+            .await
+            .unwrap();
+        let maka_agent_facts::tool_output::AcceptedToolResult::Rejected { diagnostic } =
+            serde_json::from_slice(&failure).unwrap()
+        else {
+            panic!("workspace validation must prevent the original effect");
+        };
+        assert!(diagnostic.contains("workspace_unavailable"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event.recorded.fact,
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(approval_park(&fixture, &session).await.is_none());
         std::fs::write(marker, original_marker).unwrap();
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
         fixture.config.shutdown().await.unwrap();
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -1350,7 +1395,7 @@ async fn host_shutdown_drains_resumed_effect_and_preserves_unanswered_original_f
         let original = parked(&fixture, &session).await;
         assert_eq!(original.pending.len(), 2);
         let first = &original.pending[0];
-        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":first.interaction_id,
+        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":first.request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         eprintln!("approval fixture: waiting first physical effect session={session}");
         counter.entered.acquire().await.unwrap().forget();
@@ -1366,27 +1411,29 @@ async fn host_shutdown_drains_resumed_effect_and_preserves_unanswered_original_f
             counter.release.add_permits(1);
             shutdown.await.unwrap();
         }
-        let store = fixture.session(&session).await;
-        let remaining = store.native_approval_checkpoint(&session).await.unwrap().unwrap();
-        assert_eq!(remaining.checkpoint.invocation, original.checkpoint.invocation);
+        let store = fixture.owner.durable.clone();
+        let remaining = approval_park(&fixture, &session).await.unwrap();
+        assert_eq!(remaining.view.run, original.view.run);
         assert_eq!(remaining.pending.len(), 1);
-        assert_ne!(remaining.pending[0].operation_id, first.operation_id);
-        assert!(store.interaction(&remaining.pending[0].interaction_id).await.unwrap().unwrap().outcome.is_none());
+        assert_ne!(remaining.pending[0].tool, first.tool);
+        assert!(store.interactions().read(&session, &remaining.pending[0].request_id).await.unwrap().unwrap().outcome.is_none());
         let after_close = stored_facts(&fixture, &session).await;
-        assert_eq!(after_close.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &first.operation_id)).count(), 1);
-        assert_eq!(after_close.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert!(!after_close.iter().any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })));
+        assert_eq!(after_close.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &first.tool)).count(), 1);
+        assert_eq!(after_close.iter().filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. })).count(), 1);
+        assert!(!after_close.iter().any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })));
         eprintln!("approval fixture: waiting startup recovery session={session}");
-        assert_eq!(fixture.store.recover_invocations().await.unwrap(), 0);
+        let before_recovery = fixture.recorded_facts(&session).await;
+        fixture.owner.durable.rebuild(fixture.latest_run(&session).await.run).await.unwrap();
+        assert_eq!(fixture.recorded_facts(&session).await, before_recovery);
         eprintln!("approval fixture: startup recovery complete session={session}");
-        let recovered = store.native_approval_checkpoint(&session).await.unwrap().unwrap();
-        assert_eq!(recovered.receipt, remaining.receipt);
-        assert!(store.interaction(&remaining.pending[0].interaction_id).await.unwrap().unwrap().outcome.is_none());
+        let recovered = approval_park(&fixture, &session).await.unwrap();
+        assert_eq!(recovered.view.revision, remaining.view.revision);
+        assert!(store.interactions().read(&session, &remaining.pending[0].request_id).await.unwrap().unwrap().outcome.is_none());
 
         eprintln!("approval fixture: constructing fresh Host session={session}");
         let mut native = NativeRegistry::default();
-        provide_all(&mut native).unwrap();
+        provide_all(&mut native, fixture.owner.durable.clone()).unwrap();
         maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
         let mut restored_setup = Setup::native(counter.clone(), true);
         restored_setup = restored_setup.with_query(true);
@@ -1401,38 +1448,46 @@ async fn host_shutdown_drains_resumed_effect_and_preserves_unanswered_original_f
         eprintln!("approval fixture: fresh Host ready session={session}");
         let pending = fixture.query("pendingInteractions", json!({"sessionId":session})).await.unwrap();
         assert_eq!(pending["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(pending["entries"][0]["requestId"], remaining.pending[0].interaction_id);
-        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":remaining.pending[0].interaction_id,
+        assert_eq!(pending["entries"][0]["requestId"], remaining.pending[0].request_id);
+        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":remaining.pending[0].request_id,
             "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         let mut socket = next_model_socket(&listener, &fixture, &session).await;
         let prompt = request(&mut socket).await;
         assert_eq!(prompt["messages"].as_array().unwrap().iter().filter(|message| message["role"] == "tool").count(), 2);
-        let mut commits = store.subscribe_commits().unwrap();
+        let mut commits = store.subscribe().unwrap();
         response(&mut socket).await;
         eprintln!("approval fixture: waiting original terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         eprintln!("approval fixture: waiting canonical terminal session={session}: {}", diagnostic_state(&fixture, &session).await);
         loop {
-            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::InvocationEnded { .. })) { break; }
+            if facts(&fixture, &session).await.iter().any(|fact| matches!(fact, Fact::RunTerminated { .. })) { break; }
             commits.changed().await.unwrap();
             eprintln!("approval fixture: terminal progress session={session}: {}", diagnostic_state(&fixture, &session).await);
         }
         eprintln!("approval fixture: canonical terminal confirmed session={session}");
         let events = stored_facts(&fixture, &session).await;
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::InvocationOpened { .. })).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::RunAdmitted { .. })).count(), 1);
         for pending in &original.pending {
-            assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-                Fact::ToolDispatched { operation_id, .. } if operation_id == &pending.operation_id)).count(), 1);
-            let settled = events.iter().filter(|event| matches!(&event.event.fact,
-                Fact::ToolSettled { operation_id, .. } if operation_id == &pending.operation_id)).collect::<Vec<_>>();
+            assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+                Fact::ModelObserved { attempt, part: ModelPart::ToolCall { call }, .. } if &(ToolKey { attempt: *attempt, call: call.id.clone() }) == &pending.tool)).count(), 1);
+            let settled = events.iter().filter(|event| matches!(&event.recorded.fact,
+                Fact::ToolResultAccepted { tool, .. } if tool == &pending.tool)).collect::<Vec<_>>();
             assert_eq!(settled.len(), 1);
-            assert_eq!(settled[0].event.invocation, original.checkpoint.invocation);
+            assert_eq!(settled[0].recorded.run, original.view.run);
         }
-        assert!(events.iter().any(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, outcome: ToolOutcome::Failed { message } }
-                if operation_id == &remaining.pending[0].operation_id && message.contains("stale"))));
+        let failure = events.iter().find_map(|event| match &event.recorded.fact {
+            Fact::ToolResultAccepted { tool, result, outcome: AcceptedResult::Rejected }
+                if tool == &remaining.pending[0].tool => Some(result.clone()),
+            _ => None,
+        }).expect("the stale original binding must settle as a failure");
+        let failure = fixture.owner.durable.content(original.view.run, failure).await.unwrap();
+        let maka_agent_facts::tool_output::AcceptedToolResult::Rejected { diagnostic } =
+            serde_json::from_slice(&failure).unwrap() else {
+                panic!("stale binding must prevent the original effect");
+            };
+        assert!(diagnostic.contains("stale"));
         assert_eq!(counter.entered.available_permits(), 0, "fresh opaque binding must not start another native call");
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
-        assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
+        assert!(approval_park(&fixture, &session).await.is_none());
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
         eprintln!("approval fixture: Host shutdown complete session={session}");
@@ -1470,24 +1525,12 @@ async fn owner_shutdown_retains_blocking_continuation_preparation_and_real_work_
         eprintln!("approval fixture: waiting physical park session={session}");
         let checkpoint = parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
-        // Retire the queue observer before this test admits the same canonical
-        // checkpoint through the real Engine, rather than a fabricated message.
-        fixture.owner.stop.cancel();
-        fixture.owner.producers.close();
-        fixture.owner.producers.wait().await;
-        let store = fixture.session(&session).await;
-        store.commit_interaction_outcome(&approval.request_id,
-            maka_agent_facts::interaction::InteractionAnswer::ServiceApproval {
-                decision: maka_agent_facts::interaction::Decision::Allow,
-            }.into_outcome(now())).await.unwrap();
-        let configuration = store.invocation_configuration(&checkpoint.checkpoint.invocation)
-            .await.unwrap().unwrap();
+        let store = fixture.owner.durable.clone();
         let entered = Arc::new(Semaphore::new(0));
         let observed_stop = Arc::new(Semaphore::new(0));
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (dropped, mut drop_notice) = tokio::sync::oneshot::channel();
-        let shutdown = CancellationToken::new();
-        let preparation_shutdown = shutdown.clone();
+        let preparation_shutdown = fixture.owner.stop.clone();
         let preparation_entered = entered.clone();
         let preparation_observed_stop = observed_stop.clone();
         let continuation = Box::pin(async move {
@@ -1501,42 +1544,38 @@ async fn owner_shutdown_retains_blocking_continuation_preparation_and_real_work_
             job.await.map_err(|error| RunError::Internal(error.to_string()))?;
             Err(RunError::Cancelled)
         });
-        let running = fixture.owner.engine.start_resume(store.clone(), maka_agent_engine::ResumeInput {
-            configuration,
-            checkpoint: checkpoint.clone(),
-            executor: fixture.owner.clone(),
-            host_epoch: fixture.owner.revision.activation.clone(),
-            owner_shutdown: shutdown.clone(),
-            continuation,
-            tool_names: fixture.owner.tools.names().into_iter().collect(),
-        }, CancellationToken::new()).await.unwrap();
+        *fixture.owner.continuation_preparation.lock().unwrap() = Some(continuation);
+        fixture.mutation(2, "respond", json!({"sessionId":session,"requestId":approval.request_id,
+            "answer":{"kind":"service_approval","decision":"allow"}}), Uuid::new_v4()).await.unwrap();
         entered.acquire().await.unwrap().forget();
         assert_eq!(counter.effects.load(Ordering::SeqCst), 1);
-        shutdown.cancel();
-        observed_stop.acquire().await.unwrap().forget();
+        let closing = fixture.owner.close();
+        tokio::pin!(closing);
+        tokio::select! {
+            observed = observed_stop.acquire() => observed.unwrap().forget(),
+            result = &mut closing => panic!("shutdown must retain physical preparation: {result:?}"),
+        }
         assert!(matches!(drop_notice.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
             "owner shutdown must not drop preparation while its blocking job remains physical");
         assert!(matches!(fixture.store.finish_session_retirement(&session).await,
             Err(maka_event_log::StoreError::SessionBusy)), "actual Work pin must remain until preparation joins");
         let before_release = stored_facts(&fixture, &session).await;
-        assert_eq!(before_release.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert!(!before_release.iter().any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })));
+        assert_eq!(before_release.iter().filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. })).count(), 1);
+        assert!(!before_release.iter().any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })));
         release.send(()).unwrap();
-        let completion = running.completion().await;
-        assert!(completion.cleanup.is_ok());
-        let maka_agent_engine::ActivationExit::Parked(receipt) = completion.result.unwrap() else {
-            panic!("drained owner shutdown must retain the original model cursor");
-        };
-        assert_eq!(receipt, checkpoint.receipt);
+        closing.await.unwrap();
+        let remaining = store.frontier(checkpoint.view.run).await.unwrap();
+        assert!(remaining.terminal.is_none(), "drained owner shutdown must retain the original model cursor");
+        assert_eq!(remaining.run, checkpoint.view.run);
         assert!(drop_notice.try_recv().is_ok());
-        let remaining = store.native_approval_checkpoint(&session).await.unwrap().unwrap();
-        assert_eq!(remaining.receipt, checkpoint.receipt);
-        assert!(remaining.pending.is_empty());
+        assert_eq!(remaining.spec, checkpoint.view.spec);
+        assert_eq!(remaining.current_attempt, checkpoint.view.current_attempt);
+        assert!(store.interactions().pending(&session).await.unwrap().records.is_empty());
         let events = stored_facts(&fixture, &session).await;
-        assert_eq!(events.iter().filter(|event| matches!(&event.event.fact,
-            Fact::ToolSettled { operation_id, .. } if operation_id == &checkpoint.pending[0].operation_id)).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.event.fact, Fact::ModelRequested { .. })).count(), 1);
-        assert!(!events.iter().any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. })));
+        assert_eq!(events.iter().filter(|event| matches!(&event.recorded.fact,
+            Fact::ToolResultAccepted { tool, .. } if tool == &checkpoint.pending[0].tool)).count(), 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.recorded.fact, Fact::ModelAttemptPrepared { .. })).count(), 1);
+        assert!(!events.iter().any(|event| matches!(event.recorded.fact, Fact::RunTerminated { .. })));
         assert_eq!(counter.effects.load(Ordering::SeqCst), 1);
         eprintln!("approval fixture: waiting Host shutdown session={session}");
         fixture.app.shutdown().await.unwrap();
@@ -1566,16 +1605,18 @@ async fn frozen_retry_preparation_reacquires_current_ceiling_and_rejects_changed
         tool_response(&mut socket).await;
         pending_approval(&fixture, &session).await;
         let checkpoint = parked(&fixture, &session).await;
-        let invocation = &checkpoint.checkpoint.invocation;
-        let accepted = &checkpoint.checkpoint.native_basis;
-        let accepted_basis =
-            Arc::new(serde_json::from_value::<MessageBasis>(accepted.clone()).unwrap());
+        let accepted = checkpoint.view.spec.clone();
         let cancellation = CancellationToken::new();
-        let original = fixture
-            .owner
-            .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
-            .await
-            .unwrap();
+        let current = fixture.owner.session(&session).await.unwrap();
+        let scope = fixture.owner.current_work_scope(&session, &current.configuration).await.unwrap();
+        let (lease, effects) = scope.accept(cancellation.clone());
+        let claim = fixture.owner.durable.claim(checkpoint.view.run).await.unwrap();
+        let access = fixture.owner.run_access(Arc::new(accepted.clone()), claim, &lease).unwrap();
+        let original = access.live_configuration().await.unwrap();
+        let (original_basis, _) = fixture.owner.restored_data(&checkpoint.view).await.unwrap();
+        drop(access);
+        effects.settle().await.unwrap();
+        lease.finish();
         let current = fixture.owner.session(&session).await.unwrap();
         let boundary_revision = current.configuration.boundary_revision + 1;
         let changed = fixture
@@ -1599,70 +1640,43 @@ async fn frozen_retry_preparation_reacquires_current_ceiling_and_rejects_changed
             changed,
             maka_event_log::sessions::SessionMutation::Committed(_)
         ));
-        let resumed = fixture
-            .owner
-            .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
-            .await
-            .unwrap();
-        assert_eq!(
-            resumed.settings.configuration.sandbox_mode,
-            SandboxMode::ReadOnly
-        );
-        assert_eq!(
-            resumed.settings.configuration.approval_policy,
-            ApprovalPolicy::Never
-        );
-        assert_eq!(
-            resumed.settings.configuration.boundary_revision,
-            boundary_revision
-        );
-        assert_eq!(
-            resumed.settings.configuration.workspace_binding,
-            original.settings.configuration.workspace_binding
-        );
-        assert_eq!(
-            resumed
-                .settings
-                .native_activation_basis
-                .as_ref()
-                .unwrap()
-                .checkpoint_value()
-                .unwrap(),
-            *accepted
-        );
-
-        let mut replaced: MessageBasis = serde_json::from_value(accepted.clone()).unwrap();
-        replaced.binding.id = Uuid::new_v4();
-        let replaced = Arc::new(replaced);
-        assert!(
-            matches!(fixture.owner.prepare_frozen_retry(invocation, replaced, &cancellation).await,
-            Err(RunError::InvalidInput(reason)) if reason == "agent_session_configuration_changed")
-        );
-
-        let mut retired = accepted.clone();
-        retired["background_kind"] = json!({"plan": "approved proposal"});
-        let mut retired: MessageBasis = serde_json::from_value(retired).unwrap();
         let current = fixture.owner.session(&session).await.unwrap();
-        retired.background = Some(contract::ScheduledTarget {
-            session_id: session.clone(),
-            workspace: current.configuration.workspace,
-            permissions: current.configuration.permissions,
-            boundary_revision: current.configuration.boundary_revision,
-            binding: current.configuration.binding,
-        });
-        assert!(
-            matches!(fixture.owner.prepare_frozen_retry(invocation, Arc::new(retired), &cancellation).await,
-            Err(RunError::InvalidInput(reason)) if reason == "plan_disabled")
-        );
+        let scope = fixture.owner.current_work_scope(&session, &current.configuration).await.unwrap();
+        let (lease, effects) = scope.accept(cancellation.clone());
+        let claim = fixture.owner.durable.claim(checkpoint.view.run).await.unwrap();
+        let access = fixture.owner.run_access(Arc::new(accepted.clone()), claim, &lease).unwrap();
+        let resumed = access.live_configuration().await.unwrap();
+        let (resumed_basis, _) = fixture.owner.restored_data(&checkpoint.view).await.unwrap();
+        assert_eq!(resumed.permissions.access, WorkspaceAccess::ReadOnly);
+        assert!(!resumed.permissions.request_permissions);
+        assert_eq!(resumed.boundary_revision, boundary_revision);
+        assert_eq!(resumed.binding, original.binding);
+        assert_eq!(access.spec(), &accepted);
+        assert_eq!(resumed_basis.binding, original_basis.binding);
+        let floor = access.sandbox_floor(&maka_agent_facts::tool_call::ToolOrigin::Standalone).await.unwrap();
+        let maka_sandbox::Sandbox::Managed { filesystem, .. } = floor else {
+            panic!("read-only current ceiling must remain managed");
+        };
+        assert_eq!(filesystem.compile().unwrap().access(&fixture.workspace), maka_sandbox::filesystem::Access::Read);
+
+        let mut replaced = accepted.clone();
+        replaced.permission_basis.binding.id = Uuid::new_v4();
+        let replaced = fixture.owner.run_access(Arc::new(replaced), access.claim().clone(), &lease).unwrap();
+        assert!(matches!(replaced.live_configuration().await,
+            Err(maka_agent_facts::tools::ToolError::Failed(reason)) if reason == "agent_run_spec_mismatch"));
+
+        let mut retired = checkpoint.view.clone();
+        retired.spec.trigger = maka_agent_facts::durable::Trigger::HistorySource;
+        assert!(matches!(fixture.owner.restored_data(&retired).await,
+            Err(error) if matches!(error.cause, RunError::InvalidInput(ref reason)
+                if reason == "Historical source is not executable")));
 
         super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
-        assert!(
-            fixture
-                .owner
-                .prepare_frozen_retry(invocation, accepted_basis.clone(), &cancellation)
-                .await
-                .is_err()
-        );
+        assert!(restored_model(&fixture, &checkpoint.view).await.capture().await.is_err());
+        drop(replaced);
+        drop(access);
+        effects.settle().await.unwrap();
+        lease.finish();
         assert_eq!(
             counter.effects.load(Ordering::SeqCst),
             0,
@@ -1691,84 +1705,38 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         let session = fixture
             .create("Restart due model retry through Native dispatcher")
             .await;
-        fixture.send(&session).await.unwrap();
-        let (prime, basis) = {
-            let runs = fixture.owner.runs.state().await;
-            let control = runs.controls.get(&session).unwrap();
-            (control.invocation.clone(), control.basis.clone())
-        };
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let queued = fixture.send(&session).await.unwrap();
+        let prime = fixture.delivered_run(&queued).await;
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         let mut socket = next_model_socket(&listener, &fixture, &session).await;
         request(&mut socket).await;
         response(&mut socket).await;
         drop(socket);
         loop {
             if stored_facts(&fixture, &session).await.iter().any(|stored| {
-                stored.event.invocation == prime
-                    && matches!(stored.event.fact, Fact::InvocationEnded { .. })
+                stored.recorded.run == prime
+                    && matches!(stored.recorded.fact, Fact::RunTerminated { .. })
             }) {
                 break;
             }
             commits.changed().await.unwrap();
         }
         fixture.drained().await;
-        let configuration = store
-            .invocation_configuration(&prime)
-            .await
-            .unwrap()
-            .unwrap();
         let held_admission = fixture.owner.runs.ordered(&session).await;
-        let identity = Uuid::new_v4();
-        let invocation = maka_agent_facts::event::Invocation {
-            session_id: session.clone(),
-            turn_id: format!("retry-turn-{identity}"),
-            run_id: format!("retry-run-{identity}"),
-            invocation_id: format!("retry-invocation-{identity}"),
-        };
-        let source = crate::model::Source::restore(
-            fixture.owner.configuration.clone(),
-            fixture.owner.credentials.clone(),
-            basis.model.clone().unwrap(),
-            session.clone(),
-            fixture.owner.revision.clone(),
-        )
-        .unwrap();
-        let prepared = source.capture().await.unwrap();
-        let tools = fixture
-            .owner
-            .selected_tools(
-                &session,
-                &basis,
-                configuration.tool_discovery,
-                configuration.editing_tools,
-            )
+        let (invocation, request_fact_id): (RunId, FactId) =
+            fixture.seed_due_model_retry(&session, prime).await;
+        let seeded = store.frontier(invocation).await.unwrap();
+        let seeded_request = store
+            .request(invocation, seeded.current_step.unwrap())
+            .await
             .unwrap();
-        let input = maka_agent_engine::RunInput {
-            invocation: invocation.clone(),
-            model_source: Some(Arc::new(source)),
-            model_revision: Some(prepared.revision),
-            provider_id: prepared.provider_id,
-            context: prepared.context,
-            provider: prepared.provider,
-            provider_options: prepared.options,
-            main_output_limit: prepared.main_output_limit,
-            supports_vision: prepared.supports_vision,
-            request_fingerprint: Some(basis.fingerprint.clone()),
-            native_activation_basis: Some(basis),
-            configuration,
-            work: maka_agent_engine::RunWork::Message {
-                message: "Hello".into(),
-                source_messages: vec![],
-                tools,
-            },
-        };
-        let seeded = maka_agent_engine::retry_fixture::seed_due_model_retry(
-            &fixture.owner.engine,
-            store.clone(),
-            input,
+        let seeded_provenance: Value = serde_json::from_slice(
+            &store
+                .content(invocation, seeded_request.provenance.clone())
+                .await
+                .unwrap(),
         )
-        .await
         .unwrap();
         let deployment = fixture
             .app
@@ -1779,28 +1747,22 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
             .deployment;
         fixture.app.shutdown().await.unwrap();
         drop(held_admission);
-        let preserved = store
-            .activation_checkpoint(&session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(preserved.checkpoint, seeded.checkpoint.checkpoint);
-        assert_eq!(preserved.receipt, seeded.checkpoint.receipt);
-        assert_eq!(fixture.store.recover_invocations().await.unwrap(), 0);
-        let recovered = store
-            .activation_checkpoint(&session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(recovered.checkpoint, seeded.checkpoint.checkpoint);
-        assert_eq!(recovered.receipt, seeded.checkpoint.receipt);
+        let preserved = store.frontier(invocation).await.unwrap();
+        assert_eq!(preserved, seeded);
+        assert_eq!(preserved.revision, seeded.revision);
+        let before_recovery = fixture.recorded_facts(&session).await;
+        store.rebuild(invocation).await.unwrap();
+        assert_eq!(fixture.recorded_facts(&session).await, before_recovery);
+        let recovered = store.frontier(invocation).await.unwrap();
+        assert_eq!(recovered, seeded);
+        assert_eq!(recovered.revision, seeded.revision);
         assert!(
             futures_util::FutureExt::now_or_never(listener.accept()).is_none(),
             "old Host must join without sending the seeded historical request"
         );
 
         let mut native = NativeRegistry::default();
-        provide_all(&mut native).unwrap();
+        provide_all(&mut native, fixture.owner.durable.clone()).unwrap();
         maka_settings_native::provide(&mut native, bundled_catalog()).unwrap();
         fixture.app = Application::start_from_store(
             fixture.store.clone(),
@@ -1815,11 +1777,10 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         fixture.app.ready().await.unwrap();
         let mut socket = loop {
             assert!(
-                !stored_facts(&fixture, &session)
-                    .await
-                    .iter()
-                    .any(|stored| stored.event.invocation == invocation
-                        && matches!(stored.event.fact, Fact::InvocationEnded { .. })),
+                !stored_facts(&fixture, &session).await.iter().any(|stored| {
+                    stored.recorded.run == invocation
+                        && matches!(stored.recorded.fact, Fact::RunTerminated { .. })
+                }),
                 "retry terminated before its actual transport send"
             );
             tokio::select! {
@@ -1833,8 +1794,8 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         drop(socket);
         loop {
             if stored_facts(&fixture, &session).await.iter().any(|stored| {
-                stored.event.invocation == invocation
-                    && matches!(stored.event.fact, Fact::InvocationEnded { .. })
+                stored.recorded.run == invocation
+                    && matches!(stored.recorded.fact, Fact::RunTerminated { .. })
             }) {
                 break;
             }
@@ -1844,61 +1805,66 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         let events: Vec<_> = stored_facts(&fixture, &session)
             .await
             .into_iter()
-            .filter(|stored| stored.event.invocation == invocation)
+            .filter(|stored| stored.recorded.run == invocation)
             .collect();
         let requested: Vec<_> = events
             .iter()
-            .filter(|stored| matches!(stored.event.fact, Fact::ModelRequested { .. }))
+            .filter(|stored| matches!(stored.recorded.fact, Fact::ModelAttemptPrepared { .. }))
             .collect();
         assert_eq!(
             requested.len(),
             2,
             "one historical request and exactly one resumed send"
         );
-        assert_eq!(requested[0].event.id, seeded.request_event_id);
-        assert_ne!(requested[0].event.id, requested[1].event.id);
-        let mut resumed = requested[1].event.fact.clone();
-        match (&requested[0].event.fact, &mut resumed) {
+        assert_eq!(requested[0].recorded.id, request_fact_id);
+        assert_ne!(requested[0].recorded.id, requested[1].recorded.id);
+        let mut resumed = requested[1].recorded.fact.clone();
+        let (original_step, resumed_step) = match (&requested[0].recorded.fact, &mut resumed) {
             (
-                Fact::ModelRequested {
-                    step_id: original_step,
-                    input_digest,
-                    ..
+                Fact::ModelAttemptPrepared {
+                    attempt: original_attempt,
+                    step: original_step,
                 },
-                Fact::ModelRequested {
-                    step_id: resumed_step,
-                    ..
+                Fact::ModelAttemptPrepared {
+                    attempt: resumed_attempt,
+                    step: resumed_step,
                 },
             ) => {
-                assert_ne!(original_step.as_str(), resumed_step.as_str());
-                assert_eq!(input_digest, &seeded.input_digest);
-                *resumed_step = original_step.clone();
+                assert_ne!(*original_attempt, *resumed_attempt);
+                assert_eq!(*original_step, *resumed_step);
+                *resumed_attempt = *original_attempt;
+                (*original_step, *resumed_step)
             }
-            _ => unreachable!("both canonical requests were selected above"),
-        }
+            _ => unreachable!("both canonical attempts were selected above"),
+        };
+        let original_request = store.request(invocation, original_step).await.unwrap();
+        let resumed_request = store.request(invocation, resumed_step).await.unwrap();
+        let provenance: Value = serde_json::from_slice(
+            &store
+                .content(invocation, original_request.provenance.clone())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance["inputDigest"], seeded_provenance["inputDigest"]);
         assert_eq!(
-            requested[0].event.fact, resumed,
+            requested[0].recorded.fact, resumed,
             "frozen source, input and route evidence must be preserved"
         );
-        assert_eq!(
-            store
-                .request_composition(&session, &requested[0].event.id)
-                .await
-                .unwrap()
-                .unwrap(),
-            store
-                .request_composition(&session, &requested[1].event.id)
-                .await
-                .unwrap()
-                .unwrap()
-        );
+        assert_eq!(original_request.composition, resumed_request.composition);
+        assert_eq!(original_request, seeded_request);
+        assert_eq!(resumed_request, seeded_request);
+        assert_eq!(events.iter().filter(|stored| matches!(
+            &stored.recorded.fact,
+            Fact::ModelInterrupted { attempt, .. } if Some(*attempt) == seeded.current_attempt
+        )).count(), 1);
         assert_eq!(
             events
                 .iter()
                 .filter(|stored| matches!(
-                    stored.event.fact,
-                    Fact::ModelInterrupted {
-                        status: maka_agent_facts::event::ModelInterruption::RetryableFailure,
+                    stored.recorded.fact,
+                    Fact::ModelClosed {
+                        outcome: maka_agent_facts::accounting::Outcome::Success,
                         ..
                     }
                 ))
@@ -1908,17 +1874,11 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         assert_eq!(
             events
                 .iter()
-                .filter(|stored| matches!(stored.event.fact, Fact::ModelCompleted { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
-                .iter()
                 .filter(|stored| matches!(
-                    stored.event.fact,
-                    Fact::InvocationEnded {
-                        outcome: maka_agent_facts::event::InvocationOutcome::Completed
+                    stored.recorded.fact,
+                    Fact::RunTerminated {
+                        terminal: Terminal::Completed,
+                        ..
                     }
                 ))
                 .count(),
@@ -1927,21 +1887,23 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
         assert_eq!(
             events
                 .iter()
-                .filter(|stored| matches!(stored.event.fact, Fact::InvocationEnded { .. }))
+                .filter(|stored| matches!(stored.recorded.fact, Fact::RunTerminated { .. }))
                 .count(),
             1
         );
+        assert!(!events.iter().any(|stored| matches!(
+            stored.recorded.fact,
+            Fact::ModelObserved {
+                part: ModelPart::ToolCall { .. },
+                ..
+            }
+        )));
+        let completed = store.frontier(invocation).await.unwrap();
         assert!(
-            !events
-                .iter()
-                .any(|stored| matches!(stored.event.fact, Fact::ToolDispatched { .. }))
-        );
-        assert!(
-            store
-                .activation_checkpoint(&session)
-                .await
-                .unwrap()
-                .is_none()
+            completed
+                .waits
+                .values()
+                .all(|wait| { wait.satisfied.is_some() || wait.cancelled.is_some() })
         );
         assert!(
             futures_util::FutureExt::now_or_never(listener.accept()).is_none(),
@@ -2005,10 +1967,10 @@ async fn closing_session_mcp(mode: McpClose) {
         request(&mut socket).await;
         tool_response(&mut socket).await;
         let approval = pending_approval(&fixture, &session).await;
-        let store = fixture.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
+        let store = fixture.owner.durable.clone();
+        let mut commits = store.subscribe().unwrap();
         let checkpoint = loop {
-            if let Some(checkpoint) = store.native_approval_checkpoint(&session).await.unwrap() {
+            if let Some(checkpoint) = approval_park(&fixture, &session).await {
                 break checkpoint;
             }
             commits.changed().await.unwrap();
@@ -2021,14 +1983,32 @@ async fn closing_session_mcp(mode: McpClose) {
                 closing.close().await.unwrap();
             });
             closed.cleanup.unwrap();
+            let remaining = fixture
+                .owner
+                .durable
+                .frontier(checkpoint.view.run)
+                .await
+                .unwrap();
             assert!(
-                store
-                    .native_approval_checkpoint(&session)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .revoked
+                !fixture.owner.mcp_projects.has_any_client(&session),
+                "closing the original MCP generation must withdraw its live capability"
             );
+            assert!(
+                !remaining.stopped,
+                "Host shutdown must not fabricate a durable Stop"
+            );
+            assert!(remaining.terminal.is_none());
+            assert_eq!(remaining.run, checkpoint.view.run);
+            let pending = store
+                .interactions()
+                .pending(&session)
+                .await
+                .unwrap()
+                .records;
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].request_id, approval.request_id);
+            assert_eq!(pending[0].execution, approval.execution);
+            assert!(pending[0].outcome.is_none());
             assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
             fixture.app.shutdown().await.unwrap();
             fixture.config.shutdown().await.unwrap();
@@ -2040,18 +2020,12 @@ async fn closing_session_mcp(mode: McpClose) {
             .await
             .into_iter()
             .filter(|event| {
-                matches!(&event.event.fact, Fact::ToolSettled { operation_id, .. }
-                if operation_id == &checkpoint.pending[0].operation_id)
+                matches!(&event.recorded.fact, Fact::ToolResultAccepted { tool, .. }
+                if tool == &checkpoint.pending[0].tool)
             })
             .count();
         assert_eq!(settlements, 1);
-        assert!(
-            store
-                .native_approval_checkpoint(&session)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(approval_park(&fixture, &session).await.is_none());
         let late = fixture
             .mutation(
                 2,

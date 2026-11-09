@@ -31,7 +31,7 @@ use crate::{
     Command, pipe, pty,
     windows::{checked, job::Job, owned, wait_process},
 };
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_sandbox::{Network, filesystem::Policy, windows::mxc::PreparedPolicy};
 use serde::{Deserialize, Serialize};
 use std::{

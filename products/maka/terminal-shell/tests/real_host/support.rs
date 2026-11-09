@@ -40,7 +40,7 @@ use maka_host_runtime::{
     ipc::{self, LocalListener},
 };
 use maka_packages::Package;
-use maka_plugin_core::operation::{OperationOutcome, Receipt};
+use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
 use nsh_platform_tui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
@@ -192,7 +192,11 @@ impl Fixture {
             options.code_mode,
         )
         .await;
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(
+            RootStore::open(owner, &maka_product_native::root_migrations())
+                .await
+                .unwrap(),
+        );
         let bundled = product_packages().await;
         let home = directory.path().join("assistant-home");
         std::fs::create_dir(&home).unwrap();
@@ -265,11 +269,19 @@ impl Fixture {
             .await
             .unwrap();
         let mut native = NativeRegistry::default();
+        let data = store.data_writer().unwrap();
+        let state = maka_agent_state::Store::new(
+            data.clone(),
+            maka_agent_state::DriverDomain::new(data).unwrap(),
+        )
+        .unwrap();
         maka_product_native::provide(
             &mut native,
             Arc::new(maka_product_native::catalog::Catalog::new(
                 maka_product_native::catalog::Snapshot::bundled().unwrap(),
             )),
+            state,
+            crate::maka_executable(),
         )
         .unwrap();
         let host = Host::open(
@@ -473,7 +485,10 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
     let reply = mutation.confirm().await.unwrap();
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             ..
         } => value,
         other => panic!("unexpected actual Host receipt: {other:?}"),
@@ -590,7 +605,6 @@ impl ModelRequest {
         self.finish_with_reason("stop").await;
     }
     /// Ends the reply with one call to `name`.
-    #[cfg(feature = "desktop-tests")]
     pub async fn tool_call(mut self, name: &str, arguments: Value) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"nsh-real-call","type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":null}]})).await;
         self.finish_with_reason("tool_calls").await;

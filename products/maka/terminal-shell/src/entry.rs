@@ -59,8 +59,7 @@ impl Args {
             .map(PathBuf::from)
             .ok_or("home directory unavailable; select --root")?;
         #[cfg(windows)]
-        let home =
-            maka_event_log::root::windows::account_home().map_err(|error| error.to_string())?;
+        let home = maka_sandbox::account_home().map_err(|error| error.to_string())?;
         Ok(home.join(".maka/application/host"))
     }
 

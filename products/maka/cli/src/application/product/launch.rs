@@ -41,7 +41,11 @@ pub(super) async fn create(root: std::path::PathBuf) -> Result<RootStore, HostEr
         RootOwner::create(&root, &RootNamespaces::for_current_account()?)
     })
     .await??;
-    Ok(maka_transport::open_store(std::sync::Arc::new(owner)).await?)
+    Ok(maka_transport::open_store(
+        std::sync::Arc::new(owner),
+        &maka_product_native::root_migrations(),
+    )
+    .await?)
 }
 
 pub(super) fn decode_packages(

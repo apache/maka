@@ -18,18 +18,21 @@
  */
 
 use super::*;
+use crate::{history::test_support as canonical, preparation};
 use futures_util::poll;
-use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
 use maka_agent_facts::{
-    input::{DeliveredMessage, MessageInput},
+    durable::{ExecutionIdentity, Fact, RunId, UnixMillis},
+    input::{DeliveredMessage, MessageInput, RunInput},
     message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage},
 };
-use maka_capabilities::model_preparation::{ModelPreparationResources, PreparationPolicy};
-use maka_event_log::{
-    context::semantic::SemanticSelection,
-    root::{RootNamespaces, RootOwner},
-    root_store::{RootStore, SessionExecutionLease, SessionStore},
+use maka_agent_state::{
+    Admission, Change,
+    queue::{Consume, Placement as QueuePlacement},
+    session_history::SessionHistory,
 };
+use maka_capabilities::model_preparation::{ModelPreparationResources, PreparationPolicy};
+use maka_event_log::root_store::{RootStore, SessionStore, SessionWorkLease, WorkEffects};
+use maka_model::prompt::Message;
 use std::{sync::Arc, task::Poll, time::Duration};
 
 fn provider() -> ProviderConfig {
@@ -52,126 +55,59 @@ async fn source(
 ) -> (
     RootStore,
     Arc<SessionStore>,
-    SessionExecutionLease,
-    SemanticSelection,
+    SessionWorkLease,
+    Vec<Message>,
+    WorkEffects,
 ) {
-    source_with_messages(path, Vec::new()).await
-}
-
-async fn source_with_messages(
-    path: &std::path::Path,
-    source_messages: Vec<RootSourceMessage>,
-) -> (
-    RootStore,
-    Arc<SessionStore>,
-    SessionExecutionLease,
-    SemanticSelection,
-) {
-    let root = RootStore::open(Arc::new(
-        RootOwner::create(
-            &path.join("root"),
-            &RootNamespaces {
-                ownership: path.join("owners"),
-                control: path.join("control"),
-            },
-        )
-        .unwrap(),
-    ))
-    .await
-    .unwrap();
-    let session = root
-        .create_session("session", "create", &serde_json::json!({}), 1)
+    let root = canonical::open(path, false).await;
+    root.create_session("session", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let execution = session.execution_scope(None).await.unwrap().accept();
-    let store = Arc::new(execution.store());
-    let sequence = store
-        .append(
-            &EventWrite::plain(RuntimeEvent::new(
-                Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
-                },
-                Fact::InvocationOpened {
-                    input: InvocationInput::Message {
-                        content: if source_messages.is_empty() {
-                            "source-backed admission regression".into()
-                        } else {
-                            maka_agent_facts::message::aggregate(
-                                source_messages.iter().map(|source| &source.message.content),
-                            )
-                        },
-                        request_fingerprint: None,
-                        source_messages,
-                    },
-                    configuration: None,
-                },
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let selection = SemanticSelection {
-        session: "session".into(),
-        lineage: None,
-        after: 0,
-        through: sequence,
-        before: u64::MAX,
-        captured_through: sequence,
-        replay: None,
-        prior_unknown: false,
-    };
-    (root, store, execution, selection)
+    let (store, work, effects) = canonical::work(&root).await;
+    (
+        root,
+        store,
+        work,
+        vec![Message::user("source-backed admission regression")],
+        effects,
+    )
 }
-
 async fn capture(
     log: &Arc<SessionStore>,
-    selection: SemanticSelection,
+    messages: Vec<Message>,
     resources: ModelPreparationResources,
 ) -> PreparedPrompt {
-    let history = crate::history::prepare_view(
-        log,
-        &crate::cleanup::Evidence::default(),
-        selection,
-        Language::En,
-        false,
-        &maka_model::ProviderKind::OpenaiChatCompletions,
-        &CancellationToken::new(),
-        resources,
-        0,
-    )
-    .await
-    .unwrap();
-    PreparedPrompt::from_history(history)
+    canonical::capture(log, messages, resources).await
 }
 
 #[tokio::test]
 async fn production_wire_preserves_merged_and_steered_sender_origins_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let message = |id: &str, sender: &str, text: &str, disposition| {
-        let content = MessageInput::from(text);
-        RootSourceMessage {
-            message: DeliveredMessage {
-                message_id: id.into(),
-                submitted_content_digest: content.content_digest().unwrap(),
-                content: content.clone(),
-                origin: Some(MessageOrigin::Session {
-                    invocation: Invocation {
-                        session_id: sender.into(),
-                        turn_id: format!("turn-{sender}"),
-                        run_id: format!("run-{sender}"),
-                        invocation_id: format!("invocation-{sender}"),
-                    },
-                }),
-            },
-            unprepared_content: content,
-            submitted_placement: Placement::CurrentTurn,
-            disposition,
-            submitted_intent: None,
-        }
-    };
+    let message =
+        |id: &str, sender: &str, text: &str, disposition| {
+            let content = MessageInput::from(text);
+            RootSourceMessage {
+                message: DeliveredMessage {
+                    message_id: id.into(),
+                    submitted_content_digest: content.content_digest().unwrap(),
+                    content: content.clone(),
+                    origin: Some(MessageOrigin::Session {
+                        execution: ExecutionIdentity {
+                            session_id: sender.into(),
+                            turn_id: format!("turn-{sender}"),
+                            run_id: RunId::try_from(uuid::Uuid::from_u128(
+                                if sender == "sender-a" { 10 } else { 11 },
+                            ))
+                            .unwrap(),
+                        },
+                    }),
+                },
+                unprepared_content: content,
+                submitted_placement: Placement::CurrentTurn,
+                disposition,
+                submitted_intent: None,
+            }
+        };
     let first = message(
         "first",
         "sender-a",
@@ -190,78 +126,170 @@ async fn production_wire_preserves_merged_and_steered_sender_origins_after_reope
         "Adjust course 原文",
         MessageDisposition::Steering,
     );
-    let (root, log, execution, mut selection) =
-        source_with_messages(directory.path(), vec![first.clone(), second.clone()]).await;
-    selection.through = log
-        .append(
-            &EventWrite::plain(RuntimeEvent::new(
-                Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
+    let root = canonical::open(directory.path(), false).await;
+    root.create_session("session", "create", &serde_json::json!({}), 1)
+        .await
+        .unwrap();
+    let state = canonical::state(&root);
+    let queued = canonical::enqueue(
+        &state,
+        first.clone(),
+        vec![first.clone(), second.clone()],
+        QueuePlacement::Followup,
+    )
+    .await;
+    let revision = state.queue().read("session".into()).await.unwrap().revision;
+    let admission = Admission::new(queued.spec, UnixMillis(2), vec![]).with_queue(Consume {
+        session: "session".into(),
+        requests: vec![queued.id],
+        expected_revision: revision,
+    });
+    let run = admission.run();
+    let committed = state.admit(admission).await.unwrap();
+    let queued = canonical::enqueue(
+        &state,
+        steering.clone(),
+        vec![steering.clone()],
+        QueuePlacement::Steering {
+            run,
+            expected_head: committed.head,
+        },
+    )
+    .await;
+    let revision = state.queue().read("session".into()).await.unwrap().revision;
+    let (step, request, contents) = canonical::request(vec![queued.source]);
+    let claim = state.claim(run).await.unwrap();
+    state
+        .append_steering(
+            &claim,
+            committed.head,
+            vec![Change::new(
+                Fact::StepPrepared {
+                    step,
+                    request: request.reference().clone(),
+                    adjudications: vec![],
                 },
-                Fact::MessageSteered {
-                    message: Box::new(steering.message.clone()),
-                    source: Box::new(steering.clone()),
-                },
-            ))
-            .unwrap(),
+                UnixMillis(3),
+            )],
+            contents,
+            Consume {
+                session: "session".into(),
+                requests: vec![queued.id],
+                expected_revision: revision,
+            },
         )
         .await
         .unwrap();
-    selection.captured_through = selection.through;
-    drop(log);
-    execution.finish();
+    drop((claim, state));
     root.shutdown().await.unwrap();
     drop(root);
 
-    let root = RootStore::open(Arc::new(
-        RootOwner::open_existing(
-            &directory.path().join("root"),
-            &RootNamespaces {
-                ownership: directory.path().join("owners"),
-                control: directory.path().join("control"),
-            },
+    let root = canonical::open(directory.path(), true).await;
+    let (log, execution, effects) = canonical::work(&root).await;
+    let history = SessionHistory::new(
+        root.data_writer().unwrap(),
+        canonical::owner(),
+        "session".into(),
+    );
+    let cut = history.capture().await.unwrap();
+    let page = history.page(&cut, 0, 256).await.unwrap();
+    let opening = page
+        .items
+        .iter()
+        .find(|item| matches!(item.recorded.fact, Fact::RunAdmitted { .. }))
+        .unwrap();
+    let sources = history
+        .sources(&cut, opening.sequence, None, 256)
+        .await
+        .unwrap();
+    assert_eq!(sources.sources.len(), 1);
+    let original = &sources.sources[0];
+    let bytes = history
+        .source_content(
+            &cut,
+            opening.sequence,
+            original.position,
+            &original.request.source,
         )
-        .unwrap(),
-    ))
-    .await
-    .unwrap();
-    let session = root.session("session").await.unwrap();
-    let execution = session.execution_scope(None).await.unwrap().accept();
-    let log = Arc::new(execution.store());
-    let opening = log.first_message_opening("session").await.unwrap().unwrap();
-    let Fact::InvocationOpened {
-        input:
-            InvocationInput::Message {
-                content,
-                source_messages,
-                ..
-            },
+        .await
+        .unwrap();
+    let source: RootSourceMessage = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(source, first);
+    let spec = history.run_source(run).await.unwrap().spec;
+    let bytes = history
+        .with_content(&cut, run, &spec.input, |reader| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(reader, &mut bytes)?;
+            Ok(bytes)
+        })
+        .await
+        .unwrap();
+    let RunInput::Message {
+        content,
+        source_messages,
         ..
-    } = opening.event.fact
+    } = serde_json::from_slice(&bytes).unwrap()
     else {
-        panic!("expected the persisted opening");
+        panic!("expected persisted opening input")
     };
     assert_eq!(
         content.text,
         "sender-b is only body text\n原文\n\nSecond agent 原文\n"
     );
     assert_eq!(source_messages, vec![first, second]);
-    let persisted = log
-        .steering_message("session", "steering")
-        .await
-        .unwrap()
+    let prepared = page
+        .items
+        .iter()
+        .find(|item| matches!(item.recorded.fact, Fact::StepPrepared { .. }))
         .unwrap();
-    let Fact::MessageSteered { message, source } = persisted.event.fact else {
-        panic!("expected persisted steering");
-    };
-    assert_eq!(*message, steering.message);
-    assert_eq!(*source, steering);
+    let sources = history
+        .sources(&cut, prepared.sequence, None, 256)
+        .await
+        .unwrap();
+    assert_eq!(sources.sources.len(), 1);
+    let original = &sources.sources[0];
+    let bytes = history
+        .source_content(
+            &cut,
+            prepared.sequence,
+            original.position,
+            &original.request.source,
+        )
+        .await
+        .unwrap();
+    let persisted: RootSourceMessage = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(persisted.message, steering.message);
+    assert_eq!(persisted, steering);
 
     let resources = ModelPreparationResources::new(PreparationPolicy::default()).unwrap();
-    let mut prompt = capture(&log, selection, resources).await;
+    let artifacts = maka_agent_state::artifacts::ArtifactStore::new(root.data_writer().unwrap());
+    let scope = maka_agent_state::artifacts::SessionScope {
+        owner: canonical::owner(),
+        session: "session".into(),
+    };
+    let mut messages = Vec::new();
+    for (source, steering) in source_messages
+        .iter()
+        .map(|source| (source, false))
+        .chain(std::iter::once((&persisted, true)))
+    {
+        messages.push(
+            preparation::project_input(
+                &artifacts,
+                &scope,
+                &source.message.content,
+                Language::En,
+                false,
+                steering,
+                source.message.origin.as_ref(),
+                &resources,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let mut prompt = capture(&log, messages, resources).await;
     prompt
         .compile_wire(
             Language::En,
@@ -291,8 +319,8 @@ async fn production_wire_preserves_merged_and_steered_sender_origins_after_reope
         assert_eq!(message["role"], "user");
         let (header, text) = message["content"].as_str().unwrap().split_once('\n').unwrap();
         let origin: serde_json::Value = serde_json::from_str(header.strip_prefix("[Message source (Host-provided): ").unwrap().strip_suffix(']').unwrap()).unwrap();
-        assert_eq!(origin, serde_json::json!({"kind":"session","invocation":{
-            "session_id":sender,"turn_id":format!("turn-{sender}"),"run_id":format!("run-{sender}"),"invocation_id":format!("invocation-{sender}")
+        assert_eq!(origin, serde_json::json!({"kind":"session","execution":{
+            "sessionId":sender,"turnId":format!("turn-{sender}"),"runId":uuid::Uuid::from_u128(if sender == "sender-a" { 10 } else { 11 })
         }}));
         assert_eq!(text, body);
     }
@@ -300,6 +328,7 @@ async fn production_wire_preserves_merged_and_steered_sender_origins_after_reope
     prompt.close().await.unwrap();
     drop(prompt);
     drop(log);
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
 }
@@ -307,7 +336,7 @@ async fn production_wire_preserves_merged_and_steered_sender_origins_after_reope
 #[tokio::test]
 async fn two_captured_requests_reach_send_ready_and_last_output_retains_full_charge() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, log, execution, selection) = source(directory.path()).await;
+    let (root, log, execution, selection, effects) = source(directory.path()).await;
     let provider = provider();
     let options = serde_json::Value::Null;
     let cancellation = CancellationToken::new();
@@ -387,6 +416,7 @@ async fn two_captured_requests_reach_send_ready_and_last_output_retains_full_cha
     .await
     .expect("source capture, admission and final output release must make progress");
     drop(log);
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
 }
@@ -394,7 +424,7 @@ async fn two_captured_requests_reach_send_ready_and_last_output_retains_full_cha
 #[tokio::test]
 async fn blocked_wire_admission_releases_counting_work_and_observes_cancellation() {
     let directory = tempfile::tempdir().unwrap();
-    let (root, log, execution, selection) = source(directory.path()).await;
+    let (root, log, execution, selection, effects) = source(directory.path()).await;
     let definitions = [Arc::new(ToolDefinition {
         name: "fixture".into(),
         description: "fixture input".into(),
@@ -452,6 +482,7 @@ async fn blocked_wire_admission_releases_counting_work_and_observes_cancellation
     prompt.close().await.unwrap();
     drop(prompt);
     drop(log);
+    effects.settle().await.unwrap();
     execution.finish();
     root.shutdown().await.unwrap();
 }

@@ -40,48 +40,39 @@ struct Route {
     service: Service,
 }
 struct EndpointState {
-    catalog: Arc<Vec<Value>>,
+    catalog: Option<Arc<Vec<Value>>>,
     route: Option<Arc<Route>>,
-    busy: bool,
+    active: Weak<Bridge>,
     retired: bool,
-    failure: Option<Error>,
 }
 pub(super) struct Endpoint {
     pub session_id: String,
+    address: std::net::SocketAddr,
     url: String,
-    directory: PathBuf,
     state: Mutex<EndpointState>,
     server_stop: CancellationToken,
     server: tokio::sync::Mutex<Option<tokio::task::JoinHandle<std::io::Result<()>>>>,
 }
 impl Endpoint {
-    pub async fn open(session_id: String, definitions: Vec<Value>) -> Result<Arc<Self>, Error> {
+    pub async fn open(
+        session_id: String,
+        definitions: Option<Vec<Value>>,
+    ) -> Result<Arc<Self>, Error> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
         let address = listener
             .local_addr()
             .map_err(|e| Error::Provider(e.to_string()))?;
-        // Explicit cleanup only: an unconfirmed native process may still read these files.
-        let directory = tokio::task::spawn_blocking(|| {
-            tempfile::Builder::new()
-                .prefix("maka-native-mcp-")
-                .tempdir()
-                .map(tempfile::TempDir::keep)
-        })
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?
-        .map_err(|e| Error::Provider(e.to_string()))?;
         let endpoint = Arc::new(Self {
             session_id,
+            address,
             url: format!("http://{address}/mcp"),
-            directory,
             state: Mutex::new(EndpointState {
-                catalog: Arc::new(definitions),
+                catalog: definitions.map(Arc::new),
                 route: None,
-                busy: false,
+                active: Weak::new(),
                 retired: false,
-                failure: None,
             }),
             server_stop: CancellationToken::new(),
             server: tokio::sync::Mutex::new(None),
@@ -128,30 +119,54 @@ impl Endpoint {
         }));
         Ok(endpoint)
     }
-    pub fn bind(self: &Arc<Self>, tools: tools::Tools) -> Result<Arc<Bridge>, Error> {
-        let definitions = tools.definitions();
-        let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
-        if state.retired {
+    pub async fn local_addr(&self) -> Result<std::net::SocketAddr, Error> {
+        let server = self.server.lock().await;
+        if self.server_stop.is_cancelled()
+            || self
+                .state
+                .lock()
+                .expect("MCP endpoint lock poisoned")
+                .retired
+            || !server.as_ref().is_some_and(|task| !task.is_finished())
+        {
             return Err(Error::Retired);
         }
-        if let Some(failure) = &state.failure {
-            return Err(failure.clone());
+        Ok(self.address)
+    }
+    pub fn bind(
+        self: &Arc<Self>,
+        tools: tools::Tools,
+        directory: PathBuf,
+    ) -> Result<Arc<Bridge>, Error> {
+        let definitions = tools.definitions();
+        let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
+        if state.retired || self.server_stop.is_cancelled() {
+            return Err(Error::Retired);
         }
-        if state.busy {
+        if state
+            .active
+            .upgrade()
+            .is_some_and(|bridge| !bridge.drained())
+        {
             return Err(Error::Invalid(
-                "Native MCP invocation has not settled".into(),
+                "Previous Host MCP scope has not drained".into(),
             ));
         }
-        if definitions
-            .iter()
-            .any(|definition| !state.catalog.contains(definition))
-        {
-            state.catalog = Arc::new(definitions);
+        if state.catalog.as_ref().is_none_or(|catalog| {
+            definitions
+                .iter()
+                .any(|definition| !catalog.contains(definition))
+        }) {
+            state.catalog = Some(Arc::new(definitions));
         }
         let bridge = Arc::new(Bridge {
             tools,
             endpoint: Arc::downgrade(self),
-            catalog: state.catalog.clone(),
+            catalog: state
+                .catalog
+                .as_ref()
+                .expect("actual Call initialized the catalog")
+                .clone(),
             state: Mutex::new(Admission {
                 phase: Phase::Opening,
                 pending: 0,
@@ -164,7 +179,7 @@ impl Endpoint {
             failed: CancellationToken::new(),
             listed: CancellationToken::new(),
             url: self.url.clone(),
-            directory: self.directory.clone(),
+            directory,
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
             sessions_stop: CancellationToken::new(),
             manager: Arc::new(LocalSessionManager::default()),
@@ -185,7 +200,7 @@ impl Endpoint {
             bridge.manager.clone(),
             config,
         );
-        state.busy = true;
+        state.active = Arc::downgrade(&bridge);
         state.route = Some(Arc::new(Route {
             bridge: bridge.clone(),
             service,
@@ -196,11 +211,16 @@ impl Endpoint {
         let bridge = {
             let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
             state.retired = true;
-            state.route.as_ref().map(|route| route.bridge.clone())
+            state.active.upgrade()
         };
-        let scope = match bridge {
-            Some(bridge) => bridge.close().await,
-            None => Ok(()),
+        let drained = match bridge {
+            Some(bridge) => {
+                // Business failures belong to the canonical effect receipt. Only
+                // still-live Host resources prevent this transport's retirement.
+                let _business = bridge.close().await;
+                bridge.drained()
+            }
+            None => true,
         };
         self.server_stop.cancel();
         let mut server = self.server.lock().await;
@@ -212,18 +232,9 @@ impl Endpoint {
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             *server = None;
         }
-        {
-            let state = self.state.lock().expect("MCP endpoint lock poisoned");
-            if state.busy || matches!(scope, Err(Error::CleanupUnconfirmed)) {
-                return Err(Error::CleanupUnconfirmed);
-            }
+        if !drained {
+            return Err(Error::CleanupUnconfirmed);
         }
-        match tokio::fs::remove_dir_all(&self.directory).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(Error::CleanupUnconfirmed),
-        }
-        // Historical invocation failures still quarantine bind, but do not prevent retirement.
         Ok(())
     }
 }
@@ -283,7 +294,7 @@ impl Drop for RequestGuard {
             .lock()
             .expect("MCP admission lock poisoned")
             .requests -= 1;
-        self.0.changed.notify_one();
+        self.0.changed.notify_waiters();
     }
 }
 pub(super) struct Bridge {
@@ -302,6 +313,29 @@ pub(super) struct Bridge {
     manager: Arc<LocalSessionManager>,
     closing: tokio::sync::Mutex<()>,
 }
+impl maka_agent_ports::executor::RootSettlementOwner for Bridge {
+    fn original_root_cleanup(&self) -> OperationCleanup {
+        if self.drained() {
+            OperationCleanup::Confirmed
+        } else {
+            OperationCleanup::Unconfirmed
+        }
+    }
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move {
+            loop {
+                let notified = self.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.drained() {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+}
+
 impl Bridge {
     fn begin_request(self: &Arc<Self>) -> Option<RequestGuard> {
         let mut state = self.state.lock().expect("MCP admission lock poisoned");
@@ -337,6 +371,7 @@ impl Bridge {
             .expect("MCP admission lock poisoned")
             .phase = Phase::Closed;
         self.cancelled.cancel();
+        self.changed.notify_waiters();
     }
     pub async fn close(&self) -> Result<(), Error> {
         let _closing = self.closing.lock().await;
@@ -398,18 +433,9 @@ impl Bridge {
             .clone()
             .map_or(Ok(()), Err)
     }
-    // Only runtime, after physical native cleanup, may release this endpoint for another invocation.
-    pub fn settled(&self, result: &Result<Outcome, Error>) {
-        if let Some(endpoint) = self.endpoint.upgrade() {
-            let mut state = endpoint.state.lock().expect("MCP endpoint lock poisoned");
-            if matches!(
-                result,
-                Err(Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_))
-            ) {
-                state.failure = result.as_ref().err().cloned();
-            }
-            state.busy = matches!(result, Err(Error::CleanupUnconfirmed));
-        }
+    pub(super) fn drained(&self) -> bool {
+        let state = self.state.lock().expect("MCP admission lock poisoned");
+        state.phase == Phase::Closed && state.idle() && state.handlers == 0
     }
     async fn call(
         self: &Arc<Self>,
@@ -457,7 +483,7 @@ impl Bridge {
                     state.pending -= 1;
                 }
                 let _ = send.send(reply);
-                bridge.changed.notify_one();
+                bridge.changed.notify_waiters();
             });
         }
         let reply = receive
@@ -491,7 +517,7 @@ impl Drop for Handler {
             .lock()
             .expect("MCP admission lock poisoned")
             .handlers -= 1;
-        self.0.changed.notify_one();
+        self.0.changed.notify_waiters();
     }
 }
 impl ServerHandler for Handler {
@@ -520,14 +546,18 @@ impl ServerHandler for Handler {
         self.0.call(request, context.ct).await
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn tools() -> (tempfile::TempDir, Arc<maka_event_log::SessionStore>) {
+    async fn tools() -> (
+        tempfile::TempDir,
+        Arc<maka_event_log::root_store::SessionStore>,
+        maka_event_log::root_store::SessionWorkLease,
+        maka_event_log::root_store::WorkEffects,
+    ) {
         let directory = tempfile::tempdir().unwrap();
         let owner = maka_event_log::root::RootOwner::create(
             &directory.path().join("root"),
@@ -537,12 +567,61 @@ mod tests {
             },
         )
         .unwrap();
-        let root = RootStore::open(Arc::new(owner)).await.unwrap();
-        root.create_session("session", "test", &serde_json::json!({}), 1)
+        let root = RootStore::open(Arc::new(owner), maka_event_log::ROOT_MIGRATIONS)
             .await
             .unwrap();
-        let store = Arc::new(root.session("session").await.unwrap());
-        (directory, store)
+        let session = root
+            .create_session("session", "test", &serde_json::json!({}), 1)
+            .await
+            .unwrap();
+        let (lease, effects) = session
+            .work_scope(None)
+            .await
+            .unwrap()
+            .accept(CancellationToken::new());
+        std::fs::create_dir(directory.path().join("native-inputs")).unwrap();
+        (directory, Arc::new(lease.store()), lease, effects)
+    }
+    struct ListingEffects;
+    impl tools::HostEffects for ListingEffects {
+        fn invoke(
+            &self,
+            _: maka_tools::ToolCatalog,
+            _: maka_agent_facts::tools::ToolCallContext,
+            _: String,
+            _: Value,
+            _: CancellationToken,
+        ) -> BoxFuture<
+            'static,
+            Result<
+                maka_agent_facts::tool_output::ReturnedToolResult,
+                maka_agent_facts::tools::ToolError,
+            >,
+        > {
+            panic!("listing/catalog tests must never execute a Host effect")
+        }
+    }
+    fn list_tools(
+        store: &maka_event_log::root_store::SessionStore,
+        catalog: maka_tools::ToolCatalog,
+    ) -> tools::Tools {
+        tools::Tools::for_test(
+            catalog,
+            maka_agent_facts::durable::ExecutionIdentity {
+                session_id: "session".into(),
+                turn_id: "list-only".into(),
+                run_id: maka_agent_facts::durable::RunId::new(),
+            },
+            store.work_custody().unwrap(),
+            maka_agent_facts::durable::ExternalTaskId::new(),
+            maka_agent_facts::executor::Binding {
+                executor_id: "external".to_owned().try_into().unwrap(),
+                package_id: "list-only".into(),
+                entry_id: "external".into(),
+                activation: "list-only".into(),
+            },
+            Arc::new(ListingEffects),
+        )
     }
     fn definition() -> Value {
         serde_json::json!({"name":"FrozenTool","description":"original","inputSchema":{"type":"object"}})
@@ -626,12 +705,15 @@ mod tests {
     }
     #[tokio::test]
     async fn endpoint_is_stable_but_credentials_and_transport_authority_are_not_reusable() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![definition()])
+        let (_directory, store, lease, _effects) = tools().await;
+        let endpoint = Endpoint::open("session".into(), Some(vec![definition()]))
             .await
             .unwrap();
         let first = endpoint
-            .bind(tools::Tools::for_test(store.clone(), Default::default()))
+            .bind(
+                list_tools(&store, Default::default()),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         let config_directory = first.directory().to_owned();
         let first_id = initialized(&first).await;
@@ -639,16 +721,25 @@ mod tests {
         let (status, response) = post(&first, first.bearer(), Some(&first_id), list.clone()).await;
         assert_eq!(status, 200, "{response}");
         assert!(response.contains("FrozenTool"), "{response}");
+        use maka_agent_ports::executor::RootSettlementOwner as _;
+        assert_eq!(first.original_root_cleanup(), OperationCleanup::Unconfirmed);
+        let signal = first.clone().original_root_cleanup_signal();
+        tokio::pin!(signal);
+        assert!(futures_util::poll!(signal.as_mut()).is_pending());
         first.close().await.unwrap();
+        signal.await;
+        assert_eq!(first.original_root_cleanup(), OperationCleanup::Confirmed);
         assert!(first.manager.sessions.read().await.is_empty());
         assert!(first.admit().is_err(), "a closed scope must never reopen");
         assert!(
             config_directory.exists(),
             "scope close cannot remove native input files"
         );
-        first.settled(&Err(Error::Cancelled));
         let second = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
+            .bind(
+                list_tools(&store, Default::default()),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         assert_eq!(first.url, second.url);
         assert_eq!(first.directory(), second.directory());
@@ -676,20 +767,32 @@ mod tests {
             "reduced ceiling must not change the catalog: {response}"
         );
         second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
         assert_eq!(
             post(&second, second.bearer(), None, initialize()).await.0,
             401
         );
         endpoint.finish().await.unwrap();
+        assert!(_effects.seal().unwrap());
+        _effects.settle().await.unwrap();
+        lease.finish();
+        assert!(
+            config_directory.exists(),
+            "bridge retirement cannot dispose caller-owned native inputs"
+        );
+        std::fs::remove_dir_all(&config_directory).unwrap();
         assert!(!config_directory.exists());
     }
     #[tokio::test]
     async fn request_captured_before_close_cannot_rebind_to_the_next_scope() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![]).await.unwrap();
+        let (_directory, store, lease, _effects) = tools().await;
+        let endpoint = Endpoint::open("session".into(), Some(vec![]))
+            .await
+            .unwrap();
         let first = endpoint
-            .bind(tools::Tools::for_test(store.clone(), Default::default()))
+            .bind(
+                list_tools(&store, Default::default()),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         let old_route = endpoint.state.lock().unwrap().route.clone().unwrap();
         let guard = first.begin_request().unwrap();
@@ -704,14 +807,19 @@ mod tests {
         );
         assert!(
             endpoint
-                .bind(tools::Tools::for_test(store.clone(), Default::default()))
+                .bind(
+                    list_tools(&store, Default::default()),
+                    _directory.path().join("native-inputs")
+                )
                 .is_err()
         );
         drop(guard);
         closing.await.unwrap().unwrap();
-        first.settled(&Err(Error::Cancelled));
         let second = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
+            .bind(
+                list_tools(&store, Default::default()),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         let request = HttpRequest::builder()
             .method("POST")
@@ -725,21 +833,23 @@ mod tests {
         );
         assert!(second.manager.sessions.read().await.is_empty());
         second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
         endpoint.finish().await.unwrap();
+        assert!(_effects.seal().unwrap());
+        _effects.settle().await.unwrap();
+        lease.finish();
     }
 
     #[tokio::test]
     async fn settled_catalog_updates_keep_the_endpoint_and_do_not_rewrite_old_scopes() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![definition()])
+        let (_directory, store, lease, _effects) = tools().await;
+        let endpoint = Endpoint::open("session".into(), Some(vec![definition()]))
             .await
             .unwrap();
         let first = endpoint
-            .bind(tools::Tools::for_test(
-                store.clone(),
-                catalog(vec![definition()]),
-            ))
+            .bind(
+                list_tools(&store, catalog(vec![definition()])),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         let first_id = initialized(&first).await;
         let mut changed = definition();
@@ -750,20 +860,19 @@ mod tests {
         let updated = vec![added, changed];
         assert!(
             endpoint
-                .bind(tools::Tools::for_test(
-                    store.clone(),
-                    catalog(updated.clone())
-                ))
+                .bind(
+                    list_tools(&store, catalog(updated.clone())),
+                    _directory.path().join("native-inputs")
+                )
                 .is_err(),
             "definitions cannot change while the original invocation is unsettled"
         );
         first.close().await.unwrap();
-        first.settled(&Err(Error::Cancelled));
         let second = endpoint
-            .bind(tools::Tools::for_test(
-                store.clone(),
-                catalog(updated.clone()),
-            ))
+            .bind(
+                list_tools(&store, catalog(updated.clone())),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         assert_eq!(second.url, first.url);
         assert_eq!(second.directory(), first.directory());
@@ -788,9 +897,11 @@ mod tests {
             "{response}"
         );
         second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
         let reduced = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
+            .bind(
+                list_tools(&store, Default::default()),
+                _directory.path().join("native-inputs"),
+            )
             .unwrap();
         assert_eq!(
             reduced.definitions(),
@@ -798,7 +909,9 @@ mod tests {
             "a reduced ceiling must not churn the catalog"
         );
         reduced.close().await.unwrap();
-        reduced.settled(&Err(Error::Cancelled));
         endpoint.finish().await.unwrap();
+        assert!(_effects.seal().unwrap());
+        _effects.settle().await.unwrap();
+        lease.finish();
     }
 }

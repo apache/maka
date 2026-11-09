@@ -23,11 +23,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+maka-fs-tools.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
+maka-computer-use.workspace = true
 maka-plugin-core.workspace = true
 uuid.workspace = true
 maka-agent-api.workspace = true
+maka-agent-ports.workspace = true
+futures-util.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-sandbox.workspace = true
@@ -35,3 +39,5 @@ sha2.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+
+maka-process.workspace = true

@@ -36,7 +36,7 @@ pub(super) async fn read(
         .await?;
     let record: InteractionRecord =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
-    if record.session_id != session || record.request_id != request {
+    if record.execution.session_id != session || record.request_id != request {
         return Err("The Host returned a different permission request".into());
     }
     Ok(record)

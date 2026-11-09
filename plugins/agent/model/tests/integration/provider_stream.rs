@@ -245,7 +245,8 @@ async fn native_tool_argument_prefix_is_observed_before_completion_and_chunked_a
                 socket.write_all(last.as_bytes()).await.unwrap();
             });
             let mut stream = executor.stream(request(kind, base), CancellationToken::new()).await.unwrap();
-            let mut builder = StepBuilder::for_step("arguments").unwrap();
+            let step_id = maka_agent_facts::durable::StepId::new();
+            let mut builder = StepBuilder::for_step(step_id).unwrap();
             let mut observed = String::new();
             let mut started = false;
             let mut finished = false;

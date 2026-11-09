@@ -17,89 +17,31 @@
  * under the License.
  */
 
-//! Immutable attachment copy with bounded streaming custody.
+//! Paired resource custody across selected Sessions and workspace bindings.
 use super::*;
-use maka_agent_facts::attachment::{AttachmentRef, StorageRef};
-use maka_agent_ports::execution::CopyAttachment;
-use maka_capabilities::storage::Namespace;
 use rusqlite::OptionalExtension;
 
 impl RootStore {
-    pub async fn copy_plugin_attachment(
-        &self,
-        namespace: &Namespace,
-        request: CopyAttachment,
-    ) -> Result<AttachmentRef, StoreError> {
-        self.copy_attachment(namespace, request, None).await
-    }
-
-    /// Reuse the target's actual physical execution instead of re-entering its
-    /// binding admission. Serialized Session identities cannot supply custody.
-    pub async fn copy_plugin_attachment_to_execution(
-        &self,
-        target: &SessionStore,
-        namespace: &Namespace,
-        request: CopyAttachment,
-    ) -> Result<AttachmentRef, StoreError> {
-        self.copy_attachment(namespace, request, Some(target)).await
-    }
-
-    /// Read a source attachment while retaining an existing target execution's
-    /// binding pin. This returns data, never a foreign Session capability.
-    pub async fn execution_attachment(
-        &self,
-        target: &SessionStore,
-        source_session: &str,
-        artifact: &str,
-    ) -> Result<crate::artifacts::ArtifactEntry, StoreError> {
-        self.require_open()?;
-        let (source, _) = self
-            .pin_session_pair(source_session, target.id(), Some(target))
-            .await?;
-        source.get_artifact(source_session, artifact).await
-    }
-
-    async fn copy_attachment(
-        &self,
-        namespace: &Namespace,
-        request: CopyAttachment,
-        execution: Option<&SessionStore>,
-    ) -> Result<AttachmentRef, StoreError> {
-        self.require_open()?;
-        request
-            .validate()
-            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
-        let StorageRef::SessionFile { session_id, .. } = &request.attachment.storage_ref else {
-            return Err(StoreError::InvalidTransition(
-                "Attachment source is not a Session Artifact".into(),
-            ));
-        };
-        let (_, target) = self
-            .pin_session_pair(session_id, &request.target_session_id, execution)
-            .await?;
-        target.copy_plugin_attachment(namespace, request).await
-    }
-
     pub(super) async fn pin_session_pair(
         &self,
         session_id: &str,
         target_session: &str,
-        execution: Option<&SessionStore>,
+        work: Option<&SessionStore>,
     ) -> Result<(EventLog, EventLog), StoreError> {
-        let execution_custody = if let Some(target) = execution {
+        let work_custody = if let Some(target) = work {
             if !Arc::ptr_eq(&self.gates, &target.gates) {
                 return Err(StoreError::InvalidTransition(
-                    "foreign Root execution custody".into(),
+                    "foreign Root work custody".into(),
                 ));
             }
             target.check_session(target_session)?;
             target.owner()?;
             Some(
                 target
-                    .execution
+                    .work
                     .as_ref()
                     .ok_or_else(|| {
-                        StoreError::InvalidTransition("Session has no active execution".into())
+                        StoreError::InvalidTransition("Session has no active work".into())
                     })?
                     .custody()?,
             )
@@ -124,7 +66,7 @@ impl RootStore {
         ] {
             let is_target = session == target_session;
             let binding = owner
-                .scoped(Arc::new((sessions.clone(), execution_custody.clone())))
+                .scoped(Arc::new((sessions.clone(), work_custody.clone())))
                 .connection
                 .read(move |connection| {
                     let configuration: Option<String> = connection
@@ -151,12 +93,12 @@ impl RootStore {
             .read(
                 bindings
                     .into_iter()
-                    .filter(|id| execution_custody.is_none() || Some(*id) != target_binding)
+                    .filter(|id| work_custody.is_none() || Some(*id) != target_binding)
                     .map(gates::Key::Binding),
             )
             .await?;
         let custody: crate::connection::custody::Custody =
-            Arc::new((sessions, bindings, execution_custody));
+            Arc::new((sessions, bindings, work_custody));
         self.require_open()?;
         Ok((source.scoped(custody.clone()), target.scoped(custody)))
     }

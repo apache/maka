@@ -50,7 +50,7 @@ import {
   tui_network_replace,
   tui_session_saving,
   tui_settings_language,
-  tui_subagents_choose_model,
+  tui_choose_model,
   tui_theme_role_number,
   tui_thinking_default,
 } from '../../../../plugins/shared/tui-messages.js';
@@ -316,7 +316,7 @@ export const settingsMessages = {
     '正在取消登入；等待原始結果…',
   ],
   'Checking receipts…': ['Checking receipts…', '正在检查回执…', '正在檢查回執…'],
-  'Choose a model': tui_subagents_choose_model,
+  'Choose a model': tui_choose_model,
   'Choose model': msg_chooseModel,
   'Choose model and effort': [
     'Choose model and effort',

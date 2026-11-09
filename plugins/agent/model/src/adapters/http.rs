@@ -54,6 +54,74 @@ impl Default for Shared {
 #[derive(Default)]
 pub(super) struct HttpAdapter(Arc<Shared>);
 impl ProviderAdapter for HttpAdapter {
+    fn recovery_contract(
+        &self,
+        kind: &maka_agent_ports::model::ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<maka_agent_ports::model::RecoveryContract> {
+        use maka_agent_ports::model::ProviderKind;
+        if tools.iter().any(|tool| tool.provider.is_some()) {
+            return None;
+        }
+        let protocol = match kind {
+            ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
+                "maka.adapter.chat-completions.local-functions"
+            }
+            ProviderKind::Anthropic => "maka.adapter.anthropic-messages.local-functions",
+            _ => return None,
+        };
+        Some(maka_agent_ports::model::RecoveryContract {
+            protocol: protocol.into(),
+            version: 1,
+        })
+    }
+    fn continuation_cursor(
+        &self,
+        contract: &maka_agent_ports::model::RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        use maka_agent_facts::model::{ModelPart, TextKind};
+        if contract.version != 1
+            || !matches!(
+                contract.protocol.as_str(),
+                "maka.adapter.chat-completions.local-functions"
+                    | "maka.adapter.anthropic-messages.local-functions"
+            )
+        {
+            return None;
+        }
+        let options = match part {
+            ModelPart::Text {
+                text_kind,
+                provider_options,
+                ..
+            } => {
+                let options = provider_options
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                if *text_kind == TextKind::Thinking
+                    && contract.protocol == "maka.adapter.anthropic-messages.local-functions"
+                    && !["signature", "redactedData"].iter().any(|key| {
+                        options["anthropic"][key]
+                            .as_str()
+                            .is_some_and(|value| !value.is_empty())
+                    })
+                {
+                    return None;
+                }
+                options
+            }
+            ModelPart::ToolCall { call } if !call.provider_executed => call
+                .provider_options
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
+            ModelPart::Source { .. } => serde_json::Value::Null,
+            _ => return None,
+        };
+        Some(serde_json::json!({"providerOptions": options}))
+    }
+
     fn enforces_idle_timeout(&self) -> bool {
         true
     }
@@ -288,7 +356,7 @@ async fn run_inner(
         let response = dispatch(
             context,
             http::Request {
-                method: http::Method::Post,
+                method: maka_plugin_core::http::Method::Post,
                 url: url.clone(),
                 headers: headers.clone(),
                 body: upload,
@@ -574,6 +642,14 @@ mod quota_scope_tests {
         }
     }
     impl Transport for Rejection {
+        fn send_text(
+            &self,
+            socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+            chunks: maka_agent_ports::model::TextStream,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+        {
+            Box::pin(async move { socket.send_text(chunks).await })
+        }
         fn identity(&self) -> u64 {
             1
         }
@@ -672,5 +748,38 @@ mod quota_scope_tests {
             assert_eq!(start.elapsed(), Duration::ZERO);
             assert!(response.closed.load(Ordering::SeqCst));
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use maka_agent_facts::model::{ModelPart, TextKind};
+    use maka_agent_ports::model::ProviderKind;
+    #[test]
+    fn anthropic_replay_requires_and_preserves_complete_thinking_signature() {
+        let adapter = HttpAdapter::default();
+        let contract = adapter
+            .recovery_contract(&ProviderKind::Anthropic, &[])
+            .unwrap();
+        let mut part = ModelPart::Text {
+            text_kind: TextKind::Thinking,
+            text: "thinking".into(),
+            provider_options: None,
+        };
+        assert_eq!(adapter.continuation_cursor(&contract, &part), None);
+        if let ModelPart::Text {
+            provider_options, ..
+        } = &mut part
+        {
+            *provider_options = Some(Arc::new(
+                serde_json::json!({"anthropic":{"signature":"original_signature"}}),
+            ));
+        }
+        assert_eq!(
+            adapter.continuation_cursor(&contract, &part).unwrap()["providerOptions"]["anthropic"]
+                ["signature"],
+            "original_signature"
+        );
     }
 }

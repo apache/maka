@@ -79,5 +79,4 @@ pub(crate) enum Completion {
     Completed,
     Cancelled,
     Failed,
-    Paused,
 }

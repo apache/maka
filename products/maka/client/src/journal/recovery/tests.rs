@@ -22,7 +22,7 @@ use crate::{CONTROL_KIND, SETTINGS_KIND, ServiceOwner};
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
-    operation::{OperationCleanup, OperationOutcome, Receipt},
+    operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -163,7 +163,9 @@ fn operation(list: List, id: u128, host: &DeploymentRef, key: &DraftKey) -> Oper
 fn returned(cleanup: OperationCleanup) -> Receipt {
     Receipt::Recorded {
         outcome: OperationOutcome::Returned {
-            value: json!({"kind":"rejected"}),
+            result: OperationResult::Success {
+                value: json!({"kind":"rejected"}),
+            },
         },
         cleanup,
     }

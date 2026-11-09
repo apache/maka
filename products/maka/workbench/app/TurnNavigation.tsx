@@ -17,13 +17,14 @@
  * under the License.
  */
 
+import type { HistoryRowAddress, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { textTooltip } from './ui';
 import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
 import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { pixelRatio, platform, windowSize } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import type { Position } from './history';
+
 import { C, controlStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -107,15 +108,16 @@ function RailFade(props: { bottom: boolean }) {
 }
 
 export type TurnNavigationItem = {
-  turnId: string;
+  turnKey: string;
   label: string;
+  order: HistoryOrder;
   anchor:
-    | { kind: 'loaded'; position: Position }
+    | { kind: 'loaded'; position: HistoryRowAddress }
     | {
         kind: 'landmark';
         through: number;
-        position: Position;
-        lastPosition: Position;
+        position: HistoryRowAddress;
+        lastPosition: HistoryRowAddress;
       };
 };
 
@@ -203,7 +205,7 @@ export function TurnNavigation(props: {
   });
   const activeIndex = computed(() => {
     const active = props.active();
-    return props.items().findIndex((item) => item.turnId === active);
+    return props.items().findIndex((item) => item.turnKey === active);
   });
   let rail: ListRef | undefined;
   const followActive = () => {
@@ -233,7 +235,7 @@ export function TurnNavigation(props: {
           testID="turn-navigation"
           accessibilityLabel={tr('Turn navigation')}
           each={props.items()}
-          keyExtractor={(item) => item.turnId}
+          keyExtractor={(item) => item.turnKey}
           estimatedItemSize={markPitch()}
           scrollbar={false}
           contentStyle={{ paddingVertical: railInset }}
@@ -244,8 +246,8 @@ export function TurnNavigation(props: {
           {(item) => (
             <NavigationMark
               item={item}
-              active={props.active() === item().turnId}
-              busy={props.busy() === item().turnId}
+              active={props.active() === item().turnKey}
+              busy={props.busy() === item().turnKey}
               navigate={props.navigate}
             />
           )}

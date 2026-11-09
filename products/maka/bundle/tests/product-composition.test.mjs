@@ -195,15 +195,13 @@ test('the default ModelList tool binds the agent backend directory without a cli
   });
   assert.equal(host.instances.agent.bindings.settings, undefined);
   assert.deepEqual(host.instances.settings.bindings, {});
-  for (const name of ['agent', 'workhub']) {
-    const agent = host.instances[name];
-    const grants = native.filter(
-      (grant) =>
-        grant.origin[0] === agent.key &&
-        grant.consumer[0] === agent.key &&
-        grant.provider[0] === host.instances.settings.key &&
-        grant.export === 'Settings',
-    );
-    assert.deepEqual(grants, []);
-  }
+  const agent = host.instances.agent;
+  const grants = native.filter(
+    (grant) =>
+      grant.origin[0] === agent.key &&
+      grant.consumer[0] === agent.key &&
+      grant.provider[0] === host.instances.settings.key &&
+      grant.export === 'Settings',
+  );
+  assert.deepEqual(grants, []);
 });

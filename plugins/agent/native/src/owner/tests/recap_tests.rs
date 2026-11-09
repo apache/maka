@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_event_log::usage::{AuxiliarySource, Origin, Outcome};
+use maka_agent_facts::accounting::{AuxiliarySource, Origin, Outcome};
 
 async fn fixture(base: &str) -> Fixture {
     Fixture::configured(base, None, None, None, |settings| settings.recaps = true).await
@@ -38,11 +38,14 @@ async fn read(f: &Fixture, session: &str) -> Value {
         .unwrap()
 }
 async fn attempts(f: &Fixture, session: &str) -> Vec<maka_agent_facts::accounting::ModelAttempt> {
-    f.store
-        .usage_activity(
-            maka_event_log::root_store::UsageQuery {
+    f.owner
+        .durable
+        .usage()
+        .activity(
+            maka_agent_state::usage::UsageQuery {
                 from: 0.0,
                 to: 253402300799999.0,
+                owner: Some(f.owner.run_owner()),
                 session_id: Some(session.into()),
                 through: None,
             },

@@ -19,6 +19,7 @@
 
 use maka_capabilities::call;
 use maka_capabilities::http;
+use maka_plugin_core::http::Method;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use url::Url;
@@ -100,7 +101,7 @@ impl Search {
                 scope.clone(),
                 http::Request {
                     url: "https://api.tavily.com/search".into(),
-                    method: http::Method::Post,
+                    method: Method::Post,
                     headers: vec![("Content-Type".into(), "application/json".into())],
                     body: serde_json::to_vec(&Request {
                         api_key: key,

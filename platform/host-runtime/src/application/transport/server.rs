@@ -479,10 +479,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         drop(prepared);
                         self.abort("mutation preparation cancelled".into()).await
                     }
-                    control @ (Control::Commit { .. } | Control::Confirm)
+                    control @ (Control::Commit { .. } | Control::Confirm { .. })
                         if matches!(
                             (&control, owned),
-                            (Control::Commit { .. }, false) | (Control::Confirm, true)
+                            (Control::Commit { .. }, false) | (Control::Confirm { .. }, true)
                         ) =>
                     {
                         let reference = prepared.reference().clone();
@@ -491,7 +491,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                                 Control::Commit { intent } => {
                                     server.client.mutate_from_peer(prepared, *intent).await
                                 }
-                                Control::Confirm => server.client.mutate_owned(prepared).await,
+                                Control::Confirm { recovery } => {
+                                    server.client.mutate_owned(prepared, recovery).await
+                                }
                                 _ => unreachable!(),
                             }
                         };

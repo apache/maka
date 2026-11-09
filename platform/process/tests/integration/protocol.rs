@@ -91,7 +91,7 @@ async fn protocol_pipes_roundtrip_and_close_descendants_on_exit_or_cancel() {
                     .unwrap();
                 process.stdin.flush().await.unwrap();
             } else {
-                process.child.terminate().unwrap();
+                process.child.terminate().await.unwrap();
             }
             drop(process.stdin);
             let (mut out, mut err) = (String::new(), String::new());

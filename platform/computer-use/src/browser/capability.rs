@@ -1174,7 +1174,11 @@ mod tests {
             .unwrap();
         let mut browsers = Browsers::default();
         let cancellation = CancellationToken::new();
-        let invocation = crate::InvocationContext::new("asset-fixture", "turn");
+        let invocation = crate::InvocationContext::new(
+            "asset-fixture",
+            "turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        );
         let bound = browsers
             .bind(
                 TabSource {
@@ -1374,9 +1378,13 @@ mod tests {
         assets: Vec<Discovered>,
     ) -> Result<Value, ToolError> {
         let cancellation = CancellationToken::new();
-        let invocation = crate::InvocationContext::new("asset-fixture", "turn")
-            .with_operation_id("original-operation".into())
-            .with_browser_authorization(authority);
+        let invocation = crate::InvocationContext::new(
+            "asset-fixture",
+            "turn",
+            crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+        )
+        .with_operation_id("original-operation".into())
+        .with_browser_authorization(authority);
         let source = source(&mut tab, &invocation, &cancellation).await;
         let publisher = Arc::new(TestFiles(files)) as Arc<dyn crate::BrowserAssetFiles>;
         let mut directory = publisher.begin(cancellation.clone()).await?;
@@ -1492,9 +1500,13 @@ mod tests {
             let (mut tab, server) = asset_tab(state.clone()).await;
             let authority = allowed();
             let cancellation = CancellationToken::new();
-            let invocation = crate::InvocationContext::new("asset-fixture", "turn")
-                .with_operation_id("original-operation".into())
-                .with_browser_authorization(authority.clone());
+            let invocation = crate::InvocationContext::new(
+                "asset-fixture",
+                "turn",
+                crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
+            )
+            .with_operation_id("original-operation".into())
+            .with_browser_authorization(authority.clone());
             let source = source(&mut tab, &invocation, &cancellation).await;
             source
                 .approve_fallback(&tab, "https://assets.test/one.png")

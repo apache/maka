@@ -105,6 +105,9 @@ async fn configure_batch_commits_one_revision_and_rejects_stale_writes() {
         )
         .await
         .unwrap();
+    let HandlerValue::Json(result) = result else {
+        panic!("configureBatch must return JSON")
+    };
     jsonschema::validator_for(&method.output)
         .unwrap()
         .validate(&result)
@@ -440,8 +443,11 @@ async fn inherited_structure_enable_parameters_bindings_and_removals_write_only_
         .unwrap();
     let candidates = f
         .manager
-        .binding_candidates(json!({"consumer":{"kind":"root","name":"consumer"},
-        "import":"content","includePackages":false}))
+        .binding_candidates(
+            &maka_sandbox::Sandbox::Disabled,
+            json!({"consumer":{"kind":"root","name":"consumer"},
+        "import":"content","includePackages":false}),
+        )
         .await
         .unwrap();
     assert_eq!(

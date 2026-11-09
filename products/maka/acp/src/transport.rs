@@ -192,10 +192,6 @@ impl Peer {
             let reason = match result {
                 Ok(Completion::Completed) => acp::StopReason::EndTurn,
                 Ok(Completion::Cancelled) => acp::StopReason::Cancelled,
-                Ok(Completion::Paused) => acp::StopReason::Other(acp::OtherStopReason::new(
-                    "_maka_paused",
-                    Default::default(),
-                )),
                 result => acp::StopReason::Error(acp::ErrorStopReason::new().error(
                     acp::Error::internal_error().data(match result {
                         Err(e) => e.to_string(),

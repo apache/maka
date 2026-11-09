@@ -53,5 +53,10 @@ impl BrowserAuthorization for LoopbackFixture {
     }
 }
 pub fn context<'a>(session: &'a str, turn: &'a str) -> InvocationContext<'a> {
-    InvocationContext::new(session, turn).with_browser_authorization(Arc::new(LoopbackFixture))
+    InvocationContext::new(
+        session,
+        turn,
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    )
+    .with_browser_authorization(Arc::new(LoopbackFixture))
 }

@@ -23,6 +23,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+rusqlite.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 dunce = "1.0.5"
@@ -32,7 +34,6 @@ unicode-normalization = "0.1.25"
 maka-code-runtime.workspace = true
 maka-computer-use.workspace = true
 hex.workspace = true
-maka-graph.workspace = true
 maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true
@@ -52,6 +53,7 @@ base64 = "0.23.1"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 maka-agent-engine.workspace = true
+maka-agent-state.workspace = true
 maka-assistant.workspace = true
 maka-config.workspace = true
 maka-event-log.workspace = true
@@ -108,3 +110,7 @@ maka-processes-native.workspace = true
 maka-interactions-native.workspace = true
 
 maka-decisions-api-native.workspace = true
+
+[[test]]
+name = "durable_recovery"
+path = "tests/durable_recovery.rs"

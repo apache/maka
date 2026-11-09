@@ -101,7 +101,10 @@ async fn mutation(
 fn outcome(reply: maka_plugin_core::operation::OperationReply) -> Value {
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             ..
         } => value,
         other => panic!("Unexpected terminal receipt {other:?}"),
@@ -224,7 +227,7 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
         let final_record=f.session(&session).await.read_shell_run(&session,id).await.unwrap().unwrap();
         assert!(changes.has_changed().unwrap(), "durable terminal outcome must notify the selected Session");
         assert!(!final_record.state.active());
-        let maka_agent_facts::shell_run::ShellOutput::Pipes { stdout, .. }=&final_record.output else {panic!("pipes")};
+        let maka_plugin_core::shell_run::ShellOutput::Pipes { stdout, .. }=&final_record.output else {panic!("pipes")};
         assert!(stdout.contains("readylive-pipedone"));
         watch.cancel();
         let completion=watch.completion().await;
@@ -232,26 +235,6 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
         completion.cleanup.unwrap();
         list.cancel(); list.completion().await.cleanup.unwrap();
         assert_eq!(query(&f,"read",target).await["kind"],"completed");
-        processes::close(&f).await;
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn workhub_terminal_selects_coordinator_namespace_and_rejects_original_agent_session() {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        let (_, mut f, ordinary_session) = processes::fixture().await;
-        workhub::activate(&mut f, true).await;
-        let resolved = workhub::resolve(&f, workhub::selection(&f).await, Uuid::new_v4()).await;
-        let coordinator = resolved["session"]["id"].as_str().unwrap();
-        assert!(coordinator.starts_with("wh_"));
-        let denied = query(&f, "list", json!({"sessionId": ordinary_session})).await;
-        assert_eq!(denied["kind"], "failed", "{denied}");
-        let listed = query(&f, "list", json!({"sessionId": coordinator})).await;
-        assert_eq!(listed["kind"], "completed", "{listed}");
-        let owner = caller();
-        let started = mutation(&f, &owner, "start", json!({"sessionId": coordinator, "command": "printf coordinator > coordinator-terminal.txt"}), Uuid::new_v4()).await;
-        assert_eq!(started["kind"], "completed", "{started}");
-        wait_file(&f, "coordinator-terminal.txt", "coordinator").await;
         processes::close(&f).await;
     }).await.unwrap();
 }

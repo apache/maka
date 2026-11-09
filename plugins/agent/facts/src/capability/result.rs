@@ -39,7 +39,7 @@ fn present_json<'de, D: serde::Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",

@@ -44,29 +44,9 @@ pub struct BrowserConnection {
     pub endpoint: String,
 }
 
-/// Backend-validated source of a browser lease observation.
-/// The discriminator and routing string are neither ownership nor permission.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BrowserLeaseSubject {
-    #[serde(rename_all = "camelCase")]
-    PhysicalClaim { claim_id: String },
-    #[serde(rename_all = "camelCase")]
-    FixedSession { scope_id: String },
-}
-impl BrowserLeaseSubject {
-    /// Return an observed routing identity, never a sealed proof or grant.
-    pub fn routing_id(&self) -> &str {
-        match self {
-            Self::PhysicalClaim { claim_id } => claim_id,
-            Self::FixedSession { scope_id } => scope_id,
-        }
-    }
-}
-
 #[cfg(test)]
 mod browser_subject_tests {
-    use super::*;
+    use maka_plugin_core::computer::BrowserLeaseSubject;
     use serde_json::json;
 
     #[test]

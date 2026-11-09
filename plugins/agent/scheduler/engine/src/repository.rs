@@ -19,10 +19,10 @@
 
 //! Domain persistence uses the normal plugin CAS store; no second database owner.
 use crate::{Error, invalid, plan::Plan};
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Record;
-use maka_capabilities::storage::Store;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Record;
+use maka_plugin_core::storage::Store;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -111,7 +111,7 @@ impl Repository {
         }
         let current = self.storage.read(self.index()).await?;
         if current.as_ref().map(|record| record.revision) != Some(index.revision) {
-            return Err(maka_capabilities::storage::StoreError::Conflict {
+            return Err(maka_plugin_core::storage::StoreError::Conflict {
                 expected: index.revision.to_string(),
                 actual: current
                     .map_or_else(|| "missing".into(), |record| record.revision.to_string()),
@@ -197,7 +197,7 @@ impl Repository {
         let count = mutations.len();
         let records = self.storage.batch(mutations).await?;
         if records.len() != count {
-            return Err(maka_capabilities::storage::StoreError::OutcomeUnknown(
+            return Err(maka_plugin_core::storage::StoreError::OutcomeUnknown(
                 "storage returned an invalid batch receipt".into(),
             )
             .into());
@@ -245,7 +245,7 @@ impl Repository {
             ])
             .await?;
         if records.len() != 2 {
-            return Err(maka_capabilities::storage::StoreError::OutcomeUnknown(
+            return Err(maka_plugin_core::storage::StoreError::OutcomeUnknown(
                 "storage returned an invalid batch receipt".into(),
             )
             .into());

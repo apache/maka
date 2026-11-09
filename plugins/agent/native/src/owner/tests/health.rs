@@ -79,14 +79,15 @@ mod acceptance {
     use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest};
 
     async fn pending(f: &Fixture, session: &str) -> InteractionRecord {
-        let mut commits = f.session(session).await.subscribe_commits().unwrap();
+        let interactions = f.owner.durable.interactions();
+        let mut commits = interactions.subscribe().unwrap();
         loop {
-            if let Some(record) = f
-                .session(session)
-                .await
-                .pending_interactions(session)
+            commits.borrow_and_update();
+            if let Some(record) = interactions
+                .pending(session)
                 .await
                 .unwrap()
+                .records
                 .into_iter()
                 .next()
             {
@@ -104,7 +105,7 @@ mod acceptance {
         } else {
             json!({"decision":"deny"})
         };
-        f.mutation(2, "respond", json!({"sessionId":record.session_id,"requestId":record.request_id,"answer":{"kind":"permissions","decision":decision}}),Uuid::new_v4()).await.unwrap();
+        f.mutation(2, "respond", json!({"sessionId":record.execution.session_id,"requestId":record.request_id,"answer":{"kind":"permissions","decision":decision}}),Uuid::new_v4()).await.unwrap();
     }
     async fn head(socket: &mut tokio::net::TcpStream) -> String {
         let mut bytes = vec![];
@@ -187,16 +188,16 @@ mod acceptance {
             assert_eq!(checked["value"]["process"]["logs"]["stdout"],"health-output");
             assert_eq!(socket.read(&mut [0;1]).await.unwrap(),0);
             let deployment = f.app.source().unwrap().deployment;
-            let prefix=f.session(&(session)).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id:session.clone() },256,4*1024*1024).await.unwrap();
-            let event=prefix.events.iter().rev().find(|event|matches!(event.event.fact,maka_agent_facts::event::Fact::ToolSettled { .. })).unwrap();
-            let maka_agent_facts::tool_output::ToolOutput::Operation(reply)=f.session(&session).await.resolve_tool_result(&session,&event.event.id).await.unwrap() else { panic!("original health receipt") };
+            let recorded=f.history_items(&session).await;
+            let original_return=recorded.iter().rev().find(|item|matches!(&item.recorded.fact,Fact::HostToolResultRecorded { reference,.. } if reference.method=="health")).expect("original health producer T2");
+            let maka_agent_facts::tool_output::ToolOutput::Operation(reply)=service_tools::tool_return(&f,&session,original_return).await.body.output else { panic!("original health receipt") };
             let original=reply.reference;
             assert_eq!(original.method,"health");
             let original_receipt = f.store.operation(&original).unwrap().operation_observation().await.unwrap().unwrap();
             f.app.shutdown().await.unwrap();
             let mut native = NativeRegistry::default();
             maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-            provide_all(&mut native).unwrap();
+            provide_all(&mut native, f.owner.durable.clone()).unwrap();
             let policy = service_tools::Setup::health().policy();
             f.issuer = policy.issuer();
             f.app = Application::start_from_store(f.store.clone(), deployment, native, f.issuer.clone(), Arc::new(Grant(f.issuer.clone(), Some(policy))), Some(maka_host_js::factory(Default::default()))).await.unwrap();
@@ -210,7 +211,7 @@ mod acceptance {
             let foreign=f.create("Foreign").await;
             let rejected=roundtrip(&model,&f,&foreign,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
             assert_eq!(rejected["kind"],"failed","{rejected}");
-            assert!(f.session(&foreign).await.pending_interactions(&foreign).await.unwrap().is_empty());
+            assert!(f.owner.durable.interactions().pending(&foreign).await.unwrap().records.is_empty());
             assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
@@ -221,25 +222,30 @@ mod acceptance {
             let (model,f,session,reference)=fixture().await;
             let endpoint=TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url=format!("http://{}/health",endpoint.local_addr().unwrap());
-            let started=call(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
+            call(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
+            let run=f.latest_run(&session).await.run;
             pending(&f,&session).await;
-            f.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
+            f.mutation(2,"stop",json!({"sessionId":session,"runId":run}),Uuid::new_v4()).await.unwrap();
             f.drained().await;
-            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
             assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
-            let started=call(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
+            call(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
+            let run=f.latest_run(&session).await.run;
             permission(&f,&pending(&f,&session).await,true).await;
             let (mut socket,_)=endpoint.accept().await.unwrap();
             assert!(head(&mut socket).await.starts_with("HEAD /health "));
-            f.mutation(2,"stop",json!({"sessionId":session,"invocationId":started["invocationId"]}),Uuid::new_v4()).await.unwrap();
+            f.mutation(2,"stop",json!({"sessionId":session,"runId":run}),Uuid::new_v4()).await.unwrap();
             f.drained().await;
             assert_eq!(socket.read(&mut [0;1]).await.unwrap(),0);
-            let facts=service_tools::facts(&f,&session).await;
-            let operations:std::collections::BTreeSet<_>=facts.iter().filter_map(|fact|match fact {
-                maka_agent_facts::event::Fact::ToolDispatched { name,operation_id,.. } if name=="Http"=>Some(operation_id), _=>None
-            }).collect();
-            assert_eq!(operations.len(),1);
-            assert_eq!(facts.iter().filter(|fact|matches!(fact,maka_agent_facts::event::Fact::ToolSettled { operation_id,.. } if operations.contains(operation_id))).count(),1);
+            assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err(),"the one admitted HEAD must not be retried after cancellation");
+            let recorded=f.history_items(&session).await;
+            let admitted=recorded.iter().filter(|item|item.recorded.run==run && matches!(item.recorded.fact,Fact::ToolAdmitted { .. })).count();
+            assert_eq!(admitted,1,"one outer health tool admission, not a proxy count of HTTP requests");
+            let returns:Vec<_>=recorded.iter().filter(|item|item.recorded.run==run && matches!(&item.recorded.fact,Fact::HostToolResultRecorded { reference,.. } if reference.method=="health")).collect();
+            assert_eq!(returns.len(),1,"one original health service return");
+            let maka_agent_facts::tool_output::ToolOutput::Operation(reply)=service_tools::tool_return(&f,&session,returns[0]).await.body.output else {panic!("original health operation receipt")};
+            let original=f.store.operation(&reply.reference).unwrap().operation_observation().await.unwrap().expect("original health SDK observation");
+            assert_eq!(original.cleanup,maka_plugin_core::operation::OperationCleanup::Confirmed);
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
     }
@@ -268,7 +274,7 @@ mod acceptance {
             assert_eq!(lines[1]["value"]["process"]["status"],"completed");
             response(&mut model_socket).await; f.drained().await;
             assert!(tokio::time::timeout(Duration::from_millis(50),redirect.accept()).await.is_err());
-            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
+            assert!(f.owner.durable.interactions().pending(&session).await.unwrap().records.is_empty());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
     }

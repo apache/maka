@@ -84,10 +84,8 @@ impl ComputerAppDecision {
 impl ComputerAppActivity {
     pub fn validate(&self) -> Result<(), &'static str> {
         for id in [
-            &self.invocation.session_id,
-            &self.invocation.turn_id,
-            &self.invocation.run_id,
-            &self.invocation.invocation_id,
+            &self.execution.session_id,
+            &self.execution.turn_id,
             &self.operation_id,
         ] {
             entity_id(id)?;
@@ -195,14 +193,39 @@ impl InteractionRequest {
                 }
             }
             Self::Permissions {
+                target,
                 tool_use_id,
                 basis,
                 request,
             } => {
-                if tool_use_id.as_ref().is_some_and(|id| id.is_empty()) || basis.validate().is_err()
-                {
-                    return Err("Invalid permission request identity or revision");
+                use crate::durable::AuthorizationObligation;
+                let disclosed = match target {
+                    AuthorizationObligation::Tool { tool } => {
+                        if tool.call.is_empty() || tool.call.contains('\0') {
+                            return Err("Invalid permission tool obligation");
+                        }
+                        true
+                    }
+                    AuthorizationObligation::Cell { operation, .. } => {
+                        if operation.is_nil() {
+                            return Err("Invalid permission Cell operation");
+                        }
+                        false
+                    }
+                    AuthorizationObligation::External { operation, .. } => {
+                        if operation.is_nil() {
+                            return Err("Invalid permission External operation");
+                        }
+                        true
+                    }
+                };
+                if tool_use_id.is_some() != disclosed {
+                    return Err("Permission display category differs from its typed obligation");
                 }
+                if let Some(id) = tool_use_id {
+                    entity_id(id)?;
+                }
+                basis.validate()?;
                 request.validate()?;
             }
             Self::Question {
@@ -304,7 +327,7 @@ impl InteractionOutcome {
             return Err("Invalid outcome timestamp");
         }
         if let Self::PermissionsDecision {
-            decision: grant::Decision::Allow { permissions, .. },
+            decision: PermissionDecision::Allow { permissions, .. },
             ..
         } = self
         {
@@ -338,19 +361,6 @@ impl InteractionOutcome {
                     ..
                 },
             ) => Err("Human interactions have no response deadline"),
-            (
-                InteractionRequest::Permissions {
-                    tool_use_id: None, ..
-                },
-                Self::PermissionsDecision {
-                    decision:
-                        grant::Decision::Allow {
-                            scope: grant::Scope::Once,
-                            ..
-                        },
-                    ..
-                },
-            ) => Err("An Executor permission request requires Turn or Session scope"),
             (
                 InteractionRequest::Permissions { request, .. },
                 Self::PermissionsDecision { decision, .. },
@@ -387,7 +397,7 @@ impl InteractionAnswer {
             self.clone().into_outcome(MAX_SAFE_INTEGER).validate()?;
         }
         if let Self::Permissions {
-            decision: grant::Decision::Allow { permissions, .. },
+            decision: PermissionDecision::Allow { permissions, .. },
         } = self
         {
             permissions
@@ -409,15 +419,15 @@ impl InteractionAnswer {
             (
                 Self::Permissions {
                     decision:
-                        grant::Decision::Allow {
-                            scope: grant::Scope::Once,
+                        PermissionDecision::Allow {
+                            scope: PermissionScope::Once,
                             ..
                         },
                 },
                 InteractionRequest::Permissions {
                     tool_use_id: None, ..
                 },
-            ) => Err("An Executor permission request requires Turn or Session scope"),
+            ) => Err("An Executor permission request requires Run or Session scope"),
             (Self::Permissions { decision }, InteractionRequest::Permissions { request, .. }) => {
                 decision
                     .validate_for(&request.permissions)
@@ -448,9 +458,8 @@ impl InteractionAnswer {
 impl InteractionRecord {
     pub fn validate(&self) -> Result<(), &'static str> {
         for id in [
-            &self.session_id,
-            &self.turn_id,
-            &self.run_id,
+            &self.execution.session_id,
+            &self.execution.turn_id,
             &self.request_id,
         ] {
             entity_id(id)?;
@@ -459,6 +468,29 @@ impl InteractionRecord {
             return Err("Invalid interaction creation timestamp");
         }
         self.request.validate()?;
+        if let InteractionRequest::Permissions {
+            target,
+            tool_use_id,
+            ..
+        } = &self.request
+        {
+            use crate::durable::AuthorizationObligation;
+            let expected = match target {
+                AuthorizationObligation::Tool { tool } => Some(crate::tool_call::tool_use_id(
+                    self.execution.run_id,
+                    &format!("{}:{}", tool.attempt, tool.call),
+                )),
+                AuthorizationObligation::Cell { .. } => None,
+                AuthorizationObligation::External { operation, .. } => Some(
+                    crate::tool_call::tool_use_id(self.execution.run_id, &operation.to_string()),
+                ),
+            };
+            if tool_use_id.as_deref() != expected.as_deref() {
+                return Err(
+                    "Permission display identity differs from its original execution obligation",
+                );
+            }
+        }
         if let Some(outcome) = &self.outcome {
             outcome.validate_for_request(&self.request)?;
         }
@@ -530,5 +562,90 @@ impl SystemPermissionApplicationLocation {
             return Err("Permission application must be an absolute app bundle");
         }
         Ok(url)
+    }
+}
+
+#[cfg(test)]
+mod permission_display_tests {
+    use super::*;
+    use crate::{durable::*, tool_call::tool_use_id};
+
+    #[test]
+    fn permission_display_is_bound_to_original_run_and_typed_obligation() {
+        let run = RunId::new();
+        let tool = ToolKey {
+            attempt: ModelAttemptId::new(),
+            call: "call:with:colons".into(),
+        };
+        let operation = uuid::Uuid::new_v4();
+        let basis = serde_json::from_value(serde_json::json!({
+            "boundaryRevision": 2,
+            "binding": { "id": uuid::Uuid::new_v4(), "permissionEpoch": 3 }
+        }))
+        .unwrap();
+        for (target, display) in [
+            (
+                AuthorizationObligation::Tool { tool: tool.clone() },
+                Some(tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))),
+            ),
+            (
+                AuthorizationObligation::External {
+                    task: ExternalTaskId::new(),
+                    operation,
+                },
+                Some(tool_use_id(run, &operation.to_string())),
+            ),
+            (
+                AuthorizationObligation::Cell {
+                    cell: crate::cells::CellId::new(),
+                    operation,
+                },
+                None,
+            ),
+        ] {
+            let record = InteractionRecord {
+                execution: ExecutionIdentity {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: run,
+                },
+                request_id: "permission-request".into(),
+                created_at: 1,
+                request: InteractionRequest::Permissions {
+                    target,
+                    tool_use_id: display.clone(),
+                    basis,
+                    request: PermissionRequest {
+                        reason: "original operation".into(),
+                        command: None,
+                        permissions: maka_sandbox::grant::Permissions {
+                            filesystem: vec![],
+                            network: maka_sandbox::Network::Denied,
+                        },
+                    },
+                },
+                outcome: None,
+            };
+            record.validate().unwrap();
+            let encoded = serde_json::to_value(&record).unwrap();
+            assert_eq!(
+                serde_json::from_value::<InteractionRecord>(encoded).unwrap(),
+                record
+            );
+            let mut foreign_display = record.clone();
+            let InteractionRequest::Permissions {
+                tool_use_id: shown, ..
+            } = &mut foreign_display.request
+            else {
+                unreachable!()
+            };
+            *shown = Some(tool_use_id(run, "another-operation"));
+            assert!(foreign_display.validate().is_err());
+            if display.is_some() {
+                let mut foreign_run = record.clone();
+                foreign_run.execution.run_id = RunId::new();
+                assert!(foreign_run.validate().is_err());
+            }
+        }
     }
 }

@@ -25,7 +25,7 @@ import { useHost } from './host';
 import {
   canRegenerateFromText,
   messageKey,
-  type Position,
+  sameHistoryRow,
   type Row,
   userAuthored,
 } from './history';
@@ -42,9 +42,7 @@ import {
   IconButton,
 } from './ui';
 
-const samePosition = (left: Position, right: Position) =>
-  left.sourceSequence === right.sourceSequence && left.itemIndex === right.itemIndex;
-type Target = OriginalMessage & { turnId: string };
+type Target = OriginalMessage & { turnId?: string };
 const sameTarget = (left: Target | null, right: Target | null) =>
   left === right ||
   (left !== null &&
@@ -52,7 +50,7 @@ const sameTarget = (left: Target | null, right: Target | null) =>
     left.sessionId === right.sessionId &&
     left.key === right.key &&
     left.turnId === right.turnId &&
-    samePosition(left.position, right.position));
+    sameHistoryRow(left.position, right.position));
 
 /**
  * Edit and resend a user message: fork the conversation before its turn and
@@ -86,8 +84,7 @@ export function MessageEdit(props: {
   const target = computed<Target | null>(
     () => {
       const row = props.row();
-      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
-        return null;
+      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position) return null;
       // A message the Host generated is not the user's to edit and resend as their own.
       if (!userAuthored(row)) return null;
       // Text replay must not drop attachments or structured references.
@@ -123,7 +120,7 @@ export function MessageEdit(props: {
           kind: 'fork',
           session: observed.session,
           title: forkTitle(observed.session.title),
-          position: { kind: 'before_turn', turnId: original.turnId },
+          position: { kind: 'before_source_turn', position: original.position },
         },
         text,
         props.regenerate ?? false,
@@ -182,8 +179,7 @@ export function TurnRetry(props: {
   const target = computed<Target | null>(
     () => {
       const row = props.row();
-      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
-        return null;
+      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position) return null;
       // Text replay must not drop attachments or structured references.
       if (!canRegenerateFromText(row)) return null;
       return {

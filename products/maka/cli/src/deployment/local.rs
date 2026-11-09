@@ -278,7 +278,9 @@ async fn prepare_application(
         if root.root_id() != root_id {
             return Err("State Root changed before application preparation".into());
         }
-        let store = maka_transport::open_store(Arc::new(root)).await?;
+        let store =
+            maka_transport::open_store(Arc::new(root), &maka_product_native::root_migrations())
+                .await?;
         let result = crate::application::select_committed_host(&store, selection).await;
         store.drain().await;
         return result;
@@ -636,6 +638,18 @@ mod tests {
                     ))
                 })
             }
+            fn send_text(
+                &self,
+                _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+                _: maka_agent_ports::model::TextStream,
+            ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>>
+            {
+                Box::pin(async {
+                    Err(maka_agent_ports::model::Error::Adapter(
+                        "public catalog does not use WebSockets".into(),
+                    ))
+                })
+            }
             fn connect(
                 &self,
                 _: maka_agent_ports::model::Connect,
@@ -715,9 +729,12 @@ mod tests {
             drop(host);
         }
         let store = Arc::new(
-            maka_transport::open_store(Arc::new(RootOwner::open(root, &namespaces).unwrap()))
-                .await
-                .unwrap(),
+            maka_transport::open_store(
+                Arc::new(RootOwner::open(root, &namespaces).unwrap()),
+                &maka_product_native::root_migrations(),
+            )
+            .await
+            .unwrap(),
         );
         let record = store.application_launch().await.unwrap().unwrap();
         let mut loaded = store
@@ -879,7 +896,25 @@ mod tests {
             loaded,
             {
                 let mut native = maka_host_runtime::application::NativeRegistry::default();
-                maka_product_native::provide(&mut native, catalog.catalog()).unwrap();
+                let data = store.data_writer().unwrap();
+                let state = maka_agent_state::Store::new(
+                    data.clone(),
+                    maka_agent_state::DriverDomain::new(data).unwrap(),
+                )
+                .unwrap();
+                let test_executable = std::env::current_exe().unwrap();
+                let helper = test_executable
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join(if cfg!(windows) { "maka.exe" } else { "maka" });
+                assert!(
+                    helper.is_file(),
+                    "CLI fixture requires the actual Maka executable"
+                );
+                maka_product_native::provide(&mut native, catalog.catalog(), state, helper)
+                    .unwrap();
                 native
                     .insert(
                         "example.FailingSettings".into(),
@@ -1215,10 +1250,12 @@ mod tests {
         .unwrap();
         initialized.shutdown().await.unwrap();
         drop(initialized);
-        let store =
-            maka_transport::open_store(Arc::new(RootOwner::open(&root, &namespaces).unwrap()))
-                .await
-                .unwrap();
+        let store = maka_transport::open_store(
+            Arc::new(RootOwner::open(&root, &namespaces).unwrap()),
+            &maka_product_native::root_migrations(),
+        )
+        .await
+        .unwrap();
         let record = store.application_launch().await.unwrap().unwrap();
         let loaded = store
             .load_application(record.deployment)
@@ -1228,17 +1265,15 @@ mod tests {
         let mut publication: Configuration =
             serde_json::from_value(record.configuration.clone()).unwrap();
         let Configuration::PublicHost { endpoints, .. } = &mut publication;
-        for name in ["agent", "coordinator"] {
-            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                assert!(
-                    endpoints
-                        .get_mut(name)
-                        .unwrap()
-                        .grant
-                        .methods
-                        .remove(method)
-                );
-            }
+        for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+            assert!(
+                endpoints
+                    .get_mut("agent")
+                    .unwrap()
+                    .grant
+                    .methods
+                    .remove(method)
+            );
         }
         // A caller can remove business management while retaining product-owned
         // Agent publication. Owner coordination must not need this endpoint.

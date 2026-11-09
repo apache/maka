@@ -31,7 +31,9 @@ use maka_event_log::{
     root_store::RootStore,
 };
 use maka_host_runtime::application::RecoveryInvocation;
-use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt};
+use maka_plugin_core::operation::{
+    OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt,
+};
 use std::sync::atomic::AtomicBool;
 
 async fn store() -> (tempfile::TempDir, RootNamespaces, Arc<RootStore>) {
@@ -41,7 +43,11 @@ async fn store() -> (tempfile::TempDir, RootNamespaces, Arc<RootStore>) {
         control: dir.path().join("control"),
     };
     let owner = Arc::new(RootOwner::create(&dir.path().join("root"), &namespaces).unwrap());
-    let store = Arc::new(setup(RootStore::open(owner)).await.unwrap());
+    let store = Arc::new(
+        setup(RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS))
+            .await
+            .unwrap(),
+    );
     (dir, namespaces, store)
 }
 fn mutation_packages() -> (Package, Package) {
@@ -97,7 +103,7 @@ impl Handler for VerifiedEcho {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let store = self.store.clone();
         let caller = self.caller.clone();
         let calls = self.calls.clone();
@@ -493,7 +499,7 @@ async fn javascript_mutation_receives_original_reference_and_dispatches_once() {
         let client=app.client();let binding=client.bind(client.activation(&id(2)).unwrap(),"echo".into()).await.unwrap().remove(0);let operation=Uuid::new_v4();
         let accepted=mutate(&client, &store, binding.clone(),"echo".into(),json!("script"),scope(&issuer,true),operation).await.unwrap();let reference=accepted.reference.clone();assert_eq!(returned(accepted.result().await),json!("script:1"));
         assert_eq!(returned(mutate(&client, &store, binding,"echo".into(),json!("script"),scope(&issuer,true),operation).await.unwrap().result().await),json!("script:1"));
-        assert_eq!(store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,OperationOutcome::Returned {value:json!("script:1")});
+        assert_eq!(store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,OperationOutcome::Returned {result: OperationResult::Success {value:json!("script:1")}});
         app.shutdown().await.unwrap();drop(app);drop(client);close(store).await;
     }).await.unwrap();
 }
@@ -509,9 +515,9 @@ async fn javascript_forwarded_mutation_preserves_original_evidence_and_parent_cl
         let source=format!(r#"
             export const service={{async echo(input,_observation,context) {{
                 const reply=await context.invoke({{operation:'mutate',import:'child',provider:0,method:'echo',input,operationId:'{operation}',attachments:{{}}}});
-                if(reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned') throw Error('child receipt not returned');
+                if(reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned' || reply.receipt.outcome.result.kind !== 'success') throw Error('child receipt not returned');
                 if(!reply.reference || reply.reference.operation !== '{operation}') throw Error('lost child reference');
-                return reply.receipt.outcome.value+':parent';
+                return reply.receipt.outcome.result.value+':parent';
             }}}};
             export function activate() {{return {{echo:{{contract:{},service:['service']}}}};}}
         "#,serde_json::to_string(&contract(MethodMode::Query)).unwrap());
@@ -565,7 +571,7 @@ fn persisted_operation(
             .unwrap();
     let (outcome, cleanup): (String, String) = connection.query_row(
         "SELECT CASE WHEN json_extract(o.outcome_json,'$.kind')='returned'
-         THEN json_object('kind','returned','value',json(CAST(c.payload AS TEXT))) ELSE o.outcome_json END,
+         THEN json_object('kind','returned','result',json(CAST(c.payload AS TEXT))) ELSE o.outcome_json END,
          o.cleanup_json FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id
          WHERE deployment=? AND namespace=? AND operation=? AND source_revision=?",
         rusqlite::params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace).unwrap(), reference.operation.to_string(), i64::try_from(reference.source.revision).unwrap()],
@@ -590,7 +596,7 @@ struct UncertainSettlement {
     calls: Arc<AtomicUsize>,
 }
 impl Handler for UncertainSettlement {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let store = self.store.clone();
         let reference = context.operation().unwrap().clone();
         let database = self.database.clone();
@@ -615,7 +621,7 @@ impl Handler for UncertainSettlement {
             ))
             .unwrap();
             connection.execute_batch(&format!("CREATE TRIGGER reject_operation_settlement BEFORE UPDATE OF outcome_json ON application_operations BEGIN SELECT RAISE(ABORT,'{SETTLEMENT_SECRET}'); END;")).unwrap();
-            Ok(input)
+            Ok(input.into())
         })
     }
 }
@@ -744,7 +750,10 @@ async fn uncertain_durable_settlement_does_not_replay_effect_or_invent_cleanup_f
 fn returned(reply: OperationReply) -> Value {
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             ..
         } => value,
         other => panic!("expected returned receipt: {other:?}"),
@@ -772,16 +781,18 @@ fn large_receipt_value() -> Value {
 
 struct ReceiptBoundaryEcho(Arc<AtomicUsize>);
 impl Handler for ReceiptBoundaryEcho {
-    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, _: Context) -> BoxFuture<'static, HandlerResult> {
         let calls = self.0.clone();
         Box::pin(async move {
             calls.fetch_add(1, Ordering::SeqCst);
             if input == json!("large") {
-                Ok(large_receipt_value())
+                Ok(large_receipt_value().into())
             } else if input == json!("integer") {
-                Ok(json!(9007199254740993_u64))
+                Ok(json!(9007199254740993_u64).into())
             } else {
-                Err("effect result unknown".into())
+                Err(HandlerError::Unknown {
+                    diagnostic: "effect result unknown".into(),
+                })
             }
         })
     }
@@ -858,16 +869,16 @@ async fn javascript_receipts_preserve_child_reference_unknown_and_oversized_reco
         assert!(matches!(integer.receipt,Receipt::Unavailable {..}));
         assert_eq!(read("recover").await,integer);
         let stored_integer = store.operation(&integer.reference).unwrap().operation_observation().await.unwrap().unwrap();
-        assert_eq!(stored_integer.outcome,OperationOutcome::Returned {value:json!(9007199254740993_u64)});
+        assert_eq!(stored_integer.outcome,OperationOutcome::Returned {result: OperationResult::Success {value:json!(9007199254740993_u64)}});
         assert_eq!(stored_integer.cleanup,OperationCleanup::Confirmed);
         assert_eq!(calls.load(Ordering::SeqCst),2);
         let large = read("large").await;
         assert!(matches!(&large.receipt,Receipt::Recorded {
-            outcome:OperationOutcome::Returned {value},
+            outcome:OperationOutcome::Returned {result: OperationResult::Success {value}},
             cleanup:OperationCleanup::Confirmed,
         } if value == &large_receipt_value()), "expected the complete large returned value with confirmed cleanup; calls={}, unknown={}", calls.load(Ordering::SeqCst), matches!(&large.receipt, Receipt::Recorded { outcome: OperationOutcome::Unknown {..}, .. }));
         let stored = store.operation(&large.reference).unwrap().operation_observation().await.unwrap().unwrap();
-        assert_eq!(stored.outcome,OperationOutcome::Returned {value:large_receipt_value()});
+        assert_eq!(stored.outcome,OperationOutcome::Returned {result: OperationResult::Success {value:large_receipt_value()}});
         assert_eq!(stored.cleanup,OperationCleanup::Confirmed);
         assert_eq!(read("large").await,large);
         assert_eq!(read("recover").await,large);
@@ -977,7 +988,7 @@ struct CallerCheckedMutation {
     fail_cleanup: bool,
 }
 impl Handler for CallerCheckedMutation {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let database = self.caller_database.clone();
         let started = self.started.clone();
         let release = self.release.clone();
@@ -1014,7 +1025,7 @@ impl Handler for CallerCheckedMutation {
                 ticket.start();
                 ticket.complete(Err("caller effect cleanup unconfirmed".into()));
             }
-            Ok(input)
+            Ok(input.into())
         })
     }
 }
@@ -1161,13 +1172,13 @@ async fn separate_caller_root_stays_owned_through_effect_cleanup_and_keeps_origi
                 assert!(RootOwner::open(&caller_dir.path().join("root"),&caller_ns).is_err(),"failed physical cleanup retains the original caller lease");
             } else {
                 let owner=Arc::new(RootOwner::open(&caller_dir.path().join("root"),&caller_ns).unwrap());
-                let caller=Arc::new(RootStore::open(owner).await.unwrap());
+                let caller=Arc::new(RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS).await.unwrap());
                 assert_eq!(caller.load_application(caller_deployment).await.unwrap().unwrap().source().reference,next);
                 let saved=caller.application_intents(caller_deployment,id(41),0,128).await.unwrap();
                 assert_eq!(saved.len(),1);assert_eq!(saved[0].caller,caller_source);assert_eq!(saved[0].reference,reference);
                 assert!(caller.operation(&reference).is_err(),"the current caller Root cannot substitute a not-recorded business receipt");
                 let original=client.recover(client.activation(&id(2)).unwrap(),saved[0].reference.clone(),scope(&issuer,true)).await.unwrap().unwrap();
-                assert_eq!(original.outcome,OperationOutcome::Returned {value:json!("original")});
+                assert_eq!(original.outcome,OperationOutcome::Returned {result: OperationResult::Success {value:json!("original")}});
                 host.shutdown().await.unwrap();drop(host);drop(client);close(host_store).await;close(caller).await;
             }
         }).await.unwrap();

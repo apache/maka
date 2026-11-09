@@ -83,7 +83,9 @@ async fn grouped_cas_rejection_rolls_back_upload_adoption_and_preserves_peers_on
             &upload,
             &Receipt::Recorded {
                 outcome: OperationOutcome::Returned {
-                    value: serde_json::json!({"kind":"rejected"}),
+                    result: OperationResult::Success {
+                        value: serde_json::json!({"kind":"rejected"}),
+                    },
                 },
                 cleanup: OperationCleanup::Confirmed,
             },

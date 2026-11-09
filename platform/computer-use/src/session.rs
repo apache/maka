@@ -45,7 +45,10 @@ pub struct Session {
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
-    audio: Option<crate::driver::AudioCompletion>,
+    audio: Option<(
+        (String, String, crate::ExecutionCorrelation),
+        crate::driver::AudioCompletion,
+    )>,
 }
 
 enum EpochState {
@@ -104,6 +107,7 @@ impl Session {
         self.owner.ensure_open()?;
         if self.id.as_deref() != Some(invocation.session())
             || request.turn_id != invocation.turn()
+            || &request.execution != invocation.execution_correlation()
             || request.native_epoch != self.epoch.to_string()
             || invocation.operation_id().is_none_or(str::is_empty)
         {
@@ -395,7 +399,14 @@ impl Session {
                         invocation,
                     )
                     .await?;
-                    self.audio = Some(completion);
+                    self.audio = Some((
+                        (
+                            invocation.session().to_owned(),
+                            invocation.turn().to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        completion,
+                    ));
                     Ok(started.structured_content.unwrap_or(Value::Null))
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -410,7 +421,16 @@ impl Session {
                         .await?;
                     let snapshot = self.native.lock().await.audio_completion(self.epoch);
                     match snapshot.await {
-                        Ok(completion) => self.audio = Some(completion),
+                        Ok(completion) => {
+                            self.audio = Some((
+                                (
+                                    invocation.session().to_owned(),
+                                    invocation.turn().to_owned(),
+                                    invocation.execution_correlation().clone(),
+                                ),
+                                completion,
+                            ))
+                        }
                         Err(snapshot) => {
                             return match self.discard_audio().await {
                                 Ok(()) => Err(failed(format!(
@@ -854,7 +874,7 @@ impl Session {
     }
     pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
         #[cfg(target_os = "windows")]
-        if let Some(crate::driver::AudioCompletion::Worker(capture)) = self.audio.as_ref() {
+        if let Some((_, crate::driver::AudioCompletion::Worker(capture))) = self.audio.as_ref() {
             // This epoch may outlive a replacement input binding. Its exact
             // original output observation, not "current", selects cleanup.
             capture.discard().await?;
@@ -871,7 +891,10 @@ impl Session {
     pub fn wait_audio_finished(
         &self,
     ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
-        let completion = self.audio.clone();
+        let completion = self
+            .audio
+            .as_ref()
+            .map(|(_, completion)| completion.clone());
         Box::pin(async move {
             completion
                 .ok_or_else(|| failed("Computer audio recording is not active"))?
@@ -885,6 +908,7 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         if self.id.as_deref().is_some_and(|id| id != session) {
@@ -899,13 +923,18 @@ impl Session {
                 .native
                 .lock()
                 .await
-                .finish_windows_turn(self.epoch, session, turn);
+                .finish_windows_turn(self.epoch, session, turn, execution);
             close.await
         };
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let raw = Driver::finish_raw_native_turn(&self.native, self.epoch, turn).await;
+        let raw =
+            Driver::finish_raw_native_turn(&self.native, self.epoch, session, turn, execution)
+                .await;
         let cursor = self.owner.cursor();
-        let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
+        let browsers = self
+            .browsers
+            .finish_turn(turn, execution, &cursor, language)
+            .await;
         #[cfg(target_os = "windows")]
         {
             match (native, browsers) {
@@ -920,7 +949,9 @@ impl Session {
         {
             match (raw, browsers) {
                 (Ok(()), Ok(())) => {
-                    self.raw_computer.handles.retain(|_, owner| owner != turn);
+                    self.raw_computer.handles.retain(|_, owner| {
+                        !(owner.0 == session && owner.1 == turn && &owner.2 == execution)
+                    });
                     Ok(())
                 }
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),

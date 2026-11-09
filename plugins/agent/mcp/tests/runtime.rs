@@ -18,17 +18,14 @@
  */
 
 use maka_agent_facts::{
-    event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent, ToolOutcome},
-    tool_call::ToolCallIdentity,
-    tools::{ToolError, ToolJournal},
+    durable::{ExecutionIdentity, RunId},
+    tools::ToolError,
 };
-use maka_event_log::EventLog;
 use maka_mcp::{Connection, ServerConfiguration};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -38,58 +35,25 @@ fn fixture() -> PathBuf {
 fn config(mode: &str, record: &Path) -> ServerConfiguration {
     serde_json::from_value(json!({"name":"test","transport":{"type":"stdio","command":which::which("node").unwrap(),"args":[fixture(),mode,record],"cwd":record.parent().unwrap()},"startupTimeoutMs":3000})).unwrap()
 }
-async fn journal(connection: Connection, name: &str, input: Value) -> Value {
-    let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        EventLog::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap(),
-    );
-    let invocation = Invocation {
-        session_id: "session".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "invocation".into(),
-    };
-    log.create_session("session", "create", &json!({}), 1)
+async fn call(connection: &Connection, name: &str, input: Value) -> Value {
+    let result = connection
+        .call(name.into(), input, CancellationToken::new())
         .await
-        .unwrap();
-    log.append(
-        &EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Code {
-                    source: "test".into(),
-                },
+        .unwrap()
+        .into_durable(
+            "mcp-call",
+            std::time::UNIX_EPOCH,
+            &ExecutionIdentity {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: RunId::new(),
             },
-        ))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let name = name.to_owned();
-    let argument = input.clone();
-    let result = ToolJournal::new(log.clone(), invocation)
-        .invoke_call_with(
-            "call".into(),
-            ToolCallIdentity::standalone("call".into()),
-            name.clone(),
-            input,
-            None,
-            CancellationToken::new(),
-            move |cancel| Box::pin(async move { connection.call(name, argument, cancel).await }),
         )
-        .await
         .unwrap();
-    let settled = log.prefix(16, usize::MAX).await.unwrap().events;
-    assert!(settled.iter().any(|stored| matches!(
-        &stored.event.fact,
-        Fact::ToolSettled { outcome: ToolOutcome::Succeeded { is_error, .. }, .. }
-            if *is_error == (result["isError"] == true)
-    )));
-    Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-    result
+    let is_error = result.is_error;
+    let value = result.output.into_json();
+    assert_eq!(is_error, value["isError"] == true);
+    value
 }
 fn records(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path)
@@ -209,13 +173,13 @@ async fn stdio_pages_preserve_result_envelopes_media_and_explicit_tool_selection
             .read_only,
         "server readOnlyHint cannot authorize a tool"
     );
-    let result = journal(connection.clone(), "echo", json!({"n":7})).await;
+    let result = call(&connection, "echo", json!({"n":7})).await;
     assert_eq!(result["structuredContent"], json!({"n":7}));
     assert_eq!(result["_meta"]["fixture"], true);
-    let error = journal(connection.clone(), "error", json!({"reason":"expected"})).await;
+    let error = call(&connection, "error", json!({"reason":"expected"})).await;
     assert_eq!(error["isError"], true);
     assert_eq!(error["content"][0]["text"], "business failed");
-    let media = journal(connection.clone(), "media", json!({})).await;
+    let media = call(&connection, "media", json!({})).await;
     assert_eq!(media["content"].as_array().unwrap().len(), 3);
     assert_eq!(
         media["content"][0]["annotations"]["audience"],
@@ -242,7 +206,7 @@ async fn streamable_http_uses_configured_headers_and_normal_tool_calls() {
         let connection = Connection::connect(config, Default::default())
             .await
             .unwrap();
-        let result = journal(connection.clone(), "echo", json!({"http":true})).await;
+        let result = call(&connection, "echo", json!({"http":true})).await;
         assert_eq!(result["structuredContent"], json!({"http":true}));
         connection.close().await.unwrap();
         let events = records(&record);
@@ -332,7 +296,7 @@ async fn cancellation_without_response_evidence_and_catalog_changes_retire_names
     let connection = Connection::connect(config("normal", &record), Default::default())
         .await
         .unwrap();
-    journal(connection.clone(), "change", json!({})).await;
+    call(&connection, "change", json!({})).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         let mut poll = tokio::time::interval(Duration::from_millis(10));
         while connection.available() {
@@ -430,7 +394,7 @@ async fn http_preserves_large_json_chunked_and_sse_results() {
         let connection = Connection::connect(config, Default::default())
             .await
             .unwrap();
-        let result = journal(connection.clone(), "echo", json!({})).await;
+        let result = call(&connection, "echo", json!({})).await;
         assert_eq!(
             result["content"][0]["text"].as_str().unwrap().len(),
             16 * 1024 * 1024 + 1
@@ -470,8 +434,8 @@ async fn stdio_preserves_large_results_and_complete_catalog_pagination() {
     let connection = Connection::connect(config("stdio-large", &record), Default::default())
         .await
         .unwrap();
-    let result = journal(
-        connection.clone(),
+    let result = call(
+        &connection,
         "echo",
         json!({"marker":"stdio-large-complete"}),
     )
@@ -486,7 +450,7 @@ async fn stdio_preserves_large_results_and_complete_catalog_pagination() {
     );
     connection.close().await.unwrap();
     let result = Connection::connect(config("repeated-cursor", &record), Default::default()).await;
-    assert!(matches!(result, Err(error) if error == "MCP pagination cursor repeats"));
+    assert!(matches!(result, Err(error) if error.message == "MCP pagination cursor repeats"));
 }
 
 #[tokio::test]
@@ -509,8 +473,9 @@ async fn explicit_startup_cancellation_returns_confirmed_child_cleanup() {
         .unwrap()
         .err()
         .expect("cancelled startup");
-    assert!(error.cleanup_confirmed, "{}", error.message);
-    let pid = std::fs::read_to_string(record)
+    assert_eq!(error.message, "MCP startup cancelled");
+    assert!(error.material.is_none(), "{}", error.message);
+    let pid = std::fs::read_to_string(&record)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -518,4 +483,6 @@ async fn explicit_startup_cancellation_returns_confirmed_child_cleanup() {
         .unwrap();
     #[cfg(unix)]
     assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    #[cfg(unix)]
+    assert_gone(&record);
 }

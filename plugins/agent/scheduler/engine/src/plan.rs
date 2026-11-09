@@ -318,7 +318,7 @@ mod tests {
             outcome: Outcome::Ok,
             message: "admitted".into(),
             session_id: Some("session".into()),
-            run_id: Some("run".into()),
+            run_id: Some(maka_agent_facts::durable::RunId::default()),
         };
         reopened.settle(run.clone()).unwrap();
         assert_eq!(reopened.task.status, Status::Completed);

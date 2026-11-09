@@ -57,7 +57,7 @@ pub enum Error {
     #[error(transparent)]
     Time(#[from] jiff::Error),
     #[error(transparent)]
-    Storage(#[from] maka_capabilities::storage::StoreError),
+    Storage(#[from] maka_plugin_core::storage::StoreError),
 }
 
 fn invalid(message: impl Into<String>) -> Error {

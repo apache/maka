@@ -70,7 +70,7 @@ pub(crate) async fn capture(
     exited: CancellationToken,
     observer: Option<(
         tokio::sync::mpsc::Sender<crate::PipeEvent>,
-        maka_agent_facts::shell_run::PipeStream,
+        maka_plugin_core::shell_run::PipeStream,
     )>,
 ) -> Tail {
     let mut tail = Tail::default();

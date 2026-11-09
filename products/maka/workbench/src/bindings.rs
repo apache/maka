@@ -38,6 +38,7 @@ pub use permission_window::SystemPermissionWindow;
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
+use maka_plugin_core::operation::OperationResult;
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use std::{
@@ -748,7 +749,9 @@ impl ApplicationHost {
                 (id, mutation.confirm().await?)
             };
             match reply.receipt {
-                Receipt::Recorded { outcome: OperationOutcome::Returned { value }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } }, cleanup: OperationCleanup::Confirmed } => Err(diagnostic),
+                Receipt::Recorded { outcome: OperationOutcome::NotExecuted { .. }, cleanup: OperationCleanup::Confirmed } => Err("The permission request was prevented before execution.".into()),
                 _ => Err(format!("The permission request has no confirmed result. Recover original operation {id} before requesting again.")),
             }
         }).await

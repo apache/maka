@@ -232,7 +232,7 @@ async fn lost_continuation_receipt_recovers_automatically_without_replaying_the_
     let settled = restarted.operation(id).await.unwrap();
     assert_eq!(settled.reference, original.reference);
     assert!(
-        matches!(settled.receipt, Some(Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},..}) if value["kind"] == "started" && value["execution"]["turnId"] != ready["source"]["turnId"])
+        matches!(settled.receipt, Some(Receipt::Recorded {outcome:OperationOutcome::Returned {result: maka_plugin_core::operation::OperationResult::Success {ref value}},..}) if value["kind"] == "started" && value["execution"]["turnId"] != ready["source"]["turnId"])
     );
     support::wait_draft(
         &restarted,

@@ -241,6 +241,7 @@ fn identity() -> ScopeIdentity {
         epoch: "native-epoch".into(),
         session: "agent-session".into(),
         turn: "logical-turn".into(),
+        execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
         operation_id: "original-host-operation".into(),
     }
 }
@@ -906,6 +907,7 @@ async fn history_preparation_routes_only_to_its_independent_host_consent() {
         browser_id: "selected-browser".into(),
         generation: "selected-generation".into(),
         turn_id: identity.turn.clone(),
+        execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
         operation_id: identity.operation_id.clone(),
         target: crate::BrowserPreparationTarget::SessionHistory,
     };

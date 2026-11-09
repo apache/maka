@@ -17,8 +17,8 @@
  * under the License.
  */
 
-use maka_agent_facts::workspace::{BindingStamp, PermissionBasis};
 use maka_event_log::EventLog;
+use maka_sandbox::workspace::{BindingStamp, PermissionBasis};
 use serde_json::json;
 
 pub async fn create(log: &EventLog, session: &str, cwd: &str) -> PermissionBasis {

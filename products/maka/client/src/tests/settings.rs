@@ -135,7 +135,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         fixture.counter.release.notify_one();
         loop {
             let recovered = restarted.recover(id).await.unwrap();
-            if let Receipt::Recorded { outcome: OperationOutcome::Returned { value }, cleanup: OperationCleanup::Confirmed } = recovered.receipt {
+            if let Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup: OperationCleanup::Confirmed } = recovered.receipt {
                 assert_eq!(value, json!({"sent":1}));
                 assert_eq!(recovered.reference, prepared.reference.clone().unwrap());
                 break;
@@ -150,12 +150,12 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         fixture.counter.blocked.store(false, Ordering::SeqCst);
         let next = second.settings_mutation(Uuid::new_v4(), "setup", "discoverModels", Value::Null, Attachments::new()).await.unwrap();
         next.prepare().await.unwrap();
-        assert!(matches!(next.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":2})));
+        assert!(matches!(next.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":2})));
         assert_eq!(restarted.query("agent", "read", Value::Null).await.unwrap(), json!({"sent":2}));
         let preferences = json!({"expectedRevision":0,"mutation":{"kind":"language","preference":"zh-CN"}});
         let update = second.settings_mutation(Uuid::new_v4(), "settings", "updateAssistantPreferences", preferences.clone(), Attachments::new()).await.unwrap();
         update.prepare().await.unwrap();
-        assert!(matches!(update.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":3})));
+        assert!(matches!(update.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":3})));
         let network = json!({"expectedPolicyRevision":0,"expectedCredential":null,"networkProxy":{"enabled":true,"protocol":"http","host":"proxy.test","port":8080,"authEnabled":true,"username":"user","bypassList":[],"autoBypassDomains":[]},"credential":"replace"});
         let password = format!("{}x", "密".repeat(5_000)).into_bytes();
         let update = first.settings_mutation(Uuid::new_v4(), "settings", "updateNetwork", network.clone(), resource(password.clone())).await.unwrap();
@@ -163,7 +163,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         update.confirm().await.unwrap();
         let recovered = restarted.recover(update.id()).await.unwrap();
         assert_eq!(recovered.reference, prepared.reference.unwrap());
-        assert!(matches!(recovered.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":4})));
+        assert!(matches!(recovered.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":4})));
         for (index, action) in ["keep", "delete"].into_iter().enumerate() {
             let mut input = network.clone();
             input["credential"] = json!(action);
@@ -172,7 +172,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
             }
             let update = second.settings_mutation(Uuid::new_v4(), "settings", "updateNetwork", input, Attachments::new()).await.unwrap();
             update.prepare().await.unwrap();
-            assert!(matches!(update.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":index + 5})));
+            assert!(matches!(update.confirm().await.unwrap().receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":index + 5})));
         }
         assert_eq!(&fixture.counter.messages.lock().unwrap()[2..4], &[preferences, network]);
         assert_eq!(fixture.counter.secrets.lock().unwrap().as_slice(), &["k€y\\\"raw".as_bytes().to_vec(), password]);

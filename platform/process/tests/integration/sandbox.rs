@@ -87,7 +87,7 @@ async fn destination_grants_route_native_pipes_and_ptys_without_allowing_direct_
         assert_eq!(output["output"]["stdout"], "OK", "{output}");
         let (mut child, terminal) = maka_process::pty::spawn(
             executor.command_pty(&command).unwrap(),
-            maka_agent_facts::terminal::TerminalSize::new(80, 24).unwrap(),
+            maka_plugin_core::terminal::TerminalSize::new(80, 24).unwrap(),
         )
         .await
         .unwrap();
@@ -159,7 +159,7 @@ async fn loader_configuration_cannot_execute_before_the_sandbox_boundary() {
     );
     let failure = match maka_process::pty::spawn(
         command(),
-        maka_agent_facts::terminal::TerminalSize::new(80, 24).unwrap(),
+        maka_plugin_core::terminal::TerminalSize::new(80, 24).unwrap(),
     )
     .await
     {

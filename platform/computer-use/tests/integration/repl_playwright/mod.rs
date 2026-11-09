@@ -100,8 +100,12 @@ impl ToolExecutor for Bridge {
                 .await
                 .invoke(
                     serde_json::from_value(input).unwrap(),
-                    &InvocationContext::new("playwright-fixture", "fixture-turn")
-                        .with_browser_authorization(authority),
+                    &InvocationContext::new(
+                        "playwright-fixture",
+                        "fixture-turn",
+                        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+                    )
+                    .with_browser_authorization(authority),
                     &cancellation,
                     Language::En,
                 )
@@ -452,7 +456,11 @@ async fn browser_reads_require_actual_host_authority_and_bound_pending_cdp_work(
     let browser = Browser::open().await;
     let driver = Arc::new(Mutex::new(Driver::default()));
     let mut session = browser.session(driver.clone());
-    let base = InvocationContext::new("direct-fixture", "fixture-turn");
+    let base = InvocationContext::new(
+        "direct-fixture",
+        "fixture-turn",
+        maka_computer_use::ExecutionCorrelation::new("fixture-execution").unwrap(),
+    );
     let cancellation = CancellationToken::new();
     let bound = session
         .invoke(

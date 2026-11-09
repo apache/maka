@@ -165,6 +165,11 @@ async fn subscription_profile_survives_proxy_ws_continuation_and_http_fallback()
             let lane = Conversation::default();
             let token = profile["token"].as_str().unwrap();
             let mut next = codex_request(port, token);
+            if index==1{
+                super::failures::assert_failed(executor.stream_in_conversation(codex_request(port,token),CancellationToken::new(),Some(lane.clone())).await.unwrap()).await;
+                assert_eq!(lane.retry_transport_phase(),maka_agent_ports::model::RetryTransportPhase::Primary);
+                assert!(lane.try_switch_fallback_transport());
+            }
             let step = generate_step(&executor, &lane, codex_request(port, token)).await;
             assert!(matches!(&step.parts[..], [ModelPart::Text {text, ..}] if text.chunks().collect::<String>() == "OK"));
             if index == 0 {

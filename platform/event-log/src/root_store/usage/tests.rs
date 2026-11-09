@@ -29,7 +29,9 @@ async fn open() -> (tempfile::TempDir, RootStore) {
         control: dir.path().join("control"),
     };
     let owner = Arc::new(root::RootOwner::create(&dir.path().join("root"), &namespaces).unwrap());
-    let root = RootStore::open(owner).await.unwrap();
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     (dir, root)
 }
 async fn admit(log: &EventLog, model: String, tokens: u64) {

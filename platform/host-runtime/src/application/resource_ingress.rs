@@ -21,8 +21,8 @@
 use super::*;
 use maka_capabilities::call::ReadResource;
 use maka_capabilities::call::ResourceEncoding;
-use maka_capabilities::call::Resources;
 use maka_plugin_core::contract::ResourceType;
+use maka_plugin_core::work::resources::Resources;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -94,6 +94,32 @@ impl Default for CallResources {
     }
 }
 impl CallResources {
+    /// The actual retained descriptors, not content handles or recovery authority.
+    /// Observing local resources calls their adapter metadata; no payload is read.
+    pub fn descriptors(&self) -> Result<BTreeMap<String, ResourceDescriptor>> {
+        let attachments = match &self.0 {
+            ResourceInput::Local(attachments) => attachments,
+            ResourceInput::Captured(reserved) => &reserved.attachments,
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            attachments
+                .iter()
+                .map(|(slot, resource)| {
+                    Ok((
+                        slot.clone(),
+                        ResourceDescriptor {
+                            encoding: resource.encoding(),
+                            resource: resource.resource_type(),
+                            length: u64::try_from(resource.bytes())
+                                .map_err(|_| "invalid resource length")?,
+                            metadata: resource.metadata(),
+                        },
+                    ))
+                })
+                .collect()
+        }))
+        .map_err(|_| "Host resource descriptor observation panicked".to_string())?
+    }
     pub(super) fn captured(&self) -> bool {
         matches!(self.0, ResourceInput::Captured(_))
     }

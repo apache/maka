@@ -17,9 +17,9 @@
  * under the License.
  */
 
-use maka_capabilities::storage::Namespace;
 use maka_event_log::{EventLog, StoreError, sessions::PluginSession};
 use maka_plugin_core::scope::Scope;
+use maka_plugin_core::storage::Namespace;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -105,74 +105,13 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
             Err(StoreError::SessionConflict)
         ));
     }
-    let request = maka_agent_facts::session::CopyRequest {
-        source_session_id: claim.session_id.clone(),
-        target_session_id: "owned-copy".into(),
-        expected_source_revision: record.revision,
-        purpose: maka_agent_facts::session::CopyPurpose::EmptySideConversation,
-    };
-    let owner = PluginSession {
-        session_id: request.target_session_id.clone(),
-        fingerprint: "copy-with-settings".into(),
-        authority_session_id: Some(claim.session_id.clone()),
-        ..claim.clone()
-    };
-    let other = PluginSession {
-        creator: Namespace::new("another.workflow", Scope::Profile).unwrap(),
-        ..owner.clone()
-    };
-    assert!(
-        log.copy_plugin_session(request.clone(), &configuration, 4, other)
-            .await
-            .is_err(),
-        "reading a managed Session does not authorize escaping its owner lifecycle"
-    );
-    assert!(log.session_creator("owned-copy").await.unwrap().is_none());
-    let maka_event_log::sessions::SessionCopyResult::Committed(copied) = log
-        .copy_plugin_session(request.clone(), &configuration, 4, owner.clone())
-        .await
-        .unwrap()
-    else {
-        panic!("unexpected revision conflict")
-    };
-    assert!(
-        matches!(
-            log.copy_session(request.clone(), &configuration, 4).await,
-            Err(StoreError::SessionConflict)
-        ),
-        "native copy retries cannot adopt a plugin's creation"
-    );
-    assert!(matches!(
-        log.copy_plugin_session(
-            request.clone(),
-            &configuration,
-            4,
-            PluginSession {
-                fingerprint: "changed-settings".into(),
-                ..owner.clone()
-            }
-        )
-        .await,
-        Err(StoreError::SessionConflict)
-    ));
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
-    let maka_event_log::sessions::SessionCopyResult::Committed(replayed) = log
-        .copy_plugin_session(
-            request,
-            &json!({"ignored": "freshly resolved defaults"}),
-            5,
-            owner.clone(),
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("exact copy was not replayed")
-    };
-    assert_eq!(replayed, copied);
     assert_eq!(
-        log.session_manager("owned-copy").await.unwrap(),
-        Some(owner.creator)
+        log.create_plugin_session(&claim, &configuration, 5)
+            .await
+            .unwrap(),
+        record
     );
     assert_eq!(
         log.session_manager(&claim.session_id).await.unwrap(),

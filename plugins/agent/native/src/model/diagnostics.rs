@@ -110,6 +110,12 @@ pub(super) fn configuration(stage: &'static str, error: &ConfigError, connection
 pub(super) fn model(stage: &'static str, error: &ModelError, connection_id: &str) {
     match error {
         ModelError::Cancelled => {}
+        ModelError::LocalAuthorization(_) => tracing::warn!(
+            stage,
+            cause = "local_model_authorization",
+            connection_id,
+            "Model dispatch authorization refused"
+        ),
         ModelError::Http { status, .. } => tracing::warn!(
             stage,
             cause = "model_http",

@@ -39,7 +39,7 @@ pub(super) struct RawComputer {
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     ready_at: Option<tokio::time::Instant>,
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    pub(super) handles: HashMap<String, String>,
+    pub(super) handles: HashMap<String, (String, String, crate::ExecutionCorrelation)>,
     #[cfg(target_os = "windows")]
     windows: HashMap<u64, WindowsObservation>,
     #[cfg(target_os = "macos")]

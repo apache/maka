@@ -19,7 +19,7 @@
 
 use super::*;
 use maka_host_runtime::application::Mutation;
-use maka_plugin_core::operation::OperationCleanup;
+use maka_plugin_core::operation::{OperationCleanup, OperationResult};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 async fn begin(f: &Fixture, action: Value) -> (Scope, Mutation) {
@@ -48,20 +48,55 @@ async fn begin(f: &Fixture, action: Value) -> (Scope, Mutation) {
         .unwrap();
     (scope, client.mutate(prepared, intent).await.unwrap())
 }
-async fn process(control: &TcpListener, protocol: u8) -> (BufReader<TcpStream>, String) {
-    let count = if protocol == 1 { 2 } else { 1 };
-    for index in 0..count {
-        let (socket, _) = control.accept().await.unwrap();
-        let mut socket = BufReader::new(socket);
-        let mut pid = String::new();
-        socket.read_line(&mut pid).await.unwrap();
-        assert!(pid.trim().parse::<u32>().is_ok());
-        if index + 1 == count {
-            return (socket, pid);
+async fn process(control: &TcpListener, _protocol: u8) -> (BufReader<TcpStream>, String) {
+    let (socket, _) = control.accept().await.unwrap();
+    let mut socket = BufReader::new(socket);
+    let mut pid = String::new();
+    socket.read_line(&mut pid).await.unwrap();
+    assert!(pid.trim().parse::<u32>().is_ok());
+    (socket, pid)
+}
+async fn traces(f: &Fixture, trace: &std::path::Path) -> Vec<Value> {
+    use maka_plugin_core::storage::{Namespace, Scan};
+    let namespace = Namespace::new(
+        maka_workspace_api::protocol::IMPLEMENTATION,
+        maka_plugin_core::scope::Scope::Profile,
+    )
+    .unwrap();
+    let mut scan = Scan::default();
+    let mut calls = vec![];
+    loop {
+        let page = f
+            .store
+            .plugin_data_scan(&namespace, scan.clone())
+            .await
+            .unwrap();
+        for entry in page.entries {
+            let Some(value) = entry.record.data.value() else {
+                continue;
+            };
+            if value["source"]["kind"] != "setup" {
+                continue;
+            }
+            let path = std::path::Path::new(value["resourceRef"].as_str().unwrap())
+                .join("tmp")
+                .join(trace.file_name().unwrap());
+            if path.exists() {
+                calls.extend(
+                    std::fs::read_to_string(path)
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str::<Value>(line).unwrap()),
+                );
+            }
+        }
+        match page.next_after {
+            Some(after) => scan.after = Some(after),
+            None => return calls,
         }
     }
-    unreachable!()
 }
+
 fn reaped(pid: &str) {
     assert!(
         !std::process::Command::new("/bin/kill")
@@ -79,7 +114,10 @@ async fn result(f: &Fixture, authority: Scope, mut mutation: Mutation) -> Value 
     completed.cleanup.unwrap();
     let reference = completed.reply.reference.clone();
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         cleanup: OperationCleanup::Confirmed,
     } = completed.reply.receipt
     else {
@@ -100,7 +138,9 @@ async fn result(f: &Fixture, authority: Scope, mut mutation: Mutation) -> Value 
     assert_eq!(
         recovered.outcome,
         OperationOutcome::Returned {
-            value: value.clone()
+            result: OperationResult::Success {
+                value: value.clone()
+            }
         }
     );
     assert_eq!(recovered.cleanup, OperationCleanup::Confirmed);
@@ -136,8 +176,32 @@ async fn application_setup_v1_and_v2_checks_authenticates_cancels_and_recovers()
                 assert_eq!(value["kind"], if cancel { "unresolved" } else { "authenticated" });
                 reaped(&pid);
             }
-            let calls: Vec<Value> = std::fs::read_to_string(trace).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-            assert_eq!(calls.iter().filter(|v| v["method"] == "spawn").count(), if protocol == 1 { 6 } else { 3 });
+            let calls=traces(&f,&trace).await;
+            assert_eq!(calls.iter().filter(|entry|entry["method"]=="self_exit" && entry["phase"]=="authentication").count(),1,"successful Auth ACK is flushed before the fixture immediately exits");
+            let session=f.create("Private profile runtime").await;
+            super::super::super::files::change(&f,&session,"danger_full_access",false,false).await;
+            let accepted=execute(&f,&session,"require-login").await;
+            let (_runtime,_)=control.accept().await.unwrap();f.drained().await;
+            let mut changes = f.owner.durable.subscribe().unwrap();
+            let observed = loop {
+                changes.borrow_and_update();
+                let observed = work(&f, &session, &accepted).await;
+                if !matches!(observed["execution"]["state"]["kind"].as_str(), Some("admitted" | "running" | "waiting")) { break observed; }
+                changes.changed().await.unwrap();
+            };
+            assert_eq!(observed["execution"]["state"]["kind"],"completed","{observed}");
+            let (_, _, answer) = external_result(&f, &session, &accepted).await;
+            assert_eq!(answer,"answer require-login");
+            let runtime=trace_text(&f,&session,&trace).await;
+            let runtime:Vec<Value>=runtime.lines().map(|line|serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(runtime.iter().filter(|entry|entry["method"]=="self_exit" && entry["phase"]=="prompt").count(),1,"runtime also exits immediately after its real terminal response");
+            let seeded=runtime.iter().find(|entry|entry["method"]=="profile_seed_read").expect("the new runtime actually reads the persisted private credential");
+            assert_eq!(seeded["authenticated"],true);
+            let setup_homes:Vec<_>=calls.iter().filter(|entry|entry["method"]=="spawn").map(|entry|&entry["home"]).collect();
+            assert!(setup_homes.iter().all(|home|**home!=seeded["home"]),"runtime gets a fresh HOME, not the old authenticated process state");
+            assert_eq!(setup_homes.len(),3);
+            assert!(!f.workspace.join(".acp-fixture-token").exists());
+            assert_eq!(calls.iter().filter(|v| v["method"] == "spawn").count(), 3);
             assert_eq!(calls.iter().filter(|v| v["method"] == "authenticate" || v["method"] == "auth/login").count(), 2);
             assert!(!calls.iter().any(|v| v["method"].as_str().is_some_and(|m| m.starts_with("session/"))), "setup must not create an Agent conversation");
             f.app.shutdown().await.unwrap();
@@ -146,142 +210,186 @@ async fn application_setup_v1_and_v2_checks_authenticates_cancels_and_recovers()
     }).await.unwrap();
 }
 #[tokio::test]
-async fn application_setup_requires_both_setup_and_process_launch_grants() {
+async fn application_setup_requires_both_setup_and_original_process_run_grants() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        for denied in ["setup", "launch", "directory"] {
+        for denied in ["setup", "run"] {
             let (mut f, _control, trace, configuration) = setup(2).await;
             activate_backend(&mut f, true, None, true, Some(configuration), &[denied]).await;
             let (scope, mut mutation) = begin(&f, json!({"kind":"check"})).await;
             assert!(mutation.recv().await.is_none());
             let completed = mutation.completion().await;
             completed.cleanup.unwrap();
-            assert!(!matches!(completed.reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value["kind"] == "checked"));
+            assert!(!matches!(completed.reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result:OperationResult::Success {ref value} }, .. } if value["kind"] == "checked"));
             scope.finish().await.unwrap();
-            assert!(!trace.exists(), "denied setup must not spawn a process");
+            assert!(traces(&f,&trace).await.is_empty(),"denied setup must not spawn a process");
             f.app.shutdown().await.unwrap();
             f.config.shutdown().await.unwrap();
         }
     }).await.unwrap();
 }
 
-async fn protocol(f: &Fixture, authority: Scope, method: &str, input: Value) -> Mutation {
-    let client = f.app.client();
-    let binding = client
-        .bind(client.activation(&id(21)).unwrap(), "processes".into())
-        .await
+fn returned(reply: maka_plugin_core::operation::OperationReply) -> Value {
+    match reply.receipt {
+        Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
+            cleanup: OperationCleanup::Confirmed,
+        } => value,
+        other => panic!("unexpected setup process receipt: {other:?}"),
+    }
+}
+async fn captured(f: &Fixture, probe: &Probe) -> (Scope, Mutation, Arc<Context>) {
+    let (scope, mutation) = begin(f, json!({"kind":"check"})).await;
+    probe.entered.acquire().await.unwrap().forget();
+    let context = probe.contexts.lock().unwrap().pop_front().unwrap();
+    assert!(
+        context
+            .native_context::<maka_agent_authority::setup::ActualSetupContext>()
+            .is_some()
+    );
+    assert!(context.work_custody().is_none());
+    (scope, mutation, context)
+}
+async fn protocol(
+    probe: &Probe,
+    context: &Context,
+    method: &str,
+    input: Value,
+) -> (maka_host_runtime::application::NativeRequest, Mutation) {
+    let actual = context
+        .native_context::<maka_agent_authority::setup::ActualSetupContext>()
+        .unwrap();
+    let request = probe
+        .services
+        .get()
         .unwrap()
-        .remove(0);
-    let prepared = client
-        .prepare_mutation(
-            binding,
+        .request_with_context(
+            context.scope().identity.clone(),
+            context.scope().cancellation.clone(),
+            actual,
+        )
+        .unwrap()
+        .with_sandbox_floor(context.scope().sandbox_floor())
+        .unwrap();
+    let resources = maka_host_runtime::application::CallResources::default();
+    let descriptors = resources.descriptors().unwrap();
+    let recovery = json!({"kind":"setup_process_test","method":method,"input":input,"resources":{"descriptors":descriptors,"reacquisition":{"kind":"none"}}});
+    let mutation = request
+        .begin_mutation(
+            "processes",
+            0,
             method.into(),
             input,
-            authority,
             Uuid::new_v4(),
-            Attachments::new().into(),
+            recovery,
+            resources,
         )
+        .unwrap()
         .await
         .unwrap();
-    let intent = f
-        .store
-        .record_application_intent(
-            prepared.reference().source.clone(),
-            prepared.consumer().instance().clone(),
-            prepared.reference().clone(),
-            Value::Null,
-        )
-        .await
-        .unwrap();
-    client.mutate(prepared, intent).await.unwrap()
+    (request, mutation)
 }
 #[tokio::test]
 async fn application_process_input_is_request_bound_and_private_root_remains_denied() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let (mut f, _control, _trace, configuration) = setup(2).await;
-        activate_backend(&mut f, true, None, true, Some(configuration), &[]).await;
-        let authority = scope(&f.issuer, true);
-        let mut process = protocol(
-            &f,
-            authority.clone(),
-            "launch",
-            json!({"executable":"/bin/cat"}),
+        let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::SetupProtocol);
+        activate_backend(&mut f, true, Some(probe.clone()), true, None, &[]).await;
+        let (scope, setup, original) = captured(&f, &probe).await;
+        let (request, mut process) = protocol(
+            &probe,
+            &original,
+            "run",
+            json!({"executable":"/bin/cat","args":[],"env":{}}),
         )
         .await;
-        let id = process.recv().await.unwrap()["id"].clone();
-        let foreign = scope(&f.issuer, true);
-        let denied = protocol(&f, foreign.clone(), "input", json!({"id":id,"bytes":[88]}))
-            .await
-            .completion()
-            .await;
+        let started = process.recv().await.unwrap();
+        assert_eq!(started["kind"], "started");
+        let id = started["id"].clone();
+        let (foreign_scope, foreign_setup, foreign) = captured(&f, &probe).await;
+        let (foreign_request, denied) =
+            protocol(&probe, &foreign, "input", json!({"id":id,"bytes":[88]})).await;
+        let denied = denied.completion().await;
         denied.cleanup.unwrap();
-        assert!(matches!(
+        assert!(!matches!(
             denied.reply.receipt,
             Receipt::Recorded {
-                outcome: OperationOutcome::Unknown { .. },
-                cleanup: OperationCleanup::Confirmed
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success { .. }
+                },
+                ..
             }
         ));
-        foreign.finish().await.unwrap();
-        for input in [
+        foreign_request.finish().await.unwrap();
+        let (input, written) = protocol(
+            &probe,
+            &original,
+            "input",
             json!({"id":id,"bytes":[65,0,255]}),
-            json!({"id":id,"bytes":null}),
-        ] {
-            let completed = protocol(&f, authority.clone(), "input", input)
-                .await
-                .completion()
-                .await;
-            completed.cleanup.unwrap();
-            assert!(matches!(
-                completed.reply.receipt,
-                Receipt::Recorded {
-                    outcome: OperationOutcome::Returned { .. },
-                    cleanup: OperationCleanup::Confirmed
-                }
-            ));
+        )
+        .await;
+        let written = written.completion().await;
+        written.cleanup.unwrap();
+        assert_eq!(returned(written.reply), json!({"bytes":3,"closed":false}));
+        input.finish().await.unwrap();
+        let mut output = vec![];
+        while output.len() < 3 {
+            let item = process.recv().await.unwrap();
+            if item["stream"] == "stdout" {
+                output.extend(serde_json::from_value::<Vec<u8>>(item["bytes"].clone()).unwrap());
+            }
         }
-        let mut output = Vec::new();
-        while let Some(chunk) = process.recv().await {
-            output.extend(serde_json::from_value::<Vec<u8>>(chunk["bytes"].clone()).unwrap());
+        let (closing, closed) = protocol(&probe, &original, "close", json!({"id":id})).await;
+        let closed = closed.completion().await;
+        closed.cleanup.unwrap();
+        assert_eq!(returned(closed.reply), json!({"bytes":0,"closed":false}));
+        closing.finish().await.unwrap();
+        while let Some(item) = process.recv().await {
+            if item["stream"] == "stdout" {
+                output.extend(serde_json::from_value::<Vec<u8>>(item["bytes"].clone()).unwrap());
+            }
         }
-        let completed = process.completion().await;
-        completed.cleanup.unwrap();
+        let finished = process.completion().await;
+        finished.cleanup.unwrap();
+        assert_eq!(returned(finished.reply)["kind"], "exited");
+        request.finish().await.unwrap();
         assert_eq!(
             output,
             [65, 0, 255],
-            "foreign request must not write to the original pipe"
+            "foreign role never writes to the original pipe"
         );
-        authority.finish().await.unwrap();
         let secret = f.root.join("setup-private-fixture.txt");
         std::fs::write(&secret, "protected-host-data").unwrap();
-        let authority = scope(&f.issuer, true);
-        let mut process = protocol(
-            &f,
-            authority.clone(),
-            "launch",
-            json!({"executable":"/bin/cat","args":[secret]}),
+        let (request, mut process) = protocol(
+            &probe,
+            &foreign,
+            "run",
+            json!({"executable":"/bin/cat","args":[secret],"env":{}}),
         )
         .await;
-        let mut output = Vec::new();
-        while let Some(chunk) = process.recv().await {
-            if chunk["stream"] == "stdout" {
-                output.extend(serde_json::from_value::<Vec<u8>>(chunk["bytes"].clone()).unwrap());
+        assert_eq!(process.recv().await.unwrap()["kind"], "started");
+        let mut output = vec![];
+        while let Some(item) = process.recv().await {
+            if item["stream"] == "stdout" {
+                output.extend(serde_json::from_value::<Vec<u8>>(item["bytes"].clone()).unwrap());
             }
         }
-        let completed = process.completion().await;
-        completed.cleanup.unwrap();
+        let finished = process.completion().await;
+        finished.cleanup.unwrap();
+        let value = returned(finished.reply);
+        request.finish().await.unwrap();
         assert!(
             output.is_empty(),
-            "setup installation ceiling must not expose the Host private Root"
+            "actual Setup floor cannot expose the Host private Root"
         );
-        let Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
-            cleanup: OperationCleanup::Confirmed,
-        } = completed.reply.receipt
-        else {
-            panic!("process receipt missing")
-        };
         assert_eq!(value["success"], false);
-        authority.finish().await.unwrap();
+        probe.release.add_permits(2);
+        let checked = result(&f, scope, setup).await;
+        assert_eq!(checked["kind"], "checked");
+        let checked = result(&f, foreign_scope, foreign_setup).await;
+        assert_eq!(checked["kind"], "checked");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

@@ -28,8 +28,8 @@ fn complete_agent_selectors_validate_and_deserialize_without_losing_original_val
     };
     let work = json!({
         "sessionId": "session".repeat(24),
-        "target": {"kind":"invocation", "invocationId":"invocation".repeat(16)},
-        "cursor":{"invocationId":"invocation".repeat(16), "offset":0}
+        "target": {"kind":"run", "runId":"00000000-0000-0000-0000-000000000001"},
+        "cursor":{"runId":"00000000-0000-0000-0000-000000000001", "offset":0}
     });
     let imported = json!({
         "kind":"preview", "source":{"id":"00000000-0000-0000-0000-000000000001","revision":1},
@@ -63,7 +63,14 @@ fn complete_agent_selectors_validate_and_deserialize_without_losing_original_val
     assert!(failures.is_empty(), "{}", failures.join("; "));
     let work: WorkRead = serde_json::from_value(work).unwrap();
     assert_eq!(work.session_id, "session".repeat(24));
-    assert_eq!(work.cursor.unwrap().invocation_id, "invocation".repeat(16));
+    assert_eq!(
+        work.cursor.unwrap().run_id.to_string(),
+        "00000000-0000-0000-0000-000000000001"
+    );
+    assert_eq!(
+        serde_json::to_value(work.target).unwrap(),
+        json!({"kind":"run", "runId":"00000000-0000-0000-0000-000000000001"})
+    );
     let imported: ImportsRead = serde_json::from_value(imported).unwrap();
     let ImportsRead::Preview { entry, .. } = imported else {
         panic!("original preview selector retained")

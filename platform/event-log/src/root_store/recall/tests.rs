@@ -59,7 +59,7 @@ async fn import(root: &RootStore, id: &str, records: Vec<Record>) {
     root.import_session(
         &PluginSession {
             session_id: id.into(),
-            creator: maka_capabilities::storage::Namespace::new(
+            creator: maka_plugin_core::storage::Namespace::new(
                 "recall-index-test",
                 maka_plugin_core::scope::Scope::Profile,
             )
@@ -101,7 +101,9 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let root = RootStore::open(owner.clone()).await.unwrap();
+        let root = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         let left = format!("{PREFIX}a");
         let right = format!("{PREFIX}b");
         import(&root, &left, a).await;
@@ -138,7 +140,9 @@ impl Fixture {
 
     async fn reopen(mut self) -> Self {
         self.root.close().await.unwrap();
-        self.root = RootStore::open(self.owner.clone()).await.unwrap();
+        self.root = RootStore::open(self.owner.clone(), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         self
     }
 }
@@ -437,7 +441,9 @@ fn demand_owner(path: &std::path::Path) -> Arc<RootOwner> {
 async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recovers() {
     let directory = tempfile::tempdir().unwrap();
     let owner = demand_owner(directory.path());
-    let root = RootStore::open(owner.clone()).await.unwrap();
+    let root = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let session = "demand-source";
     crate::test_store::inspect_cache(&root.log, |db| {
         db.execute_batch("CREATE TEMP TRIGGER fail_recall BEFORE INSERT ON temp.recall_progress BEGIN SELECT RAISE(ABORT,'Recall index fault'); END;").unwrap();
@@ -571,7 +577,9 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
         .unwrap();
     assert_eq!(warm.hits[0].message_id, found.hits[0].message_id);
     root.close().await.unwrap();
-    let root = RootStore::open(owner).await.unwrap();
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(
             db.query_row("SELECT count(*) FROM transcript_directory", [], |row| row
@@ -596,7 +604,7 @@ async fn demand_indexes_new_copy_with_old_sources_without_inheriting_progress() 
     use crate::sessions::{SessionCopy, SessionCopyResult};
     use maka_agent_facts::session::{CopyPurpose, ForkPosition};
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     import(
@@ -690,7 +698,9 @@ async fn cancelled_source_catchup_rolls_back_its_scope_and_resumes_after_reopen(
     use rusqlite::functions::FunctionFlags;
     let directory = tempfile::tempdir().unwrap();
     let owner = demand_owner(directory.path());
-    let root = RootStore::open(owner.clone()).await.unwrap();
+    let root = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     import(
         &root,
         "demand-cancel",
@@ -738,7 +748,9 @@ async fn cancelled_source_catchup_rolls_back_its_scope_and_resumes_after_reopen(
     })
     .await;
     root.close().await.unwrap();
-    let root = RootStore::open(owner).await.unwrap();
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let found = root
         .search_history("demand-", query("needle"), CancellationToken::new())
         .await
@@ -752,7 +764,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
     use crate::sessions::{MaterialCollection, SessionCopy, SessionCopyResult};
     use maka_agent_facts::session::{CopyPurpose, ForkPosition};
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     import(
@@ -840,7 +852,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
 #[tokio::test]
 async fn cached_namespace_failure_stays_explicit_without_replaying_sources() {
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     let session = "demand-namespace";
@@ -933,7 +945,7 @@ async fn cached_namespace_failure_stays_explicit_without_replaying_sources() {
 #[tokio::test]
 async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_atomic() {
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     let old_session = "demand-reuse-old";
@@ -1039,14 +1051,14 @@ async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_at
 #[tokio::test]
 async fn recall_indexes_tool_calls_ranks_multi_term_matches_and_exposes_compacted_turn_prefix() {
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     let session = "demand-midturn";
     root.import_session(
         &PluginSession {
             session_id: session.into(),
-            creator: maka_capabilities::storage::Namespace::new(
+            creator: maka_plugin_core::storage::Namespace::new(
                 "recall-index-test",
                 maka_plugin_core::scope::Scope::Profile,
             )
@@ -1306,7 +1318,7 @@ async fn history_context_orders_neighbors_by_display_seat_across_interleaved_exe
         executor::{Binding, Output},
     };
     let directory = tempfile::tempdir().unwrap();
-    let root = RootStore::open(demand_owner(directory.path()))
+    let root = RootStore::open(demand_owner(directory.path()), crate::ROOT_MIGRATIONS)
         .await
         .unwrap();
     let session = "demand-executor-order";

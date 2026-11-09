@@ -147,6 +147,16 @@ impl CommitHub {
     }
 }
 impl CommitNotice {
+    /// Preserve statically routed owner sessions and transaction-discovered
+    /// domain sessions together. Empty declarations never erase an owner route.
+    pub(crate) fn with_sessions(&self, sessions: impl IntoIterator<Item = String>) -> Self {
+        let mut affected = self.sessions.iter().cloned().collect::<BTreeSet<_>>();
+        affected.extend(sessions);
+        Self {
+            hub: self.hub.clone(),
+            sessions: affected.into_iter().collect(),
+        }
+    }
     /// Called only after a confirmed commit, on its independent SQL owner.
     pub(crate) fn publish(&self, sequence: u64) {
         self.notify(Some(sequence));

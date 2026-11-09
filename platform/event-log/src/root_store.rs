@@ -28,44 +28,43 @@ use std::sync::{
 };
 
 pub(crate) mod creation;
+mod data;
+pub use data::{DataChange, DataWriter};
 mod effects;
 mod execution;
 pub use effects::BrowserLeaseChildReceipt;
 mod family;
 mod gates;
+mod workspace_fence;
+pub use workspace_fence::{RootWorkspace, WorkspaceFence};
+mod work_fence;
+pub use work_fence::SessionWorkFence;
 mod lifecycle;
 mod material;
+mod resource_io;
 pub use execution::{
-    InvocationEffectLease, InvocationEffects, SessionExecutionLease, SessionExecutionScope,
+    RetainedWorkSettlement, SessionWorkLease, SessionWorkScope, WorkEffectLease, WorkEffects,
+    WorkSettlementObserver,
 };
-pub(crate) use lifecycle::{StageOwner, StageRegistration};
+pub(crate) use lifecycle::StageRegistration;
+pub use resource_io::{RequestFileCloseFailure, close_request_file, create_request_file};
 mod applications;
 mod attachments;
 pub(crate) mod checkpoints;
-mod computer_apps;
 mod control;
 pub use checkpoints::{Checkout, HistoryCheckpoints};
-pub(crate) use computer_apps::activity::{
-    record_computer_app_activity, require_computer_app_running,
-};
 mod plugins;
-mod recall;
 mod recovery;
 mod retirement;
 mod subscriptions;
 pub use subscriptions::RootSubscription;
-mod tool_execution;
-mod usage;
-pub(crate) mod usage_meter;
-pub use usage::{
-    UsageActivityCursor, UsageActivityPage, UsageFence, UsageGroupCursor, UsageQuery, UsageReport,
-};
-pub use usage_meter::SessionUsageTotals;
 pub(crate) mod catalog;
 mod operations;
-pub use operations::{OperationAuxiliary, OperationStore};
+mod tool_execution;
+pub use operations::{OperationStore, OperationWork, ProviderJournal, RecoveredOperation};
 mod projects;
 mod session_metadata;
+pub use session_metadata::SessionRevisionGuard;
 mod session_store;
 pub use creation::CreationRejection;
 #[cfg(test)]
@@ -86,7 +85,7 @@ pub struct RootStore {
 pub struct SessionStore {
     id: Arc<str>,
     log: Weak<EventLog>,
-    execution: Option<Arc<execution::Pins>>,
+    work: Option<Arc<execution::Pins>>,
     gates: Arc<gates::Gates>,
     closed: Arc<AtomicBool>,
 }
@@ -97,8 +96,8 @@ impl SessionStore {
     }
 
     fn owner(&self) -> Result<Arc<EventLog>, StoreError> {
-        if self.execution.as_ref().is_some_and(|pins| !pins.active())
-            || (self.execution.is_none()
+        if self.work.as_ref().is_some_and(|pins| !pins.active())
+            || (self.work.is_none()
                 && (self.closed.load(Ordering::Acquire) || self.gates.is_closing()))
         {
             return Err(StoreError::ConnectionClosed);
@@ -110,7 +109,7 @@ impl SessionStore {
     /// The accepted SQL job inherits both guards through the scoped connection.
     async fn scoped(&self) -> Result<EventLog, StoreError> {
         let owner = self.owner()?;
-        if let Some(pins) = &self.execution {
+        if let Some(pins) = &self.work {
             return Ok(owner.scoped(pins.custody()?).bind_session(self.id.clone()));
         }
         Ok(
@@ -152,13 +151,18 @@ impl RootStore {
         self.log.sqlite_resource_stats().await
     }
 
-    pub async fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
+    /// Open with the complete product migration catalog, including Root migrations.
+    pub async fn open(
+        owner: Arc<root::RootOwner>,
+        catalog: &[crate::migration::Migration],
+    ) -> Result<Self, StoreError> {
         owner.validate_current()?;
         let log = Arc::new(
             EventLog::open_owned(
                 &owner.canonical_path().join(root::ROOT_DATABASE),
                 Some(owner.clone()),
                 OpenPurpose::Execution,
+                catalog,
             )
             .await?,
         );
@@ -179,17 +183,7 @@ impl RootStore {
             // No admission or retirement can observe work abandoned by the
             // previous owner as live after a process restart.
             store.recover_host_effects().await?;
-            store.recover_auxiliary_models().await?;
-            store
-                .recover_invocations()
-                .await
-                .map_err(|error| match error {
-                    crate::recovery::RecoveryError::Store(error) => error,
-                    error => StoreError::InvalidTransition(error.to_string()),
-                })?;
-            store
-                .recover_shell_runs(crate::native_approvals::now_millis()?)
-                .await?;
+            store.recover_shell_runs(now_millis()?).await?;
             store
                 .lifecycle
                 .as_mut()
@@ -222,7 +216,7 @@ impl RootStore {
         SessionStore {
             id: id.into(),
             log: Arc::downgrade(&self.log),
-            execution: None,
+            work: None,
             gates: self.gates.clone(),
             closed: self.closed.clone(),
         }
@@ -261,7 +255,7 @@ async fn pin_sessions(
     owner: Arc<EventLog>,
     gates: &Arc<gates::Gates>,
     sessions: &[String],
-    additional: &[maka_agent_facts::workspace::BindingRef],
+    additional: &[maka_sandbox::workspace::BindingRef],
 ) -> Result<EventLog, StoreError> {
     let session_pins = gates
         .read(sessions.iter().cloned().map(gates::Key::Session))
@@ -272,7 +266,7 @@ async fn pin_sessions(
         for session in ids {
             let reference: Option<Option<String>> = connection.query_row("SELECT json_extract(configuration,'$.workspace') FROM session_control WHERE id=?", rusqlite::params![session], |row| row.get(0)).optional()?;
             if let Some(Some(reference)) = reference {
-                let reference: maka_agent_facts::workspace::BindingRef = serde_json::from_str(&reference)?;
+                let reference: maka_sandbox::workspace::BindingRef = serde_json::from_str(&reference)?;
                 reference.validate().map_err(|error| StoreError::InvalidTransition(error.into()))?;
                 binding_ids.push(reference.id);
             }
@@ -286,42 +280,10 @@ async fn pin_sessions(
     Ok(owner.scoped(Arc::new((session_pins, binding_pins))))
 }
 
-impl RootStore {
-    pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
-        self.require_open()?;
-        self.log.activation_checkpoint_sessions().await
-    }
-    pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
-        self.require_open()?;
-        self.log.ready_native_approval_sessions().await
-    }
-}
-
-impl RootStore {
-    pub async fn reconcile_activation_controls(&self) -> Result<(), StoreError> {
-        self.require_open()?;
-        self.log.reconcile_activation_controls().await
-    }
-}
-
-impl RootStore {
-    pub async fn due_model_retry_sessions(
-        &self,
-        now_unix_ms: u64,
-    ) -> Result<Vec<String>, StoreError> {
-        self.require_open()?;
-        let mut candidates = self.log.due_model_retry_candidates(now_unix_ms).await?;
-        candidates.sort();
-        Ok(candidates
-            .into_iter()
-            .map(|(_, _, session)| session)
-            .collect())
-    }
-    pub async fn next_model_retry_deadline(
-        &self,
-        now_unix_ms: u64,
-    ) -> Result<Option<u64>, StoreError> {
-        self.require_open()?;
-        self.log.next_model_retry_deadline(now_unix_ms).await
-    }
+fn now_millis() -> Result<u64, StoreError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .ok_or_else(|| StoreError::InvalidTransition("clock is outside the supported range".into()))
 }

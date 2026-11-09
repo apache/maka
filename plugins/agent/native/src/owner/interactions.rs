@@ -31,19 +31,30 @@ impl Owner {
         session_id: &str,
     ) -> Result<PendingInteractions, String> {
         self.session(session_id).await?;
-        let observed = self
-            .store
-            .session(session_id)
+        let mut observed = self
+            .durable
+            .interactions()
+            .pending(session_id)
             .await
-            .map_err(|error| error.to_string())?
-            .session_projection::<StoredSessionConfiguration>(session_id)
-            .await
-            .map_err(|_| "agent_interactions_unavailable")?
-            .ok_or("agent_session_unavailable")?;
+            .map_err(|error| error.to_string())?;
+        let mut cursor = observed.next.take();
+        while let Some(after) = cursor {
+            let page = self
+                .durable
+                .interactions()
+                .pending_page(session_id, Some(after), 256)
+                .await
+                .map_err(|error| error.to_string())?;
+            if page.revision != observed.revision {
+                return Err("agent_interactions_changed".into());
+            }
+            cursor = page.next;
+            observed.records.extend(page.records);
+        }
         Ok(PendingInteractions {
-            revision: observed.session.revision,
+            revision: observed.revision,
             entries: observed
-                .pending_interactions
+                .records
                 .into_iter()
                 .map(|record| InteractionSummary {
                     request_id: record.request_id,
@@ -97,15 +108,11 @@ impl Owner {
         session_id: &str,
         request_id: &str,
     ) -> Result<Option<InteractionRecord>, String> {
-        Ok(self
-            .store
-            .session(session_id)
+        self.durable
+            .interactions()
+            .read(session_id, request_id)
             .await
-            .map_err(|error| error.to_string())?
-            .interaction(request_id)
-            .await
-            .map_err(|_| "agent_interactions_unavailable")?
-            .filter(|record| record.session_id == session_id))
+            .map_err(|error| error.to_string())
     }
     async fn commit_response(
         &self,
@@ -193,15 +200,18 @@ impl Owner {
             });
         }
         let committed = self
-            .store
-            .session(&record.session_id)
+            .durable
+            .interactions()
+            .commit_outcome(
+                &record.execution.session_id,
+                &record.request_id,
+                input.answer.into_outcome(now()),
+            )
             .await
-            .map_err(|error| error.to_string())?
-            .commit_interaction_outcome(&record.request_id, input.answer.into_outcome(now()))
-            .await
-            .map_err(|_| "agent_interaction_commit_unavailable")?;
+            .map_err(|error| error.to_string())?;
+        self.wake_notify.notify_one();
         Ok(InteractionResult::Recorded {
-            record: Box::new(committed.record),
+            record: Box::new(committed),
         })
     }
 }

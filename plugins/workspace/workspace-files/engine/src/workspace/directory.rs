@@ -38,7 +38,7 @@ impl PublishedDirectory {
         })
     }
 
-    pub fn identity(&self) -> io::Result<maka_agent_facts::execution::DirectoryIdentity> {
+    pub fn identity(&self) -> io::Result<maka_sandbox::workspace::DirectoryIdentity> {
         crate::directory::identity(&self.root.dir)
     }
 

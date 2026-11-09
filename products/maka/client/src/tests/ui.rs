@@ -75,7 +75,7 @@ async fn ui_bindings_retire_reads_keep_original_mutations_and_recover_after_reop
         original.await.unwrap().unwrap();
         retirement.await.unwrap().unwrap();
         let reply = reopened.recover(id).await.unwrap();
-        assert!(matches!(&reply.receipt, Receipt::Recorded { outcome:OperationOutcome::Returned { value }, .. } if value == &json!({"kind":"saved"})));
+        assert!(matches!(&reply.receipt, Receipt::Recorded { outcome:OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if value == &json!({"kind":"saved"})));
         assert!(watch.next().await.unwrap().is_none());
         assert!(reopened.pending_ui(&instance).await.unwrap().is_empty());
         assert_eq!(reopened.recover(id).await.unwrap().reference, reply.reference);

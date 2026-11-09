@@ -17,8 +17,10 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 pub use crate::event_write::{EventWrite, ProjectionArtifactWrite};
-pub use crate::input::{InvocationInput, MessageInput};
+pub use crate::input::{MessageInput, RunInput};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::SystemTime;
@@ -32,31 +34,18 @@ pub struct SourceCapture {
     pub prior_unknown: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Invocation {
-    pub session_id: String,
-    pub turn_id: String,
-    pub run_id: String,
-    pub invocation_id: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalStatus {
     Completed,
     Failed,
     Cancelled,
-    /// Physical termination only; the logical Turn awaits its sealed successor.
-    Paused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InvocationOutcome {
+pub enum RunOutcome {
     Completed,
-    HandoffPaused {
-        pause: crate::handoff::HandoffPause,
-    },
     ContextCompactFinished {
         outcome: crate::context::CompactOutcome,
     },
@@ -71,13 +60,12 @@ pub enum InvocationOutcome {
     },
 }
 
-impl InvocationOutcome {
+impl RunOutcome {
     pub fn status(&self) -> TerminalStatus {
         match self {
             Self::Completed | Self::ContextCompactFinished { .. } => TerminalStatus::Completed,
             Self::Failed { .. } => TerminalStatus::Failed,
             Self::Cancelled { .. } => TerminalStatus::Cancelled,
-            Self::HandoffPaused { .. } => TerminalStatus::Paused,
         }
     }
 }
@@ -128,17 +116,18 @@ pub enum Fact {
     ExecutorCompleted {
         message_id: Option<String>,
     },
-    InvocationOpened {
-        input: InvocationInput,
+    RunOpened {
+        input: RunInput,
         /// Absent when message preparation fails before configuration capture.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        configuration: Option<Box<crate::execution::InvocationConfiguration>>,
+        configuration: Option<Box<crate::execution::RunConfiguration>>,
     },
     ModelRequested {
         /// Complete ModelObserved items are durably accepted before stream end.
         /// Otherwise history accepts only the complete ModelCompleted output.
         item_acceptance: bool,
-        step_id: String,
+        step_id: crate::durable::StepId,
+        attempt_id: crate::durable::ModelAttemptId,
         model_id: String,
         source_scope: LogScope,
         source_high_water: u64,
@@ -172,11 +161,13 @@ pub enum Fact {
     /// Durable stream evidence. Marked requests accept complete items as they
     /// arrive; completion-only requests accept history at ModelCompleted.
     ModelObserved {
-        step_id: String,
+        step_id: crate::durable::StepId,
+        attempt_id: crate::durable::ModelAttemptId,
         event: crate::model::recorded::ModelObservation,
     },
     ModelInterrupted {
-        step_id: String,
+        step_id: crate::durable::StepId,
+        attempt_id: crate::durable::ModelAttemptId,
         status: ModelInterruption,
         /// Provider-owned diagnostic for users and inspection, not model input
         /// or retry authority. Cancellation need not include a diagnostic.
@@ -188,7 +179,8 @@ pub enum Fact {
         partial: Option<crate::model::recorded::ModelPartial>,
     },
     ModelCompleted {
-        step_id: String,
+        step_id: crate::durable::StepId,
+        attempt_id: crate::durable::ModelAttemptId,
         output: crate::model::recorded::ModelCompletion,
     },
     ToolDispatched {
@@ -229,8 +221,8 @@ pub enum Fact {
         input: crate::model::ToolInput,
         reason: crate::tool_call::ToolRejection,
     },
-    InvocationEnded {
-        outcome: InvocationOutcome,
+    RunEnded {
+        outcome: RunOutcome,
     },
 }
 
@@ -262,7 +254,7 @@ impl Fact {
             Self::ExecutorStarted { .. } => "executor_started",
             Self::ExecutorObserved { .. } => "executor_observed",
             Self::ExecutorCompleted { .. } => "executor_completed",
-            Self::InvocationOpened { .. } => "invocation_opened",
+            Self::RunOpened { .. } => "run_opened",
             Self::MessageSteered { .. } => "message_steered",
             Self::ModelRequested { .. } => "model_requested",
             Self::ContextCheckpointRecorded { .. } => "context_checkpoint_recorded",
@@ -277,7 +269,7 @@ impl Fact {
             Self::ToolSettled { .. } => "tool_settled",
             Self::ToolNotified { .. } => "tool_notified",
             Self::ToolRejected { .. } => "tool_rejected",
-            Self::InvocationEnded { .. } => "invocation_ended",
+            Self::RunEnded { .. } => "run_ended",
         }
     }
 
@@ -288,9 +280,6 @@ impl Fact {
             | Self::ToolYielded { operation_id }
             | Self::ToolSettled { operation_id, .. }
             | Self::ToolRejected { operation_id, .. } => Some(operation_id),
-            Self::ModelRequested { step_id, .. }
-            | Self::ModelCompleted { step_id, .. }
-            | Self::ModelInterrupted { step_id, .. } => Some(step_id),
             _ => None,
         }
     }
@@ -315,7 +304,7 @@ pub struct RuntimeEvent {
     /// Factual wall-clock capture, not an ordering authority. Persisted once;
     /// delivery and replay must never replace it with their current time.
     pub recorded_at: SystemTime,
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub fact: Fact,
 }
 
@@ -327,11 +316,11 @@ impl RuntimeEvent {
         Uuid::now_v7().to_string()
     }
 
-    pub fn new(invocation: Invocation, fact: Fact) -> Self {
+    pub fn new(execution: ExecutionIdentity, fact: Fact) -> Self {
         Self {
             id: Self::new_id(),
             recorded_at: SystemTime::now(),
-            invocation,
+            execution,
             fact,
         }
     }
@@ -353,7 +342,7 @@ pub enum LogScope {
     /// The inherited Session base plus this Run and its canonical continuation ancestors.
     Lineage {
         session_id: String,
-        run_id: String,
+        run_id: crate::durable::RunId,
     },
 }
 
@@ -370,63 +359,115 @@ pub struct LogPrefix {
 }
 
 #[derive(Debug, Serialize)]
-pub struct InvocationProjection {
+pub struct RunProjection {
     pub terminal: Option<TerminalStatus>,
+    /// Complete calls remain obligations even when no ToolDispatched was recorded.
+    pub pending_tool_calls: Vec<crate::durable::ToolKey>,
     pub uncertain_operations: Vec<String>,
-    pub unfinished_model_steps: Vec<String>,
+    pub unfinished_model_attempts: Vec<crate::durable::ModelAttemptId>,
     pub unfinished_executor: bool,
 }
 
 impl LogPrefix {
-    pub fn project_invocation(&self, invocation_id: &str) -> InvocationProjection {
+    pub fn project_run(&self, run_id: crate::durable::RunId) -> RunProjection {
+        use crate::durable::{ModelAttemptId, ToolKey};
+        use crate::model::{
+            ModelPart,
+            recorded::{CompletionPart, ModelObservation},
+        };
         let mut terminal = None;
-        let mut pending = std::collections::BTreeSet::new();
-        let mut model_steps = std::collections::BTreeSet::new();
+        let mut pending = std::collections::BTreeMap::new();
+        let mut operations = std::collections::BTreeSet::new();
+        let mut attempts = std::collections::BTreeSet::new();
         let mut unfinished_executor = false;
+        fn observe(
+            pending: &mut std::collections::BTreeMap<String, ToolKey>,
+            attempt: ModelAttemptId,
+            part: &ModelPart,
+        ) {
+            match part {
+                ModelPart::ToolCall { call } => {
+                    pending.insert(
+                        format!("{attempt}:{}", call.id),
+                        ToolKey {
+                            attempt,
+                            call: call.id.clone(),
+                        },
+                    );
+                }
+                ModelPart::ToolResult { id, .. } => {
+                    pending.remove(&format!("{attempt}:{id}"));
+                }
+                _ => {}
+            }
+        }
         for stored in &self.events {
-            if stored.event.invocation.invocation_id != invocation_id {
+            if stored.event.execution.run_id != run_id {
                 continue;
             }
             match &stored.event.fact {
-                Fact::ToolDispatched { operation_id, .. } => {
-                    pending.insert(operation_id.clone());
+                Fact::ModelObserved {
+                    attempt_id,
+                    event: ModelObservation::Part(record),
+                    ..
+                } => {
+                    observe(&mut pending, *attempt_id, &record.part);
                 }
-                Fact::ToolSettled { operation_id, .. } => {
+                Fact::ModelCompleted {
+                    attempt_id, output, ..
+                } => {
+                    for part in &output.parts {
+                        if let CompletionPart::Own(record) = part {
+                            observe(&mut pending, *attempt_id, &record.part);
+                        }
+                    }
+                    attempts.remove(attempt_id);
+                }
+                Fact::ToolDispatched {
+                    operation_id, call, ..
+                } => {
+                    operations.insert(operation_id.clone());
+                    if let crate::tool_call::ToolOrigin::Provider { link } = &call.origin {
+                        pending
+                            .entry(operation_id.clone())
+                            .or_insert_with(|| ToolKey {
+                                attempt: link.attempt,
+                                call: call.tool_call_id.clone(),
+                            });
+                    }
+                }
+                Fact::ToolSettled {
+                    operation_id,
+                    outcome,
+                } => {
+                    if matches!(outcome, ToolOutcome::Unknown { .. }) {
+                        operations.insert(operation_id.clone());
+                    } else {
+                        operations.remove(operation_id);
+                        pending.remove(operation_id);
+                    }
+                }
+                Fact::ToolRejected { operation_id, .. } => {
                     pending.remove(operation_id);
                 }
                 Fact::ExecutorStarted { .. } => unfinished_executor = true,
                 Fact::ExecutorCompleted { .. } => unfinished_executor = false,
-                Fact::InvocationEnded { outcome } => {
-                    terminal = Some(outcome.status());
-                    if !matches!(outcome, InvocationOutcome::Failed { class, .. } if class == "outcome_unknown")
-                    {
-                        unfinished_executor = false;
-                    }
+                // Terminal business state does not discharge unresolved effects.
+                Fact::RunEnded { outcome } => terminal = Some(outcome.status()),
+                Fact::ModelRequested { attempt_id, .. } => {
+                    attempts.insert(*attempt_id);
                 }
-                Fact::MessageImported { .. }
-                | Fact::InvocationOpened { .. }
-                | Fact::MessageSteered { .. }
-                | Fact::ContextCheckpointRecorded { .. }
-                | Fact::ContextCompactionWaiting
-                | Fact::ToolResultArchived { .. }
-                | Fact::ExecutorObserved { .. }
-                | Fact::ModelObserved { .. }
-                | Fact::ToolRejected { .. } => {}
-                Fact::ToolNotified { .. }
-                | Fact::ToolOperationObserved { .. }
-                | Fact::ToolYielded { .. } => {}
-                Fact::ModelRequested { step_id, .. } => {
-                    model_steps.insert(step_id.clone());
+                Fact::ModelInterrupted { attempt_id, .. } => {
+                    attempts.remove(attempt_id);
                 }
-                Fact::ModelCompleted { step_id, .. } | Fact::ModelInterrupted { step_id, .. } => {
-                    model_steps.remove(step_id);
-                }
+                _ => {}
             }
         }
-        InvocationProjection {
+        RunProjection {
             terminal,
-            uncertain_operations: pending.into_iter().collect(),
-            unfinished_model_steps: model_steps.into_iter().collect(),
+            pending_tool_calls: pending.into_values().collect(),
+            uncertain_operations: operations.into_iter().collect(),
+            unfinished_model_attempts: attempts.into_iter().collect(),
             unfinished_executor,
         }
     }
@@ -454,9 +495,9 @@ pub enum CommitError {
 /// The store owns I/O scheduling. Once submitted, dropping the waiter is not
 /// proof of rollback; the store must retain its writer authority through drain.
 pub trait EventSink: Send + Sync + 'static {
-    fn execution_custody(
+    fn work_custody(
         self: std::sync::Arc<Self>,
-    ) -> Option<std::sync::Arc<dyn crate::tools::ExecutionCustody>> {
+    ) -> Option<std::sync::Arc<dyn maka_plugin_core::work::WorkCustody>> {
         None
     }
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture;

@@ -139,7 +139,7 @@ pub(super) fn home_directory() -> Result<Option<std::path::PathBuf>, maka_host_r
         .filter(|home| !home.is_empty())
         .map(std::path::PathBuf::from);
     #[cfg(windows)]
-    let instructions = Some(maka_event_log::root::windows::account_home()?);
+    let instructions = Some(maka_sandbox::account_home()?);
     Ok(instructions)
 }
 
@@ -173,8 +173,9 @@ mod tests {
             _: String,
             input: serde_json::Value,
             _: Context,
-        ) -> futures_util::future::BoxFuture<'static, Result<serde_json::Value, String>> {
-            Box::pin(async move { Ok(input) })
+        ) -> futures_util::future::BoxFuture<'static, maka_host_runtime::application::HandlerResult>
+        {
+            Box::pin(async move { Ok(input.into()) })
         }
     }
     impl NativeOwner for CleanupGate {
@@ -213,7 +214,7 @@ mod tests {
                     &RootNamespaces::for_current_account().unwrap(),
                 )
                 .unwrap();
-                let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await.unwrap());
+                let store = Arc::new(maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations()).await.unwrap());
                 let deployment = uuid::Uuid::new_v4();
                 let contract: maka_plugin_core::contract::Contract = serde_json::from_value(json!({
                     "name":"example.CleanupGate", "version":1, "transport":"remote",

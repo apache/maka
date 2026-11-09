@@ -21,9 +21,9 @@
 mod dispatch;
 pub(super) mod tools;
 use super::*;
-use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
 use maka_goal::goal::{Arm, Meter, Pending, Repository, Saved, Status};
 use maka_plugin_core::operation::RecoveryRef;
+use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
 use std::sync::{
     OnceLock, Weak,
     atomic::{AtomicBool, Ordering},
@@ -32,9 +32,9 @@ use tokio::sync::Notify;
 
 pub(super) struct Goals {
     pub(super) admissions: Arc<runs::Registry>,
-    storage: Arc<maka_host_runtime::storage::Storage>,
-    pub(super) repository: Repository<MessageBasis>,
-    pub(super) gate: Mutex<()>,
+    pub(super) storage: Arc<maka_host_runtime::storage::Storage>,
+    pub(super) repository: Repository<super::notifications::BackgroundApproval>,
+    pub(super) gate: Arc<Mutex<()>>,
     wake: Notify,
     changed: tokio::sync::watch::Sender<()>,
     owner: OnceLock<Weak<Owner>>,
@@ -54,7 +54,7 @@ impl Goals {
             admissions: Arc::new(runs::Registry::default()),
             repository: Repository::new(storage.clone()),
             storage,
-            gate: Mutex::new(()),
+            gate: Arc::new(Mutex::new(())),
             wake: Notify::new(),
             changed: tokio::sync::watch::channel(()).0,
             owner: OnceLock::new(),
@@ -80,7 +80,10 @@ impl Goals {
         self.changed.send_modify(|_| {});
         self.wake.notify_one();
     }
-    pub(super) async fn save(&self, saved: Saved<MessageBasis>) -> Result<(), String> {
+    pub(super) async fn save(
+        &self,
+        saved: Saved<super::notifications::BackgroundApproval>,
+    ) -> Result<(), String> {
         self.repository.save(saved).await.map_err(reason)?;
         self.written();
         Ok(())
@@ -130,7 +133,7 @@ fn receipt_mutation(reference: &RecoveryRef, result: &GoalResult) -> Result<Muta
         ),
     })
 }
-fn detail(saved: Saved<MessageBasis>) -> GoalDetail {
+fn detail(saved: Saved<super::notifications::BackgroundApproval>) -> GoalDetail {
     let goal = saved.goal;
     GoalDetail {
         id: goal.id,
@@ -212,12 +215,19 @@ impl Owner {
         }
         Ok(())
     }
-    async fn goal_meter(&self, session: &str) -> Result<Meter, String> {
+    pub(super) async fn goal_meter(&self, session: &str) -> Result<Meter, String> {
         let model = self
-            .store
-            .session_usage_totals(session)
+            .durable
+            .usage()
+            .session_totals(
+                maka_agent_facts::durable::RunOwner {
+                    deployment: self.data_source.deployment,
+                    namespace: self.data_source.namespace.clone(),
+                },
+                session,
+            )
             .await
-            .map_err(reason)?;
+            .map_err(|error| error.to_string())?;
         Ok(Meter {
             known: model.input.known.saturating_add(model.output.known),
             missing: model.input.missing.saturating_add(model.output.missing),
@@ -228,22 +238,28 @@ impl Owner {
         session: &str,
         id: Uuid,
         approval: GoalApproval,
-    ) -> Result<MessageBasis, String> {
+    ) -> Result<super::notifications::BackgroundApproval, String> {
         if approval.target.session_id != session {
             return Err("goal_approval_session_changed".into());
         }
         let basis = self
             .approve_background(
                 &approval.target,
-                approval.model,
+                approval.model.clone(),
                 approval.thinking_level,
                 BackgroundKind::Goal(id),
             )
             .await?;
         self.check_goal_tools(&basis)?;
-        Ok(basis)
+        Ok(super::notifications::BackgroundApproval {
+            target: approval.target,
+            model: approval.model,
+            accepted_model: basis.model.clone().ok_or("goal_model_unavailable")?,
+            thinking_level: approval.thinking_level,
+            language: basis.language,
+        })
     }
-    pub(super) fn check_goal_tools(&self, basis: &MessageBasis) -> Result<(), String> {
+    pub(super) fn check_goal_tools(&self, basis: &CapturedRun) -> Result<(), String> {
         if basis
             .allowed_tools
             .as_ref()
@@ -254,45 +270,22 @@ impl Owner {
         Ok(())
     }
     async fn goal_session_idle(&self, session: &str) -> Result<bool, String> {
-        let runs = self.runs.lock().await;
+        let runs = self.runs.state().await;
         if runs.closing {
             return Err("agent_closed".into());
         }
         if runs.busy(session) {
             return Ok(false);
         }
-        if self.runs.has_checkpoints() {
-            let current = self.session(session).await?;
-            if !self.runs.workspace_available(
-                session,
-                std::path::Path::new(&current.configuration.workspace.path),
-            ) {
-                return Ok(false);
-            }
-        }
-        if !self
-            .store
-            .session(session)
-            .await
-            .map_err(|error| error.to_string())?
-            .message_queue(session)
-            .await
-            .map_err(reason)?
-            .entries
-            .is_empty()
-        {
-            return Ok(false);
-        }
+        drop(runs);
         Ok(self
-            .store
-            .session(session)
-            .await
-            .map_err(|error| error.to_string())?
-            .latest_turn_boundary(session)
+            .durable
+            .session_quiescence(self.run_owner(), session.to_owned())
             .await
             .map_err(reason)?
-            .is_none_or(|boundary| boundary.state.terminal_outcome().is_some()))
+            .is_quiescent())
     }
+
     pub async fn goal_change(
         self: &Arc<Self>,
         input: GoalChange,
@@ -309,7 +302,7 @@ impl Owner {
         };
         let admission = self.goals.admissions.ordered(session).await;
         self.mutable_session(session).await?;
-        let runs = self.runs.lock().await;
+        let runs = self.runs.state().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
@@ -440,14 +433,13 @@ impl Owner {
                         Ok(grant) => grant,
                         Err(error) => return self.reject_goal(operation, error).await,
                     };
-                    if saved
-                        .goal
-                        .arm
-                        .grant
-                        .model
-                        .as_ref()
-                        .map(|model| &model.binding)
-                        != grant.model.as_ref().map(|model| &model.binding)
+                    if saved.goal.arm.grant.model != grant.model
+                        || !saved
+                            .goal
+                            .arm
+                            .grant
+                            .accepted_model
+                            .same_execution_route(&grant.accepted_model)
                     {
                         saved.goal.retry_at = None;
                     }

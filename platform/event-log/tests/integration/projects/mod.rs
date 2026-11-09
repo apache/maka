@@ -47,11 +47,7 @@ async fn member(log: &EventLog, owner: &str, id: &str, project: Option<&str>, pa
 }
 
 #[tokio::test]
-async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_sessions_or_facts() {
-    use maka_agent_facts::{
-        event::{EventWrite, Fact, Invocation, RuntimeEvent},
-        input::InvocationInput,
-    };
+async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_sessions() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -74,26 +70,6 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
     member(&log, "owner_", "b", Some(&second.id), "/linked").await;
     member(&log, "owner_", "c", Some(&third.id), "/third").await;
     member(&log, "owner_", "unrelated", None, "/old").await;
-    let opening = RuntimeEvent::new(
-        Invocation {
-            session_id: "a".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        },
-        Fact::InvocationOpened {
-            configuration: None,
-            input: InvocationInput::Message {
-                source_messages: vec![],
-                content: "immutable opening".into(),
-                request_fingerprint: None,
-            },
-        },
-    );
-    log.append(&EventWrite::plain(opening).unwrap())
-        .await
-        .unwrap();
-    let facts = serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap();
     let projects_before = log.list_projects().await.unwrap();
     let before = log.list_sessions::<Value>(None, None, 32).await.unwrap();
     let selected = json!({"path":"/new","projectId":first.id,"worktree":{"replacement":"new"}});
@@ -162,10 +138,6 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
             _ => assert_eq!(after, before),
         }
     }
-    assert_eq!(
-        serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap(),
-        facts
-    );
     let again = log
         .relink_project(
             &second.id,
@@ -192,10 +164,6 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
             .unwrap()
             .sessions,
         expected.sessions
-    );
-    assert_eq!(
-        serde_json::to_value(log.prefix(32, 65536).await.unwrap()).unwrap(),
-        facts
     );
     log.close().await.unwrap();
 }

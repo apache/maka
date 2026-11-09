@@ -35,17 +35,11 @@ use std::collections::HashSet;
 )]
 pub enum MessageOrigin {
     Session {
-        invocation: crate::event::Invocation,
+        execution: crate::durable::ExecutionIdentity,
     },
     Goal {
         goal_id: String,
         objective: String,
-    },
-    WorkhubTask {
-        task_id: String,
-    },
-    WorkhubGraph {
-        graph_id: String,
     },
     /// A worker conversation created by the Bot finished a run.
     BotWorker {
@@ -78,11 +72,10 @@ impl MessageOrigin {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            Self::Session { invocation } => {
-                crate::interaction::entity_id(&invocation.session_id)?;
-                crate::interaction::entity_id(&invocation.turn_id)?;
-                crate::interaction::entity_id(&invocation.run_id)?;
-                crate::interaction::entity_id(&invocation.invocation_id)
+            Self::Session { execution } => {
+                crate::interaction::entity_id(&execution.session_id)?;
+                crate::interaction::entity_id(&execution.turn_id)?;
+                Ok(())
             }
             Self::Goal { goal_id, objective } => {
                 crate::interaction::entity_id(goal_id)?;
@@ -91,8 +84,6 @@ impl MessageOrigin {
                 }
                 Ok(())
             }
-            Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
-            Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
             Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
             Self::Plan {
                 execution_id,
@@ -328,8 +319,8 @@ mod tests {
             .collect();
         let content = aggregate(sources.iter().map(|s| &s.message.content));
         assert!(validate_sources(&content, &sources).is_ok());
-        sources[0].message.origin = Some(MessageOrigin::WorkhubTask {
-            task_id: "invalid/id".into(),
+        sources[0].message.origin = Some(MessageOrigin::BotWorker {
+            session_id: "invalid/id".into(),
         });
         assert!(validate_sources(&content, &sources).is_err());
         sources[0].message.origin = None;

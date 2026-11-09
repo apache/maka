@@ -432,18 +432,41 @@ impl Owner {
                 if other.as_ref().map(reference) != destination {
                     return Ok(ProjectResult::Changed);
                 }
-                if current
-                    .locations
-                    .iter()
-                    .chain(other.iter().flat_map(|p| &p.locations))
-                    .any(|location| {
-                        !self
-                            .runs
-                            .workspace_available("", std::path::Path::new(&location.path))
-                    })
-                {
-                    return Ok(ProjectResult::Busy);
+                let mut workspaces = Vec::new();
+                for path in std::iter::once(path.as_str()).chain(
+                    current
+                        .locations
+                        .iter()
+                        .chain(other.iter().flat_map(|project| &project.locations))
+                        .map(|location| location.path.as_str()),
+                ) {
+                    let Some(directory) = workspace::selected(
+                        self.workspace_roots.clone(),
+                        path,
+                        self.home.as_deref(),
+                        self.managed_worktrees.clone(),
+                    )
+                    .await?
+                    else {
+                        return Ok(ProjectResult::Unavailable);
+                    };
+                    let directory = workspace::open_directory(
+                        &self.workspace_roots,
+                        &directory,
+                        &self.managed_worktrees,
+                    )
+                    .await?;
+                    workspaces.push(
+                        self.store
+                            .workspace(directory)
+                            .await
+                            .map_err(|error| error.to_string())?,
+                    );
                 }
+                let fence = match self.store.fence_workspaces(&workspaces).await {
+                    Ok(fence) => fence,
+                    Err(error) => return stored(error),
+                };
                 let ids = std::iter::once(current.id.clone())
                     .chain(current.aliases.iter().cloned())
                     .chain(other.iter().flat_map(|record| {
@@ -465,19 +488,31 @@ impl Owner {
                 let mut after = None;
                 loop {
                     let pending = self
-                        .store
-                        .pending_message_sessions(&self.prefix, after.as_deref())
+                        .durable
+                        .queue()
+                        .ready(self.run_owner(), after.clone(), 128)
                         .await
                         .map_err(|_| "agent_projects_unavailable")?;
                     if pending.is_empty() {
                         break;
                     }
-                    for id in &pending {
+                    let mut previous =
+                        after
+                            .as_ref()
+                            .map(|cursor: &maka_agent_state::queue::ReadyCursor| {
+                                cursor.session.as_str()
+                            });
+                    for entry in &pending {
+                        let id = &entry.cursor.session;
+                        if previous == Some(id.as_str()) {
+                            continue;
+                        }
                         if affected(&self.session(id).await?.configuration.workspace) {
                             return Ok(ProjectResult::Busy);
                         }
+                        previous = Some(id.as_str());
                     }
-                    after = pending.last().cloned();
+                    after = pending.last().map(|entry| entry.cursor.clone());
                 }
                 let root = self
                     .store
@@ -503,6 +538,7 @@ impl Owner {
                             destination: other,
                             owner_scope: self.prefix.clone(),
                         },
+                        &fence,
                         registration,
                         now(),
                         serde_json::to_value(selected).map_err(|_| "agent_project_invalid")?,

@@ -85,9 +85,10 @@ use std::sync::{
 };
 
 async fn root(directory: &std::path::Path) -> RootStore {
-    RootStore::open(Arc::new(
-        RootOwner::create(&directory.join("root"), &namespaces(directory)).unwrap(),
-    ))
+    RootStore::open(
+        Arc::new(RootOwner::create(&directory.join("root"), &namespaces(directory)).unwrap()),
+        crate::ROOT_MIGRATIONS,
+    )
     .await
     .unwrap()
 }
@@ -257,13 +258,16 @@ async fn settlements_count_reported_missing_and_terminal_usage_once_across_rollb
     drop(log);
     drop(session);
     root.close().await.unwrap();
-    let root = RootStore::open(Arc::new(
-        RootOwner::open(
-            &directory.path().join("root"),
-            &namespaces(directory.path()),
-        )
-        .unwrap(),
-    ))
+    let root = RootStore::open(
+        Arc::new(
+            RootOwner::open(
+                &directory.path().join("root"),
+                &namespaces(directory.path()),
+            )
+            .unwrap(),
+        ),
+        crate::ROOT_MIGRATIONS,
+    )
     .await
     .unwrap();
     assert_eq!(

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use super::cell_context::SessionData;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,7 +75,8 @@ async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch()
         })
     }));
     let engine = executor();
-    let store = CellStore::temporary().unwrap();
+    let owner = Arc::new(SessionData::default());
+    let store = owner.cell_store();
     // Check inside JavaScript: decoding a private-number object back into a Rust Value can hide corruption.
     let check = r#"
         const numbers = [value.nested[0], value.nested[1].fraction,
@@ -124,7 +126,7 @@ async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch()
         if output.len() == 2 {
             assert!(matches!(&output[1], CellOutput::Text { text } if text == "42"));
         }
-        context.commit().unwrap();
+        owner.accept(&result, context.take_draft().unwrap());
     }
 }
 
@@ -304,8 +306,9 @@ async fn javascript_failure_cancels_and_drains_dispatched_tools() {
                 vec![],
             )
             .unwrap();
-            executor()
-                .execute_module(
+            let engine = executor();
+            let prepared = engine
+                .prepare_module(
                     format!(
                         "tools.wait({{}}); await tools.echo({{}}); {}",
                         if fail {
@@ -318,7 +321,11 @@ async fn javascript_failure_cancels_and_drains_dispatched_tools() {
                     CancellationToken::new(),
                     context,
                 )
-                .await
+                .await?;
+            let binding = prepared.binding().clone();
+            let result = prepared.execute_bound().await;
+            engine.release_binding(&binding);
+            result
         });
         tokio::time::timeout(Duration::from_secs(5), cancelled.notified())
             .await

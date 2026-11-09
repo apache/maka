@@ -85,12 +85,12 @@ async fn system_permission_controls_recover_each_grants_original_without_redispa
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
         assert_eq!(recovered.reference, prepared.reference.clone().unwrap());
-        assert!(matches!(recovered.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":1})));
+        assert!(matches!(recovered.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":1})));
         assert_eq!(observer.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(), [screen_id]);
         fixture.counter.blocked.store(false, Ordering::SeqCst);
         let screen_reply = screen.confirm().await.unwrap();
         assert_eq!(screen_reply.reference, screen_prepared.reference.clone().unwrap());
-        assert!(matches!(screen_reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"sent":2})));
+        assert!(matches!(screen_reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"sent":2})));
         assert!(observer.pending_controls().await.unwrap().is_empty());
         assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 2);
         screen.close().await.unwrap();

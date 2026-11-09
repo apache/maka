@@ -126,6 +126,47 @@ impl MutationExecutor {
     }
 }
 
+impl MutationExecutor {
+    pub fn publish_change(
+        &self,
+        change: crate::publication::PublicationChange,
+        source: crate::publication::SourceIdentity,
+        content: Option<Box<dyn crate::publication::PublicationContent>>,
+        cancellation: CancellationToken,
+    ) -> ToolFuture<crate::publication::PublicationResult> {
+        let authority = self.authority.clone();
+        let coordinator = self.coordinator.clone();
+        Box::pin(async move {
+            let authority = authority.ok_or_else(|| failed("Write authority is disabled"))?;
+            let started = Arc::new(AtomicBool::new(false));
+            let worker_started = started.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::publication::run(
+                    &authority,
+                    &coordinator,
+                    change,
+                    source,
+                    content,
+                    &cancellation,
+                    &worker_started,
+                )
+            })
+            .await
+            .map_err(|error| {
+                if started.load(Ordering::SeqCst) {
+                    ToolError::OutcomeUnknown(format!(
+                        "publication worker failed after mutation started: {error}"
+                    ))
+                } else {
+                    failed(format!(
+                        "publication worker failed before mutation: {error}"
+                    ))
+                }
+            })?
+        })
+    }
+}
+
 impl ToolExecutor for MutationExecutor {
     fn names(&self) -> Vec<String> {
         if self.authority.is_some() {

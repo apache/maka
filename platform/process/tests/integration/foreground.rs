@@ -245,7 +245,7 @@ async fn normal_root_exit_drains_descendants_and_their_inherited_output() {
                     .unwrap();
                 let (mut child, io) = maka_process::pty::spawn(
                     plan,
-                    maka_agent_facts::terminal::TerminalSize::new(80, 24).unwrap(),
+                    maka_plugin_core::terminal::TerminalSize::new(80, 24).unwrap(),
                 )
                 .await
                 .unwrap();

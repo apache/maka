@@ -22,7 +22,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// A frozen lifecycle plan; only Host-owned lineage and authority dependencies
+/// A frozen lifecycle plan; only Host-owned authority dependencies
 /// participate. Plugin business identifiers and display labels are irrelevant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemovalPlan {
@@ -42,7 +42,7 @@ pub enum RemoveFamilyResult {
 pub enum RemovalAuthority {
     Unmanaged,
     Granted {
-        namespace: maka_capabilities::storage::Namespace,
+        namespace: maka_plugin_core::storage::Namespace,
         sessions: BTreeSet<String>,
     },
 }
@@ -116,7 +116,7 @@ impl EventLog {
             .await
     }
 
-    /// Remove the revision family and archive its dependent families atomically.
+    /// Retire a Session and archive its authority-dependent descendants atomically.
     /// A retry reads the accepted plan before checking any current metadata.
     pub async fn remove_session_family(
         &self,
@@ -166,21 +166,17 @@ impl EventLog {
                     return Ok(None);
                 }
                 authority.check(&tx, &plan)?;
-                let mut approval_revoked = false;
                 for target in &plan.remove {
-                    approval_revoked |= fence(&tx, target, Action::Remove)?;
+                    fence(&tx, target, Action::Remove)?;
                 }
                 for target in &plan.archive {
-                    approval_revoked |= fence(&tx, target, Action::Archive)?;
+                    fence(&tx, target, Action::Archive)?;
                 }
                 tx.execute(
                     "INSERT INTO session_removal_receipts VALUES (?,?)",
                     params![&session, serde_json::to_string(&plan)?],
                 )?;
                 tx.commit().map_err(StoreError::CommitUnknown)?;
-                if approval_revoked {
-                    commits.activations();
-                }
                 commits
                     .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))
                     .metadata();
@@ -217,31 +213,25 @@ fn receipt(
 fn read(connection: &rusqlite::Connection, session: &str) -> Result<RemovalPlan, StoreError> {
     let rows = connection
         .prepare_cached(
-            "WITH RECURSIVE families AS (
-            SELECT s.id, s.archived, COALESCE(c.state,'committed') AS copy_state,
-                CASE WHEN json_extract(c.lineage_json,'$.kind')='revision'
-                     THEN json_extract(c.lineage_json,'$.root_session_id') ELSE s.id END AS family,
-                p.authority_session_id AS parent
-            FROM session_control s
-            LEFT JOIN session_history_copies c ON c.session_id=s.id
-            LEFT JOIN plugin_sessions p ON p.session_id=s.id
-            WHERE NOT EXISTS(SELECT 1 FROM session_retirements r
-                WHERE r.session_id=s.id AND r.remove_session=1)
-        ), root AS (SELECT family FROM families WHERE id=?1), dependents(id) AS (
-            SELECT id FROM families WHERE family=(SELECT family FROM root)
-            UNION SELECT child.id FROM families child JOIN dependents d
-                ON child.parent=d.id OR child.family=d.id
-        ) SELECT f.id, f.family, f.archived, f.family=(SELECT family FROM root) AS removes
-          FROM families f JOIN dependents d ON f.id=d.id
-          WHERE f.copy_state<>'preparing' OR f.id=?1
-          ORDER BY removes DESC, f.id",
+            "WITH RECURSIVE dependents(id) AS (
+                SELECT id FROM session_control WHERE id=?1
+                  AND NOT EXISTS(SELECT 1 FROM session_retirements r
+                    WHERE r.session_id=id AND r.remove_session=1)
+                UNION
+                SELECT child.id FROM dependents d
+                  JOIN plugin_sessions p ON p.authority_session_id=d.id
+                  JOIN session_control child ON child.id=p.session_id
+                  WHERE NOT EXISTS(SELECT 1 FROM session_retirements r
+                    WHERE r.session_id=child.id AND r.remove_session=1)
+            ) SELECT s.id, s.archived, s.id=?1 AS removes
+              FROM dependents d JOIN session_control s ON s.id=d.id
+              ORDER BY removes DESC, s.id",
         )?
         .query_map(params![session], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, bool>(1)?,
                 row.get::<_, bool>(2)?,
-                row.get::<_, bool>(3)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -253,19 +243,17 @@ fn read(connection: &rusqlite::Connection, session: &str) -> Result<RemovalPlan,
         archive: Vec::new(),
         archived_subtask_count: 0,
     };
-    let mut archived_families = BTreeSet::new();
     for row in rows {
         let id: String = row.0;
-        if row.3 {
+        if row.2 {
             plan.remove.push(id);
         } else {
             plan.archive.push(id);
-            if !row.2 {
-                archived_families.insert(row.1);
+            if !row.1 {
+                plan.archived_subtask_count += 1;
             }
         }
     }
-    plan.archived_subtask_count = archived_families.len() as u64;
     Ok(plan)
 }
 
@@ -273,11 +261,11 @@ pub(super) fn fence(
     connection: &rusqlite::Connection,
     session: &str,
     action: Action,
-) -> Result<bool, StoreError> {
+) -> Result<(), StoreError> {
     if let Some(previous) = super::read(connection, session)? {
         match action {
-            Action::Archive => return Ok(false),
-            Action::Remove if previous.removes() => return Ok(false),
+            Action::Archive => return Ok(()),
+            Action::Remove if previous.removes() => return Ok(()),
             Action::Remove => {}
         }
     }
@@ -293,24 +281,5 @@ pub(super) fn fence(
             params![session],
         )?;
     }
-    let approval_revoked = crate::native_approvals::revoke_for_session(
-        connection,
-        session,
-        crate::native_approvals::now_millis()?,
-    )?;
-    // Accepted queue identities and payload deletion share the lifecycle commit.
-    connection.execute(
-        "INSERT INTO message_cancellations(session_id,message_id,cancellation_id)
-        SELECT session_id,message_id,?1 FROM message_admissions WHERE session_id=?1",
-        params![session],
-    )?;
-    let cancelled = connection.execute(
-        "DELETE FROM message_admissions WHERE session_id=?",
-        params![session],
-    )?;
-    if cancelled > 0 {
-        crate::message_queue::bump(connection, session)?;
-    }
-    super::super::advance_revision(connection, session)?;
-    Ok(approval_revoked)
+    super::super::advance_revision(connection, session)
 }

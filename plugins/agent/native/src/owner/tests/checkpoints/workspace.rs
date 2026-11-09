@@ -39,14 +39,17 @@ async fn mutate(f: &Fixture, method: &str, input: Value, id: Uuid) -> (RecoveryR
         .unwrap();
     let reference = prepared.reference().clone();
     let receipt = client
-        .mutate_owned(prepared)
+        .mutate_owned(prepared, json!({ "reference": &reference }))
         .await
         .unwrap()
         .result()
         .await
         .receipt;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -227,11 +230,16 @@ async fn checkpoint_admission_excludes_shared_workspaces_without_stalling_other_
         .await
         .unwrap();
     let b = f.mutation(2,"create",json!({"title":"Unrelated B","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
-    let shared_producer = f.owner.runs.ordered(&shared).await;
-    assert!(f.owner.checkpoint_admission(&a, None).await.is_err());
+    let shared_configuration = f.owner.session(&shared).await.unwrap().configuration;
+    let shared_producer = f
+        .owner
+        .current_work_scope(&shared, &shared_configuration)
+        .await
+        .unwrap();
+    assert!(f.owner.checkpoint_admission(&a, true).await.is_err());
     drop(shared_producer);
     let producer_b = f.owner.goals.admissions.ordered(&b).await;
-    let (admission, _) = f.owner.checkpoint_admission(&a, None).await.unwrap();
+    let (admission, _) = f.owner.checkpoint_admission(&a, true).await.unwrap();
     // Read-only session/history observation remains available while mutations are excluded.
     assert!(f.query("observe", json!({"sessionId":a})).await.is_ok());
     assert!(
@@ -259,9 +267,9 @@ async fn checkpoint_admission_excludes_shared_workspaces_without_stalling_other_
         .unwrap()["reason"],
         "busy"
     );
-    assert!(f.owner.checkpoint_admission(&shared, None).await.is_err());
+    assert!(f.owner.checkpoint_admission(&shared, true).await.is_err());
     drop(producer_b);
-    let (other_checkpoint, _) = f.owner.checkpoint_admission(&b, None).await.unwrap();
+    let (other_checkpoint, _) = f.owner.checkpoint_admission(&b, true).await.unwrap();
     drop(other_checkpoint);
     tokio::time::timeout(
         Duration::from_secs(30),
@@ -370,14 +378,13 @@ async fn active_goal_defers_during_shared_checkpoint_and_restore_enforces_tilde_
             .unwrap()
             .unwrap();
         request(&mut goal_turn_2).await;
-        // Manually insert `a` into `runs.checkpoints` to simulate `a` holding workspace checkpoint right as `goal_turn_2` finishes!
-        let held = f
-            .owner
-            .runs
-            .checkpoint(&a, vec![f.workspace.clone()])
-            .unwrap();
-        response_with_text(&mut goal_turn_2, "working on goal step 2").await;
+        // Hold the real producer gate until the current physical work ends,
+        // then acquire the actual directory fence before allowing its next tick.
+        let producer=f.owner.goals.admissions.ordered(&shared).await;
+        response_with_text(&mut goal_turn_2,"working on goal step 2").await;
         f.drained().await;
+        let held=f.owner.checkpoint_admission(&a,true).await.unwrap().0;
+        drop(producer);
         f.owner.goals.execution_changed();
         tokio::time::sleep(Duration::from_millis(120)).await;
         let during = f.query("goal", json!({"sessionId":shared})).await.unwrap()["current"].clone();

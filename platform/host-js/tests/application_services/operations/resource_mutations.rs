@@ -104,7 +104,7 @@ struct Effect {
     calls: Arc<AtomicUsize>,
 }
 impl Handler for Effect {
-    fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         let store = self.store.clone();
         let calls = self.calls.clone();
         let caller = self.caller.clone();
@@ -133,7 +133,8 @@ impl Handler for Effect {
             Ok(json!(format!(
                 "effect-{}",
                 calls.fetch_add(1, Ordering::SeqCst) + 1
-            )))
+            ))
+            .into())
         })
     }
 }
@@ -310,8 +311,8 @@ async fn javascript_delegated_mutation_forwards_actual_current_slots_and_never_r
             export const service={{async echo(input,_observation,context){{
                 try {{
                     const reply=await context.invoke({{operation:'mutate',import:'child',provider:0,method:'echo',input,operationId:'{operation}',attachments:{{text:'text'}}}});
-                    if(reply.receipt.kind!=='recorded'||reply.receipt.outcome.kind!=='returned')throw Error('receipt unavailable');
-                    return reply.receipt.outcome.value;
+                    if(reply.receipt.kind!=='recorded'||reply.receipt.outcome.kind!=='returned'||reply.receipt.outcome.result.kind!=='success')throw Error('receipt unavailable');
+                    return reply.receipt.outcome.result.value;
                 }} catch(error) {{return 'blocked';}}
             }}}};
         "#,serde_json::to_string(&attached_contract()).unwrap());
@@ -346,7 +347,7 @@ async fn failed_resource_mutation_keeps_original_snapshot_and_capacity_after_bus
         let recorded=store.record_application_intent(reference.source.clone(),id(2),reference.clone(), serde_json::Value::Null).await.unwrap();
         let completed=client.mutate(prepared,recorded).await.unwrap().completion().await;
         assert!(completed.cleanup.is_err());
-        assert!(matches!(completed.reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {ref value},cleanup:OperationCleanup::Failed {..}} if value==&json!("xxxxx")));
+        assert!(matches!(completed.reply.receipt,Receipt::Recorded {outcome:OperationOutcome::Returned {result: OperationResult::Success {ref value}},cleanup:OperationCleanup::Failed {..}} if value==&json!("xxxxx")));
         original_scope.finish().await.unwrap();assert!(weak.upgrade().is_some());
         let (resources,rejected)=bytes(1);
         let failure=client.prepare_mutation(binding,"echo".into(),json!("public"),scope(&issuer,true),Uuid::new_v4(),resources.into()).await.err().unwrap();

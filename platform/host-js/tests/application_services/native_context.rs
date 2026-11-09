@@ -108,7 +108,11 @@ async fn native_context_uses_actual_root_and_stable_instances_across_deployments
         for root_index in 0..2 {
             let root = dir.path().join(format!("root-{root_index}"));
             let owner = Arc::new(RootOwner::create(&root, &namespaces).unwrap());
-            let store = Arc::new(RootStore::open(owner).await.unwrap());
+            let store = Arc::new(
+                RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+                    .await
+                    .unwrap(),
+            );
             let marker = format!("Root {root_index}");
             store
                 .create_session("root-marker", "create-marker", &marker, 1)

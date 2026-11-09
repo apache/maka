@@ -26,13 +26,13 @@ use super::{
     terminal::Terminal,
 };
 use futures_util::FutureExt;
-use maka_agent_facts::shell_run::ShellOutcome;
-use maka_agent_facts::shell_run::ShellOutput;
-use maka_agent_facts::shell_run::ShellPatch;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::{ShellObservation, ShellRun};
-use maka_agent_facts::terminal::TerminalSize;
 use maka_event_log::root_store::SessionStore;
+use maka_plugin_core::shell_run::ShellOutcome;
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::{ShellObservation, ShellRun};
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::pty::{self, PtyChild, PtyCommand, PtyIo};
 use std::{
     num::NonZeroI64,
@@ -340,22 +340,25 @@ pub(super) fn exit_outcome(status: ExitStatus) -> ShellOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::shell_run::ShellPermissions;
-    use maka_agent_facts::shell_run::ShellVisibility;
+    use maka_plugin_core::shell_run::ShellPermissions;
+    use maka_plugin_core::shell_run::ShellVisibility;
 
     #[tokio::test]
     async fn native_cleanup_failure_preserves_unsettled_row_and_typed_worker_error() {
         let directory = tempfile::tempdir().unwrap();
-        let root = maka_event_log::root_store::RootStore::open(Arc::new(
-            maka_event_log::root::RootOwner::create(
-                &directory.path().join("root"),
-                &maka_event_log::root::RootNamespaces {
-                    ownership: directory.path().join("owners"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        ))
+        let root = maka_event_log::root_store::RootStore::open(
+            Arc::new(
+                maka_event_log::root::RootOwner::create(
+                    &directory.path().join("root"),
+                    &maka_event_log::root::RootNamespaces {
+                        ownership: directory.path().join("owners"),
+                        control: directory.path().join("control"),
+                    },
+                )
+                .unwrap(),
+            ),
+            maka_event_log::ROOT_MIGRATIONS,
+        )
         .await
         .unwrap();
         let binding = root
@@ -381,14 +384,13 @@ mod tests {
             .create_shell_run(ShellRun {
                 id: "cleanup-failure".into(),
                 session_id: "session".into(),
-                source_run_id: None,
-                source_turn_id: "turn".into(),
-                source_tool_call_id: "tool".into(),
+                source_work_id: None,
+                correlation: serde_json::json!({}),
                 visibility: ShellVisibility::Model,
                 permissions: ShellPermissions {
-                    basis: maka_agent_facts::workspace::PermissionBasis {
+                    basis: maka_sandbox::workspace::PermissionBasis {
                         boundary_revision: 0,
-                        binding: maka_agent_facts::workspace::BindingStamp {
+                        binding: maka_sandbox::workspace::BindingStamp {
                             id: binding.id,
                             permission_epoch: 0,
                         },

@@ -80,7 +80,7 @@ pub struct ComputerAppDisplay {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComputerAppActivity {
-    pub invocation: crate::event::Invocation,
+    pub execution: crate::durable::ExecutionIdentity,
     pub operation_id: String,
     pub target: GrantTarget,
     pub display: ComputerAppDisplay,
@@ -156,8 +156,8 @@ pub enum SystemPermissionGrant {
 #[serde(rename_all = "snake_case")]
 pub enum ClosureReason {
     Steered,
-    TurnStopped,
-    TurnTerminal,
+    RunStopped,
+    RunTerminal,
     ProducerCancelled,
     TimedOut,
     HostRestarted,
@@ -175,7 +175,7 @@ pub enum InteractionRequest {
     /// Human consent for the exact decision proposed for a child interaction.
     SessionApproval {
         tool_use_id: String,
-        basis: crate::workspace::PermissionBasis,
+        basis: maka_sandbox::workspace::PermissionBasis,
         session_id: String,
         request_id: String,
         answer: SessionApprovalAnswer,
@@ -190,9 +190,10 @@ pub enum InteractionRequest {
         through: u64,
     },
     Permissions {
+        target: crate::durable::AuthorizationObligation,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
         tool_use_id: Option<String>,
-        basis: crate::workspace::PermissionBasis,
+        basis: maka_sandbox::workspace::PermissionBasis,
         request: PermissionRequest,
     },
     Question {
@@ -211,13 +212,13 @@ pub enum InteractionRequest {
         /// Agent-owned approvals expire with this original permission boundary.
         /// Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
         #[serde(skip_serializing_if = "Option::is_none")]
-        basis: Option<crate::workspace::PermissionBasis>,
+        basis: Option<maka_sandbox::workspace::PermissionBasis>,
     },
     ComputerApp {
         tool_use_id: String,
         native_operation_id: String,
         target: GrantTarget,
-        basis: crate::workspace::PermissionBasis,
+        basis: maka_sandbox::workspace::PermissionBasis,
         display: ComputerAppDisplay,
         allow_always: bool,
         authority_revision: u64,
@@ -255,7 +256,7 @@ pub enum InteractionAnswer {
         decision: Decision,
     },
     Permissions {
-        decision: grant::Decision,
+        decision: PermissionDecision,
     },
     Question {
         answers: Vec<Option<String>>,
@@ -291,7 +292,7 @@ pub enum InteractionOutcome {
         committed_at: u64,
     },
     PermissionsDecision {
-        decision: grant::Decision,
+        decision: PermissionDecision,
         committed_at: u64,
     },
     QuestionAnswer {
@@ -320,6 +321,27 @@ pub enum InteractionOutcome {
 }
 
 impl InteractionOutcome {
+    pub fn is_approval_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::SessionApprovalDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::ServiceApprovalDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::PermissionsDecision {
+                decision: PermissionDecision::Deny,
+                ..
+            } | Self::ClientCapabilityDecision {
+                decision: Decision::Deny,
+                ..
+            } | Self::ComputerAppDecision {
+                decision: ComputerAppDecision::Deny,
+                ..
+            } | Self::Closure { .. }
+        )
+    }
     pub fn committed_at(&self) -> u64 {
         match self {
             Self::QuestionAnswer { committed_at, .. }
@@ -429,9 +451,7 @@ impl InteractionAnswer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InteractionRecord {
-    pub session_id: String,
-    pub turn_id: String,
-    pub run_id: String,
+    pub execution: crate::durable::ExecutionIdentity,
     pub request_id: String,
     pub created_at: u64,
     pub request: InteractionRequest,
@@ -446,11 +466,42 @@ pub struct SessionGrant {
     pub target: GrantTarget,
     pub granted_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub basis: Option<crate::workspace::PermissionBasis>,
+    pub basis: Option<maka_sandbox::workspace::PermissionBasis>,
 }
 
 /// The Host supplies the real operation description; it is display information,
 /// not authority inferred from a command string or a plugin-supplied Session ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionScope {
+    Once,
+    Run,
+    Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PermissionDecision {
+    Deny,
+    Allow {
+        permissions: grant::Permissions,
+        scope: PermissionScope,
+    },
+}
+impl PermissionDecision {
+    pub fn validate_for(&self, requested: &grant::Permissions) -> Result<(), maka_sandbox::Error> {
+        requested.validate()?;
+        if let Self::Allow { permissions, .. } = self
+            && !requested.contains(permissions)?
+        {
+            return Err(maka_sandbox::Error::Invalid(
+                "approved permissions exceed the request".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PermissionRequest {

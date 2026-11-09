@@ -23,6 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cap-std.workspace = true
 maka-agent-api.workspace = true
 maka-agent-facts.workspace = true
 maka-fs-tools.workspace = true

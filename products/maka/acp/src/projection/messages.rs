@@ -20,7 +20,7 @@
 use super::*;
 
 pub(crate) struct ModelMetadataUpdate {
-    key: (String, String, MessageKind),
+    key: (MessageIdentity, MessageKind),
     meta: Meta,
     pub update: Update,
 }
@@ -28,7 +28,7 @@ pub(crate) struct ModelMetadataUpdate {
 impl Projection {
     pub fn pending_model_positions(
         &self,
-        steps: Option<&HashSet<String>>,
+        steps: Option<&HashSet<(StepId, ModelAttemptId)>>,
     ) -> Vec<(
         maka_agent_ports::session::history::RowPosition,
         HistoryField,
@@ -45,7 +45,7 @@ impl Projection {
             .flat_map(|rows| rows.iter())
             .map(|(position, kind)| {
                 (
-                    *position,
+                    position.clone(),
                     if *kind == MessageKind::Thinking {
                         HistoryField::Thinking
                     } else {
@@ -56,7 +56,7 @@ impl Projection {
             .collect()
     }
 
-    pub fn acknowledge_models(&mut self, steps: Option<&HashSet<String>>) {
+    pub fn acknowledge_models(&mut self, steps: Option<&HashSet<(StepId, ModelAttemptId)>>) {
         if let Some(steps) = steps {
             for step in steps {
                 self.pending_models.remove(step);
@@ -75,7 +75,8 @@ impl Projection {
         } else {
             MessageKind::Text
         };
-        let key = (chunk.turn_id.clone(), chunk.message_id.clone(), kind);
+        let identity = MessageIdentity::history(chunk);
+        let key = (identity.clone(), kind);
         let message = self
             .streams
             .get(&key)
@@ -95,11 +96,7 @@ impl Projection {
             metadata.remove("model");
         }
         let update = Update::Message {
-            id: if kind == MessageKind::Thinking {
-                format!("thinking:{}", chunk.message_id)
-            } else {
-                chunk.message_id.clone()
-            },
+            id: identity.presentation_id(kind)?,
             kind,
             text: Text::Metadata,
             meta: meta.clone(),
@@ -116,23 +113,22 @@ impl Projection {
 
     pub(super) fn replace_text(
         &mut self,
-        turn: &str,
-        id: &str,
+        identity: MessageIdentity,
         kind: MessageKind,
         next: &str,
         meta: Meta,
-    ) -> Vec<Update> {
-        let key = (turn.to_owned(), id.to_owned(), kind);
+    ) -> Result<Vec<Update>, crate::Error> {
+        let key = (identity.clone(), kind);
         let previous = self.streams.get(&key);
         if previous.is_some_and(|p| p.text == next && p.meta == meta)
-            || (previous.is_none() && next.is_empty() && kind != MessageKind::User)
+            || (previous.is_none()
+                && next.is_empty()
+                && kind != MessageKind::User
+                && !matches!(&identity, MessageIdentity::Row(_)))
         {
-            return vec![];
+            return Ok(vec![]);
         }
-        let message_id = match kind {
-            MessageKind::Thinking => format!("thinking:{id}"),
-            _ => id.to_owned(),
-        };
+        let message_id = identity.presentation_id(kind)?;
         let update = Update::Message {
             id: message_id,
             kind,
@@ -148,19 +144,34 @@ impl Projection {
                 canonical,
             },
         );
-        vec![update]
+        Ok(vec![update])
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ids() -> (RunId, StepId, ModelAttemptId) {
+        serde_json::from_value(json!([
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003"
+        ]))
+        .unwrap()
+    }
+    fn position() -> maka_agent_ports::session::history::RowPosition {
+        maka_agent_ports::session::history::RowPosition::Live {
+            sequence: 1,
+            fact: serde_json::from_value(json!("00000000-0000-4000-8000-000000000004")).unwrap(),
+            item_index: 0,
+        }
+    }
     fn preview_page(revision: u64, offset: u64, total_bytes: u64, text: &str) -> PreviewPage {
         PreviewPage::Cut {
             host_epoch: "epoch".into(),
-            invocation_id: "invocation".into(),
+            run_id: ids().0,
             turn_id: "turn".into(),
-            step_id: "step".into(),
+            step_id: ids().1,
+            attempt_id: ids().2,
             revision,
             depends_on: 17,
             first: offset == 0,
@@ -215,6 +226,8 @@ mod tests {
             "draft"
         );
         let mut chunk = HistoryChunk {
+            imported_turn: None,
+            run_id: None,
             model_part: None,
             final_output: false,
             has_references: false,
@@ -224,18 +237,15 @@ mod tests {
             attachments: Vec::new(),
             timing: None,
             field: HistoryField::Body,
-            message_id: "message".into(),
-            turn_id: "turn".into(),
-            timestamp: 0,
+            message_id: Some("message".into()),
+            turn_id: Some("turn".into()),
+            timestamp: Some(0),
             role: Role::Assistant,
-            order: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
+            order: maka_agent_ports::session::history::HistoryOrder {
+                path: vec![1],
                 item_index: 0,
             },
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
+            position: position(),
             offset: 0,
             total_bytes: 9,
             text: "can".into(),
@@ -272,7 +282,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        projection.commit_preview("invocation", "step", Some("message"));
+        projection.commit_preview(ids().0, ids().1, ids().2, Some("message"));
         assert!(
             projection
                 .preview(&preview_page(1, 4, 8, "中!"))
@@ -286,7 +296,7 @@ mod tests {
                 .is_empty()
         );
         let mut projection = Projection::default();
-        projection.commit_preview("invocation", "step", None);
+        projection.commit_preview(ids().0, ids().1, ids().2, None);
         assert!(
             projection
                 .preview(&preview_page(1, 0, 8, "🦀中!"))
@@ -305,6 +315,8 @@ mod tests {
             "!"
         );
         let mut chunk = HistoryChunk {
+            imported_turn: None,
+            run_id: None,
             model_part: None,
             final_output: false,
             has_references: false,
@@ -314,18 +326,15 @@ mod tests {
             attachments: Vec::new(),
             timing: None,
             field: HistoryField::Body,
-            message_id: "m".into(),
-            turn_id: "t".into(),
-            timestamp: 0,
+            message_id: Some("m".into()),
+            turn_id: Some("t".into()),
+            timestamp: Some(0),
             role: Role::Assistant,
-            order: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
+            order: maka_agent_ports::session::history::HistoryOrder {
+                path: vec![1],
                 item_index: 0,
             },
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
+            position: position(),
             offset: 0,
             total_bytes: 8,
             text: "🦀中".into(),
@@ -365,6 +374,8 @@ mod tests {
     fn missing_history_fragment_is_rejected() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            imported_turn: None,
+            run_id: None,
             model_part: None,
             final_output: false,
             has_references: false,
@@ -374,18 +385,15 @@ mod tests {
             attachments: Vec::new(),
             timing: None,
             field: HistoryField::Body,
-            message_id: "m".into(),
-            turn_id: "t".into(),
-            timestamp: 0,
+            message_id: Some("m".into()),
+            turn_id: Some("t".into()),
+            timestamp: Some(0),
             role: Role::Assistant,
-            order: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
+            order: maka_agent_ports::session::history::HistoryOrder {
+                path: vec![1],
                 item_index: 0,
             },
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
+            position: position(),
             offset: 2,
             total_bytes: 3,
             text: "a".into(),
@@ -397,12 +405,18 @@ mod tests {
     fn attachment_only_user_message_keeps_safe_descriptions_during_replay() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            imported_turn: None,
+            run_id: None,
             model_part: None,
             final_output: false,
             has_references: false,
             model: None,
-            origin: Some(maka_agent_facts::message::MessageOrigin::WorkhubTask {
-                task_id: "task-original".into(),
+            origin: Some(maka_agent_facts::message::MessageOrigin::Session {
+                execution: maka_agent_facts::durable::ExecutionIdentity {
+                    session_id: "source-session".into(),
+                    turn_id: "source-turn".into(),
+                    run_id: ids().0,
+                },
             }),
             compaction: None,
             attachments: vec![maka_agent_api::contract::HistoryAttachment {
@@ -413,18 +427,15 @@ mod tests {
             }],
             timing: None,
             field: HistoryField::Body,
-            message_id: "u".into(),
-            turn_id: "t".into(),
-            timestamp: 0,
+            message_id: Some("u".into()),
+            turn_id: Some("t".into()),
+            timestamp: Some(0),
             role: Role::User,
-            order: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
+            order: maka_agent_ports::session::history::HistoryOrder {
+                path: vec![1],
                 item_index: 0,
             },
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
+            position: position(),
             offset: 0,
             total_bytes: 0,
             text: String::new(),
@@ -435,7 +446,9 @@ mod tests {
         assert_eq!(
             update["_meta"]["maka"]["origin"],
             serde_json::json!({
-                "kind": "workhub_task", "taskId": "task-original"
+                "kind": "session", "execution": {
+                    "sessionId": "source-session", "turnId": "source-turn", "runId": ids().0
+                }
             })
         );
         assert_eq!(update["_meta"]["maka"]["hostMessageId"], "u");
@@ -455,6 +468,8 @@ mod tests {
     fn diagnostic_history_replays_as_marked_text_without_tool_metadata() {
         let mut projection = Projection::default();
         let mut chunk = HistoryChunk {
+            imported_turn: None,
+            run_id: None,
             model_part: None,
             final_output: false,
             has_references: false,
@@ -464,18 +479,15 @@ mod tests {
             attachments: Vec::new(),
             timing: None,
             field: HistoryField::Body,
-            message_id: "failure".into(),
-            turn_id: "turn".into(),
-            timestamp: 0,
+            message_id: None,
+            turn_id: None,
+            timestamp: Some(0),
             role: Role::Failure,
-            order: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
+            order: maka_agent_ports::session::history::HistoryOrder {
+                path: vec![1],
                 item_index: 0,
             },
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
+            position: position(),
             offset: 0,
             total_bytes: 16,
             text: "Provider ".into(),
@@ -490,6 +502,12 @@ mod tests {
         assert_eq!(update["sessionUpdate"], "agent_message");
         assert_eq!(update["content"][0]["text"], "Provider offline");
         assert_eq!(update["_meta"]["maka"]["role"], "failure");
+        assert!(update["_meta"]["maka"].get("hostMessageId").is_none());
+        assert!(update["_meta"]["maka"].get("turnId").is_none());
+        assert_eq!(
+            update["_meta"]["maka"]["historyPosition"],
+            serde_json::to_value(position()).unwrap()
+        );
         chunk.offset = 0;
         chunk.text = "Provider offline".into();
         assert!(projection.chunk(&chunk).unwrap().is_empty());
@@ -504,17 +522,17 @@ mod tests {
         let mut projection = Projection::default();
         let mut chunk: HistoryChunk = serde_json::from_value(json!({
             "messageId":"accepted", "turnId":"turn", "timestamp":1,
-            "order":{"sourceSequence":10,"itemIndex":0},
-            "position":{"sourceSequence":10,"itemIndex":0},
+            "order":{"path":[10],"itemIndex":0},
+            "position":{"kind":"live","sequence":10,"fact":"00000000-0000-4000-8000-000000000004","itemIndex":0},
             "field":"body","role":"assistant","offset":0,"totalBytes":7,"text":"你好!",
-            "modelPart":{"stepId":"step","ordinal":0},
+            "modelPart":{"stepId":ids().1,"attemptId":ids().2,"ordinal":0},
             "model":{"kind":"native","requestedModelId":"alias","reportedModelId":null}
         }))
         .unwrap();
         projection.chunk(&chunk).unwrap();
         assert_eq!(
             projection.pending_model_positions(None),
-            vec![(chunk.position, HistoryField::Body)]
+            vec![(chunk.position.clone(), HistoryField::Body)]
         );
         chunk.text = "你".into();
         chunk.model = Some(maka_agent_ports::session::history::HistoryModel::Native {

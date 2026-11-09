@@ -124,7 +124,11 @@ async fn fixed_root_logs_public_endpoint_survives_unrelated_initialization_failu
             .unwrap();
         capture.write_all(b"before\n").unwrap();
         capture.flush().unwrap();
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(
+            RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
         let (input, packages) = sources();
         let source = store
             .commit_application(Uuid::new_v4(), 0, input, vec![], packages)

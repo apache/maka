@@ -108,7 +108,12 @@ impl From<ReadError> for Error {
 /// Revalidate an authenticated read scope before each batch. Lifecycle alone
 /// is not authorization; this contract is implemented by the embedding.
 pub trait ReadAuthorization: Send + Sync {
-    fn check(&self) -> futures_util::future::BoxFuture<'_, Result<crate::call::Ticket, ReadError>>;
+    fn check(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_plugin_core::work::resources::Ticket, ReadError>,
+    >;
 }
 
 /// Embedding-owned root. Only the embedding decides which directory to expose.
@@ -202,7 +207,7 @@ pub struct ReadDirectory {
 #[derive(Clone)]
 struct ReadOwner(crate::call::Scope);
 impl ReadOwner {
-    fn admit(&self) -> Result<crate::call::Ticket, ReadError> {
+    fn admit(&self) -> Result<maka_plugin_core::work::resources::Ticket, ReadError> {
         self.0.resources.reserve().map_err(|_| ReadError::Retired)
     }
     fn spawn_resource<F>(

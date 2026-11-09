@@ -46,7 +46,7 @@ async fn progress_cancellation_and_scope_drain_preserve_saved_business_receipts(
                     match mutation.next().await.unwrap().unwrap() {
                         MutationEvent::Finished { reply, cleanup } => {
                             assert_eq!(reply.reference, prepared.reference.clone().unwrap());
-                            assert!(matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value == &json!({"kind":"saved"})));
+                            assert!(matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, .. } if value == &json!({"kind":"saved"})));
                             assert_eq!(cleanup, if cleanup_failure { Err("tool cleanup unconfirmed: counter cleanup failure".into()) } else { Ok(()) });
                         }
                         other => panic!("cancellation must retain the original terminal reply: {other:?}"),
@@ -60,7 +60,7 @@ async fn progress_cancellation_and_scope_drain_preserve_saved_business_receipts(
             let original = client.operation_for_settings(id).await.unwrap();
             assert!(!original.abandoned, "finish={finish}, cleanup_failure={cleanup_failure}");
             assert_eq!(original.reference, prepared.reference);
-            assert!(matches!(&original.receipt, Some(Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. }) if value == &json!({"kind":"saved"})), "finish={finish}, cleanup_failure={cleanup_failure}, original={original:?}");
+            assert!(matches!(&original.receipt, Some(Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. }) if value == &json!({"kind":"saved"})), "finish={finish}, cleanup_failure={cleanup_failure}, original={original:?}");
             assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 1);
             if cleanup_failure {
                 assert_eq!(client.pending_requests().await, 1, "a business receipt does not release unconfirmed physical custody");
@@ -171,7 +171,7 @@ async fn confirmed_business_result_is_usable_while_original_cleanup_is_retained(
         mutation.prepare().await.unwrap();
         let reply = mutation.confirm().await.unwrap();
         assert!(matches!(reply.receipt, Receipt::Recorded {
-            outcome: OperationOutcome::Returned { ref value },
+            outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } },
             cleanup: OperationCleanup::Failed { .. },
         } if value == &json!({"sent":1})));
         assert!(client.pending_settings().await.unwrap().is_empty());
@@ -189,7 +189,7 @@ async fn confirmed_business_result_is_usable_while_original_cleanup_is_retained(
         next.prepare().await.unwrap();
         assert!(
             matches!(next.confirm().await.unwrap().receipt, Receipt::Recorded {
-            outcome: OperationOutcome::Returned { ref value }, ..
+            outcome: OperationOutcome::Returned { result: OperationResult::Success { ref value } }, ..
         } if value == &json!({"sent":2}))
         );
         assert_eq!(client.pending_requests().await, 1);

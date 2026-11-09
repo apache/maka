@@ -63,7 +63,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const ENTRY: &str = "__maka-cua-desktop";
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -101,6 +101,7 @@ pub(crate) enum Request {
         epoch: String,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         #[serde(default)]
         operation_id: Option<String>,
         #[serde(default)]
@@ -116,6 +117,7 @@ pub(crate) enum Request {
         epoch: String,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         operation_id: String,
         browsers: Vec<BrowserConnection>,
         #[serde(default, skip_serializing_if = "no_preparation_policy")]
@@ -139,11 +141,14 @@ pub(crate) enum Request {
         epoch: String,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         language: maka_agent_facts::language::Language,
     },
     FinishOwnerTurn {
         owner: String,
+        session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         language: maka_agent_facts::language::Language,
     },
     Shutdown,
@@ -254,6 +259,7 @@ fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
             epoch,
             session,
             turn,
+            execution,
             operation_id: Some(operation_id),
             ..
         } if !operation_id.is_empty() => Some(callbacks::ScopeIdentity {
@@ -261,6 +267,7 @@ fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
             epoch: epoch.clone(),
             session: session.clone(),
             turn: turn.clone(),
+            execution: execution.clone(),
             operation_id: operation_id.clone(),
         }),
         Request::LeaseChild {
@@ -268,6 +275,7 @@ fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
             epoch,
             session,
             turn,
+            execution,
             operation_id,
             ..
         } if !operation_id.is_empty() => Some(callbacks::ScopeIdentity {
@@ -275,6 +283,7 @@ fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
             epoch: epoch.clone(),
             session: session.clone(),
             turn: turn.clone(),
+            execution: execution.clone(),
             operation_id: operation_id.clone(),
         }),
         _ => None,
@@ -282,14 +291,31 @@ fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
 }
 fn seal_parent_callbacks(callbacks: &callbacks::ParentCallbacks, request: &Request) {
     match request {
-        Request::CloseEpoch { owner, epoch } => callbacks.seal_matching(owner, Some(epoch), None),
-        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None),
-        Request::FinishTurn {
-            owner, epoch, turn, ..
-        } => callbacks.seal_matching(owner, Some(epoch), Some(turn)),
-        Request::FinishOwnerTurn { owner, turn, .. } => {
-            callbacks.seal_matching(owner, None, Some(turn))
+        Request::CloseEpoch { owner, epoch } => {
+            callbacks.seal_matching(owner, Some(epoch), None, None, None)
         }
+        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None, None, None),
+        Request::FinishTurn {
+            owner,
+            epoch,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(
+            owner,
+            Some(epoch),
+            Some(session),
+            Some(turn),
+            Some(execution),
+        ),
+        Request::FinishOwnerTurn {
+            owner,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(owner, None, Some(session), Some(turn), Some(execution)),
         _ => {}
     }
 }
@@ -745,6 +771,7 @@ mod tests {
     #[cfg(any(feature = "native-desktop", unix))]
     fn request(session: &str, command: Value) -> Request {
         Request::Invoke {
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             owner: session.into(),
             epoch: "fixture-epoch".into(),
             session: session.into(),
@@ -825,6 +852,7 @@ mod tests {
             assert_eq!(result.unwrap()["settings"]["label"], label);
         }
         send.send(Request::FinishTurn {
+            execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
             owner: "a".into(),
             epoch: "fixture-epoch".into(),
             session: "a".into(),
@@ -885,6 +913,7 @@ mod tests {
             (Language::En, "en", "target rebinding"),
         ] {
             let request = Request::Invoke {
+                execution: crate::ExecutionCorrelation::new("fixture-execution").unwrap(),
                 owner: "fixture-owner".into(),
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),

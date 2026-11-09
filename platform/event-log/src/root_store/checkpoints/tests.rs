@@ -18,14 +18,15 @@
  */
 
 use super::*;
+use crate::checkpoints::HistorySnapshot;
 use serde_json::json;
 use std::{
+    io::{Read, Seek, Write},
     path::Path,
     time::{Duration, Instant},
 };
 use uuid::Uuid;
 
-mod body;
 mod load;
 mod workspace;
 
@@ -50,8 +51,33 @@ fn scope() -> Scope {
         namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::from_u128(2)]),
     }
 }
+// A test-owned domain snapshot, deliberately not an Agent archive.
+const HISTORY_BYTES: &[u8] = b"root-test-domain\0original immutable source\xff";
+fn history() -> HistorySnapshot {
+    HistorySnapshot {
+        object: ObjectRef {
+            digest: crate::checkpoints::digest(HISTORY_BYTES),
+            bytes: HISTORY_BYTES.len() as u64,
+        },
+        inventory: b"root-test-domain/source".to_vec(),
+        cut: b"root-test-domain/cut/1".to_vec(),
+    }
+}
+fn snapshot_file() -> std::fs::File {
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(HISTORY_BYTES).unwrap();
+    file.rewind().unwrap();
+    file
+}
+fn assert_original_snapshot(mut file: std::fs::File) {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, HISTORY_BYTES);
+}
 async fn fixture(path: &Path) -> (RootStore, HistoryCheckpoints, PublicationRequest) {
-    let store = RootStore::open(owner(path)).await.unwrap();
+    let store = RootStore::open(owner(path), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     store
         .create_session("source", "create", &json!({"title":"original"}), 1)
         .await
@@ -61,7 +87,8 @@ async fn fixture(path: &Path) -> (RootStore, HistoryCheckpoints, PublicationRequ
         operation: Uuid::from_u128(3),
         fingerprint: "a".repeat(64),
         expected_revision: None,
-        confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+        confirmed_subtree_digest: crate::checkpoints::digest(&history().inventory),
+        history: history(),
         workspace: None,
     };
     (store, handle, request)
@@ -77,18 +104,15 @@ fn published(value: &Publication) -> Head {
 async fn publish_replay_exact_checkout_and_head_cas() {
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, request) = fixture(directory.path()).await;
-    let value = handle.publish(request.clone()).await.unwrap();
+    let value = handle
+        .publish(request.clone(), snapshot_file())
+        .await
+        .unwrap();
     assert!(!value.cleanup_pending);
     let first = published(&value);
     assert_eq!(handle.read_head().await.unwrap(), Some(first.clone()));
     let checkout = handle.checkout_exact(first.revision).await.unwrap();
-    let mut staged = StagedBundle::read(tokio::fs::File::from_std(checkout.bundle))
-        .await
-        .unwrap();
-    staged.validate_history().await.unwrap();
-    let before: serde_json::Value = staged.configuration("source").await.unwrap();
-    assert_eq!(before["title"], "original");
-    staged.close().await.unwrap();
+    assert_original_snapshot(checkout.snapshot);
     store
         .update_session_metadata::<serde_json::Value, _>("source", 1, |config| {
             config["title"] = json!("later");
@@ -96,11 +120,17 @@ async fn publish_replay_exact_checkout_and_head_cas() {
         })
         .await
         .unwrap();
-    assert_eq!(handle.publish(request.clone()).await.unwrap(), value);
+    assert_eq!(
+        handle
+            .publish(request.clone(), snapshot_file())
+            .await
+            .unwrap(),
+        value
+    );
     let mut next = request.clone();
     next.operation = Uuid::from_u128(4);
     next.expected_revision = Some(first.revision);
-    let second = published(&handle.publish(next).await.unwrap());
+    let second = published(&handle.publish(next, snapshot_file()).await.unwrap());
     assert_ne!(first.revision, second.revision);
     assert!(
         handle
@@ -124,7 +154,10 @@ async fn concurrent_cas_and_identity_conflicts() {
     let (store, handle, first) = fixture(directory.path()).await;
     let mut second = first.clone();
     second.operation = Uuid::from_u128(4);
-    let (a, b) = tokio::join!(handle.publish(first.clone()), handle.publish(second));
+    let (a, b) = tokio::join!(
+        handle.publish(first.clone(), snapshot_file()),
+        handle.publish(second, snapshot_file())
+    );
     let outcomes = [a.unwrap(), b.unwrap()];
     assert_eq!(
         outcomes
@@ -144,7 +177,7 @@ async fn concurrent_cas_and_identity_conflicts() {
     changed.fingerprint = "b".repeat(64);
     assert!(
         handle
-            .publish(changed)
+            .publish(changed, snapshot_file())
             .await
             .unwrap_err()
             .to_string()
@@ -172,7 +205,7 @@ async fn prepared_bytes_survive_live_changes_and_reopen() {
     let log = handle.session.scoped().await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
     journal::claim(&log, request.clone()).await.unwrap();
-    let manifest = capture(&log, &objects, &request).await.unwrap();
+    let manifest = capture(&objects, &request, snapshot_file(), None).unwrap();
     journal::prepare(&log, request, manifest.clone())
         .await
         .unwrap();
@@ -186,7 +219,9 @@ async fn prepared_bytes_survive_live_changes_and_reopen() {
         .unwrap();
     drop(objects);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     let value = handle.receipt(input.clone()).await.unwrap().unwrap();
     assert_eq!(published(&value).manifest, manifest);
@@ -194,13 +229,8 @@ async fn prepared_bytes_survive_live_changes_and_reopen() {
         .checkout_exact(published(&value).revision)
         .await
         .unwrap();
-    let mut staged = StagedBundle::read(tokio::fs::File::from_std(checkout.bundle))
-        .await
-        .unwrap();
-    let config: serde_json::Value = staged.configuration("source").await.unwrap();
-    assert_eq!(config["title"], "original");
-    staged.close().await.unwrap();
-    assert_eq!(handle.publish(input).await.unwrap(), value);
+    assert_original_snapshot(checkout.snapshot);
+    assert_eq!(handle.publish(input, snapshot_file()).await.unwrap(), value);
     store.close().await.unwrap();
 }
 
@@ -212,7 +242,7 @@ async fn corrupt_object_cannot_be_checked_out_or_published() {
     let log = handle.session.scoped().await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
     journal::claim(&log, request.clone()).await.unwrap();
-    let manifest = capture(&log, &objects, &request).await.unwrap();
+    let manifest = capture(&objects, &request, snapshot_file(), None).unwrap();
     journal::prepare(&log, request.clone(), manifest.clone())
         .await
         .unwrap();
@@ -222,8 +252,7 @@ async fn corrupt_object_cannot_be_checked_out_or_published() {
         .join(&manifest.digest);
     std::fs::write(&path, b"broken").unwrap();
     assert!(
-        verify(&log, &objects, &request, &manifest)
-            .await
+        verify(&objects, &request, &manifest)
             .unwrap_err()
             .to_string()
             .contains("digest")
@@ -232,7 +261,9 @@ async fn corrupt_object_cannot_be_checked_out_or_published() {
     drop(log);
     drop(objects);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert!(matches!(
         handle.receipt(input).await.unwrap().unwrap().state,
@@ -257,7 +288,7 @@ async fn cleanup_failure_does_not_undo_publication_and_retries_only_cleanup() {
     let log = handle.session.scoped().await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
     journal::claim(&log, request.clone()).await.unwrap();
-    let manifest = capture(&log, &objects, &request).await.unwrap();
+    let manifest = capture(&objects, &request, snapshot_file(), None).unwrap();
     journal::prepare(&log, request.clone(), manifest.clone())
         .await
         .unwrap();
@@ -267,7 +298,10 @@ async fn cleanup_failure_does_not_undo_publication_and_retries_only_cleanup() {
     let staging = objects.staging(&request, "manifest").unwrap();
     std::fs::remove_file(&staging).unwrap();
     std::fs::create_dir(&staging).unwrap();
-    let failed_cleanup = handle.publish(input.clone()).await.unwrap();
+    let failed_cleanup = handle
+        .publish(input.clone(), snapshot_file())
+        .await
+        .unwrap();
     assert_eq!(failed_cleanup.state, result.state);
     assert!(failed_cleanup.cleanup_pending);
     assert!(
@@ -280,14 +314,16 @@ async fn cleanup_failure_does_not_undo_publication_and_retries_only_cleanup() {
     drop(log);
     drop(objects);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert_eq!(
         handle.receipt(input.clone()).await.unwrap(),
         Some(failed_cleanup)
     );
     std::fs::remove_dir(&staging).unwrap();
-    let cleaned = handle.publish(input).await.unwrap();
+    let cleaned = handle.publish(input, snapshot_file()).await.unwrap();
     assert!(!cleaned.cleanup_pending);
     assert!(cleaned.cleanup_error.is_none());
     assert_eq!(cleaned.state, result.state);
@@ -325,151 +361,13 @@ async fn abandoning_observer_does_not_release_physical_work_before_close() {
 }
 
 #[tokio::test]
-async fn real_history_and_artifact_are_verified_but_busy_source_is_not_published() {
-    use maka_agent_facts::{
-        artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest},
-        attachment::{AttachmentKind, AttachmentRef, StorageRef},
-        event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-        input::{DeliveredMessage, MessageInput},
-        message::{MessageDisposition, Placement, RootSourceMessage},
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let (store, handle, input) = fixture(directory.path()).await;
-    let log = handle.session.scoped().await.unwrap();
-    log.commit_artifact(
-        Artifact {
-            id: "upload".into(),
-            session_id: "source".into(),
-            turn_id: "upload".into(),
-            created_at: 2,
-            name: "input.txt".into(),
-            kind: ArtifactKind::File,
-            size_bytes: 5,
-            mime_type: Some("text/plain".into()),
-            source: ArtifactSource::UserUpload,
-            summary: Some(content_digest(b"hello")),
-        },
-        b"hello",
-    )
-    .await
-    .unwrap();
-    let mut content: MessageInput = "actual checkpoint history".to_owned().into();
-    content.attachments = Some(vec![AttachmentRef {
-        kind: AttachmentKind::Other,
-        name: "input.txt".into(),
-        mime_type: "text/plain".into(),
-        bytes: 5,
-        storage_ref: StorageRef::SessionFile {
-            session_id: "source".into(),
-            relative_path: "upload".into(),
-        },
-    }]);
-    let source = RootSourceMessage {
-        message: DeliveredMessage {
-            origin: None,
-            message_id: "message".into(),
-            content: content.clone(),
-            submitted_content_digest: content.content_digest().unwrap(),
-        },
-        unprepared_content: content.clone(),
-        submitted_placement: Placement::CurrentTurn,
-        disposition: MessageDisposition::TurnStarted,
-        submitted_intent: None,
-    };
-    let invocation = Invocation {
-        session_id: "source".into(),
-        turn_id: "turn".into(),
-        run_id: "run".into(),
-        invocation_id: "inv".into(),
-    };
-    log.append(
-        &EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    content,
-                    source_messages: vec![source],
-                    request_fingerprint: None,
-                },
-            },
-        ))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        handle.publish(input.clone()).await,
-        Err(StoreError::SessionBusy)
-    ));
-    assert!(handle.read_head().await.unwrap().is_none());
-    log.append(
-        &EventWrite::plain(RuntimeEvent::new(
-            invocation,
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Completed,
-            },
-        ))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    drop(log);
-    assert_eq!(
-        handle.publish(input.clone()).await.unwrap().state,
-        PublicationState::Interrupted
-    );
-    let mut next = input;
-    next.operation = Uuid::from_u128(9);
-    let head = published(&handle.publish(next).await.unwrap());
-    let checkout = handle.checkout_exact(head.revision).await.unwrap();
-    let mut staged = StagedBundle::read(tokio::fs::File::from_std(checkout.bundle))
-        .await
-        .unwrap();
-    staged.validate_history().await.unwrap();
-    assert_eq!(staged.artifact_count().await.unwrap(), 1);
-    staged.close().await.unwrap();
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn source_retirement_does_not_erase_checkpoint_or_original_receipt() {
-    use crate::sessions::{RemovalAuthority, RemoveFamilyResult};
-    let directory = tempfile::tempdir().unwrap();
-    let (store, handle, input) = fixture(directory.path()).await;
-    let value = handle.publish(input.clone()).await.unwrap();
-    let head = published(&value);
-    assert!(matches!(
-        store
-            .remove_session_family("source", 1, RemovalAuthority::Unmanaged)
-            .await
-            .unwrap(),
-        RemoveFamilyResult::Accepted(_)
-    ));
-    store.finish_session_retirement("source").await.unwrap();
-    store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
-    let handle = store.history_checkpoints("source", scope()).await.unwrap();
-    assert_eq!(handle.publish(input.clone()).await.unwrap(), value);
-    assert_eq!(
-        handle.checkout_exact(head.revision).await.unwrap().head,
-        head
-    );
-    let mut next = input;
-    next.operation = Uuid::from_u128(10);
-    assert!(matches!(
-        handle.publish(next).await,
-        Err(StoreError::SessionNotFound)
-    ));
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn concurrent_identical_requests_share_one_capture_and_receipt() {
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
-    let (first, second) =
-        tokio::join!(handle.publish(input.clone()), handle.publish(input.clone()));
+    let (first, second) = tokio::join!(
+        handle.publish(input.clone(), snapshot_file()),
+        handle.publish(input.clone(), snapshot_file())
+    );
     let first = first.unwrap();
     let second = second.unwrap();
     assert!(
@@ -483,7 +381,7 @@ async fn concurrent_identical_requests_share_one_capture_and_receipt() {
             assert_eq!(published(&result), head);
         }
     }
-    assert_eq!(handle.publish(input).await.unwrap(), value);
+    assert_eq!(handle.publish(input, snapshot_file()).await.unwrap(), value);
     store.close().await.unwrap();
 }
 
@@ -496,19 +394,26 @@ async fn incomplete_staging_is_interrupted_and_cleaned_without_another_capture()
     let log = handle.session.scoped().await.unwrap();
     journal::claim(&log, request.clone()).await.unwrap();
     let objects = Objects::open(store.owned_root().unwrap()).unwrap();
-    let mut partial = objects.create(&request, "bundle").unwrap();
-    partial.write_all(b"MAKA-SESSION\0\x02incomplete").unwrap();
+    let mut partial = objects.create(&request, "snapshot").unwrap();
+    partial
+        .write_all(b"incomplete opaque domain snapshot")
+        .unwrap();
     partial.sync_all().unwrap();
     drop(partial);
     drop(log);
     drop(objects);
     store.close().await.unwrap();
-    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     let receipt = handle.receipt(input.clone()).await.unwrap().unwrap();
     assert_eq!(receipt.state, PublicationState::Interrupted);
     assert!(!receipt.cleanup_pending);
-    assert_eq!(handle.publish(input).await.unwrap(), receipt);
+    assert_eq!(
+        handle.publish(input, snapshot_file()).await.unwrap(),
+        receipt
+    );
     assert!(handle.read_head().await.unwrap().is_none());
     store.close().await.unwrap();
 }
@@ -524,7 +429,10 @@ async fn cleanup_receipt_failure_still_returns_acknowledged_publication() {
             BEGIN SELECT RAISE(ABORT,'injected cleanup receipt failure'); END;")?;
         Ok(())
     }).await.unwrap();
-    let value = handle.publish(input.clone()).await.unwrap();
+    let value = handle
+        .publish(input.clone(), snapshot_file())
+        .await
+        .unwrap();
     let head = published(&value);
     assert!(value.cleanup_pending);
     assert!(
@@ -546,7 +454,7 @@ async fn cleanup_receipt_failure_still_returns_acknowledged_publication() {
         .await
         .unwrap();
     drop(log);
-    let retry = handle.publish(input).await.unwrap();
+    let retry = handle.publish(input, snapshot_file()).await.unwrap();
     assert_eq!(published(&retry), head);
     assert!(!retry.cleanup_pending);
     assert!(retry.cleanup_error.is_none());
@@ -564,7 +472,10 @@ async fn rejected_prepare_does_not_leave_a_capture_running_until_restart() {
             BEGIN SELECT RAISE(ABORT,'injected prepare failure'); END;")?;
         Ok(())
     }).await.unwrap();
-    let error = handle.publish(input.clone()).await.unwrap_err();
+    let error = handle
+        .publish(input.clone(), snapshot_file())
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("injected prepare failure"));
     assert!(handle.read_head().await.unwrap().is_none());
     let receipt = handle.receipt(input.clone()).await.unwrap().unwrap();
@@ -588,7 +499,10 @@ async fn rejected_prepare_does_not_leave_a_capture_running_until_restart() {
         })
         .await
         .unwrap();
-    assert_eq!(handle.publish(input).await.unwrap(), receipt);
+    assert_eq!(
+        handle.publish(input, snapshot_file()).await.unwrap(),
+        receipt
+    );
     assert_eq!(
         std::fs::read_dir(directory.path().join("root/history-checkpoints/staging"))
             .unwrap()
@@ -603,7 +517,7 @@ async fn nonregular_checkpoint_object_is_rejected_without_blocking_close() {
     use std::os::unix::fs::OpenOptionsExt;
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
-    let head = published(&handle.publish(input).await.unwrap());
+    let head = published(&handle.publish(input, snapshot_file()).await.unwrap());
     let checkout = handle.checkout_exact(head.revision).await.unwrap();
     let path = directory
         .path()
@@ -649,7 +563,7 @@ fn crash_child() {
         .unwrap();
     runtime.block_on(async {
         let (store, handle, request) = fixture(Path::new(&path)).await;
-        handle.publish(request).await.unwrap();
+        handle.publish(request, snapshot_file()).await.unwrap();
         store.close().await.unwrap();
     });
 }
@@ -701,13 +615,16 @@ async fn killed_writer_recovers_without_a_new_capture() {
         );
         child.kill().unwrap();
         child.wait().unwrap();
-        let store = RootStore::open(owner(directory.path())).await.unwrap();
+        let store = RootStore::open(owner(directory.path()), crate::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
         let handle = store.history_checkpoints("source", scope()).await.unwrap();
         let input = PublicationRequest {
             operation: Uuid::from_u128(3),
             fingerprint: "a".repeat(64),
             expected_revision: None,
-            confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+            confirmed_subtree_digest: crate::checkpoints::digest(&history().inventory),
+            history: history(),
             workspace: None,
         };
         let receipt = handle.receipt(input.clone()).await.unwrap().unwrap();
@@ -718,7 +635,10 @@ async fn killed_writer_recovers_without_a_new_capture() {
             assert_eq!(handle.read_head().await.unwrap(), Some(published(&receipt)));
         }
         assert!(!receipt.cleanup_pending);
-        assert_eq!(handle.publish(input).await.unwrap(), receipt);
+        assert_eq!(
+            handle.publish(input, snapshot_file()).await.unwrap(),
+            receipt
+        );
         assert_eq!(
             std::fs::read_dir(directory.path().join("root/history-checkpoints/staging"))
                 .unwrap()

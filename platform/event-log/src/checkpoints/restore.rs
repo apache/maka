@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Same-Root recovery at the captured, completed Session revision.
+//! Same-Root workspace recovery. History admission belongs to its canonical owner.
 use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,13 +26,13 @@ pub struct RestoreOperation {
     pub fingerprint: String,
     pub revision: Revision,
     pub parent: std::path::PathBuf,
-    pub parent_identity: maka_agent_facts::execution::DirectoryIdentity,
+    pub parent_identity: maka_sandbox::workspace::DirectoryIdentity,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedRestore {
     pub head: Head,
-    pub history_cut: String,
+    pub history: HistorySnapshot,
     pub workspace: WorkspaceSnapshot,
     pub path: std::path::PathBuf,
 }

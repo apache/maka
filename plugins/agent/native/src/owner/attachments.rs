@@ -28,16 +28,17 @@ use maka_agent_facts::attachment::AttachmentKind;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::attachment::sniff_binary_mime;
+use maka_agent_state::artifacts::{SessionScope, Upload};
 use maka_capabilities::call::ReadResource;
 use maka_capabilities::call::ResourceEncoding;
 use maka_host_runtime::application::Context;
 
 impl Owner {
-    pub async fn upload_attachment(
+    pub(crate) async fn upload_attachment(
         self: &Arc<Self>,
         input: UploadAttachment,
-        context: Context,
-    ) -> Result<AttachmentUploadResult, String> {
+        context: &Context,
+    ) -> Result<NativeMutation<AttachmentUploadResult>, String> {
         let operation = context.operation().ok_or("agent_mutation_required")?;
         let identity = self.operation_id(operation);
         let resource = context
@@ -45,36 +46,37 @@ impl Owner {
             .get("file")
             .ok_or("agent_attachment_required")?
             .clone();
-        let mut ticket = context
-            .scope()
-            .resources
-            .reserve()
-            .map_err(|e| e.to_string())?;
-        ticket.start();
-        let owner = self.clone();
-        // This original Scope owns the entire worker through the SQL commit. Losing
-        // the caller never reports physical cleanup before that worker finishes.
-        tokio::spawn(async move {
-            let result = async {
-                let runs = owner.runs.lock().await;
-                if runs.closing || context.scope().cancellation.is_cancelled() {
-                    return Ok(AttachmentUploadResult::Rejected {
-                        reason: AttachmentRejection::Closed,
-                    });
+        self.resource_work(context.scope(), move |owner, scope| {
+            Box::pin(async move {
+                let rejected = |reason| {
+                    Ok(NativeMutation::Returned(AttachmentUploadResult::Rejected {
+                        reason,
+                    }))
+                };
+                if owner.runs.state().await.closing
+                    || scope.cancellation.is_cancelled()
+                    || owner.stop.is_cancelled()
+                {
+                    return rejected(AttachmentRejection::Closed);
                 }
-                if owner.mutable_session(&input.session_id).await?.archived {
-                    return Ok(AttachmentUploadResult::Rejected {
-                        reason: AttachmentRejection::Archived,
-                    });
+                if owner
+                    .scoped_session(&scope, &input.session_id)
+                    .await?
+                    .archived
+                {
+                    return rejected(AttachmentRejection::Archived);
                 }
-                let cancellation = context.scope().cancellation.clone();
+                let session = input.session_id.clone();
+                let logical_id = identity.clone();
+                let cancellation = scope.cancellation.clone();
+                let stop = owner.stop.clone();
                 let material = tokio::task::spawn_blocking(move || {
-                    let bytes = read(&*resource, &input, &cancellation)?;
+                    let bytes = read(&*resource, &input, &cancellation, &stop)?;
                     let mime = mime(&input.name, &bytes);
                     let record = Artifact {
-                        id: upload_artifact_id(&input.session_id, &identity),
+                        id: upload_artifact_id(&input.session_id, &logical_id),
                         session_id: input.session_id,
-                        turn_id: format!("upload_{identity}"),
+                        turn_id: format!("upload_{logical_id}"),
                         created_at: now(),
                         name: normalize_name(&input.name),
                         kind: if mime.starts_with("image/") {
@@ -92,52 +94,52 @@ impl Owner {
                     Ok::<_, String>((record, bytes))
                 })
                 .await
-                .map_err(|_| "agent_attachment_worker_failed")?;
-                let Ok((record, payload)) = material else {
-                    return Ok(AttachmentUploadResult::Rejected {
-                        reason: AttachmentRejection::InvalidFile,
-                    });
-                };
-                if context.scope().cancellation.is_cancelled() {
-                    return Ok(AttachmentUploadResult::Rejected {
-                        reason: AttachmentRejection::Closed,
-                    });
+                .map_err(|error| format!("agent_attachment_worker_failed: {error}"))?;
+                if owner.stop.is_cancelled() || scope.cancellation.is_cancelled() {
+                    return rejected(AttachmentRejection::Closed);
                 }
-                let record = owner
-                    .store
-                    .session(&record.session_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .commit_artifact(record, payload)
-                    .await
-                    .map_err(|_| "agent_attachment_commit_failed")?;
-                Ok(AttachmentUploadResult::Uploaded {
-                    attachment: Attachment {
-                        session_id: record.session_id,
-                        id: record.id,
-                        name: record.name,
-                        mime_type: record.mime_type.expect("upload MIME"),
-                        bytes: record.size_bytes,
+                let Ok((record, bytes)) = material else {
+                    return rejected(AttachmentRejection::InvalidFile);
+                };
+                if owner.scoped_session(&scope, &session).await?.archived {
+                    return rejected(AttachmentRejection::Archived);
+                }
+                let attachment = Attachment {
+                    session_id: record.session_id.clone(),
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                    mime_type: record.mime_type.clone().expect("upload MIME"),
+                    bytes: record.size_bytes,
+                };
+                let upload = Upload::new(
+                    SessionScope {
+                        owner: owner.run_owner(),
+                        session,
                     },
+                    identity.clone(),
+                    identity,
+                    record,
+                    bytes,
+                );
+                Ok(NativeMutation::Commit {
+                    value: AttachmentUploadResult::Uploaded { attachment },
+                    change: owner.durable.artifacts().prepare_upload(upload),
                 })
-            }
-            .await;
-            drop(context);
-            ticket.complete(Ok(()));
-            result
+            })
         })
         .await
-        .map_err(|_| "agent_attachment_worker_failed")?
     }
 
     pub(super) async fn attachment_refs(
         &self,
         session: &str,
         ids: Vec<String>,
+        scope: &maka_capabilities::call::Scope,
     ) -> Result<Option<Vec<AttachmentRef>>, String> {
         if ids.is_empty() {
             return Ok(None);
         }
+        self.scoped_session(scope, session).await?;
         let mut seen = std::collections::BTreeSet::new();
         let mut attachments = Vec::with_capacity(ids.len());
         for id in ids {
@@ -145,14 +147,18 @@ impl Owner {
                 return Err("agent_attachments_invalid".into());
             }
             let record = self
-                .store
-                .session(session)
+                .durable
+                .artifacts()
+                .get(
+                    SessionScope {
+                        owner: self.run_owner(),
+                        session: session.into(),
+                    },
+                    id.clone(),
+                )
                 .await
                 .map_err(|error| error.to_string())?
-                .get_artifact(session, &id)
-                .await
-                .map_err(|_| "agent_attachment_unavailable")?
-                .record
+                .map(|record| record.artifact)
                 .filter(|record| {
                     record.source == ArtifactSource::UserUpload && record.session_id == session
                 })
@@ -183,6 +189,7 @@ fn read(
     resource: &dyn ReadResource,
     input: &UploadAttachment,
     cancellation: &CancellationToken,
+    stop: &CancellationToken,
 ) -> Result<Vec<u8>, String> {
     if resource.resource_type() != maka_plugin_core::contract::binary_resource_type()
         || resource.encoding() != ResourceEncoding::Bytes
@@ -194,7 +201,7 @@ fn read(
     }
     let mut bytes = Vec::with_capacity(input.bytes);
     for offset in (0..input.bytes).step_by(64 * 1024) {
-        if cancellation.is_cancelled() {
+        if cancellation.is_cancelled() || stop.is_cancelled() {
             return Err("agent_attachment_cancelled".into());
         }
         let end = (offset + 64 * 1024).min(input.bytes);
@@ -228,5 +235,51 @@ fn mime(name: &str, bytes: &[u8]) -> &'static str {
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         _ if text => "text/plain",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_capabilities::call::immutable_bytes;
+
+    #[test]
+    fn selected_resource_keeps_all_bytes_across_transport_quanta_and_checks_digest() {
+        let bytes = "附件\n".repeat(24 * 1024).into_bytes();
+        let resource = immutable_bytes("notes.md".into(), bytes.clone());
+        let mut input = UploadAttachment {
+            session_id: "session".into(),
+            name: "notes.md".into(),
+            bytes: bytes.len(),
+            digest: content_digest(&bytes),
+        };
+        let cancellation = CancellationToken::new();
+        let stop = CancellationToken::new();
+        assert_eq!(
+            read(&*resource, &input, &cancellation, &stop).unwrap(),
+            bytes
+        );
+        input.digest = content_digest(b"different");
+        assert_eq!(
+            read(&*resource, &input, &cancellation, &stop).unwrap_err(),
+            "agent_attachment_digest_mismatch"
+        );
+    }
+
+    #[test]
+    fn owner_stop_interrupts_selected_resource_read() {
+        let resource = immutable_bytes("notes.md".into(), b"original bytes".to_vec());
+        let input = UploadAttachment {
+            session_id: "session".into(),
+            name: "notes.md".into(),
+            bytes: resource.bytes(),
+            digest: content_digest(b"original bytes"),
+        };
+        let stop = CancellationToken::new();
+        stop.cancel();
+        assert_eq!(
+            read(&*resource, &input, &CancellationToken::new(), &stop).unwrap_err(),
+            "agent_attachment_cancelled"
+        );
     }
 }

@@ -64,6 +64,13 @@ struct Exchange {
     status: u16,
 }
 impl Transport for Exchange {
+    fn send_text(
+        &self,
+        socket: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
+        chunks: maka_agent_ports::model::TextStream,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
+        Box::pin(async move { socket.send_text(chunks).await })
+    }
     fn identity(&self) -> u64 {
         1
     }

@@ -72,7 +72,7 @@ impl MessageSource for Messages {
     fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
         Box::pin(async move {
             let base = self.base.prefix_identity(messages).await?;
-            crate::runner::digest(&(base, &self.identity)).map_err(std::io::Error::other)
+            crate::digest(&(base, &self.identity)).map_err(std::io::Error::other)
         })
     }
 }

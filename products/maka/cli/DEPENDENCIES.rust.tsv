@@ -582,6 +582,7 @@ maka-agent-engine@0.2.0		X
 maka-agent-facts@0.2.0		X																
 maka-agent-native@0.2.0		X																
 maka-agent-ports@0.2.0		X																
+maka-agent-state@0.2.0		X																
 maka-app-client@0.2.0		X																
 maka-assistant@0.2.0		X																
 maka-capabilities@0.2.0		X																
@@ -598,7 +599,6 @@ maka-external-agent@0.2.0		X
 maka-files-native@0.2.0		X																
 maka-fs-tools@0.2.0		X																
 maka-goal@0.2.0		X																
-maka-graph@0.2.0		X																
 maka-host-js@0.2.0		X																
 maka-host-runtime@0.2.0		X																
 maka-interactions-api@0.2.0		X																

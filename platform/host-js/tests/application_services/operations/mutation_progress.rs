@@ -20,10 +20,10 @@
 use super::*;
 use maka_host_runtime::application::{Binding, Client};
 
-type Callback = dyn Fn(Value, Context) -> BoxFuture<'static, Result<Value>> + Send + Sync;
+type Callback = dyn Fn(Value, Context) -> BoxFuture<'static, HandlerResult> + Send + Sync;
 struct ProgressHandler(Arc<Callback>);
 impl Handler for ProgressHandler {
-    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
+    fn call(&self, _: String, input: Value, context: Context) -> BoxFuture<'static, HandlerResult> {
         (self.0)(input, context)
     }
 }
@@ -224,7 +224,7 @@ async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling
                 assert!(context.emit(json!(2)).await.is_err());
                 assert!(!context.scope().cancellation.is_cancelled());
                 done.add_permits(1);
-                Ok(input)
+                Ok(input.into())
             })
         })));
         let (app, client, binding) =
@@ -265,7 +265,9 @@ async fn dropping_mutation_progress_closes_demand_without_cancelling_or_settling
         assert_eq!(
             actual.outcome,
             OperationOutcome::Returned {
-                value: json!("actual effect")
+                result: OperationResult::Success {
+                    value: json!("actual effect")
+                }
             }
         );
         assert_eq!(actual.cleanup, OperationCleanup::Confirmed);

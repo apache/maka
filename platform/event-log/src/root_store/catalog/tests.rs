@@ -34,7 +34,9 @@ async fn fixture() -> (tempfile::TempDir, RootStore) {
         )
         .unwrap(),
     );
-    let root = RootStore::open(owner).await.unwrap();
+    let root = RootStore::open(owner, crate::ROOT_MIGRATIONS)
+        .await
+        .unwrap();
     (dir, root)
 }
 fn filter() -> CatalogFilter {
@@ -42,7 +44,6 @@ fn filter() -> CatalogFilter {
         roots_only: false,
         archived_only: false,
         include_archived: true,
-        pending_only: false,
     }
 }
 fn session_ids() -> Vec<String> {
@@ -81,22 +82,8 @@ async fn keyset_paging_preserves_forward_reverse_and_resets_missing_anchor() {
             .await
             .unwrap();
     }
-    for (n, id) in [ids.first().unwrap(), ids.last().unwrap()]
-        .into_iter()
-        .enumerate()
-    {
-        let request=serde_json::from_value(json!({"sessionId":id,"turnId":"turn","runId":"run","requestId":format!("request-{n}"),"createdAt":2,
-            "request":{"kind":"form","toolUseId":"tool","message":"Answer","requester":{"name":"Tool"},"fields":[]},"outcome":null})).unwrap();
-        root.session(id)
-            .await
-            .unwrap()
-            .establish_interaction(&request)
-            .await
-            .unwrap();
-    }
     let first = root.list_sessions::<Value>(None, None, 5).await.unwrap();
     assert_eq!(page_ids(&first), ids[..5]);
-    assert_eq!(first.pending_session_count, 2);
     assert!(first.previous_cursor.is_none());
     let second = root
         .list_sessions::<Value>(Some(&first.revision), first.next_cursor.as_deref(), 5)
@@ -137,14 +124,11 @@ async fn keyset_paging_preserves_forward_reverse_and_resets_missing_anchor() {
         .unwrap();
     assert_eq!(page_ids(&missing), ids[..5]);
     assert!(missing.previous_cursor.is_none());
-    assert_eq!(missing.pending_session_count, 2);
     root.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn revision_binds_all_data_counters_control_visibility_and_query_without_turn_control_writes()
-{
-    use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+async fn revision_binds_root_counter_metadata_visibility_and_query() {
     let (_dir, root) = fixture().await;
     let ids = session_ids();
     for id in &ids {
@@ -165,29 +149,13 @@ async fn revision_binds_all_data_counters_control_visibility_and_query_without_t
     ));
 
     let before = root.catalog_version().await.unwrap();
-    let session = root.session(&ids[0]).await.unwrap();
-    session
-        .append(
-            &EventWrite::plain(RuntimeEvent::new(
-                Invocation {
-                    session_id: ids[0].clone(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
-                },
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        content: "message".into(),
-                        source_messages: Vec::new(),
-                        request_fingerprint: None,
-                    },
-                },
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
+    let record = root.get_session::<Value>(&ids[0]).await.unwrap().unwrap();
+    root.update_session_metadata(&ids[0], record.revision, |value: &mut Value| {
+        value["title"] = json!("updated canonical Root metadata");
+        Ok(())
+    })
+    .await
+    .unwrap();
     let after = root.catalog_version().await.unwrap();
     assert_ne!(before.revision, after.revision);
     let page = root.list_sessions::<Value>(None, None, 1).await.unwrap();
@@ -222,7 +190,7 @@ async fn pinned_sessions_lead_cross_session_pages_and_unpin_invalidates_cursors(
             .await
             .unwrap();
     }
-    let mut recent = ids.chunks(2).rev().flatten().cloned().collect::<Vec<_>>();
+    let recent = ids.chunks(2).rev().flatten().cloned().collect::<Vec<_>>();
     let pinned = ids.first().unwrap();
     let old = root.list_sessions::<Value>(None, None, 5).await.unwrap();
     let record = root.get_session::<Value>(pinned).await.unwrap().unwrap();
@@ -288,40 +256,19 @@ async fn pinned_sessions_lead_cross_session_pages_and_unpin_invalidates_cursors(
         page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
         recent[..5]
     );
-    let active = ids[1].clone();
-    let session = root.session(&active).await.unwrap();
-    let mut event = maka_agent_facts::event::RuntimeEvent::new(
-        maka_agent_facts::event::Invocation {
-            session_id: active.clone(),
-            turn_id: "activity-turn".into(),
-            run_id: "activity-run".into(),
-            invocation_id: "activity-invocation".into(),
-        },
-        maka_agent_facts::event::Fact::InvocationOpened {
-            configuration: None,
-            input: maka_agent_facts::input::InvocationInput::Message {
-                content: "new activity".into(),
-                request_fingerprint: None,
-                source_messages: Vec::new(),
-            },
-        },
-    );
-    event.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1000);
-    session
-        .append(&maka_agent_facts::event::EventWrite::plain(event).unwrap())
-        .await
-        .unwrap();
-    recent.retain(|id| id != &active);
-    recent.insert(0, active);
-    assert_eq!(
-        page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
-        recent[..5]
+    assert!(
+        matches!(
+            root.list_sessions::<Value>(Some(&anchor.revision), Some(pinned), 5)
+                .await,
+            Err(StoreError::RevisionConflict { .. })
+        ),
+        "unpinning invalidates the original pinned catalog snapshot"
     );
     root.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn root_sidebar_counts_pending_children_without_listing_them() {
+async fn root_sidebar_filters_owned_visible_roots_and_archived_children() {
     use crate::sessions::CatalogSelection;
     let (_dir, root) = fixture().await;
     for (id, parent, archived) in [
@@ -334,18 +281,6 @@ async fn root_sidebar_counts_pending_children_without_listing_them() {
         root.create_session(id, id, &json!({"title":id,"parentSessionId":parent}), 1)
             .await
             .unwrap();
-        if parent.is_some() {
-            let request = serde_json::from_value(json!({
-                "sessionId":id,"turnId":"turn","runId":"run","requestId":format!("request-{id}"),"createdAt":2,
-                "request":{"kind":"form","toolUseId":"tool","message":"Answer","requester":{"name":"Tool"},"fields":[]},"outcome":null
-            })).unwrap();
-            root.session(id)
-                .await
-                .unwrap()
-                .establish_interaction(&request)
-                .await
-                .unwrap();
-        }
         if archived {
             root.session(id)
                 .await
@@ -371,36 +306,37 @@ async fn root_sidebar_counts_pending_children_without_listing_them() {
         .await
         .unwrap();
     assert_eq!(page_ids(&page), ["owned_root"]);
-    assert_eq!(page.pending_session_count, 1);
-    let inbox = CatalogFilter {
+    let children_and_roots = CatalogFilter {
         roots_only: false,
-        pending_only: true,
         ..sidebar
     };
     let page = root
-        .scoped_sessions::<Value>(scope(""), None, SessionPosition::Start, inbox)
+        .scoped_sessions::<Value>(scope(""), None, SessionPosition::Start, children_and_roots)
         .await
         .unwrap();
-    assert_eq!(page_ids(&page), ["owned_child"]);
-    assert_eq!(page.pending_session_count, 1);
-    for (title, count) in [("owned_root", 0), ("owned_child", 1)] {
+    assert_eq!(page_ids(&page), ["owned_child", "owned_root"]);
+    for (title, expected) in [
+        ("owned_root", vec!["owned_root"]),
+        ("owned_child", vec![]),
+        ("missing", vec![]),
+    ] {
         let page = root
             .scoped_sessions::<Value>(scope(title), None, SessionPosition::Start, sidebar)
             .await
             .unwrap();
-        assert_eq!(page.pending_session_count, count);
-        let pending = root
-            .scoped_sessions::<Value>(scope(title), None, SessionPosition::Start, inbox)
-            .await
-            .unwrap();
-        let expected = if title == "owned_child" {
-            vec!["owned_child".to_owned()]
-        } else {
-            vec![]
-        };
-        assert_eq!(page_ids(&pending), expected);
+        assert_eq!(page_ids(&page), expected);
     }
-    root.drain().await;
+    let archived = CatalogFilter {
+        roots_only: false,
+        include_archived: true,
+        archived_only: true,
+    };
+    let page = root
+        .scoped_sessions::<Value>(scope(""), None, SessionPosition::Start, archived)
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&page), ["owned_archived"]);
+    root.close().await.unwrap();
 }
 
 #[tokio::test]

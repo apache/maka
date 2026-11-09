@@ -1235,49 +1235,22 @@ impl ByteCursor for OwnedCursor {
 mod tests {
     use super::*;
 
+    use crate::{history::test_support as canonical, preparation::PreparationIo};
     use maka_agent_facts::model::prompt::{AssistantPart, Message};
     use maka_capabilities::model_preparation::PreparationPolicy;
-    use maka_event_log::{
-        context::semantic::SemanticSelection,
-        root::{RootNamespaces, RootOwner},
-        root_store::{RootStore, SessionExecutionLease},
-    };
+    use maka_event_log::root_store::{RootStore, SessionWorkLease, WorkEffects};
     use std::path::Path;
 
-    async fn arena(path: &Path) -> (RootStore, CaptureArena, SessionExecutionLease) {
-        let root = RootStore::open(Arc::new(
-            RootOwner::create(
-                &path.join("root"),
-                &RootNamespaces {
-                    ownership: path.join("owners"),
-                    control: path.join("control"),
-                },
-            )
-            .unwrap(),
-        ))
-        .await
-        .unwrap();
-        let session = root
-            .create_session("session", "create", &serde_json::json!({}), 1)
+    async fn arena(path: &Path) -> (RootStore, CaptureArena, SessionWorkLease, WorkEffects) {
+        let root = canonical::open(path, false).await;
+        root.create_session("session", "create", &serde_json::json!({}), 1)
             .await
             .unwrap();
-        let execution = session.execution_scope(None).await.unwrap().accept();
-        let captured = execution
-            .store()
-            .capture_source(SemanticSelection {
-                session: "session".into(),
-                lineage: None,
-                after: 0,
-                through: 0,
-                before: 1,
-                captured_through: 0,
-                replay: None,
-                prior_unknown: false,
-            })
-            .await
-            .unwrap();
-        let arena = CaptureArena::new(captured, None).await.unwrap();
-        (root, arena, execution)
+        let (log, work, effects) = canonical::work(&root).await;
+        let io = PreparationIo::new(&log).unwrap();
+        let arena = CaptureArena::new(io, None).await.unwrap();
+        drop(log);
+        (root, arena, work, effects)
     }
     fn resources(bytes: usize) -> ModelPreparationResources {
         ModelPreparationResources::new(PreparationPolicy {
@@ -1324,7 +1297,7 @@ mod tests {
         };
         use sha2::{Digest, Sha256};
         let directory = tempfile::tempdir().unwrap();
-        let (root, arena, execution) = arena(directory.path()).await;
+        let (root, arena, work, effects) = arena(directory.path()).await;
         let logical: Arc<dyn MessageSource> = Arc::new(generated::GeneratedMessages::new(&[
             Message::User {
                 content: vec![
@@ -1453,13 +1426,14 @@ mod tests {
             );
             assert_eq!(citations.document(2), None);
         }
-        execution.finish();
+        effects.settle().await.unwrap();
+        work.finish();
         root.shutdown().await.unwrap();
     }
     #[tokio::test]
     async fn backed_zero_width_items_preserve_logical_offsets_and_midmessage_seek() {
         let directory = tempfile::tempdir().unwrap();
-        let (root, arena, execution) = arena(directory.path()).await;
+        let (root, arena, work, effects) = arena(directory.path()).await;
         for responses in [true, false] {
             let empty_content = if responses {
                 vec![AssistantPart::Reasoning {
@@ -1664,7 +1638,8 @@ mod tests {
         }
         arena.close().await.unwrap();
         drop(arena);
-        execution.finish();
+        effects.settle().await.unwrap();
+        work.finish();
         root.shutdown().await.unwrap();
     }
 }
