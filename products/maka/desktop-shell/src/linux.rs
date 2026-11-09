@@ -30,9 +30,9 @@ use maka_workbench::{
     reload::{Request, UiReload},
 };
 use nsh_engine::{EngineConfig, JsonValue};
-use nsh_platform_linux::{AppOptions, AppView, gtk4 as gtk};
+use nsh_platform_linux::{AppOptions, AppView, gtk4 as gtk, on_tray_lost, tray_registered};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
@@ -42,8 +42,6 @@ use tokio::{runtime::Handle, sync::watch};
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
 const STEADY: Duration = Duration::from_secs(60);
-/// The panel service that shows `nsh/desktop`'s tray icon.
-const TRAY_WATCHER: &str = "org.kde.StatusNotifierWatcher";
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
@@ -114,10 +112,10 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
             view: view.clone(),
             detach: closing.clone(),
         });
-        let tray = watch_tray(window.downgrade());
+        restore_when_tray_lost(window.downgrade());
         let closing = quit.clone();
         window.connect_close_request(move |window| {
-            if tray.get() {
+            if tray_registered() {
                 closing.placement.save(window);
                 window.set_visible(false);
             } else {
@@ -168,26 +166,15 @@ impl Quit {
     }
 }
 
-/// Whether a panel shows the tray now. Without one a hidden window could not
-/// come back, so a panel leaving also brings the window back.
-fn watch_tray(window: glib::WeakRef<gtk::ApplicationWindow>) -> Rc<Cell<bool>> {
-    let tray = Rc::new(Cell::new(false));
-    let (appeared, vanished) = (tray.clone(), tray.clone());
-    gio::bus_watch_name(
-        gio::BusType::Session,
-        TRAY_WATCHER,
-        gio::BusNameWatcherFlags::NONE,
-        move |_, _, _| appeared.set(true),
-        move |_, _| {
-            vanished.set(false);
-            if let Some(window) = window.upgrade()
-                && !window.is_visible()
-            {
-                window.present();
-            }
-        },
-    );
-    tray
+/// Without its icon a hidden window could not come back.
+fn restore_when_tray_lost(window: glib::WeakRef<gtk::ApplicationWindow>) {
+    on_tray_lost(move || {
+        if let Some(window) = window.upgrade()
+            && !window.is_visible()
+        {
+            window.present();
+        }
+    });
 }
 
 fn carry_out(
