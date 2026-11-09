@@ -53,17 +53,29 @@ function App() {
 mount(App);
 "#;
 
+#[track_caller]
 fn pump_until(surface: &TerminalSurface, mut done: impl FnMut() -> bool) {
+    pump_until_observed(surface, (), |_| done());
+}
+
+#[track_caller]
+fn pump_until_observed<T: std::fmt::Debug>(
+    surface: &TerminalSurface,
+    mut observed: T,
+    mut done: impl FnMut(&mut T) -> bool,
+) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         surface.pump_with_draw(false);
         assert_eq!(surface.take_error(), None);
-        if done() {
+        if done(&mut observed) {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "native app did not settle before deadline"
+            "native app did not settle before deadline: observed={observed:?}, editor={:?}, target={:?}",
+            surface.editor_text(),
+            surface.text_input_target()
         );
         std::thread::yield_now();
     }
@@ -80,9 +92,13 @@ fn key(surface: &TerminalSurface, name: &str) {
         .unwrap();
     surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
 }
+#[track_caller]
 fn clipboard(surface: &TerminalSurface, expected: &str) {
-    pump_until(surface, || {
-        surface.take_clipboard_write().as_deref() == Some(expected)
+    pump_until_observed(surface, (expected, None::<String>), |(expected, last)| {
+        if let Some(value) = surface.take_clipboard_write() {
+            *last = Some(value);
+        }
+        last.as_deref() == Some(*expected)
     });
 }
 
