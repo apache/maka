@@ -42,7 +42,8 @@ nsh init my-app --template rust
 | `README.md` | How to run, test and package the app, and how to add a TSX entry later |
 | `.gitignore` | Ignores `.nsh/` and `target/` |
 
-Rust development needs a Rust toolchain ([rustup](https://rustup.rs)); the `nsh` commands build the app's runners
+Rust development needs a Rust toolchain ([rustup](https://rustup.rs), and we recommend
+[huacnlee/cargo](https://github.com/huacnlee/cargo) for building); the `nsh` commands build the app's runners
 from NSH's crates on crates.io, at the CLI's version.
 
 ### In TSX
@@ -465,7 +466,7 @@ checks what it shows (`nsh test my-app`). A Rust app's opens its root (`open("."
 - [JSX and components](./jsx-and-components.md) and [Reactivity](./reactivity.md): components and signals, in Rust and
   TSX.
 - [Platforms](./platforms.md): what each platform supports, and its own page ([iOS](./ios.md),
-  [Android](./android.md), [macOS](./macos.md), [Windows](./windows.md), [Linux](./linux.md)).
+  [Android](./android.md), [macOS](./macos.md), [Windows](./windows.md), [Linux](./linux.md), [Web](./web.md), [TUI](./tui.md)).
 - [Signed packages](./signed-packages.md) and [Sandbox and capabilities](./sandbox-and-capabilities.md): delivery and
   what modules may do.
 - [Project structure](./project-structure.md): what goes in `nsh.json`, assets, files.

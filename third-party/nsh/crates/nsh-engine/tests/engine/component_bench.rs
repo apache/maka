@@ -219,7 +219,6 @@ impl App {
                 items.extend(batch.items);
             }
             self.core.take_list_binds(&mut self.binds);
-            self.core.take_paced_list_binds(usize::MAX, &mut self.binds);
             self.native += t.elapsed();
             if self.binds.is_empty() {
                 break;

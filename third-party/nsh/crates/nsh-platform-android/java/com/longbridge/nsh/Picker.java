@@ -32,6 +32,10 @@ import java.util.List;
  * so the embedding app forwards nothing. The picked images are read and
  * prepared (scaled down, HEIC as JPEG; {@code nsh_core::picker}) on a thread
  * of their own, then go to the engine at once ({@link Native#picked}).
+ *
+ * <p>{@code Picker.pickFiles}: the system's document picker ({@code
+ * ACTION_OPEN_DOCUMENT}), which needs no permission either. The files are read
+ * as they are.
  */
 final class Picker {
     private static final String TAG = "nsh";
@@ -46,6 +50,12 @@ final class Picker {
         /** Negative: none given. */
         float quality;
         boolean current;
+        /** A pick of files of any type ({@code nsh_core::picker::FilePickRequest}). */
+        boolean files;
+        /** The extensions a pick of files offers; none: any file. */
+        String[] extensions = new String[0];
+        /** The largest file a pick of files reads. */
+        int maxBytes;
         /** The view's engine, when the pick ends. */
         NshView view;
     }
@@ -62,7 +72,9 @@ final class Picker {
             return;
         }
         Intent intent;
-        if (photoPicker()) {
+        if (request.files) {
+            intent = documents(request);
+        } else if (photoPicker()) {
             intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
             intent.setType("image/*");
             if (request.limit > 1) {
@@ -82,6 +94,26 @@ final class Picker {
             manager.beginTransaction().add(results, FRAGMENT).commitNow();
         }
         results.start(intent, request);
+    }
+
+    /**
+     * The document picker for a pick of files. The system filters by media
+     * type: an extension it knows no type of makes the picker offer any file
+     * rather than hide the ones asked for.
+     */
+    private static Intent documents(Request request) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, request.limit > 1);
+        List<String> types = new ArrayList<>();
+        for (String extension : request.extensions) {
+            String type = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            if (type == null) return intent;
+            if (!types.contains(type)) types.add(type);
+        }
+        if (!types.isEmpty()) intent.putExtra(Intent.EXTRA_MIME_TYPES, types.toArray(new String[0]));
+        return intent;
     }
 
     /** Whether the system's Photo Picker is there. */
@@ -138,7 +170,7 @@ final class Picker {
             if (uris.size() > request.limit) uris = uris.subList(0, request.limit);
             ContentResolver resolver = getActivity().getContentResolver();
             List<Uri> picked = uris;
-            Log.i(TAG, "picked " + uris.size() + " image(s)");
+            Log.i(TAG, "picked " + uris.size() + (request.files ? " file(s)" : " image(s)"));
             new Thread(() -> answer(request, read(resolver, picked, request)), "nsh-picker").start();
         }
     }
@@ -156,7 +188,7 @@ final class Picker {
         List<Picked> files = new ArrayList<>();
         for (Uri uri : uris) {
             try {
-                Picked file = prepare(resolver, uri, request);
+                Picked file = request.files ? readFile(resolver, uri, request) : prepare(resolver, uri, request);
                 if (file != null) files.add(file);
             } catch (Exception | OutOfMemoryError e) {
                 Log.w(TAG, "cannot read a picked image", e);
@@ -181,6 +213,27 @@ final class Picker {
         }
         long handle = request.view.handle;
         if (handle != 0) Native.picked(handle, request.id, names, types, data, sizes);
+    }
+
+    /** A picked file as it is; {@code null} when it is larger than the request reads. */
+    private static Picked readFile(ContentResolver resolver, Uri uri, Request request) throws Exception {
+        long length = -1;
+        try (android.content.res.AssetFileDescriptor fd = resolver.openAssetFileDescriptor(uri, "r")) {
+            if (fd != null) length = fd.getLength();
+        } catch (Exception e) {
+            // Unknown length: told after reading.
+        }
+        byte[] bytes = length > request.maxBytes ? null : readAll(resolver, uri);
+        if (bytes == null || bytes.length > request.maxBytes) {
+            Log.w(TAG, "a picked file is left out: larger than " + request.maxBytes + " bytes");
+            return null;
+        }
+        Picked file = new Picked();
+        file.name = displayName(resolver, uri);
+        String type = resolver.getType(uri);
+        file.type = type != null ? type.toLowerCase(java.util.Locale.ROOT) : "";
+        file.bytes = bytes;
+        return file;
     }
 
     private static Picked prepare(ContentResolver resolver, Uri uri, Request request) throws Exception {

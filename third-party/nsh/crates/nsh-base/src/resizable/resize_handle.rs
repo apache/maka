@@ -119,9 +119,13 @@ pub(crate) fn band(
     state: Signal<ResizeHandleState>,
     drag: impl Fn(Drag) + 'static,
 ) -> View {
-    let extent = match edge {
-        Some(_) => HANDLE_SIZE + HANDLE_PADDING,
-        None => HANDLE_SIZE + HANDLE_PADDING * 2.0,
+    // In a terminal the band is one Cell across, the line between the
+    // panes it resizes (`terminal_line`).
+    let cell = terminal_cell();
+    let extent = match (cell, edge) {
+        (Some(cell), _) => cell.along(axis),
+        (None, Some(_)) => HANDLE_SIZE + HANDLE_PADDING,
+        (None, None) => HANDLE_SIZE + HANDLE_PADDING * 2.0,
     };
     let drag = std::rc::Rc::new(drag);
     let offset = move |e: &ResponderEvent| e.gesture.delta.along(axis);
@@ -152,7 +156,12 @@ pub(crate) fn band(
             Some(HandleEdge::Leading) => v.justify_start(),
             Some(HandleEdge::Trailing) => v.justify_end(),
         })
-        .style_when(disabled, |s| s.cursor(Cursor::Default))
+        // A terminal shows no pointer's shape, and its layout knows a
+        // divider by its cursor: a disabled band stays one Cell there.
+        .style_when(
+            move || disabled.get() && cell.is_none(),
+            |s| s.cursor(Cursor::Default),
+        )
         .when(!is_desktop(), |v| {
             let slop = match axis {
                 Axis::Horizontal => Edges {
@@ -185,6 +194,10 @@ pub(crate) fn band(
         }))
         // A scroll view around it does not take the drag over.
         .keep_touches(true);
+    let band = match cell {
+        Some(cell) => terminal_band(band, axis, cell, disabled, state, drag.clone()),
+        None => band,
+    };
     let started = drag.clone();
     let moved = drag;
     band.on_responder_grant(move |_: &ResponderEvent| {
@@ -203,6 +216,127 @@ pub(crate) fn band(
     .on_responder_release(finish.clone())
     .on_responder_terminate(finish)
 }
+
+/// One Cell of the terminal's grid, when the app runs in a terminal.
+pub(crate) fn terminal_cell() -> Option<Size<Points>> {
+    crate::terminal::is_terminal().then(|| {
+        let metrics = text_metrics("", "0");
+        Size::new(metrics.width, metrics.height)
+    })
+}
+
+/// A step of the keyboard on a focused band in a terminal: one Cell back or
+/// forward along its axis.
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Back,
+    Forward,
+}
+
+/// The keys of a focused band in a terminal: the arrows along its axis.
+const HORIZONTAL_KEYS: &[(&str, bool, Step)] =
+    &[("left", true, Step::Back), ("right", true, Step::Forward)];
+const VERTICAL_KEYS: &[(&str, bool, Step)] =
+    &[("up", true, Step::Back), ("down", true, Step::Forward)];
+
+/// A band's terminal form: the line between the panes it resizes, `│` down
+/// a horizontal handle's Cell column and `─` along a vertical one's row
+/// ([`crate::terminal::DIVIDER_VERTICAL`],
+/// [`crate::terminal::DIVIDER_HORIZONTAL`]), muted, in the accent while the
+/// pointer is over it, has it, or the keyboard focus is on it. It is a stop
+/// of the keyboard focus, and its arrows move it a Cell at a time, as one
+/// drag each. One kept to the pointer ([`PointerOnly`]: a table's column
+/// handles) is blank until the pointer is on it, muted then, so columns
+/// stand apart by their spaces, and in the accent while dragged.
+fn terminal_band(
+    band: View,
+    axis: Axis,
+    cell: Size<Points>,
+    disabled: Prop<bool>,
+    state: Signal<ResizeHandleState>,
+    drag: std::rc::Rc<dyn Fn(Drag)>,
+) -> View {
+    use crate::terminal::{DIVIDER_HORIZONTAL, DIVIDER_VERTICAL, Tone, columns_in, tone_color};
+    let focused = signal(false);
+    let cells = signal(0usize);
+    let step = move |step: Step| {
+        if disabled.get_untracked() {
+            return;
+        }
+        let by = match step {
+            Step::Back => -cell.along(axis),
+            Step::Forward => cell.along(axis),
+        };
+        drag(Drag::Start);
+        drag(Drag::Move(by));
+        drag(Drag::End(by));
+    };
+    let keys = match axis {
+        Axis::Horizontal => HORIZONTAL_KEYS,
+        Axis::Vertical => VERTICAL_KEYS,
+    };
+    match axis {
+        Axis::Horizontal => crate::keys::bind_while_directed(move || focused.get(), keys, step),
+        Axis::Vertical => crate::keys::bind_while(move || focused.get(), keys, step),
+    }
+    let pointer_only = use_context::<PointerOnly>().is_some();
+    let line = text(move || {
+        let n = cells.get();
+        let (vertical, horizontal) = match pointer_only && state.get() == ResizeHandleState::Idle {
+            true => (' ', ' '),
+            false => (DIVIDER_VERTICAL, DIVIDER_HORIZONTAL),
+        };
+        SharedString::from(match axis {
+            Axis::Horizontal => vec![vertical.to_string(); n].join("\n"),
+            Axis::Vertical => std::iter::repeat_n(horizontal, n).collect::<String>(),
+        })
+    })
+    .text_overflow(nsh_core::EllipsizeMode::Clip)
+    .style_with(move |s| {
+        let lit = match pointer_only {
+            // Shown only under the pointer: muted there, lit while held.
+            true => matches!(
+                state.get(),
+                ResizeHandleState::Pressed | ResizeHandleState::Dragging
+            ),
+            false => focused.get() || state.get() != ResizeHandleState::Idle,
+        };
+        s.text_color(tone_color(if lit && !disabled.get() {
+            Tone::Accent
+        } else {
+            Tone::Muted
+        }))
+    });
+    band.child(
+        view()
+            .flex_1()
+            .pointer_events(PointerEvents::None)
+            .on_layout(move |frame: &Bounds<Points>| {
+                let n = match axis {
+                    Axis::Horizontal => columns_in(frame.size.height, cell.height),
+                    Axis::Vertical => columns_in(frame.size.width, cell.width),
+                };
+                if cells.get_untracked() != n {
+                    cells.set(n);
+                }
+            })
+            .child(line),
+    )
+    // A press makes it a stop of the keyboard focus (Tab), unless its
+    // owner keeps it to the pointer ([`PointerOnly`]); the drag is the
+    // responder's.
+    .on_press(|| {})
+    .focusable(use_context::<PointerOnly>().is_none())
+    .on_focus(move || focused.set(true))
+    .on_blur(move || focused.set(false))
+}
+
+/// Provided around a [`ResizeHandle`], it keeps the handle to the pointer:
+/// no stop of Tab in a terminal either (a table's column handles, which
+/// would otherwise put a stop per column after the table, as
+/// `gpui-component`'s table resizes with the mouse only).
+#[derive(Clone, Copy)]
+pub(crate) struct PointerOnly;
 
 /// The props of [`ResizeHandle`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -295,8 +429,8 @@ pub fn ResizeHandle(props: ResizeHandleProps, cx: Scope<ResizeHandleEvent>) -> i
             v.left(px(0.0)).right(px(0.0)).bottom(px(0.0))
         }
         (Some(HandleEdge::Leading), Axis::Vertical) => v.left(px(0.0)).right(px(0.0)).top(px(0.0)),
-        (None, Axis::Horizontal) => v.top(px(0.0)).bottom(px(0.0)).left(-HANDLE_PADDING),
-        (None, Axis::Vertical) => v.left(px(0.0)).right(px(0.0)).top(-HANDLE_PADDING),
+        (None, Axis::Horizontal) => v.top(px(0.0)).bottom(px(0.0)).left(-straddle(axis)),
+        (None, Axis::Vertical) => v.left(px(0.0)).right(px(0.0)).top(-straddle(axis)),
     })
     .child(props.children)
     .child(
@@ -323,6 +457,12 @@ pub fn ResizeHandle(props: ResizeHandleProps, cx: Scope<ResizeHandleEvent>) -> i
             })
             .child(handle_thumb(axis, props.thumb_class, props.thumb_style)),
     )
+}
+
+/// How far a straddling band reaches before the line it is centered on:
+/// half a Cell in a terminal, [`HANDLE_PADDING`] elsewhere.
+pub(crate) fn straddle(axis: Axis) -> Points {
+    terminal_cell().map_or(HANDLE_PADDING, |cell| cell.along(axis) * 0.5)
 }
 
 /// The thumb of a handle (`handleThumbClass` / `handleThumbStyle`): a view

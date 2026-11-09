@@ -39,6 +39,7 @@ use std::{
     time::Duration,
 };
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 mod admission;
 pub(crate) struct Prompt {
     pub content: Vec<crate::content::Input>,
@@ -138,17 +139,22 @@ impl Foreground {
         }
         self.state(State::Running).await?;
         self.refresh().await?;
-        let mut callbacks = JoinSet::<Result<(), Error>>::new();
+        let mut callbacks = JoinSet::<Result<String, Error>>::new();
         let mut seen = HashSet::new();
-        // Callbacks by request, so one settled elsewhere can be dropped.
-        let mut live = HashMap::<String, tokio::task::AbortHandle>::new();
+        // Cancel only the client prompt wait; never abort an in-flight Host call.
+        let mut live = HashMap::<String, CancellationToken>::new();
         let mut pending = Vec::<InteractionSummary>::new();
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if self.work.settled() {
-                callbacks.abort_all();
-                while callbacks.join_next().await.is_some() {}
+                for cancel in live.values() {
+                    cancel.cancel();
+                }
+                while let Some(callback) = callbacks.join_next().await {
+                    let request_id = callback.map_err(Error::from)??;
+                    live.remove(&request_id);
+                }
                 return self.finish().await;
             }
             for summary in std::mem::take(&mut pending) {
@@ -175,17 +181,50 @@ impl Foreground {
                 let callback = interaction::request(&record, &self.capabilities)?;
                 let client = self.client.clone();
                 let peer = self.peer.clone();
-                let cancel = self.active.cancel.clone();
+                let cancel = self.active.cancel.child_token();
+                let request_cancel = cancel.clone();
                 let request_id = record.request_id.clone();
-                let handle = callbacks.spawn(async move {
-                    let response = peer.request(callback, &cancel).await?;
-                    let current: InteractionRecord = client.query("agent", "interaction", json!({"sessionId":record.session_id,"requestId":record.request_id})).await?;
-                    if current.outcome.is_some() { return Ok(()); }
+                callbacks.spawn(async move {
+                    let response = match peer.request(callback, &request_cancel).await {
+                        Ok(response) => response,
+                        Err(_) if request_cancel.is_cancelled() && !peer.stop.is_cancelled() => {
+                            return Ok(record.request_id);
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if request_cancel.is_cancelled() {
+                        return Ok(record.request_id);
+                    }
+                    let current: InteractionRecord = client
+                        .query(
+                            "agent",
+                            "interaction",
+                            json!({"sessionId":record.session_id,"requestId":record.request_id}),
+                        )
+                        .await?;
+                    if current.outcome.is_some() || request_cancel.is_cancelled() {
+                        return Ok(record.request_id);
+                    }
                     let answer = interaction::answer(&current, response)?;
-                    let result: InteractionResult = client.mutate("agent", "respond", json!({"sessionId":current.session_id,"requestId":current.request_id,"answer":answer}), Attachments::new()).await?;
-                    match result { InteractionResult::Recorded { record } if record.outcome.is_some() => Ok(()), _ => Err("Host rejected interaction response".into()) }
+                    let result: InteractionResult = client
+                        .mutate(
+                            "agent",
+                            "respond",
+                            json!({"sessionId":current.session_id,"requestId":current.request_id,"answer":answer}),
+                            Attachments::new(),
+                        )
+                        .await?;
+                    match result {
+                        InteractionResult::Recorded { record: committed }
+                            if committed.outcome.is_some() =>
+                        {
+                            Ok(record.request_id)
+                        }
+                        _ if request_cancel.is_cancelled() => Ok(record.request_id),
+                        _ => Err("Host rejected interaction response".into()),
+                    }
                 });
-                live.insert(request_id, handle);
+                live.insert(request_id, cancel);
                 self.state(State::RequiresAction).await?;
             }
             // Pull writes once; retain this future across callbacks and heartbeats.
@@ -195,19 +234,17 @@ impl Foreground {
                 tokio::select! {
                     biased;
                     _ = self.active.cancel.cancelled() => {
-                        callbacks.abort_all();
-                        while callbacks.join_next().await.is_some() {}
+                        while let Some(callback) = callbacks.join_next().await {
+                            let request_id = callback.map_err(Error::from)??;
+                            live.remove(&request_id);
+                        }
                         self.stop().await?;
                         break None;
                     },
                     result = &mut next => break Some(result?),
                     callback = callbacks.join_next(), if !callbacks.is_empty() => {
-                        match callback.ok_or("ACP callback task missing")? {
-                            Ok(result) => result?,
-                            // Settled elsewhere; see `live`.
-                            Err(error) if error.is_cancelled() => {}
-                            Err(error) => return Err(error.into()),
-                        }
+                        let request_id = callback.ok_or("ACP callback task missing")???;
+                        live.remove(&request_id);
                         if callbacks.is_empty() { self.state(State::Running).await?; }
                     },
                     _ = heartbeat.tick() => {
@@ -223,13 +260,13 @@ impl Foreground {
                 DeliveryPage::Interactions { pending: update } => {
                     // An interaction settled without this client, such as one
                     // its producer resolved, no longer waits for its answer.
-                    live.retain(|request_id, handle| {
+                    live.retain(|request_id, cancel| {
                         let waiting = update
                             .entries
                             .iter()
                             .any(|entry| &entry.request_id == request_id);
                         if !waiting {
-                            handle.abort();
+                            cancel.cancel();
                         }
                         waiting
                     });

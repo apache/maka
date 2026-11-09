@@ -162,7 +162,8 @@ fn ends(screen: &Screen) -> Vec<String> {
 
 /// A picker of `#3b82f6` with one part that takes the keyboard focus: the
 /// area (`area`) or HSB's hue on a track 200 long, its thumb
-/// `focus:opacity-50`; the ends `onChangeEnd` reported.
+/// `focus:opacity-50`, after a preview swatch (no `color`), which has
+/// nothing to press and so is no Tab stop; the ends `onChangeEnd` reported.
 #[derive(Clone, PartialEq, Props)]
 struct KeysProps {
     area: bool,
@@ -184,7 +185,12 @@ fn Keys(props: KeysProps) -> impl IntoElement {
             if let ColorPickerEvent::ChangeEnd(_, formatted) = e {
                 ends.update(|log| log.push(formatted.to_string()));
             }
-        });
+        })
+        .child(
+            color_swatch()
+                .accessibility_label("Current color")
+                .size(px(20.0)),
+        );
     let picker = if area {
         picker.child(
             color_area()
@@ -214,7 +220,7 @@ fn Keys(props: KeysProps) -> impl IntoElement {
 }
 
 /// The ends `keys` report on the area's thumb (`area`) or the hue's, which
-/// Tab gives the keyboard focus first, in a left-to-right or right-to-left
+/// Tab gives the keyboard focus first (past the preview swatch), in a left-to-right or right-to-left
 /// layout (on a headless macOS surface, where Tab stops at them).
 fn ends_after_keys(area: bool, rtl: bool, keys: &[&str]) -> Vec<String> {
     let mut config = EngineConfig {

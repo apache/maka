@@ -74,6 +74,8 @@ mount(() => <Text>{status()}</Text>);
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -166,6 +168,8 @@ mount(() => <Text>{status()}</Text>);"#,
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);

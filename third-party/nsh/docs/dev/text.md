@@ -2,7 +2,7 @@
 
 - **Text**: `<Text>`; styles `numberOfLines`, `textOverflow` (`ellipsis|clip|ellipsis-start|ellipsis-middle`: `EllipsizeMode`'s
   `Tail|Clip|Head|Middle`), `fontFamily` (system or imported fonts:
-  `import Inter from "./Inter.ttf"` evaluates to the family name and registers the font before the first frame), `fontWeight`,
+  `import Inter from "./Inter.ttf"` evaluates to the family name and registers the font before the first frame; a host can register the same files itself, `NshView.registerFont` / `NshAppView.registerFont`, and the app names the family), `fontWeight`,
   `fontStyle` (italic runs leave color emoji upright, in runs of their own: `AttributedText::push`, as WebKit does;
   Chrome and Android would slant them), `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
   `textAlignVertical` (the core moves the content box down). `adjustsFontSizeToFit` shrinks the fonts (down to
@@ -20,6 +20,18 @@
   edges at bidi boundaries and caches them with the layout. Linux selection drawing reuses its rectangle buffer.
   Test-id-only span updates remount the text metadata with its cached final layout (`LaidText`), retaining fitted
   font sizes. They preserve prepared state and measurement caches and raise no `onTextLayout`.
+- A text engine whose lines take all that fits and whose `measure` reports the widest line's width says so
+  (`TextEngine::breaks_lines_greedily`: macOS, Linux). The core then reuses a measurement for every maximum width from
+  that width to the one measured (`measure_text`, `SameLines`), and measures a growing width a little ahead to cover
+  the next ones, until a text's lines change within that margin. Limits on lines are measured at every width. A
+  window's resize changes the width of every text of a page on every size.
+  Another width with the same lines also keeps the final layout when every line starts at the box's left
+  (`flush_text`, `keeps_lines`), so the platform has nothing to typeset and macOS nothing to draw.
+  During a burst of resizes (`Core::set_resizing`, the engine's `RESIZE_BURST_GAP`), text more than a screen away from
+  the screen (`Core::mark_near_screen`, from the last commit's frames) is neither measured nor laid out at new widths:
+  it keeps its height, and catches up as it comes near or in the commit after the burst ends. Content below the
+  viewport's height therefore settles when the drag ends; a page scrolled past text that grows keeps what it shows
+  (`core/resize_anchor.rs`).
   A text out of the layout (`display: none` on it or on a view around it, `hidden`) is sent with an empty layout (its
   text unchanged, for tests and screen readers): its box is zero, and the web, which does not clip text to its box,
   would still draw the glyphs laid out in it.
@@ -56,7 +68,13 @@
   boxes in the area's coordinates with scroll offsets applied, its text engine's hit test), feeds `SelectionModel` its
   gestures (press with the click count and Shift, drag, long press, a handle's drag, select all) and draws what
   `ranges` says with its own highlight (each text's `selectionColor`), handles and menu; Copy takes `text` (attachments
-  left out, texts on one row joined by a tab, the others by a line break). Positions are (text index, UTF-16 offset),
+  left out, texts on one row joined by a tab, the others by a line break, a text that continues the one before it by
+  nothing). A component that lays one line out as several texts (a code view's soft-wrapped line: `DiffView`) marks
+  the later parts with `Element::continues_text` (`ViewProps::continues_text`, the internal `Prop::ContinuesText`;
+  `SelectionTexts::continues` reads it): a copy gives the line whole, a triple click selects the whole line, and a
+  double click takes a word the wrap cut across its parts. Every backend reads it from its text views' props (Android
+  passes it to the model with the texts, `nativeSetTexts`); the web's copy joins such texts by nothing (the browser's
+  own selection takes the clicks). Positions are (text index, UTF-16 offset),
   never inside a surrogate pair. A point outside every text is hit-tested in reading order: the horizontally nearest
   text on its row, above every text the first text's start, below every text the last one's end, between rows the
   nearer of the end of the text above and the start of the text below. Words are runs of letters, digits and `_`, runs

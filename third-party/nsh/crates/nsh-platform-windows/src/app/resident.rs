@@ -89,6 +89,7 @@ pub fn run_resident_app(
                 let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
                 let _ = OleInitialize(None);
             }
+            *super::RUNNING_UI.lock().unwrap() = Some(crate::window::UiThread::current());
             crate::system::set_app_id(&job.options.app_id);
             let tray = match Tray::new(job.tray) {
                 Ok(tray) => tray,
@@ -96,6 +97,7 @@ pub fn run_resident_app(
                     log::error!("cannot create the tray owner: {error}");
                     // SAFETY: pairs OleInitialize before returning from this thread.
                     unsafe { windows::Win32::System::Ole::OleUninitialize() };
+                    *super::RUNNING_UI.lock().unwrap() = None;
                     return std::process::ExitCode::FAILURE;
                 }
             };
@@ -134,6 +136,7 @@ pub fn run_resident_app(
                 RUNNING_VIEW.with(|view| *view.borrow_mut() = Weak::new());
                 drop(state);
             }
+            *super::RUNNING_UI.lock().unwrap() = None;
             // SAFETY: all windows, engines and OLE users on this thread are gone.
             unsafe { windows::Win32::System::Ole::OleUninitialize() };
             if code == 0 && opened.is_ok() {
@@ -183,7 +186,7 @@ pub(crate) fn window_closed(hwnd: HWND) -> bool {
     });
     if owned {
         let address = hwnd.0 as usize;
-        crate::window::invoke(move || {
+        crate::window::UiThread::current().invoke(move || {
             let removed = STATE.with(|slot| {
                 let mut state = slot.borrow_mut();
                 let state = state.as_mut()?;

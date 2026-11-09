@@ -11,6 +11,17 @@
 //!   root view's effective appearance (the window's, the system's), live;
 //! - the locale (`Intl`'s default): `NSLocale.currentLocale` (the region
 //!   format of System Settings), live;
+//! - the locale settings (`localeSettings()`), read together with the other
+//!   settings, as on `NSCurrentLocaleDidChangeNotification`: the preferred
+//!   languages, `NSLocale.preferredLanguages` (System Settings' list, the
+//!   app's own language first when the user chose one for it); the regional
+//!   preferences, System Settings' time format (the hours of
+//!   `NSDateFormatter`'s format for the `j` template, which 24-hour time
+//!   changes), `NSCalendar`'s first weekday, `NSLocale`'s measurement system
+//!   and the `AppleTemperatureUnit` default, over the region's; the time
+//!   zone, `NSTimeZone.systemTimeZone`'s name, live
+//!   (`NSSystemTimeZoneDidChangeNotification`, after which Foundation's
+//!   cached zone is reset);
 //! - right to left: the user's first preferred language;
 //! - reduce motion and VoiceOver: `NSWorkspace`'s accessibility settings,
 //!   live;
@@ -21,6 +32,8 @@
 //!   activation, hiding and occlusion notifications. An embedded surface
 //!   follows the embedding app's, which is the application;
 //! - the pixel ratio: the window's backing scale factor;
+//! - the window's bounds, mode and display ([`crate::window_state`]), and
+//!   the displays, sent again when they change;
 //! - the OS version: `NSProcessInfo.operatingSystemVersion`.
 //!
 //! The font scale is 1 (macOS has no text size setting apps follow), the
@@ -30,9 +43,13 @@
 //! it hosts (text fields, scroll bars) match the app. The surface's
 //! background, under the root view (which has none of its own), is the
 //! app's: the opaque background of its top view when that fills the root,
-//! else white / neutral-950 by the scheme (as the Linux backend's). It
-//! shows where the app has not drawn yet, as in the area a window grows
-//! by before the layout at its new size arrives.
+//! else, in the standalone runner's window, white / neutral-950 by the
+//! scheme (as the Linux backend's), and in a host app's view none: an
+//! embedded `AppView` shows its host through, as on iOS. It shows where
+//! the app has not drawn yet, as in the area a window grows by before the
+//! layout at its new size arrives. A see-through surface
+//! ([`crate::AppOptions::transparent`]) has none: what the app leaves
+//! unpainted shows what is behind the window.
 //!
 //! The status bar has no desktop equivalent. The clipboard is the general
 //! pasteboard; `hasText` only looks at the types on offer.
@@ -49,7 +66,10 @@ use nsh_core::{
     Command, Dialog, DialogButtonStyle, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
     geometry::px, platform::clipboard,
 };
-use nsh_engine::{ColorScheme, Edges, Environment, Idiom, Lifecycle, Locale, Os};
+use nsh_engine::{
+    ColorScheme, Edges, Environment, HourCycle, Idiom, Languages, Lifecycle, Locale,
+    LocaleSettings, MeasurementSystem, Os, TemperatureUnit, TimeZone, Weekday,
+};
 use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
@@ -59,20 +79,22 @@ use objc2_app_kit::{
     NSAccessibilityPriorityLevel, NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance,
     NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
     NSApplicationDidBecomeActiveNotification, NSApplicationDidChangeOcclusionStateNotification,
-    NSApplicationDidHideNotification, NSApplicationDidResignActiveNotification,
-    NSApplicationDidUnhideNotification, NSApplicationOcclusionState,
-    NSAttributedStringAppKitDocumentFormats, NSAttributedStringDocumentFormats,
-    NSBitmapImageFileType, NSBitmapImageRep, NSDocumentTypeDocumentAttribute,
-    NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalResponse, NSPasteboard,
-    NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSWorkspace,
+    NSApplicationDidChangeScreenParametersNotification, NSApplicationDidHideNotification,
+    NSApplicationDidResignActiveNotification, NSApplicationDidUnhideNotification,
+    NSApplicationOcclusionState, NSAttributedStringAppKitDocumentFormats,
+    NSAttributedStringDocumentFormats, NSBitmapImageFileType, NSBitmapImageRep,
+    NSDocumentTypeDocumentAttribute, NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType,
+    NSModalResponse, NSPasteboard, NSPasteboardTypeRTF, NSPasteboardTypeRTFD,
+    NSPasteboardTypeString, NSScreen, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSCurrentLocaleDidChangeNotification, NSData, NSDictionary,
-    NSKeyValueObservingOptions, NSLocale, NSLocaleLanguageDirection, NSNotification,
-    NSNotificationCenter, NSObject, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol,
-    NSOperationQueue, NSProcessInfo, NSPropertyListReadOptions, NSPropertyListSerialization,
-    NSRange, NSString, NSURL, ns_string,
+    NSArray, NSAttributedString, NSCalendar, NSCurrentLocaleDidChangeNotification, NSData,
+    NSDateFormatter, NSDictionary, NSKeyValueObservingOptions, NSLocale, NSLocaleLanguageDirection,
+    NSLocaleMeasurementSystem, NSNotification, NSNotificationCenter, NSObject,
+    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSProcessInfo,
+    NSPropertyListReadOptions, NSPropertyListSerialization, NSRange, NSString,
+    NSSystemTimeZoneDidChangeNotification, NSTimeZone, NSURL, NSUserDefaults, ns_string,
 };
 
 use crate::surface::Surface;
@@ -125,6 +147,7 @@ define_class!(
 /// The window or its screen changed (scale, ...).
 pub(crate) fn window_changed(surface: &Rc<Surface>) {
     crate::chrome::window_changed(surface);
+    crate::window_state::watch(surface);
     update(surface);
 }
 
@@ -191,34 +214,57 @@ fn install(mtm: MainThreadMarker) {
             ),
         ]
     };
+    // The time zone: Foundation caches the system's until it is reset.
+    let zone_changed = RcBlock::new(|_: NonNull<NSNotification>| {
+        NSTimeZone::resetSystemTimeZone();
+        system_changed();
+    });
+    // SAFETY: as above.
+    let zone_observer = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSSystemTimeZoneDidChangeNotification),
+            None,
+            Some(&queue),
+            &zone_changed,
+        )
+    };
     // Whether the app is in use (`lifecycle`).
     // SAFETY: as above.
-    let observers = observers
+    let observers = observers.into_iter().chain([zone_observer]).chain(
+        unsafe {
+            [
+                NSApplicationDidBecomeActiveNotification,
+                NSApplicationDidResignActiveNotification,
+                NSApplicationDidHideNotification,
+                NSApplicationDidUnhideNotification,
+                NSApplicationDidChangeOcclusionStateNotification,
+            ]
+        }
         .into_iter()
-        .chain(
+        .map(|name| {
+            // SAFETY: as above.
             unsafe {
-                [
-                    NSApplicationDidBecomeActiveNotification,
-                    NSApplicationDidResignActiveNotification,
-                    NSApplicationDidHideNotification,
-                    NSApplicationDidUnhideNotification,
-                    NSApplicationDidChangeOcclusionStateNotification,
-                ]
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    None,
+                    Some(&queue),
+                    &block,
+                )
             }
-            .into_iter()
-            .map(|name| {
-                // SAFETY: as above.
-                unsafe {
-                    NSNotificationCenter::defaultCenter()
-                        .addObserverForName_object_queue_usingBlock(
-                            Some(name),
-                            None,
-                            Some(&queue),
-                            &block,
-                        )
-                }
-            }),
-        )
+        }),
+    );
+    // The displays: plugged in, unplugged, arranged again.
+    let screens = RcBlock::new(|_: NonNull<NSNotification>| screens_changed());
+    // SAFETY: as above.
+    let observers = observers
+        .chain([unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSApplicationDidChangeScreenParametersNotification),
+                None,
+                Some(&queue),
+                &screens,
+            )
+        }])
         .collect();
     // VoiceOver posts no notification: its setting is observed.
     // SAFETY: NSObject's initializer.
@@ -253,10 +299,33 @@ fn system_changed() {
     }
 }
 
+/// The displays changed: every surface's engine gets them, and its
+/// window's state (its display's visible bounds) is read again.
+fn screens_changed() {
+    let surfaces: Vec<Rc<Surface>> = SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        s.surfaces.retain(|w| w.strong_count() > 0);
+        s.surfaces.iter().filter_map(Weak::upgrade).collect()
+    });
+    for surface in surfaces {
+        let displays = crate::window_state::displays(surface.mtm);
+        surface.control(|c| c.set_displays(displays));
+        crate::window_state::changed(&surface);
+        crate::window::screens_changed(&surface);
+    }
+}
+
 /// The embedding app set its locale or text size
 /// ([`crate::AppView::set_locale`]): the system's settings are read again,
 /// with the host's over them.
 pub(crate) fn host_environment_changed(surface: &Surface) {
+    update(surface);
+}
+
+/// `nsh test --target macos` started driving the surface: its lifecycle
+/// no longer follows a locked screen (`lifecycle`).
+#[cfg(feature = "dev")]
+pub(crate) fn testing_started(surface: &Surface) {
     update(surface);
 }
 
@@ -267,6 +336,7 @@ fn update(surface: &Surface) {
     let mut env: Environment = surface.environment.get();
     env.color_scheme = color_scheme(surface);
     env.locale = current_locale();
+    env.locale_settings = locale_settings(env.locale);
     env.font_scale = 1.0;
     env.reduce_motion = workspace.accessibilityDisplayShouldReduceMotion();
     env.screen_reader = workspace.isVoiceOverEnabled();
@@ -277,20 +347,29 @@ fn update(surface: &Surface) {
     env.idiom = Idiom::Desktop;
     env.safe_area = Edges::default();
     env.keyboard_height = px(0.0);
-    env.lifecycle = lifecycle(surface.mtm);
+    if !surface.terminal.get() {
+        env.lifecycle = lifecycle(surface.mtm, surface.testing());
+        env.window_state = crate::window_state::read(surface);
+    }
     surface.set_environment(env);
+}
+
+/// The system's time zone: its IANA name.
+fn time_zone() -> TimeZone {
+    TimeZone::parse(&NSTimeZone::systemTimeZone().name().to_string()).unwrap_or_default()
 }
 
 /// Whether the app is in use: `background` while none of it shows (hidden,
 /// or its windows minimized or covered), `active` while it is the active
-/// app, `inactive` otherwise.
-fn lifecycle(mtm: MainThreadMarker) -> Lifecycle {
+/// app, `inactive` otherwise. A test's app (`testing`) is not in the
+/// background because the screen is locked: it runs as it does on screen
+/// (`Surface::keep_deadline`), so its tests see what they see unlocked.
+fn lifecycle(mtm: MainThreadMarker, testing: bool) -> Lifecycle {
     let app = NSApplication::sharedApplication(mtm);
-    if app.isHidden()
-        || !app
-            .occlusionState()
-            .contains(NSApplicationOcclusionState::Visible)
-    {
+    let occluded = !app
+        .occlusionState()
+        .contains(NSApplicationOcclusionState::Visible);
+    if app.isHidden() || (occluded && !(testing && screen_locked())) {
         Lifecycle::Background
     } else if app.isActive() {
         Lifecycle::Active
@@ -299,13 +378,59 @@ fn lifecycle(mtm: MainThreadMarker) -> Lifecycle {
     }
 }
 
+/// Whether the user's session cannot show windows now: the screen is
+/// locked, or the session is not the console's (another user switched in).
+/// The window server then draws no window, the display link stops and the
+/// app cannot become active, while its windows, posted events and
+/// in-process drawing still work. One call to the window server; without
+/// a session at all, it counts as locked.
+pub(crate) fn screen_locked() -> bool {
+    use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
+
+    // Declared here: `objc2-core-graphics` has it behind its `CGSession`
+    // feature, which the workspace does not turn on.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> Option<NonNull<CFDictionary>>;
+    }
+    // SAFETY: CoreGraphics' public function: no arguments, and it returns
+    // a dictionary the caller owns (the Copy rule), or null without a
+    // window server session.
+    let Some(raw) = (unsafe { CGSessionCopyCurrentDictionary() }) else {
+        return true;
+    };
+    // SAFETY: an owned reference, as the Copy rule hands it over.
+    let session = unsafe { CFRetained::from_raw(raw) };
+    let flag = |name: &'static str| -> Option<bool> {
+        let key = CFString::from_static_str(name);
+        // SAFETY: the dictionary's keys are `CFString`s, as `key` is.
+        let value = unsafe { session.value((&*key as *const CFString).cast()) };
+        // SAFETY: a value of the dictionary (a CF object) or null; it
+        // lives as long as the dictionary, which outlives this use.
+        let value = unsafe { value.cast::<CFType>().as_ref() }?;
+        value.downcast_ref::<CFBoolean>().map(CFBoolean::value)
+    };
+    // The first key is there only while the screen is locked.
+    flag("CGSSessionScreenIsLocked") == Some(true) || flag("kCGSSessionOnConsoleKey") == Some(false)
+}
+
 /// The surface's environment changed: its background follows the scheme.
 pub(crate) fn environment_applied(surface: &Surface) {
     follow_background(surface);
 }
 
-/// Sets the surface's background (see the module doc), if it changed.
+/// Sets the surface's background (see the module doc), if it changed. A
+/// see-through window ([`crate::AppOptions::transparent`]) has none: what
+/// the app leaves unpainted shows what is behind the window.
 fn follow_background(surface: &Surface) {
+    if surface.transparent.get() {
+        if surface.background.replace(None).is_some()
+            && let Some(layer) = crate::view::superview(surface.root.ns()).and_then(|v| v.layer())
+        {
+            crate::surface::quiet(|| layer.setBackgroundColor(None));
+        }
+        return;
+    }
     let app = surface
         .root
         .container()
@@ -322,27 +447,34 @@ fn follow_background(surface: &Surface) {
             let color = s.background();
             (fills && color.0 & 0xff == 0xff).then_some(color)
         });
-    let color = app.unwrap_or(
-        if surface.environment.get().color_scheme == ColorScheme::Dark {
-            nsh_core::Color::rgba(10, 10, 10, 255)
-        } else {
-            nsh_core::Color::rgba(255, 255, 255, 255)
-        },
-    );
+    let color = app.unwrap_or(if !surface.standalone.get() {
+        nsh_core::Color::rgba(0, 0, 0, 0)
+    } else if surface.environment.get().color_scheme == ColorScheme::Dark {
+        nsh_core::Color::rgba(10, 10, 10, 255)
+    } else {
+        nsh_core::Color::rgba(255, 255, 255, 255)
+    });
     if surface.background.replace(Some(color)) == Some(color) {
         return;
     }
+    crate::window::set_background(surface, color);
     // The root's own layer is the app's (its style); the view holding it
-    // is the surface's.
+    // is the surface's. A main window that shows through keeps it clear.
     let Some(layer) = crate::view::superview(surface.root.ns()).and_then(|v| v.layer()) else {
         surface.background.set(None);
         return;
     };
+    if surface.main_window.transparent() {
+        return;
+    }
     crate::surface::quiet(|| layer.setBackgroundColor(Some(&crate::text::cg_color(color))));
 }
 
 /// Device pixels per point of the surface's window (or the main screen's).
 fn pixel_ratio(surface: &Surface) -> f32 {
+    if surface.terminal.get() {
+        return surface.terminal_scale.get();
+    }
     let root = surface.root.ns();
     let scale = match root.window() {
         Some(window) => window.backingScaleFactor(),
@@ -355,6 +487,64 @@ fn pixel_ratio(surface: &Surface) -> f32 {
 fn current_locale() -> Locale {
     let identifier = NSLocale::currentLocale().localeIdentifier().to_string();
     Locale::parse(&identifier).unwrap_or_default()
+}
+
+/// The user's preferred languages, most preferred first; `locale` alone
+/// when the list names none.
+fn preferred_languages(locale: Locale) -> Languages {
+    let tags: Vec<String> = NSLocale::preferredLanguages()
+        .iter()
+        .map(|tag| tag.to_string())
+        .collect();
+    Languages::parse(tags.iter().map(String::as_str)).unwrap_or(Languages::one(locale))
+}
+
+/// The user's locale settings (`localeSettings()`): the preferred languages
+/// (`locale` alone when the list names none), the time zone, and System
+/// Settings' time format, first day of the week, measurement system and
+/// temperature unit, over the region's.
+fn locale_settings(user_locale: Locale) -> LocaleSettings {
+    let locale = NSLocale::currentLocale();
+    let mut preferences = LocaleSettings::parse(&locale.localeIdentifier().to_string());
+    preferences.languages = preferred_languages(user_locale);
+    preferences.time_zone = time_zone();
+    // The hours of the user's time format, which 24-hour time changes.
+    let hours =
+        NSDateFormatter::dateFormatFromTemplate_options_locale(ns_string!("j"), 0, Some(&locale));
+    if let Some(cycle) = hours.and_then(|format| HourCycle::of_pattern(&format.to_string())) {
+        preferences.hour_cycle = cycle;
+    }
+    // From 1 for Sunday to 7 for Saturday.
+    let first = match NSCalendar::currentCalendar().firstWeekday() {
+        1 => Some(Weekday::Sunday),
+        n => u8::try_from(n)
+            .ok()
+            .and_then(|n| Weekday::from_number(n.wrapping_sub(1))),
+    };
+    if let Some(day) = first {
+        preferences.first_day_of_week = day;
+    }
+    // SAFETY: a key Foundation defines.
+    let system = locale.objectForKey(unsafe { NSLocaleMeasurementSystem });
+    match system
+        .and_then(|s| s.downcast::<NSString>().ok())
+        .map(|s| s.to_string())
+        .as_deref()
+    {
+        Some("Metric") => preferences.measurement_system = MeasurementSystem::Metric,
+        Some("U.S.") => preferences.measurement_system = MeasurementSystem::Us,
+        Some("U.K.") => preferences.measurement_system = MeasurementSystem::Uk,
+        _ => {}
+    }
+    // Set once the user picks one.
+    let unit =
+        NSUserDefaults::standardUserDefaults().stringForKey(ns_string!("AppleTemperatureUnit"));
+    match unit.map(|u| u.to_string()).as_deref() {
+        Some("Celsius") => preferences.temperature_unit = TemperatureUnit::Celsius,
+        Some("Fahrenheit") => preferences.temperature_unit = TemperatureUnit::Fahrenheit,
+        _ => {}
+    }
+    preferences
 }
 
 /// Whether the user's first language is written right to left (as React
@@ -382,12 +572,20 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
         Command::Desktop(command) => crate::chrome::command(surface, command),
+        Command::PerfMonitor(show) => {
+            if let Some(toggle) = &*surface.perf_toggle.borrow() {
+                toggle(*show);
+            }
+        }
         Command::Announce(text) => crate::access::announce(
-            surface.root.ns(),
+            crate::window::key_root(surface).ns(),
             text,
             NSAccessibilityPriorityLevel::Medium,
         ),
         Command::SetClipboard(text) => {
+            if surface.terminal.get() {
+                *surface.terminal_clipboard.borrow_mut() = Some(text.clone());
+            }
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             // SAFETY: an immutable AppKit constant.
@@ -401,8 +599,18 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         }
         Command::ReadClipboardFiles { id } => read_clipboard_files(surface, *id),
         Command::PickImages { id, request } => crate::picker::pick_images(surface, *id, *request),
+        Command::PickFiles { id, request } => {
+            crate::file_requests::pick_files(surface, *id, request);
+        }
         Command::PickScreenColor { id } => crate::screen_color::pick_screen_color(surface, *id),
         Command::Speech(command) => surface.control(|c| crate::speech::command(c, command)),
+        Command::Audio(command) => surface.control(|c| {
+            let base = surface.asset_base.borrow().clone();
+            crate::audio::command(&surface.audio, c, command, base.as_ref())
+        }),
+        Command::Notification(command) => {
+            surface.control(|c| crate::notifications::command(c, command))
+        }
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
@@ -418,6 +626,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             );
         }
         Command::Back => crate::navigation::default_back(surface),
+        Command::ExitApp if surface.terminal.get() => surface.terminal_quit.set(true),
         Command::ExitApp => {
             // Closing calls the window delegate synchronously, which stops
             // the surface and clears its mounter. Wait until this batch has
@@ -475,11 +684,14 @@ pub(crate) fn set_appearance(surface: &Rc<Surface>, appearance: nsh_core::platfo
         .root
         .ns()
         .setAppearance(ns_appearance(appearance).as_deref());
+    crate::window::set_appearance(surface, ns_appearance(appearance).as_deref());
     update(surface);
 }
 
 /// The AppKit appearance of `appearance` (`None`: the system's).
-fn ns_appearance(appearance: nsh_core::platform::Appearance) -> Option<Retained<NSAppearance>> {
+pub(crate) fn ns_appearance(
+    appearance: nsh_core::platform::Appearance,
+) -> Option<Retained<NSAppearance>> {
     use nsh_core::platform::Appearance;
     // SAFETY: immutable AppKit constants.
     let name = match appearance {
@@ -537,7 +749,9 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
         surface: Rc::downgrade(surface),
         answered: Cell::new(false),
     });
-    let Some(window) = surface.root.ns().window() else {
+    // The window the user is in: a window of the app's own when it has the
+    // keyboard.
+    let Some(window) = crate::window::sheet_window(surface) else {
         log::warn!("macos: a dialog needs the surface in a window");
         return answer.answer(-1);
     };
@@ -647,7 +861,7 @@ pub(crate) fn answer_dialog(surface: &Rc<Surface>, button: Option<&str>) -> Resu
             unsafe { found.performClick(None) };
         }
         None => {
-            let window = surface.root.ns().window().ok_or("the window is gone")?;
+            let window = alert.window().sheetParent().ok_or("the window is gone")?;
             window.endSheet_returnCode(&alert.window(), objc2_app_kit::NSModalResponseCancel);
         }
     }
@@ -753,9 +967,7 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
         .unwrap_or_default()
     {
         if let Some(uri) = item.stringForType(&file_url) {
-            if crate::file_drop::is_local_uri(&uri) {
-                paste.uris.push(uri.to_string());
-            }
+            paste.uris.extend(crate::file_drop::local_file_uri(&uri));
             continue;
         }
         let image = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
@@ -929,8 +1141,7 @@ fn read_clipboard_files(surface: &Rc<Surface>, id: u32) {
             items
                 .iter()
                 .filter_map(|item| item.stringForType(&kind))
-                .filter(|uri| crate::file_drop::is_local_uri(uri))
-                .map(|uri| uri.to_string())
+                .filter_map(|uri| crate::file_drop::local_file_uri(&uri))
                 .collect()
         })
         .unwrap_or_default();

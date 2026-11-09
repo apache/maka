@@ -65,10 +65,6 @@ use uuid::Uuid;
 pub const EDITOR: &str = "composer";
 pub const PROVIDER_KEY: &str = "nsh-real-provider-key";
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
-fn frame_time() -> f64 {
-    static STARTED: OnceLock<Instant> = OnceLock::new();
-    STARTED.get_or_init(Instant::now).elapsed().as_secs_f64()
-}
 
 async fn product_packages() -> BTreeMap<String, Package> {
     tokio::task::spawn_blocking(|| {
@@ -124,12 +120,13 @@ pub fn load_application(
     config.chunk_loader = Some(bindings.chunk_loader());
     config.context = config.context.with(bindings.reload());
     view.load_with_config(config).unwrap();
-    // load resets Surface; seed its clock before poll can apply an animation.
-    view.surface_mut().tick(frame_time());
 }
 
 pub fn tick(view: &mut AppView) {
-    view.tick(frame_time()).unwrap();
+    if view.frame_requested() {
+        view.begin_frame();
+    }
+    view.pump().unwrap();
 }
 
 pub struct Fixture {
@@ -166,8 +163,9 @@ impl Fixture {
         options: Options,
         customize: impl FnOnce(&mut Value, &Path),
     ) -> Self {
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
         let directory = tempfile::Builder::new()
-            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .tempdir_in(maka_fs_tools::workspace::project::host_path(&temp_root).unwrap())
             .unwrap();
         #[cfg(windows)]
         std::fs::remove_dir(directory.path()).unwrap();
@@ -185,14 +183,6 @@ impl Fixture {
             .unwrap(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let selection = configure(
-            owner.clone(),
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            options.images,
-            options.code_mode,
-        )
-        .await;
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let bundled = product_packages().await;
         let home = directory.path().join("assistant-home");
         std::fs::create_dir(&home).unwrap();
@@ -224,6 +214,24 @@ impl Fixture {
             json!({"access":"read_only","requestPermissions":true});
 
         customize(&mut configuration, directory.path());
+
+        let sandbox_mode = match configuration["agent"]["permissions"]["access"].as_str() {
+            Some("read_only") => maka_agent_facts::execution::SandboxMode::ReadOnly,
+            Some("workspace_write") => maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+            Some("danger_full_access") => {
+                maka_agent_facts::execution::SandboxMode::DangerFullAccess
+            }
+            other => panic!("unexpected fixture sandbox access {other:?}"),
+        };
+        let selection = configure(
+            owner.clone(),
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            options.images,
+            options.code_mode,
+            sandbox_mode,
+        )
+        .await;
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
 
         let source =
             std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs"))
@@ -382,11 +390,10 @@ impl Fixture {
     ) -> (AppView, maka_workbench::bindings::Bindings) {
         let bindings =
             maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-        let mut view = AppView::new(AppOptions {
-            size: (120, 36),
-            data_dir: Some(self.directory.path().join("nsh")),
-            ..Default::default()
-        });
+        let mut options = AppOptions::default();
+        options.data_dir = Some(self.directory.path().join("nsh"));
+        let mut view = AppView::new(options);
+        view.resize(120, 36);
         load_application(&mut view, &bindings, session);
         (view, bindings)
     }
@@ -402,6 +409,7 @@ pub(crate) async fn configure(
     base: &str,
     vision: bool,
     code_mode: bool,
+    sandbox_mode: maka_agent_facts::execution::SandboxMode,
 ) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
@@ -452,6 +460,18 @@ pub(crate) async fn configure(
             .unwrap(),
         maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
     ));
+    if sandbox_mode != maka_agent_facts::execution::SandboxMode::WorkspaceWrite {
+        assert!(matches!(
+            config
+                .set_chat_defaults(
+                    config.runtime_policy().await.unwrap().revision,
+                    maka_agent_facts::configuration::policy::ChatDefaults { sandbox_mode },
+                )
+                .await
+                .unwrap(),
+            maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
+        ));
+    }
     config.shutdown().await.unwrap();
     selection
 }
@@ -622,7 +642,6 @@ pub async fn wait_enabled_button(
 ) -> nsh_platform_tui::AccessibleNode {
     tokio::time::timeout(WAIT_TIMEOUT, async {
         loop {
-            view.poll().unwrap();
             tick(view);
             assert!(view.last_error().is_none(), "{:?}", view.last_error());
             let mut buttons = view.accessibility_snapshot().into_iter().filter(|node| {
@@ -631,7 +650,7 @@ pub async fn wait_enabled_button(
                     nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
                 ) && node.label == label
                     && node.frame.origin.y.0 >= 0.0
-                    && node.frame.origin.y.0 < view.surface().viewport().height.0
+                    && node.frame.origin.y.0 < view.viewport().height.0
             });
             let button = buttons.next();
             assert!(
@@ -682,12 +701,15 @@ pub fn click_node(view: &mut AppView, node: nsh_platform_tui::AccessibleNode) {
         MouseEventKind::Down(MouseButton::Left),
         MouseEventKind::Up(MouseButton::Left),
     ] {
-        view.handle_event(Event::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }));
+        maka_terminal_shell::terminal::handle_event(
+            view,
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
     }
 }
 
@@ -707,7 +729,6 @@ pub fn wait_view_state(
     async move {
         let started = Instant::now();
         loop {
-            view.poll().unwrap();
             tick(view);
             assert!(
                 view.last_error().is_none(),
@@ -882,17 +903,14 @@ pub(super) fn socket(directory: &Path, name: &str) -> PathBuf {
 }
 
 pub fn evidence_cells(name: &str, view: &AppView) {
-    use ratatui::{buffer::CellWidth, layout::Rect, style::Color};
+    use ratatui::{buffer::CellWidth, style::Color};
     let Some(directory) = std::env::var_os("MAKA_NSH_EVIDENCE") else {
         return;
     };
-    let viewport = view.surface().viewport();
-    let metrics = view.surface().metrics();
-    let columns = (viewport.width.0 / metrics.width().0).round() as u16;
-    let rows = (viewport.height.0 / metrics.height().0).round() as u16;
-    let area = Rect::new(0, 0, columns, rows);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    view.render(area, &mut buffer);
+    let metrics = view.cells();
+    let buffer = view.buffer();
+    let columns = buffer.area.width;
+    let rows = buffer.area.height;
     let color = |value| match value {
         Color::Rgb(r, g, b) => json!({"rgb":[r,g,b]}),
         Color::Indexed(index) => json!({"indexed":index}),

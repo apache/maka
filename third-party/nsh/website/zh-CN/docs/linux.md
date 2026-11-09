@@ -22,7 +22,10 @@ NSH 应用也能在 Linux 上运行。Linux 后端用 GTK 4 控件渲染应用�
   `webkitgtk-6.0`、Fedora 上的 `webkitgtk6.0-devel`。开发宿主和发布运行器默认使用它，因此打包后的应用运行的机器上需要装有
   WebKitGTK 6.0（Debian 与 Ubuntu 上为 `libwebkitgtk-6.0-4`；GNOME 桌面自带）。在没有它的开发包的机器上，`cargo xtask dist`
   构建的运行时中 Web 视图为占位视图，其应用只需要 GTK。
-- 应用要播放的视频格式对应的 **GStreamer** 插件（GTK 通过 GStreamer 播放视频）。
+- **GStreamer** 1.14 及以上：GTK 通过它播放视频，NSH 用它播放声音。构建运行时需要它的开发包：Debian 与 Ubuntu 上为
+  `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`，Arch 上为 `gstreamer gst-plugins-base`，Fedora 上为
+  `gstreamer1-devel gstreamer1-plugins-base-devel`。应用运行的机器上需要 GStreamer 及其 base 插件（桌面系统自带），以及应用要播放的
+  视频和音频格式对应的插件。
 
 ## 运行应用
 
@@ -168,7 +171,7 @@ Web 视图是绘制在 NSH 视图之内的 WebKitGTK 页面：sheet、对话框�
 
 - **视频的 `rate`**：GTK 只能以正常速度播放。`onEnd` 只对不循环的视频触发。
 - **可缩放的滚动视图**（`zoomTo`、缩放相关属性）。
-- **`mixBlendMode` 和 `backdropFilter`**（背景色仍会绘制）；`borderCurve: "continuous"` 绘制为圆形圆角。
+- **`mixBlendMode` 和 `backdropFilter`**（背景色仍会绘制）。背景模糊尚未实现；使用 GTK 4.22 copy 和 paste 节点的实验不属于当前渲染实现。
 - **输入辅助视图**和**状态栏**（桌面上没有对应物）。
 - **无障碍**：`accessible` 分组、自定义 `accessibilityActions`；实时区域改为播报。
 

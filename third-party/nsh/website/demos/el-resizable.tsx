@@ -1,9 +1,11 @@
 import { mount, signal, Text, View } from "nsh";
 import { ResizablePanel, ResizablePanelGroup } from "nsh/base";
-import { desktop, Log, Panel, Segmented, Split, ui, wide } from "./palette";
+import { desktop, Log, Panel, Segmented, Split, ui, wide, sectionSurface, resizableHandleLook } from "./palette";
 
 // The sizes are the app's: the group reports them when a drag ends, and the
-// app passes them back as each panel's `size`.
+// app passes them back as each panel's `size`. The handles take the shared
+// look (`resizableHandleLook`): a hairline that stays as it is, and a thumb
+// on it, a pill that grows in under the pointer and further while dragged.
 function App() {
   const sidebar = signal(desktop ? 220 : 140);
   const consoleSize = signal(120);
@@ -11,9 +13,6 @@ function App() {
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 4));
   const round = (sizes: number[]) => sizes.map((s) => Math.round(s)).join(" · ");
-
-  // The handles' look: a hairline that lights up under the pointer and while dragged.
-  const handle = "bg-border group-hover:bg-muted-foreground group-active:bg-primary";
 
   const label = (title: string, detail: string) => (
     <View style={{ gap: 4 }}>
@@ -44,10 +43,10 @@ function App() {
           </>
         }
       >
-        <View style={{ height: wide() ? 360 : 300, ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        <View style={{ height: wide() ? 360 : 300, ...sectionSurface(), overflow: "hidden" }}>
           <ResizablePanelGroup
             axis="horizontal"
-            handleClass={handle}
+            {...resizableHandleLook("horizontal")}
             handleAccessibilityLabel="Resize the sidebar"
             onResize={({ sizes }) => log(`row: ${round(sizes)}`)}
           >
@@ -59,7 +58,7 @@ function App() {
             <ResizablePanel minSize={120}>
               <ResizablePanelGroup
                 axis="vertical"
-                handleClass={handle}
+                {...resizableHandleLook("vertical")}
                 handleAccessibilityLabel="Resize the console"
                 onResize={({ sizes }) => log(`column: ${round(sizes)}`)}
               >

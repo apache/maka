@@ -13,41 +13,22 @@ colored with the theme's tokens; the app restyles each part over it.
 | `document.rs` | The document model (`Document`, `Block`, `Inline`, `CodeBlock`, `Table`, `Image`, `CustomNode`, ...): serde data, JSON in JS, its TypeScript declarations (`TextViewDocument`, `TextViewBlock`, ...) |
 | `parts.rs` | The parts the app styles: one `parts!` list makes `TextViewClasses`, `TextViewStyles` (each a `PartStyle`, a `Style` declared `StyleProp<TextStyle>`, since most parts are texts) and `TextViewPart`; `TextViewParts` (context): typed `StyleRefinement` functions by part for Rust views |
 | `extension.rs` | `MarkdownOptions`, `MarkdownExtension` (declared syntax), `MarkdownPlugin` / `MarkdownPlugins` (Rust), `Parser` |
-| `markdown/` | Markdown into the model (markdown-rs's mdast); `container.rs`: `:::` containers, split out before parsing (markdown-rs has no such syntax); `streaming.rs`: streaming repair |
-| `html/` | HTML into the model (html5ever, as a reader mode reads a page) |
+| `markdown/` | Markdown into the model (markdown-rs's mdast); `container.rs`: `:::` containers, split out before parsing (markdown-rs has no such syntax); `streaming.rs`: streaming repair; `cjk.rs`: emphasis beside CJK text read as the CJK-friendly amendment to CommonMark reads it (`**涨幅：**5%` is bold), which markdown-rs does not; `autolink.rs`: bare URLs end where CJK text or a curly quote starts (`https://example.com。下一句` links only the URL); `offsets.rs`: what is inserted before parsing taken out of the tree again, so positions (and a plugin's `ParseContext::source`) are the text given; `latex.rs`: TeX's `\(…\)` and `\[…\]` read as formulas, escaped brackets that hold a reference number or CJK words (`\[1\]\[3\]`) kept as text |
+| `html/` | HTML into the model (html5ever, as a reader mode reads a page); `ELEMENTS`: HTML's element names, outside which a tag in Markdown is text (`<US tech>`) |
+| `tex_text.rs` | A formula's TeX as plain text, which a terminal shows when the app has no `renderMath` |
 | `common.rs` | What both parsers share: `pattern` extensions on inline content, headings' anchors |
 | `math.rs` | Formulas without a `renderMath`: RaTeX's parse and layout, drawn on a canvas with the KaTeX fonts (`fonts/katex.pack.zst`; embedded, or fetched on the web: "Formulas on the web"); feature `math`, which the platforms turn on |
 | `formula.rs` | What the view calls: `math.rs` directly on native, and on the web once its side module and fonts arrived |
 
 ## How it works
 
-- **Parsed in Rust by one component-owned worker.** Source changes replace its latest request. One `blocking`
-  parse finishes before the worker starts the newest request; it constructs the parser and plugin options on that
-  thread. A completed Markdown prefix may be published while a compatible append is pending. A replacement,
-  source identity, input mode or parser configuration change rejects that result. Disposing the component cancels
-  publication. Before the first result, and after a parser failure (`onParseError`), the full current input is shown
-  literally. The same parser is public for Rust callers and the static parsing functions.
-- **Canonical source positions.** `sourceId` names the original Markdown document for reading anchors. Native
-  source wrappers on inline leaves, code blocks and formulas carry Core's `TextSourceSegment`s onto the actual Text owners;
-  UTF-8 addresses are projected through line-ending normalization, streaming repair, TeX rewriting, container slices
-  and reference definitions. Synthetic repair syntax has no original address. These wrappers stay native; JSON
-  renderer payloads contain their displayed content. HTML text with decoding or whitespace collapse is an explicit
-  replacement of its originating Markdown HTML node; its processed offsets never stand in for original addresses.
-  Selection continues to use the real selectable texts.
-- **Root blocks use a native parent-viewport list.** The scroll view around the document remains its reader;
-  only blocks near that viewport are mounted. A recycled cell has a single keyed logical owner for its block's
-  position and kind. Compatible appends retain that owner; a paragraph becoming a table replaces it, so callbacks
-  and link focus capabilities never follow the cell into another block. Footnotes form the final row. Containers
-  still use the same recursive renderer within their root block. `contentStyle: ListContentStyle` lays out these
-  rows with point-valued padding and gaps (default `rowGap: 11.25`). A supplied value replaces the complete content
-  layout, so `{}` and `{ rowGap: 0 }` both select zero gap. Root `classes` / `styles` own outer geometry and text
-  appearance; document content spacing belongs to `contentStyle`.
-  A whole-source literal fallback has its own row identity; parsed blocks do not inherit its size or callbacks.
-  The native Markdown publication also carries its captured source length and each root row's canonical ranges,
-  collected by the same converter. `VirtualList::source_rows` publishes this immutable index as `ListSourceRows`;
-  the current input supplies the complete source length. The surrounding reader keeps its one source pin while
-  a required prefix or row is pending, binds that row and its ancestor cells through the normal list window,
-  then resolves its actual text geometry. Other mounted rows do not stand in for a missing source position.
+- **Parsed in Rust, once per change.** One `computed` reads `markdown`, else `html`, else `document`, with `options`,
+  `extensions` and the `MarkdownPlugins` of the context, into a `Document`. JS only passes strings (or the `document`
+  JSON); parsing never runs in QuickJS. The `Parser` is public, so Rust code reads documents without a view.
+- **Blocks are rows of an `Each`, keyed by position and kind** (`(index, block.kind())`). A streamed reply grows at its
+  end: the blocks before it parse to equal values and keep their nodes, the block being written keeps its row (same
+  position, same kind) and only that row is made again. A block that changes kind mid-stream (a paragraph becoming a
+  table once its delimiter row arrives) gets a new row. Footnotes follow the blocks in one region of their own.
 - **Built on `Text`** (`text.md`): every paragraph, heading, table cell and code block is one native text
   block, so wrapping, font scale, selection, span backgrounds (inline code), pressable
   spans (links) and inline attachments (images, inline custom nodes, the caret) are the text element's, with nothing of
@@ -55,9 +36,9 @@ colored with the theme's tokens; the app restyles each part over it.
 - **Each block is made with primitives** (`Cx::block`): a paragraph or heading is one `text` whose children are spans
   (`Inline` → nested texts, inline images, slots), lists are rows of a marker text and a column, code blocks a column
   with floating actions and a horizontal `scroll`, tables one grid in a horizontal `scroll` (below), disclosures a
-  pressable summary and an `If`. With `selectable`, document texts carry `userSelect: "text"` (`.select_text()`), while decorative/control texts opt out with `userSelect: "none"` (`.select_none()`). The root is a selectable view
-  (`Element::selectable`), so one selection runs across the mounted blocks, and inside a selectable view on into the
-  mounted texts around the view ("Selectable views" in `text.md`).
+  pressable summary and an `If`. With `selectable`, every text carries `userSelect: "text"` (`.select_text()`) and the root is a selectable view
+  (`Element::selectable`), so one selection runs across the blocks, and inside a selectable view on into the
+  texts around the view ("Selectable views" in `text.md`).
 - **Tables** (`Cx::table`) lay out as gpui-kit's: columns fit their content when there is room, shrink (their cells
   wrapping) down to a floor per column when the view is narrower, and below the floors the table scrolls horizontally
   (`tableScroll`; `tableScrollbar` hides its indicator, as `codeBlockScrollbar` a code block's). The cells are one CSS grid, so columns line up across rows: each column is a `minmax(<floor>,
@@ -86,22 +67,13 @@ colored with the theme's tokens; the app restyles each part over it.
   code blocks again only while they are being written.
 - **Formulas are typeset** when the app gives no `renderMath` (`math.rs`): parsed and laid out by RaTeX (KaTeX's
   parser and layout in Rust), drawn natively in the text's color; TeX it rejects shows as its source.
-- **Links report presses**: `onLinkPress({ url, target })`; a heading's anchor is `#<slug>` (GitHub's slugs, `common.rs`), a
+- **Links report presses**: `onLinkPress({ url })`; a heading's anchor is `#<slug>` (GitHub's slugs, `common.rs`), a
   footnote reference `#footnote-<label>`. By default nothing opens a URL: the app decides. `links="open"`
   (`TextViewLinks::Open`, opt-in) also opens a link with a scheme after reporting it (`nsh_core::element::open_url`,
-  under the `openUrl` capability and the embedding app's URL handler), never an anchor (`#…`): `Cx::link_press`. `target` is the original native Link's focus capability;
-  `target.focus()` accepts a restoration request while that Link lives, then applies it natively in order with the
-  caller's earlier UI changes. Source replacements and removed/replaced links expire the old capability.
-- **Code controls retain their owners.** Native `codeBlockActions` supports `copy` and `wrap`. Adding `wrap`
-  initially wraps the code; its selected state and native control survive further stream appends, including code
-  inside containers. `renderCodeBlockAction` supplies app content and `labels` supplies table names/copy feedback.
-  User Wrap and disclosure choices also survive root-cell recycling. The source lifecycle owns only those values;
-  every mounted control creates its own signal. Replacing source identity, input, parser configuration or a
-  non-prefix source clears the choices; changing a block or ancestor's logical kind clears that subtree's choices.
-  Code and table scroll intent is reported as `onScrollIntent`.
-- **Image rendering context.** `renderImage` receives `TextViewImageContext` (`image`, `linked`, `flow`,
-  `lineHeight`). The app owns standalone image activation and loading; linked inline images use their enclosing
-  Link, and linked block images use one native Link wrapper.
+  under the `openUrl` capability and the embedding app's URL handler), never an anchor (`#…`): `Cx::link_press`.
+  Each link (and footnote reference) is a pressable span, so it is a stop of the keyboard focus where the platform
+  walks links (`elements.md` "Keyboard focus": `TextLink::focus_stop`): Tab reaches it, Return presses it, and the
+  press goes through `onLinkPress` and `links` as a pointer's does.
 
 ## Parts and their default styles
 
@@ -127,8 +99,7 @@ take GitHub's alert colors (note blue, tip green, important violet, warning ambe
 theme's `destructive`. Everything is the
 app's to override: `classes` (Tailwind, applied after the part's own styles, so they win) and `styles` (inline, over
 the classes), by part, and `class` / `style` on the root, whose text styles every part inherits (the root's defaults
-are the text's size, line height and color). Content padding and spacing between root blocks use `contentStyle`,
-the native list's typed content layout; nested containers retain their part styles. The root is also the part `root` (its `styles.root` is typed
+are the text's size, line height and color). The root is also the part `root` (its `styles.root` is typed
 `StyleProp<TextStyle>`, which the component's own `style`, a `ViewStyle`, is not). Line heights are points, not
 multiples (typed styles have no multiple yet): an app that changes a part's size sets its line height too, as
 Tailwind's `text-*` classes do. A node with several parts (`heading` then `heading2`; `blockquote`, `alert`, `alertNote`; `listMarker`,
@@ -222,7 +193,7 @@ build without syntect. Without the feature, code blocks the app does not highlig
   does), `render` shows a custom node in Rust. A view provides them to every `TextView` below it with
   `provide_context(MarkdownPlugins::new().with(..))`. A plugin's `render` comes before `renderCustom`, which comes
   before the node's content.
-- **`MarkdownOptions`**: `math`, `html`, `alerts` (default on), `frontmatter`, `mdx`, `streaming`, `preserveLineBreaks` (default off).
+- **`MarkdownOptions`**: `math`, `html`, `alerts` (default on), `frontmatter`, `mdx`, `streaming` (default off).
   With `mdx`, JSX elements are custom nodes named by their tag and `{expressions}` custom nodes `expression`; raw HTML
   is then text.
 
@@ -246,6 +217,19 @@ metadata, scripts, styles, form controls, embedded media; elements `hidden`, `ar
 checkboxes, `<math>` with a TeX annotation, `language-*` classes of code). Depth is bounded (256) and `colspan` too
 (64): the input is untrusted.
 
+## In a terminal
+
+On the terminal backend (`is_terminal()`) the document takes the forms of a terminal reader, in `text_view/view.rs`
+next to the screen forms; the full list is `TextView`'s row in `docs/dev/components.md` "In a terminal". In short:
+blocks are one blank row apart and nothing trails the last (`shown_before` skips the blocks that show nothing: a
+rule, a paragraph of images without alt text); headings drop their `#` marks and take their level's color in bold,
+with a `─` rule under h1 only (`terminal_heading`); a quote is `▎` in the accent before muted text; code blocks and
+formulas are bands as wide as their longest line plus a Cell each side (`terminal_band`), a code block under its
+language label; an alert is one band across the body text's width, its icon and text a Cell in, and keeps a `│` in its
+tint where the terminal draws no bands; tables fit the view by narrowing their widest column, never below
+`MIN_COLUMN` Cells (`fit_columns`, recomputed from the table's laid-out width), their cells wrapping; tasks show
+`☐` / `☑`. The tests are `nsh-base`'s `tests/base/terminal.rs`.
+
 ## Accessibility
 
 Headings have role `header`, links (and footnote references) role `link` with their title as the hint, task markers
@@ -264,14 +248,11 @@ module, which has everything.
 
 ## Performance
 
-- The worker parses the whole newest source, including late reference definitions; pending changes coalesce while
-  one parse runs. There is no incremental AST or content cap. Matched workload measurements belong in
-  `performance.md` once measured.
-- Root rows are mounted near the surrounding viewport; each cell reads only its current block. Their keyed logical
-  owners update only when that block's value changes. The complete parsed document remains available for static
-  whole-document text, and the app's canonical raw-source copy remains independent of mounted rows.
-- Selection joins the actual mounted texts. A single large root block (a long paragraph, code block, table or
-  container), including the full literal shown before parsing, remains one row.
+- The whole text is parsed again on each change (one `computed`); parsing is Rust and linear, and the rows that did
+  not change make no mount items. A streamed reply of N chunks costs N parses of a growing text (no incremental
+  parse); a baseline belongs in `performance.md` once measured.
+- Rows are made again only when their value changes (`Each` with the position and kind as the key, the block as the
+  value), and render functions only when their value changes.
 - A disclosure makes its content only while open.
 - Images default to their natural size (one `image_size` read each), at most the width of the text.
 
@@ -287,8 +268,8 @@ module, which has everything.
 | Table actions | `renderTableActions` |
 | `MarkdownPlugin` | `MarkdownPlugin` (Rust) and `MarkdownExtension` (declared, from TS too) |
 | `image_source` / image loading | `renderImage`; the default loads the URL with the runtime's image loader |
-| Link clicks | `onLinkPress({ url, target })` |
-| Streaming fade / motion | The app's: the blocks are views it styles and animates (`nsh`, layout animation) |
+| Link clicks | `onLinkPress({ url })` |
+| Streaming fade / motion | The app's: the blocks are views it styles and animates (`nsh`'s `Animated`, layout animation) |
 
 ## Limits
 

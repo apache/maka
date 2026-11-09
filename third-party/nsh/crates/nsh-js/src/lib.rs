@@ -25,6 +25,7 @@ mod error;
 mod host;
 mod host_channel;
 mod hot;
+mod i18n;
 mod input_action;
 mod keymap;
 mod list;
@@ -42,6 +43,7 @@ mod state;
 mod timers;
 mod touch;
 mod web;
+mod window;
 
 // The typed API check (docs/dev/geometry.md, "Typed API"): the scan is
 // nsh-core's; this crate's lists are `unitless.txt` and `untyped.txt`.
@@ -57,7 +59,7 @@ fn public_api_is_typed() {
 
 pub use nsh_core::{
     js::Limits,
-    platform::{ColorScheme, Environment, Idiom, Os, Renderer},
+    platform::{ColorScheme, Environment, Idiom, Os},
 };
 
 pub use crate::{

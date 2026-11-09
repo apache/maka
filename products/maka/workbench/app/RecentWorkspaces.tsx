@@ -21,7 +21,7 @@ import { Text, View, windowSize } from 'nsh';
 import { Select } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { C, controlStyle, controlHoverStyle, controlFocusStyle, textTooltip } from './ui';
+import { C, captionTextStyle, controlStyle, textTooltip, toolbarControlStyle } from './ui';
 
 export type RecentWorkspace = { path: string };
 const name = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -67,8 +67,8 @@ export function RecentWorkspaces(props: {
       }}
       open={props.open()}
       onOpenChange={({ open }) => props.changed(open)}
-      placement="bottom"
-      align="center"
+      placement="top"
+      align="start"
       offset={8}
       margin={8}
       popupStyle={{
@@ -86,27 +86,32 @@ export function RecentWorkspaces(props: {
         <View
           tooltip={textTooltip(() => props.path() || tr('Choose workspace'))}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
+            gap: 4,
             maxWidth: '100%',
             minWidth: 0,
             flexShrink: 1,
           }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
+          hoverStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.line }}
         >
-          <Icon name="folder" color={C.secondary} />
+          <Icon name="folder" color={C.muted} />
           <Text
             style={[
-              { fontSize: 13, color: C.secondary, flexShrink: 1, textOverflow: 'ellipsis-middle' },
+              {
+                ...captionTextStyle,
+                color: C.secondary,
+                flexShrink: 1,
+                textOverflow: 'ellipsis-middle',
+              },
               { numberOfLines: 1 },
             ]}
           >
             {props.path() ? name(props.path()) : tr('Choose workspace')}
           </Text>
-          <Icon name="down" color={C.secondary} />
+          <Icon name="down" color={C.muted} />
         </View>
       }
       itemStyle={{ padding: 0 }}

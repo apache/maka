@@ -230,6 +230,8 @@ pub enum Driver {
         easing: Easing,
         /// Delay before starting, in milliseconds.
         delay_ms: f32,
+        /// The highest frame rate it needs, in Hz ([`Driver::frame_rate`]).
+        frame_rate: Option<f32>,
     },
     /// Damped spring.
     Spring {
@@ -243,6 +245,8 @@ pub enum Driver {
         mass: f32,
         /// Initial velocity (units per second); `None` keeps the current one.
         velocity: Option<f32>,
+        /// The highest frame rate it needs, in Hz ([`Driver::frame_rate`]).
+        frame_rate: Option<f32>,
     },
     /// Exponential slow-down from an initial velocity (flings).
     Decay {
@@ -256,7 +260,29 @@ pub enum Driver {
         /// The fraction of its speed the value keeps when it bounces off a
         /// bound (0: it stops there).
         bounce: f32,
+        /// The highest frame rate it needs, in Hz ([`Driver::frame_rate`]).
+        frame_rate: Option<f32>,
     },
+}
+
+impl Driver {
+    /// The highest frame rate the animation needs, in Hz (TS's
+    /// `frameRate`): a slow or small motion asks for less than the
+    /// screen's highest, which platforms that can lower their frame rate
+    /// honor while nothing else moves. `None` (or a rate that is not
+    /// positive): the screen's highest.
+    pub fn frame_rate(&self) -> Option<f32> {
+        let (Driver::Timing { frame_rate, .. }
+        | Driver::Spring { frame_rate, .. }
+        | Driver::Decay { frame_rate, .. }) = self;
+        crate::style::frame_rate(*frame_rate)
+    }
+}
+
+/// The highest of two frame rates animations ask for ([`Driver::frame_rate`]):
+/// `None`, the screen's highest, wins over any rate.
+pub fn highest_frame_rate(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    Some(a?.max(b?))
 }
 
 /// Output range of an interpolation.
@@ -494,6 +520,25 @@ pub enum Composite {
 }
 
 impl Composite {
+    /// The highest frame rate its steps need ([`Driver::frame_rate`]):
+    /// `None` when one asks for the screen's highest, or when it runs no
+    /// value at all (delays alone).
+    pub fn frame_rate(&self) -> Option<f32> {
+        /// `None`: no step runs a value; `Some(None)`: one asks for the
+        /// screen's highest.
+        fn fold(c: &Composite) -> Option<Option<f32>> {
+            match c {
+                Composite::Run { driver, .. } => Some(driver.frame_rate()),
+                Composite::Delay(_) => None,
+                Composite::Loop { child, .. } => fold(child),
+                Composite::Sequence(children) | Composite::Parallel { children, .. } => {
+                    children.iter().filter_map(fold).reduce(highest_frame_rate)
+                }
+            }
+        }
+        fold(self).flatten()
+    }
+
     /// The value nodes it animates.
     pub fn nodes(&self, out: &mut Vec<NodeId>) {
         match self {

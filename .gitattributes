@@ -9,8 +9,6 @@
 # Preserve whitespace in redistributed upstream license texts.
 /products/maka/cli/THIRD_PARTY_NOTICES.txt whitespace=-blank-at-eol
 /scripts/rust/licenses/*.txt whitespace=-blank-at-eol
-/third-party/gpui-fast/assets/fonts/ibm-plex-sans/license.txt whitespace=-blank-at-eol
-/third-party/gpui-fast/assets/fonts/lilex/OFL.txt whitespace=-blank-at-eol
 
 # Repository-local agent configuration, visual review evidence, and incubation
 # working notes are not source-release inputs.
@@ -20,12 +18,12 @@
 
 # Preserve verbatim whitespace in the pinned NSH source snapshot.
 /third-party/nsh/.gitattributes whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/browser-js-size.md whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/data-table.md whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/TitleBar.tsx whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/demos/chat/markdown.tsx whitespace=-blank-at-eof
+/third-party/nsh/examples/nsh-gallery-ui/theme.ts whitespace=-blank-at-eof
 /third-party/nsh/third-party/icy_sixel/Cargo.toml whitespace=-blank-at-eof
-/third-party/nsh/website/demos/hero-chat/chat/markdown.tsx whitespace=-blank-at-eof
-/third-party/nsh/website/demos/hero-chat/ui.tsx whitespace=-blank-at-eof
-/third-party/nsh/docs/dev/browser-js-size.md whitespace=-blank-at-eof
 /third-party/nsh/crates/nsh-base/fonts/katex.LICENSE.txt whitespace=-blank-at-eol
 /third-party/nsh/examples/gallery-rs/native/assets/fonts/OFL.txt whitespace=-blank-at-eol
 /third-party/nsh/examples/gallery/fonts/OFL.txt whitespace=-blank-at-eol
@@ -34,3 +32,5 @@
 
 # The pinned upstream license checksum includes its published CRLF bytes.
 /third-party/playwright/LICENSE -text whitespace=cr-at-eol
+
+/products/maka/workbench/tests/fonts/OFL.txt whitespace=-blank-at-eol

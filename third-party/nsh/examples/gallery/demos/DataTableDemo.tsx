@@ -1,6 +1,6 @@
 import { cleanup, signal, Text, View } from "nsh";
-import { Button, DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
-import { dataTableClasses, dataTableFitPadding, Segmented } from "../ui";
+import { DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
+import { Button as GalleryButton, dataTableClasses, dataTableFitPadding, Segmented, terminal } from "../ui";
 
 // `nsh/base`'s `DataTable` over a million stocks of sixty columns the app
 // does not hold, with live quotes as gpui-component's data table story: a
@@ -111,7 +111,7 @@ function opening(id: number): Float64Array {
 }
 
 const right = { align: "end" as const, width: 110 };
-const tone = { positiveClass: "text-green-600", negativeClass: "text-red-600" };
+const tone = { positiveClass: "text-up", negativeClass: "text-down" };
 const columns: DataTableColumn[] = [
   { key: "id", title: "ID", width: 90, align: "end" as const, fixed: true, sortable: true },
   { key: "symbol", title: "Symbol", width: 110, fixed: true },
@@ -175,17 +175,9 @@ function row(id: number, n: Float64Array): (string | number)[] {
   return out;
 }
 
-/** A small button in the gallery's look. */
+/** A small secondary button of the gallery's (`buttonLook`). */
 function Tool(props: { label: string; name: string; onPress: () => void }) {
-  return (
-    <Button
-      onPress={props.onPress}
-      accessibilityLabel={props.label}
-      class="h-8 items-center justify-center rounded-md border border-border bg-card px-3 active:opacity-70"
-    >
-      <Text class="text-[13px] font-semibold text-foreground">{props.name}</Text>
-    </Button>
-  );
+  return <GalleryButton label={props.name} accessibilityLabel={props.label} variant="secondary" size="small" onPress={props.onPress} />;
 }
 
 /**
@@ -304,12 +296,15 @@ export function DataTableDemo() {
         <Tool label="Go to row 500000" name="Row 500,000" onPress={() => table?.scrollToRow(499_999)} />
         <Tool label="Go to Indicator 30" name="Indicator 30" onPress={() => table?.scrollToColumn("x30")} />
       </View>
-      <View class="flex-row items-center gap-3">
-        <Text class="font-mono text-[12px] text-foreground">{describe()}</Text>
-        <Text class="font-mono text-[12px] text-muted-foreground">
+      {/* One row in a terminal too: a line that wrapped as the counts grow
+          would move the table under the pointer dragging its bar. The
+          tick gives way first. */}
+      <View class={terminal ? "flex-row items-center gap-x-6" : "flex-row items-center gap-3"}>
+        <Text class="shrink-0 font-mono text-[12px] text-foreground">{describe()}</Text>
+        <Text class="shrink-0 font-mono text-[12px] text-muted-foreground">
           {`rows ${visible().start + 1}–${visible().end} of ${ROWS.toLocaleString("en-US")}`}
         </Text>
-        <Text class="font-mono text-[12px] text-muted-foreground">{`${columns.length} columns · tick ${ticks()}`}</Text>
+        <Text style={{ numberOfLines: 1 }} class="shrink font-mono text-[12px] text-muted-foreground">{`${columns.length} columns · tick ${ticks()}`}</Text>
       </View>
       <DataTable
         ref={(r) => (table = r)}

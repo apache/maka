@@ -1,12 +1,10 @@
-//! Input as a user's hands give it, made in process: mouse and trackpad
-//! events posted to the app as the system posts them, keys, and pictures
-//! of the window. The agent of `nsh test --target macos` acts with them
-//! ([`crate::agent`]).
-
+//! Synthesized AppKit input and screenshots for `nsh test` (`dev`).
 use std::rc::Rc;
 
 use objc2::{MainThreadMarker, rc::Retained};
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem, NSWindow,
+};
 use objc2_core_foundation::CGFloat;
 use objc2_foundation::{NSPoint, NSString};
 
@@ -17,6 +15,36 @@ use crate::surface::Surface;
 pub(crate) fn to_window(window: &NSWindow, x: f64, y: f64) -> NSPoint {
     let height = window.contentView().map_or(0.0, |v| v.frame().size.height);
     NSPoint::new(x as CGFloat, height - y as CGFloat)
+}
+
+/// How many of the agent's latest mouse events [`from_agent`] knows.
+const AGENT_EVENTS: usize = 64;
+
+thread_local! {
+    /// The type and timestamp of the agent's latest mouse events: a test's
+    /// window takes only these, so the user's own mouse, moving over it or
+    /// resting elsewhere, never changes what a test hovers
+    /// (`View::pointer`). AppKit hands the view a copy of a posted event and
+    /// keeps 16 bits of its event number, which real events reach; the
+    /// timestamp survives the copy to the nanosecond (rounded), and no
+    /// real event shares it.
+    static AGENT: std::cell::RefCell<std::collections::VecDeque<(NSEventType, i64)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Whether `event` is one of the agent's mouse events.
+pub(crate) fn from_agent(event: &NSEvent) -> bool {
+    let (kind, at) = (event.r#type(), nanoseconds(event));
+    AGENT.with_borrow(|events| {
+        events
+            .iter()
+            .any(|&(k, t)| k == kind && (t - at).abs() <= 1)
+    })
+}
+
+/// `event`'s timestamp in whole nanoseconds.
+fn nanoseconds(event: &NSEvent) -> i64 {
+    (event.timestamp() * 1e9).round() as i64
 }
 
 pub(crate) fn mouse(window: &NSWindow, kind: NSEventType, x: f64, y: f64, clicks: isize) {
@@ -43,6 +71,14 @@ pub(crate) fn mouse_event(
         clicks,
         if clicks > 0 { 1.0 } else { 0.0 },
     )
+    .inspect(|event| {
+        AGENT.with_borrow_mut(|events| {
+            if events.len() == AGENT_EVENTS {
+                events.pop_front();
+            }
+            events.push_back((event.r#type(), nanoseconds(event)));
+        });
+    })
 }
 
 pub(crate) fn mouse_with(
@@ -193,6 +229,10 @@ pub(crate) fn key(surface: &Rc<Surface>, window: &NSWindow, name: &str) {
             && let Some(n) = f[1..].parse::<u16>().ok().filter(|n| (1..=12).contains(n)) =>
         {
             const CODES: [u16; 12] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111];
+            // With the Function flag, as a keyboard's function keys have it:
+            // without it AppKit does not match one to a menu item's key
+            // equivalent.
+            flags |= NSEventModifierFlags::Function;
             let c = char::from_u32(0xf703 + u32::from(n)).unwrap_or('\0');
             (c.to_string(), CODES[usize::from(n - 1)])
         }
@@ -244,39 +284,305 @@ pub(crate) fn key_event(
             code,
         );
         let Some(event) = event else { continue };
+        if kind == NSEventType::KeyDown && crate::text_input::hold_nsevent(surface, &event) {
+            continue;
+        }
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(window));
         // Key equivalents (menus) and key monitors (`nsh/keymap`) are the
         // application's, which hands the key to its key window.
-        if window.isKeyWindow() || flags.contains(NSEventModifierFlags::Command) {
-            objc2_app_kit::NSApplication::sharedApplication(MainThreadMarker::from(window))
-                .sendEvent(&event);
+        if window.isKeyWindow() {
+            app.sendEvent(&event);
         } else if kind == NSEventType::KeyDown && crate::keymap::fires(surface, &event) {
             // The app's key monitor never sees a window's own events: it
             // gets the key first, as it would in the key window (the test
             // window often is not one, its app left in the background).
+        } else if kind == NSEventType::KeyDown && key_equivalent(window, &app, &event) {
+            // A key equivalent of the window's views (Command keys) or of
+            // the main menu, sent where the application would send it to
+            // its key window: this one is not (an app run in the
+            // background has none).
+        } else if flags.contains(NSEventModifierFlags::Command) {
+            app.sendEvent(&event);
         } else {
             window.sendEvent(&event);
         }
     }
 }
 
-/// Renders the window's content into a PNG (in process: no Screen
-/// Recording permission, and it works while the screen is locked).
+/// Whether a key equivalent took the key-down `event`: a Command key's, of
+/// `window`'s views, else the main menu's item for it (any modifiers, as in
+/// the key window), in the order the application tries them. A menu's
+/// action goes to its item's target, else down `window`'s responder chain
+/// from its first responder: AppKit's own search for a target starts at
+/// the key window, which an app in the background has none of.
+fn key_equivalent(window: &NSWindow, app: &NSApplication, event: &NSEvent) -> bool {
+    if event
+        .modifierFlags()
+        .contains(NSEventModifierFlags::Command)
+        && window.performKeyEquivalent(event)
+    {
+        return true;
+    }
+    let Some(item) = app.mainMenu().and_then(|menu| menu_item(&menu, event)) else {
+        return false;
+    };
+    let Some(action) = item.action() else {
+        return false;
+    };
+    // SAFETY: `action` is the item's own, and the item is its sender, as
+    // when the menu sends it.
+    unsafe {
+        match item.target() {
+            Some(target) => app.sendAction_to_from(action, Some(&target), Some(&item)),
+            None => window
+                .firstResponder()
+                .is_some_and(|responder| responder.tryToPerform_with(action, Some(&item))),
+        }
+    }
+}
+
+/// The item of `menu` (or of its submenus) whose key equivalent key-down
+/// `event` is. Not whether it is enabled: AppKit validates that against
+/// the key window's responders, and with none every item looks disabled
+/// once the menu has been validated; an item nothing answers does nothing
+/// when sent, and one the app disabled has an action nothing answers.
+fn menu_item(menu: &NSMenu, event: &NSEvent) -> Option<Retained<NSMenuItem>> {
+    let flags =
+        event.modifierFlags() & (key_equivalent_modifiers() | NSEventModifierFlags::Function);
+    let key = event
+        .charactersIgnoringModifiers()?
+        .to_string()
+        .to_lowercase();
+    find_item(menu, flags, &key)
+}
+
+/// The modifiers a menu item's key equivalent can name.
+fn key_equivalent_modifiers() -> NSEventModifierFlags {
+    NSEventModifierFlags::Command
+        | NSEventModifierFlags::Shift
+        | NSEventModifierFlags::Option
+        | NSEventModifierFlags::Control
+}
+
+/// [`menu_item`]'s search, for the event's `flags` (of those modifiers and Fn)
+/// and lower-case `key`.
+fn find_item(
+    menu: &NSMenu,
+    flags: NSEventModifierFlags,
+    key: &str,
+) -> Option<Retained<NSMenuItem>> {
+    for item in menu.itemArray() {
+        if let Some(submenu) = item.submenu() {
+            if item.action() == Some(crate::chrome::disabled()) {
+                continue;
+            }
+            if let Some(found) = find_item(&submenu, flags, key) {
+                return Some(found);
+            }
+            continue;
+        }
+        let equivalent = item.keyEquivalent().to_string();
+        if equivalent.is_empty() {
+            continue;
+        }
+        let mask = item.keyEquivalentModifierMask();
+        // An item of the Fn (Globe) key (Fn+D Dictation, Fn+F Full Screen)
+        // wants it held; other items take a key with or without it, as the
+        // keyboard's function keys and arrows carry it.
+        if mask.contains(NSEventModifierFlags::Function)
+            && !flags.contains(NSEventModifierFlags::Function)
+        {
+            continue;
+        }
+        // An upper-case equivalent means Shift with its lower case.
+        let mut wanted = mask & key_equivalent_modifiers();
+        if equivalent.chars().any(char::is_uppercase) {
+            wanted |= NSEventModifierFlags::Shift;
+        }
+        if wanted == flags & key_equivalent_modifiers()
+            && if equivalent.is_ascii() {
+                equivalent.eq_ignore_ascii_case(key)
+            } else {
+                equivalent.to_lowercase() == key
+            }
+        {
+            return Some(item);
+        }
+    }
+    None
+}
+
+/// A PNG of the window's content as the window server composites it
+/// ([`composited`]), or, where it cannot give one, as AppKit draws it in
+/// process ([`drawn`]). Neither needs the Screen Recording permission.
 pub(crate) fn shot(window: &NSWindow) -> Result<Vec<u8>, String> {
+    match composited(window) {
+        Ok(png) => Ok(png),
+        Err(why) => {
+            log::debug!("screenshot drawn in process: {why}");
+            drawn(window)
+        }
+    }
+}
+
+/// `CGWindowListCreateImageFromArray`: images of windows as the window
+/// server composited them. Deprecated since macOS 14 and missing from the
+/// SDK's headers since macOS 15, but still exported (macOS 27), so it is
+/// looked up at run time: a system without it falls back to [`drawn`].
+type CreateImageFromArray = unsafe extern "C" fn(
+    objc2_core_foundation::CGRect,
+    *const objc2_core_foundation::CFArray,
+    u32,
+) -> *mut objc2_core_graphics::CGImage;
+
+/// `kCGWindowImageBestResolution`: pixels at the display's backing scale.
+const IMAGE_BEST_RESOLUTION: u32 = 1 << 3;
+
+/// The window's content view as the window server composited it, with
+/// its sheets and child windows over it: what the screen shows, Core
+/// Animation's own rendering (backdrop blur and glass, 3D transforms, Core
+/// Image filters, `AVPlayerLayer`, web views), which no in-process
+/// rendering reproduces (`CARenderer` cannot render a layer tree a window
+/// shows). An app may take pictures of its own windows without the Screen
+/// Recording permission; the picture is of the window's own surface, so
+/// windows over it do not matter.
+fn composited(window: &NSWindow) -> Result<Vec<u8>, String> {
+    use objc2_app_kit::NSScreen;
+    use objc2_core_foundation::{CFArray, CFRetained, CGPoint, CGRect, CGSize};
+
+    if !window.isVisible() {
+        return Err("the window is not on screen".into());
+    }
+    // SAFETY: `dlsym` with `RTLD_DEFAULT` and a NUL-terminated name only
+    // looks the symbol up.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            c"CGWindowListCreateImageFromArray".as_ptr(),
+        )
+    };
+    if symbol.is_null() {
+        return Err("CGWindowListCreateImageFromArray is missing".into());
+    }
+    // SAFETY: the symbol is CoreGraphics' function of this signature.
+    let create: CreateImageFromArray = unsafe { std::mem::transmute(symbol) };
+    let view = window.contentView().ok_or("the window has no content")?;
+    let mtm = MainThreadMarker::from(window);
+    let primary = NSScreen::screens(mtm)
+        .firstObject()
+        .ok_or("there is no screen")?
+        .frame();
+    let frame = window.convertRectToScreen(view.convertRect_toView(view.bounds(), None));
+    // Screen coordinates from the primary screen's top left, as the window
+    // server's.
+    let rect = CGRect::new(
+        CGPoint::new(
+            frame.origin.x,
+            primary.size.height - frame.origin.y - frame.size.height,
+        ),
+        CGSize::new(frame.size.width, frame.size.height),
+    );
+    let mut ids = Vec::new();
+    front_to_back(window, &mut ids);
+    let mut values: Vec<*const std::ffi::c_void> = ids
+        .iter()
+        .map(|&id| id as usize as *const std::ffi::c_void)
+        .collect();
+    // SAFETY: the array holds window numbers as its values (as the
+    // function takes them), so it gets no callbacks to retain them;
+    // `values` outlives the call that copies them.
+    let array = unsafe {
+        CFArray::new(
+            None,
+            values.as_mut_ptr(),
+            values.len() as isize,
+            std::ptr::null(),
+        )
+    }
+    .ok_or("cannot make the window list")?;
+    // SAFETY: a rectangle, an array of window numbers and image options,
+    // as the function takes them; it returns a +1 image or null.
+    let image = unsafe { create(rect, &*array, IMAGE_BEST_RESOLUTION) };
+    let image = std::ptr::NonNull::new(image).ok_or("the window server gave no picture")?;
+    // SAFETY: the function returns an image the caller owns.
+    let image = unsafe { CFRetained::from_raw(image) };
+    if blank(&image) {
+        // A locked screen, or a window the window server has no surface of.
+        return Err("the window server's picture is blank".into());
+    }
+    let rep = objc2_app_kit::NSBitmapImageRep::initWithCGImage(
+        <objc2_app_kit::NSBitmapImageRep as objc2::AnyThread>::alloc(),
+        &image,
+    );
+    png(&rep)
+}
+
+/// The numbers of `window`, its sheets and its visible child windows,
+/// frontmost first (the order the window server composites them in).
+fn front_to_back(window: &NSWindow, ids: &mut Vec<u32>) {
+    if let Some(sheet) = window.attachedSheet() {
+        front_to_back(&sheet, ids);
+    }
+    if let Some(children) = window.childWindows() {
+        for child in children.to_vec().iter().rev() {
+            if child.isVisible() {
+                front_to_back(child, ids);
+            }
+        }
+    }
+    let id = window.windowNumber() as u32;
+    if !ids.contains(&id) {
+        ids.push(id);
+    }
+}
+
+/// Whether `image` has nothing but black or clear pixels, judged from a
+/// small copy.
+fn blank(image: &objc2_core_graphics::CGImage) -> bool {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_core_graphics::{
+        CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
+        CGImageByteOrderInfo,
+    };
+    const SIDE: usize = 32;
+    if CGImage::width(Some(image)) == 0 || CGImage::height(Some(image)) == 0 {
+        return true;
+    }
+    let Some(space) = CGColorSpace::new_device_rgb() else {
+        return false;
+    };
+    let mut pixels = [0u8; SIDE * SIDE * 4];
+    // SAFETY: `pixels` holds an RGBA context of these dimensions and
+    // outlives it.
+    unsafe {
+        let Some(context) = CGBitmapContextCreate(
+            pixels.as_mut_ptr().cast(),
+            SIDE,
+            SIDE,
+            8,
+            SIDE * 4,
+            Some(&space),
+            CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+        ) else {
+            return false;
+        };
+        CGContext::draw_image(
+            Some(&context),
+            CGRect::new(CGPoint::ZERO, CGSize::new(SIDE as f64, SIDE as f64)),
+            Some(image),
+        );
+    }
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|px| px[3] == 0 || px[..3] == [0, 0, 0])
+}
+
+/// A bitmap encoded as a PNG.
+fn png(rep: &objc2_app_kit::NSBitmapImageRep) -> Result<Vec<u8>, String> {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRepPropertyKey};
     use objc2_foundation::NSDictionary;
-    let view = window.contentView().ok_or("the window has no content")?;
-    if let Some(layer) = view.layer() {
-        crate::surface::quiet(|| order_by_z(&layer));
-    }
-    let bounds = view.bounds();
-    let rep = view
-        .bitmapImageRepForCachingDisplayInRect(bounds)
-        .ok_or("cannot make a bitmap of the window")?;
-    // An in-process picture draws masked layers whole: the children of
-    // effects (shown through their shader's frames) stay out of it.
-    let hidden = crate::shader::hide_masked(window);
-    view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
-    hidden.iter().for_each(|c| c.setHidden(false));
     let properties = NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();
     // SAFETY: an empty property dictionary is valid for PNG.
     let data =
@@ -284,30 +590,10 @@ pub(crate) fn shot(window: &NSWindow) -> Result<Vec<u8>, String> {
     Ok(data.ok_or("cannot encode the picture")?.to_vec())
 }
 
-/// Orders the sublayers of `layer` and its sublayers by their `zPosition`
-/// (keeping their order where it is equal), as Core Animation composites
-/// them: `cacheDisplayInRect:` draws sublayers in their order and ignores
-/// `zPosition`, so a decoration added before a layer it is above (a
-/// border's stroke before a gradient) would look covered in the shot. The
-/// window looks the same either way.
-pub(crate) fn order_by_z(layer: &objc2_quartz_core::CALayer) {
-    // SAFETY: the main thread reads the layer tree, which nothing else
-    // changes meanwhile.
-    let Some(sublayers) = (unsafe { layer.sublayers() }) else {
-        return;
-    };
-    let layers: Vec<Retained<objc2_quartz_core::CALayer>> = sublayers.to_vec();
-    let sorted = layers
-        .windows(2)
-        .all(|w| w[0].zPosition() <= w[1].zPosition());
-    if !sorted {
-        let mut by_z = layers.clone();
-        by_z.sort_by(|a, b| a.zPosition().total_cmp(&b.zPosition()));
-        for (i, l) in by_z.iter().enumerate() {
-            layer.insertSublayer_atIndex(l, i as u32);
-        }
-    }
-    for l in &layers {
-        order_by_z(l);
-    }
+/// Renders the window's content in process (`cacheDisplayInRect:`): it
+/// works wherever the window is, but AppKit's drawing is not Core
+/// Animation's (`docs/dev/macos.md`).
+fn drawn(window: &NSWindow) -> Result<Vec<u8>, String> {
+    let rep = crate::capture::bitmap(window, None)?;
+    png(&rep)
 }

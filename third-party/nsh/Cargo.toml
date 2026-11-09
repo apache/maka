@@ -1,8 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/gallery-rs/native", "examples/rust-exports/native", "examples/embed-gpui/run"]
-# The GPUI backend is a workspace of its own (`crates/gpui/Cargo.toml`).
-exclude = ["crates/gpui", "third-party/gpui-wgpu", "third-party/icy_sixel"]
+members = ["crates/*", "examples/gallery-rs/native", "examples/rust-exports/native", "examples/tasks-rs"]
+exclude = ["third-party/icy_sixel"]
 # `cargo run` runs the gallery (`crates/xtask/src/run.rs`).
 default-members = ["crates/xtask"]
 
@@ -25,10 +24,19 @@ unreachable_pub = "deny"
 private_interfaces = "deny"
 
 [workspace.dependencies]
+ratatui-core = { version = "0.1.2", features = ["std", "layout-cache", "underline-color"] }
+ratatui-widgets = { version = "0.3.2", default-features = false, features = ["std"] }
+ratatui-crossterm = "0.1.2"
+crossterm = "0.29.0"
+unicode-width = "0.2.2"
+vte = { version = "0.15", default-features = false }
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
+nsh-terminal = { version = "0.4.0", path = "crates/nsh-terminal" }
 nsh-core = { version = "0.4.0", path = "crates/nsh-core" }
 nsh-package = { version = "0.4.0", path = "crates/nsh-package" }
+nsh-i18n = { version = "0.4.0", path = "crates/nsh-i18n" }
+nsh-updater = { version = "0.4.0", path = "crates/nsh-updater" }
 # Without `highlight`: the platforms turn it on, the CLI and the bundler leave it off.
 nsh-base = { version = "0.4.0", path = "crates/nsh-base", default-features = false }
 nsh-macros = { version = "0.4.0", path = "crates/nsh-macros" }
@@ -37,25 +45,19 @@ nsh-js = { version = "0.4.0", path = "crates/nsh-js", default-features = false }
 nsh-engine = { version = "0.4.0", path = "crates/nsh-engine", default-features = false }
 nsh-bundler = { version = "0.4.0", path = "crates/nsh-bundler", default-features = false }
 nsh-platform-ios = { version = "0.4.0", path = "crates/nsh-platform-ios", default-features = false }
-nsh-platform-android = { version = "0.4.0", path = "crates/nsh-platform-android", default-features = false }
 nsh-platform-linux = { version = "0.4.0", path = "crates/nsh-platform-linux", default-features = false }
+nsh-platform-apple = { version = "0.4.0", path = "crates/nsh-platform-apple" }
 nsh-platform-macos = { version = "0.4.0", path = "crates/nsh-platform-macos", default-features = false }
 nsh-platform-windows = { version = "0.4.0", path = "crates/nsh-platform-windows", default-features = false }
 nsh-platform-tui = { version = "0.4.0", path = "crates/nsh-platform-tui", default-features = false }
 nsh-dev = { version = "0.4.0", path = "crates/nsh-dev" }
 nsh-testing = { version = "0.4.0", path = "crates/nsh-testing", default-features = false }
 
+icy_sixel = "=0.5.1"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4.6", features = ["derive"] }
 crossbeam-channel = "0.5"
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
-crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
-tiny-skia = "0.12"
-fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
-rustybuzz = "0.20"
-signal-hook = "0.3"
 notify = "8.2"
 log = "0.4"
 ordered-float = { version = "5", default-features = false }
@@ -77,20 +79,27 @@ wuff = "0.2.9"
 oxc_sourcemap = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Translations (`nsh_core::i18n`, `nsh-i18n`): our rust-i18n, its files and lookups.
+rust-i18n = "4.2.4"
+rust-i18n-support = "4.2.4"
+# The keys and values of `nsh.json` the CLI cannot read, which it warns of and
+# ignores (`nsh-cli`'s `package::read_config`).
+serde_ignored = "0.1.14"
+serde_path_to_error = "0.1.20"
 # Calendar dates and times of day (`nsh-base`'s `Calendar`, `TimeField`, `DatePicker`).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 plist = "1.7"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 rustc-hash = "2.1"
 # Shaders (`nsh_core::shader`): the WGSL front end and validator wgpu uses, and
 # its GLSL ES writer for the web's WebGL 2.
-naga = { version = "30", default-features = false, features = ["wgsl-in"] }
+naga = { version = "29", default-features = false, features = ["wgsl-in"] }
 # The native backends' shader renderer (`nsh_engine::shader`), the version GPUI uses:
 # WGSL only, each OS's own GPU API (and GL where Vulkan may be missing).
-wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "metal", "vulkan", "gles"] }
+wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "metal", "vulkan", "gles"] }
 pollster = "0.4"
 proc-macro2 = "1"
 quote = "1"
@@ -117,6 +126,7 @@ slab = "0.4"
 percent-encoding = "2.3"
 url = "2.5"
 ureq = "3.1"
+ring = "0.17"
 regex = "1"
 # The text of `nsh-base`'s `Editor`: a rope, and its grapheme and word boundaries.
 ropey = "1.6"
@@ -125,8 +135,6 @@ unicode-segmentation = "1.13"
 unicode-properties = { version = "0.1.3", default-features = false, features = ["emoji"] }
 # The line and word diffs of `nsh-base`'s `DiffView` (histogram, git's indent heuristic).
 imara-diff = "0.2"
-# The columns `DiffView` gives wide (CJK) characters: East Asian Width.
-unicode-width = "0.2"
 markdown = "1.0.0"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3.0"
@@ -143,7 +151,9 @@ semver = "1"
 # UI Automation. Features per area, like the Apple bindings below.
 windows = { version = "0.62", features = [
   "std",
+  "Data_Xml_Dom",
   "Foundation_Numerics",
+  "UI_Notifications",
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Direct2D",
@@ -158,6 +168,8 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Imaging",
   "Win32_Graphics_Imaging_D2D",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_XAudio2",
   "Win32_Media_MediaFoundation",
   "Win32_Storage_Xps",
   "Win32_System_Com",
@@ -172,6 +184,7 @@ windows = { version = "0.62", features = [
   "Win32_System_SystemInformation",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
+  "Win32_System_Time",
   "Win32_System_Variant",
   "Win32_System_WinRT",
   "Win32_UI_Accessibility",
@@ -180,6 +193,7 @@ windows = { version = "0.62", features = [
   "Win32_UI_Input_Ime",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Input_Pointer",
+  "Win32_UI_Notifications",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
@@ -194,6 +208,11 @@ pango = "0.22"
 pangocairo = "0.22"
 # The Linux backend's web views (its feature `webview`): WebKitGTK 6.0 (2.40+).
 webkit6 = "0.6"
+# The Linux backend's sounds: decoded once into memory, mixed in one pipeline
+# (GStreamer, which GTK's media streams already run on; the glib of gtk4's).
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-audio = "0.25"
 taffy = { version = "0.15", default-features = false, features = ["std", "flexbox", "grid", "block_layout", "content_size"] }
 # Features per crate: the runtime's binaries get only what they use.
 tokio = { version = "1", default-features = false }
@@ -201,12 +220,12 @@ tokio = { version = "1", default-features = false }
 # The same QuickJS binding and standard modules run on every platform; the JIT
 # stays disabled on wasm, preserving the native compiler's bytecode format.
 # `full` is avoided on purpose: it enables `dyn-load` (dlopen2), which does not build for iOS / Catalyst.
-rquickjs = { package = "quickjs-jit", version = "=0.14.1", default-features = false, features = ["std", "futures", "loader", "macro"] }
+rquickjs = { package = "quickjs-jit", version = "=0.14.2", default-features = false, features = ["std", "futures", "loader", "macro"] }
 
 # The standard modules `buffer`, `crypto`, `path`, `url` and `zlib` (all targets): LLRT d9fd873e,
 # vendored by quickjs-jit-stdlib, on NSH's exact QuickJS VM. Privileged I/O stays behind NSH grants.
 # `crypto` and `zlib` are `nsh-js`'s features of those names.
-quickjs-jit-stdlib = { version = "=0.14.1", default-features = false, features = ["buffer", "path"] }
+quickjs-jit-stdlib = { version = "=0.14.2", default-features = false, features = ["buffer", "path"] }
 getrandom-stdlib = { package = "getrandom", version = "0.4", default-features = false }
 cap-std = "4.0.3"
 futures-util = { version = "0.3", features = ["sink"] }
@@ -232,12 +251,15 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
   "NSAttributedString",
   "NSBundle",
   "NSCache",
+  "NSCalendar",
   "NSData",
   "NSDictionary",
   "NSDate",
+  "NSDateFormatter",
   "NSDistributedNotificationCenter",
   "NSEnumerator",
   "NSError",
+  "NSFormatter",
   "NSGeometry",
   "NSKeyValueObserving",
   "NSLocale",
@@ -252,8 +274,10 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
   "NSStream",
   "NSString",
   "NSThread",
+  "NSTimeZone",
   "NSTimer",
   "NSURL",
+  "NSURLError",
   "NSURLRequest",
   "NSURLResponse",
   "NSURLSession",
@@ -286,8 +310,6 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UIAccessibilityCustomAction",
   "UIAccessibilityIdentification",
   "UIEvent",
-  "UIFocus",
-  "UIFocusSystem",
   "UIGestureRecognizerSubclass",
   "UIPinchGestureRecognizer",
   "UIRotationGestureRecognizer",
@@ -370,6 +392,8 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
   "CGColor",
   "CGColorSpace",
   "CGContext",
+  "CGDirectDisplay",
+  "CGDisplayConfiguration",
   "CGEvent",
   "CGEventTypes",
   "CGGradient",
@@ -465,6 +489,9 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSScreen",
   "NSScrollView",
   "NSSecureTextField",
+  "NSStatusBar",
+  "NSStatusBarButton",
+  "NSStatusItem",
   "NSText",
   "NSLayoutManager",
   "NSTextContainer",
@@ -538,6 +565,6 @@ inherits = "release"
 opt-level = "z"
 strip = true
 panic = "abort"
-# Same codec as ratatui-image; only its output sink is made fallible.
+
 [patch.crates-io]
 icy_sixel = { path = "third-party/icy_sixel" }

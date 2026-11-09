@@ -254,3 +254,53 @@ test('a text of one color transitions it on its element, from the color on scree
     assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('the characters lines broke at stand between the runs, read but never drawn', { skip: !chromium }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'nsh-text-breaks-'));
+  try {
+    const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
+    await writeFile(join(dir, 'index.html'), `<!doctype html><meta charset="utf-8">
+    <body><script type="module">
+      import { Player } from '${module}';
+      try {
+        const player = Object.create(Player.prototype);
+        player.styleClass = () => '';
+        // A text of three lines as fillRun leaves them: one span per run.
+        const el = document.createElement('div');
+        el.style.cssText = 'position:absolute;left:0;top:0;font:400 20px Arial';
+        for (const text of ['it now', 'brings', 'more']) {
+          const span = document.createElement('span');
+          span.className = 'nsh-run';
+          span.style.cssText = 'position:absolute;white-space:pre';
+          span.textContent = text;
+          el.append(span);
+        }
+        document.body.append(el);
+        // [x, y, text, style, start, parts, after]: a soft break ate a
+        // space, a hard break's newline; the last line broke at nothing.
+        const runs = [[0, 0, 'it now', 0, 0, null, ' '], [0, 24, 'brings', 0, 7, null, '\\n'], [0, 48, 'more', 0, 14, null, null]];
+        const lefts = () => [...el.children].map((s) => s.getBoundingClientRect().left + ',' + s.getBoundingClientRect().top).join(' ');
+        if (!player.updateRuns(el, 0, 0, runs, [{}], null, null)) throw Error('the runs were made again');
+        const placed = lefts();
+        if (el.textContent !== 'it now brings\\nmore') throw Error('textContent: ' + JSON.stringify(el.textContent));
+        // Laid out again: the breaks are not added twice.
+        player.updateRuns(el, 0, 0, runs, [{}], null, null);
+        if (el.textContent !== 'it now brings\\nmore') throw Error('again: ' + JSON.stringify(el.textContent));
+        // Nothing moved, and the whitespace takes no room.
+        if (lefts() !== placed) throw Error('the runs moved');
+        if (el.getBoundingClientRect().height !== 0) throw Error('the breaks take room');
+        // A line that no longer breaks drops its character.
+        runs[0][6] = null;
+        player.updateRuns(el, 0, 0, runs, [{}], null, null);
+        if (el.textContent !== 'it nowbrings\\nmore') throw Error('dropped: ' + JSON.stringify(el.textContent));
+        document.body.dataset.result = 'passed';
+      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
+    </script>`);
+    const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
+      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
+    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

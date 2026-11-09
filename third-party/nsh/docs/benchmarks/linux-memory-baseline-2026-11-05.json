@@ -1,0 +1,572 @@
+{
+  "revision": "e4cc287dd",
+  "date": "2026-11-05",
+  "host": "Intel i7-13700KF, 31 GiB RAM, NVIDIA RTX 3060 Ti GDDR6X, driver 615.78.08, GTK 4.24.1, Hyprland Wayland, display scale 1.6",
+  "units": "MiB (1024 ** 2 bytes)",
+  "method": "examples/gallery/tools/memory.py --size 480x640 --renderers ngl,cairo --repeats 2 --seconds 3,8; one batch, the three apps one after another. Process only: excludes the compositor, GPU-only allocations and subprocesses.",
+  "apps": {
+    "gtk-label": "examples/gallery/tools/memory-gtk.c: a GTK 4 window with one label",
+    "rust-template": "nsh init --template rust, nsh package --target linux (release)",
+    "ts-template": "nsh init --template ts, nsh build --release, the full Linux release runner"
+  },
+  "runs": {
+    "gtk-label": [
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 200.73,
+          "Pss": 113.1,
+          "Private_Clean": 0.33,
+          "Private_Dirty": 99.44,
+          "Swap": 0.0,
+          "USS": 99.77
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 200.73,
+          "Pss": 113.1,
+          "Private_Clean": 0.33,
+          "Private_Dirty": 99.44,
+          "Swap": 0.0,
+          "USS": 99.77
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 129.43,
+          "Pss": 48.78,
+          "Private_Clean": 0.35,
+          "Private_Dirty": 36.66,
+          "Swap": 0.0,
+          "USS": 37.02
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 129.43,
+          "Pss": 48.78,
+          "Private_Clean": 0.35,
+          "Private_Dirty": 36.66,
+          "Swap": 0.0,
+          "USS": 37.02
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 81.69,
+          "Pss": 24.66,
+          "Private_Clean": 0.12,
+          "Private_Dirty": 15.15,
+          "Swap": 0.0,
+          "USS": 15.27
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 81.69,
+          "Pss": 24.66,
+          "Private_Clean": 0.12,
+          "Private_Dirty": 15.15,
+          "Swap": 0.0,
+          "USS": 15.27
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 81.86,
+          "Pss": 24.68,
+          "Private_Clean": 0.12,
+          "Private_Dirty": 15.16,
+          "Swap": 0.0,
+          "USS": 15.27
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 81.86,
+          "Pss": 24.68,
+          "Private_Clean": 0.12,
+          "Private_Dirty": 15.16,
+          "Swap": 0.0,
+          "USS": 15.27
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "dev.nsh.memory.bare"
+          }
+        ]
+      }
+    ],
+    "rust-template": [
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 215.89,
+          "Pss": 127.86,
+          "Private_Clean": 15.87,
+          "Private_Dirty": 98.61,
+          "Swap": 0.0,
+          "USS": 114.48
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 215.89,
+          "Pss": 127.86,
+          "Private_Clean": 15.87,
+          "Private_Dirty": 98.61,
+          "Swap": 0.0,
+          "USS": 114.48
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 150.29,
+          "Pss": 69.2,
+          "Private_Clean": 15.79,
+          "Private_Dirty": 41.57,
+          "Swap": 0.0,
+          "USS": 57.36
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 150.31,
+          "Pss": 69.22,
+          "Private_Clean": 15.79,
+          "Private_Dirty": 41.59,
+          "Swap": 0.0,
+          "USS": 57.38
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 101.33,
+          "Pss": 43.76,
+          "Private_Clean": 15.31,
+          "Private_Dirty": 18.98,
+          "Swap": 0.0,
+          "USS": 34.3
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 101.47,
+          "Pss": 43.86,
+          "Private_Clean": 15.31,
+          "Private_Dirty": 19.06,
+          "Swap": 0.0,
+          "USS": 34.37
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 101.45,
+          "Pss": 43.84,
+          "Private_Clean": 15.32,
+          "Private_Dirty": 19.06,
+          "Swap": 0.0,
+          "USS": 34.38
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 101.46,
+          "Pss": 43.85,
+          "Private_Clean": 15.32,
+          "Private_Dirty": 19.06,
+          "Swap": 0.0,
+          "USS": 34.39
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.rustapp"
+          }
+        ]
+      }
+    ],
+    "ts-template": [
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 162.71,
+          "Pss": 78.46,
+          "Private_Clean": 20.35,
+          "Private_Dirty": 45.4,
+          "Swap": 0.0,
+          "USS": 65.75
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 162.77,
+          "Pss": 78.49,
+          "Private_Clean": 20.35,
+          "Private_Dirty": 45.4,
+          "Swap": 0.0,
+          "USS": 65.75
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 163.0,
+          "Pss": 78.76,
+          "Private_Clean": 20.63,
+          "Private_Dirty": 45.41,
+          "Swap": 0.0,
+          "USS": 66.04
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "ngl",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 163.0,
+          "Pss": 78.76,
+          "Private_Clean": 20.63,
+          "Private_Dirty": 45.41,
+          "Swap": 0.0,
+          "USS": 66.04
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 115.6,
+          "Pss": 54.63,
+          "Private_Clean": 19.87,
+          "Private_Dirty": 24.34,
+          "Swap": 0.0,
+          "USS": 44.21
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 0,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 115.6,
+          "Pss": 54.63,
+          "Private_Clean": 19.87,
+          "Private_Dirty": 24.34,
+          "Swap": 0.0,
+          "USS": 44.21
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 3.0,
+        "mib": {
+          "Rss": 115.12,
+          "Pss": 54.46,
+          "Private_Clean": 19.76,
+          "Private_Dirty": 24.33,
+          "Swap": 0.0,
+          "USS": 44.09
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      },
+      {
+        "renderer": "cairo",
+        "repeat": 1,
+        "seconds": 8.0,
+        "mib": {
+          "Rss": 115.12,
+          "Pss": 54.46,
+          "Private_Clean": 19.76,
+          "Private_Dirty": 24.33,
+          "Swap": 0.0,
+          "USS": 44.09
+        },
+        "windows": [
+          {
+            "size": [
+              480,
+              640
+            ],
+            "floating": true,
+            "class": "com.example.hello"
+          }
+        ]
+      }
+    ]
+  }
+}

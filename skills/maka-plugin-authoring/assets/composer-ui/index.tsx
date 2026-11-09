@@ -61,13 +61,11 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
         session.attachments.notify(new Error('The input changed. Paste again.'));
         return;
       }
-      node.replaceRange({
-        start: range.start,
-        end: range.end,
-        text: value,
-        expectedText: text,
-        expectedSelection: range,
-      });
+      const next = text.slice(0, range.start) + value + text.slice(range.end);
+      const caret = range.start + value.length;
+      session.changeDraft(next);
+      selection.set({ start: caret, end: caret });
+      node.setSelection(caret, caret);
     };
     try {
       if (uris) session.attachments.dropFiles(uris, insert);

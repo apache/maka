@@ -1047,6 +1047,13 @@ thread_local! {
     static STROKES: RefCell<Option<StrokeStyles>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn clear_thread_cache() {
+    cache::clear_thread_cache();
+    gradient::clear_thread_cache();
+    layer::clear_thread_cache();
+    let _ = STROKES.try_with(|s| s.borrow_mut().take());
+}
+
 /// The stroke style of a dashed or dotted line (`None` for solid lines,
 /// which need none). Dashes are as long as three widths, as the gaps
 /// between them; dots are round, two widths apart.

@@ -819,7 +819,15 @@ export function createComposerCompletion(options: Options) {
       list = node;
     },
     queryInput(node: InputRef) {
-      queryInput.set(inputEditor(node, queryComposing));
+      queryInput.set(
+        inputEditor(node, {
+          value: query,
+          setValue: (value) => query.set(value),
+          selection: querySelection,
+          setSelection: (selection) => querySelection.set(selection),
+          composing: queryComposing,
+        }),
+      );
       querySelection.set({ start: 0, end: 0 });
       node.focus();
     },

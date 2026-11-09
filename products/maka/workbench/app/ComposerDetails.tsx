@@ -120,7 +120,7 @@ export function ComposerDetails(props: {
   // pointer and the chevron points the way the list opens.
   const chevron = (key: Panel) => (
     <Icon
-      name={selected() === key ? 'down' : platform.isTerminal ? 'right' : 'up'}
+      name={selected() === key ? 'down' : platform.idiom === 'terminal' ? 'right' : 'up'}
       color={C.muted}
     />
   );
@@ -156,7 +156,7 @@ export function ComposerDetails(props: {
           minWidth: 0,
           color: panels[key].problem()
             ? C.warning
-            : key === 'todo' && !platform.isTerminal
+            : key === 'todo' && platform.idiom !== 'terminal'
               ? C.text
               : C.muted,
         },
@@ -188,7 +188,7 @@ export function ComposerDetails(props: {
   // or leave an ambiguous corner close button above another open panel.
   const todoItem = () => {
     const single = () => available().length === 1;
-    if (platform.isTerminal) {
+    if (platform.idiom === 'terminal') {
       return (
         <View
           style={{
@@ -268,8 +268,8 @@ export function ComposerDetails(props: {
     );
   };
   const otherItem = (key: OtherPanel) => {
-    const singleDesktop = () => available().length === 1 && !platform.isTerminal;
-    const singleTerminal = () => available().length === 1 && platform.isTerminal;
+    const singleDesktop = () => available().length === 1 && platform.idiom !== 'terminal';
+    const singleTerminal = () => available().length === 1 && platform.idiom === 'terminal';
     return (
       <>
         <Button
@@ -325,7 +325,7 @@ export function ComposerDetails(props: {
             minHeight: 0,
             flexShrink: 1,
             maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
-            ...(platform.isTerminal
+            ...(platform.idiom === 'terminal'
               ? { borderTopWidth: 1, borderTopColor: C.line }
               : { borderBottomWidth: 1, borderBottomColor: C.line }),
           }}
@@ -344,7 +344,7 @@ export function ComposerDetails(props: {
           flexShrink: 1,
           backgroundColor: C.card,
           overflow: 'hidden',
-          ...(platform.isTerminal
+          ...(platform.idiom === 'terminal'
             ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }
             : {
                 // A tab on the composer card rather than a second card above it.
@@ -359,9 +359,9 @@ export function ComposerDetails(props: {
               }),
         }}
       >
-        {platform.isTerminal ? null : detail()}
+        {platform.idiom === 'terminal' ? null : detail()}
         {row()}
-        {platform.isTerminal ? detail() : null}
+        {platform.idiom === 'terminal' ? detail() : null}
       </View>
     </If>
   );

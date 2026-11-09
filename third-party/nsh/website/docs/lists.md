@@ -8,7 +8,7 @@ demo: guide-lists
 
 # Lists
 
-A list (`virtual_list(..)` in Rust, `List` from `nsh` in TSX) renders long data on a native scroll view while only creating the rows near the screen. Which rows exist, where they go, the columns, sticky headers and which items are visible are all computed natively; your code only fills cells with content when the native side asks for one. A list of a million items costs about as much as a list of thirty.
+For collections that can grow, including chat timelines, feeds and history, prefer a virtualized list from the start. Use a scroll view with ordinary children for small, bounded content. A list (`virtual_list(..)` in Rust, `List` from `nsh` in TSX) renders long data on a native scroll view while only creating the rows near the screen. Which rows exist, where they go, the columns, sticky headers and which items are visible are all computed natively; your code only fills cells with content when the native side asks for one. A list of a million items costs about as much as a list of thirty.
 
 ```rust tabs
 use std::rc::Rc;
@@ -163,6 +163,7 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `numColumns` | `.columns(n)` | `number` | `1` | Items per row (vertical lists). |
 | `inverted` | `.inverted()` | `boolean` | `false` | Item 0 at the bottom (chat); starts at the end and keeps its distance from the end. |
 | `maintainVisibleContentPosition` | `.follow_end(px(..))` | `{ autoscrollToBottomThreshold?: number }` | | A list that is not inverted stays at the end while it is within that many points of it, as content grows (see below). |
+| `alignment` | `.alignment(ListAlignment::..)` | `"top" \| "bottom"` | `"top"` | Where the list rests. `"bottom"`: it opens at the end and stays there as content grows, with rows in reading order (see below). |
 | `stickyHeaderIndices` | `.sticky_header_indices(..)` | `number[]` | | Items that stick to the top while scrolled past (one column, not inverted). |
 | `stickyHeaderOffset` | `.sticky_header_offset(px(..))`, `.bind_sticky_header_offset(&node)` | `number \| AnimatedNode` | `0` | How far below the top the sticky items stick, as CSS `position: sticky`'s `top`; the content scrolls on under the space above them. An animated value moves them every frame. |
 | `contentStyle` | `.content_padding(..)`, `.content_padding_x(..)`, ..., `.row_gap(..)`, `.column_gap(..)` | `{ padding*, gap, rowGap, columnGap }` | | Padding and gaps of the content, numbers only. |
@@ -181,14 +182,14 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `keyExtractor` | `.keys(..)` | `(item, index) => string` | | The key in viewability tokens; in Rust, the rows' identities. |
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | Pull to refresh. |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | The app's own pull-to-refresh indicator, in place of the platform's spinner (see [Scrolling](./scrolling.md#an-indicator-of-your-own)). |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](../elements/scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](../elements/scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |
 | `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`, `scrollToOffset`, `scrollToEnd`, `scrollTo`. |
 
-The header, footer and empty slots take an element (in TSX also a component: `header={Header}`). They are cells of their own, never recycled, and they are reactive like any other element.
+The header, footer and empty slots take an element (in TSX also a component: `header={Header}`). They are cells of their own, never recycled, and they are reactive like any other element: a slot that is one `<If>` or `<Each>` follows its condition or its items, and a component is called once.
 
 ## Columns and grids
 
-`numColumns` (`.columns(n)`) lays items out in rows of that many columns; content padding goes around the content, with gaps between rows and columns. Rows of a grid may have different heights: each row is as tall as its tallest item.
+`numColumns` (`.columns(n)`) lays items out in rows of that many columns; content padding goes around the content, with gaps between rows and columns. Rows of a grid may have different heights: each row is as tall as its tallest item. `numColumns` may change while the list shows (more columns as a window widens): the first visible item stays at the top, and so it does when `estimatedItemSize` changes.
 
 ```rust tabs
 let count = photos.len();
@@ -465,6 +466,25 @@ mount(Chat);
 ```
 
 `scroll_to_end(..)` / `scrollToEnd()` on an inverted list scrolls to its start: the newest message.
+
+### Bottom alignment
+
+`alignment="bottom"` (`.alignment(ListAlignment::Bottom)` in Rust) is the simplest way to build a chat: messages stay in reading order, oldest first, and the list opens at the newest. It stays at the end as a reply streams in, a message is appended or the keyboard shows; when the user scrolls up, the visible content stays where it is, and scrolling back to the end resumes following. Messages shorter than the viewport lie at its bottom.
+
+Rows keep their positions in the content while the list grows, so an appended message moves no other row: the list places the new row and scrolls once. Older messages prepended with `onLoadMoreAtStart` keep the visible rows in place.
+
+```rust tabs
+virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
+    .keys(move || messages.with(|m| m.iter().map(|m| m.id).collect::<Vec<_>>()))
+    .alignment(ListAlignment::Bottom)
+    .flex_1()
+```
+
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
 
 ### Following the end of a list that is not inverted
 

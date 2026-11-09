@@ -250,7 +250,7 @@ export function createPlugins() {
       const state = entry.state();
       if (state.kind !== 'active') continue;
       const saved = (await state.activation.prepareReload?.()) ?? null;
-      if (!alive) throw new UiError('The window closed during state capture.');
+      if (!alive) throw new Error('The window closed during state capture.');
       instances.push({ ...identityFor(entry), state: saved });
     }
     return { instances };
@@ -290,7 +290,7 @@ export function createPlugins() {
       const attempt = phase();
       if (!alive || attempt.kind !== 'preparing_close' || attempt.id !== id) return;
       phase.set({ kind: 'idle' });
-      updateError.set(new UiError(error));
+      updateError.set(new Error(error));
       void reconcile();
     }),
   );

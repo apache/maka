@@ -5,7 +5,10 @@
 //! ProMotion iPhone a link left at its default runs at 60 Hz, and above
 //! 60 Hz only in an app whose `Info.plist` sets
 //! `CADisableMinimumFrameDurationOnPhone` (`nsh package` and the
-//! development host do).
+//! development host do). The graph's link asks for less while every
+//! running animation does ([`Graph::frame_rate`], their `frameRate`); the
+//! system runs the screen at the highest rate any link or animation asks
+//! for.
 
 use nsh_core::animation::{AnimationOp, AnimationValue, Finished, Graph, NodeId};
 use objc2::{MainThreadMarker, rc::Retained, sel};
@@ -20,6 +23,8 @@ pub(crate) struct Animator {
     finished: Vec<Finished>,
     link: Retained<CADisplayLink>,
     running: bool,
+    /// The rate the link was last asked for (`None`: the screen's highest).
+    rate: Option<f32>,
 }
 
 impl Animator {
@@ -37,6 +42,7 @@ impl Animator {
             finished: Vec::new(),
             link,
             running: false,
+            rate: None,
         }
     }
 
@@ -90,6 +96,13 @@ impl Animator {
 
     fn update_link(&mut self) {
         let animating = self.graph.is_animating();
+        if animating {
+            let rate = self.graph.frame_rate();
+            if rate != self.rate {
+                self.rate = rate;
+                set_rate(&self.link, rate);
+            }
+        }
         if animating != self.running {
             self.running = animating;
             self.link.setPaused(!animating);
@@ -114,17 +127,31 @@ pub(crate) fn frame_link(target: &EventTarget) -> Retained<CADisplayLink> {
 /// ProMotion), at least 80 there: animations, scroll-driven values and JS
 /// frames move at the rate the system's own scrolling does.
 pub(crate) fn full_rate(link: &CADisplayLink) {
+    set_rate(link, None);
+}
+
+/// Has `link` fire at `rate` Hz ([`rate_range`]).
+fn set_rate(link: &CADisplayLink, rate: Option<f32>) {
+    link.setPreferredFrameRateRange(rate_range(rate));
+}
+
+/// The frame rates to ask for to run at `rate` Hz (`None`: the screen's
+/// highest): `rate` within the screen's as the preferred and the highest,
+/// and at least 80 Hz below it on a faster screen or the rate itself on a
+/// slower one, so a request of 30 Hz is honored.
+pub(crate) fn rate_range(rate: Option<f32>) -> CAFrameRateRange {
     // The main screen: the links are made before the surface is in a
     // window, and every iOS device has one screen rate.
     #[allow(deprecated)]
     let max = MainThreadMarker::new()
         .map_or(60, |mtm| UIScreen::mainScreen(mtm).maximumFramesPerSecond())
         .max(1) as f32;
-    link.setPreferredFrameRateRange(CAFrameRateRange {
-        minimum: max.min(80.0),
-        maximum: max,
-        preferred: max,
-    });
+    let preferred = rate.map_or(max, |rate| rate.clamp(1.0, max));
+    CAFrameRateRange {
+        minimum: preferred.min(80.0),
+        maximum: preferred,
+        preferred,
+    }
 }
 
 impl Drop for Animator {

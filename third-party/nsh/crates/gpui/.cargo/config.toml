@@ -1,4 +1,0 @@
-# Built into the repository's `target/` (shared with the main workspace), where
-# the CLI finds the GPUI host and runner in a checkout.
-[build]
-target-dir = "../../target"

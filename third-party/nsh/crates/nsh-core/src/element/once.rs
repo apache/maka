@@ -9,7 +9,7 @@
 //! Rust render run's cleanup or releasing the host disposes the owner,
 //! and with it everything the component made.
 
-use std::{any::Any, marker::PhantomData, rc::Rc};
+use std::{any::Any, marker::PhantomData};
 
 use super::{
     AnyValue, Component, Event, IntoElement, JsResult, MethodCall, Owner, PropError, Props,
@@ -43,11 +43,6 @@ impl<E: Event> Scope<E> {
     /// component whose view has this one.
     pub fn emit(&self, event: E) {
         super::reactive::emit(self.host, Box::new(event));
-    }
-
-    /// A listener that forwards this fixed event to the component's listeners.
-    pub fn forward(&self, event: E) -> super::Listener<()> {
-        super::Listener::<()>::forward(self.host, Rc::new(event))
     }
 
     /// Makes `api` what the component's ref does in JS (its methods) for as

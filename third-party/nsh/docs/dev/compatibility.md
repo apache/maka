@@ -60,6 +60,15 @@ good, whatever the version number says. Between releases, and before the first c
    ignores the header fields, files and capabilities a later release added (never granting what it does not know),
    unless the header's `critical` names them, so a package published with a lower minimum runtime
    (`nsh publish --min-runtime`) runs on the older runtimes it names ("Format evolution" in `nsh-package`).
+   `nsh.json` and what bundles carry from it hold both ways too: what a reader cannot read, a key it does not
+   know at any depth (`updater.channel`, a capability) or a value of a form it does not know (`"build": "7"`, a
+   tailwind color of a newer syntax), is a warning and is left out entry by entry, never an error, at build time
+   and at run time alike, and the rest applies: `nsh-cli`'s `package::parse_config` (unknown keys through
+   `serde_ignored`, values through `serde_path_to_error`, removed and read again), the
+   `from_json_lenient` of `tailwind::Theme`, `nsh_base::Theme` and `StatusBarSetting`,
+   `url_scheme::schemes_from_json_lenient`, the bundler's `resolve`, `Capabilities::from_json_lenient` (a capability or `http` grant it cannot read is not granted, so
+   nothing left out widens access). Only text that is no JSON object, a file `nsh.json` names that is missing,
+   NSH's own `Info.plist` keys and an Android `targetSdk` below the minimum are errors.
 7. **The only exception is security**: a capability that cannot be kept safe may be closed. A pull request of
    `nsh-compat` adds what it removes to that repository's `closed.txt`, each with its reason (`<entry> -- <reason>`,
    the entry as the checks report the break: `[<module>] <path>`, `<file>: <Name>`, `<file>: <Name>.<member>` or
@@ -119,7 +128,7 @@ The cases are grouped by domain (`base`, `core`, `events`, `layout`, `paint`, `p
 each. The domain's `App.tsx` imports every case and shows one at a time: the script taps `id:case-<case>` (one of the
 one-point views over the top left corner, out of the layout) and checks that case, then the next. What applies to a
 whole app has a domain of its own: the platform (`android`; `macos`, which also declares capabilities; `browser`, a
-desktop browser with the user's text size at 2) and `nsh.json`'s settings (the `layout` domain's theme spacing, the
+desktop browser with the user's text size at 2; `terminal`, the Terminal idiom on Linux) and `nsh.json`'s settings (the `layout` domain's theme spacing, the
 `base` domain's status bar). A case goes where its platform and settings are, and where they change nothing its
 neighbors check. An app whose `nsh.json` declares `capabilities` runs with the `capabilities.json` and `app.json` its
 build wrote and a new, empty data directory, so a script checks what a grant allows and what stays refused (the
@@ -164,7 +173,7 @@ screen, `absent <text>` checks one is gone, `tap id:<testID>` / `label:<label>` 
 nearest pressable ancestor; `span:<text>` the link or pressable span where `<text>` starts; `parent:<selector>` the
 view around the one it names, a component's popup by the app's content in it, and `below:<selector>` its sibling
 below it, a popup's backdrop), `wait <ms>` runs timers, and `viewport <w> <h>` and `platform <os>` (first) size the
-screen and pick the platform whose `ios={{…}}` / `android={{…}}` / `desktop={{…}}` / `web={{…}}` props apply, and
+screen and pick the platform whose `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `desktop={{…}}` / `web={{…}}` props apply, and
 `fontscale <scale>` sets the user's text size. What a view looks like is checked as the platform receives it:
 `frame <selector> <x> <y> <width> <height>` (its layout, in points relative to its parent), `prop` / `noprop` (a host
 prop), `style` / `nostyle` (a paint or text style key), `drawing` / `nodrawing` (an operation of a canvas's latest

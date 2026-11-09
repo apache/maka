@@ -78,18 +78,17 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
   const saveable = () => owner.modelDirty() || model().originalId === null;
   return (
     <SettingsBody
+      footerShown={saveable()}
       footer={
-        saveable() ? (
-          <SettingsButton
-            label={owner.busy() ? tr('Saving…') : tr('Save')}
-            accessibilityLabel={tr('Save model')}
-            tone="primary"
-            disabled={
-              disabled() || !owner.modelDirty() || !!owner.modelProblem() || !model().id.trim()
-            }
-            onPress={inputAction(owner.saveModel, owner.modelAction())}
-          />
-        ) : undefined
+        <SettingsButton
+          label={owner.busy() ? tr('Saving…') : tr('Save')}
+          accessibilityLabel={tr('Save model')}
+          tone="primary"
+          disabled={
+            disabled() || !owner.modelDirty() || !!owner.modelProblem() || !model().id.trim()
+          }
+          onPress={inputAction(owner.saveModel, owner.modelAction())}
+        />
       }
     >
       <SettingsSection>
@@ -206,8 +205,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 6,
-                        minHeight: platform.isTerminal ? 16 : 28,
-                        paddingHorizontal: platform.isTerminal ? 0 : 8,
+                        minHeight: platform.idiom === 'terminal' ? 16 : 28,
+                        paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
                         borderRadius: 8,
                       }}
                       hoverStyle={controlHoverStyle()}

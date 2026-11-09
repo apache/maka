@@ -530,9 +530,6 @@ pub fn measure_line(
     font: &CanvasFont,
     text: &str,
 ) -> Points {
-    if let Some(width) = engine.measure_canvas(font, text) {
-        return width;
-    }
     if text.is_empty() {
         return Points::ZERO;
     }
@@ -613,10 +610,7 @@ pub fn line_metrics(
     let width = if text.is_empty() {
         Points::ZERO
     } else {
-        // Preserve canvas-specific advances, distinct from terminal cell layout.
-        engine
-            .measure_canvas(font, text)
-            .unwrap_or_else(|| advance(engine, font, text))
+        advance(engine, font, text)
     };
     let layout = engine.layout(&prepared, size);
     match engine.lines(&layout).first() {
@@ -1700,40 +1694,6 @@ mod tests {
                 "{text:?}"
             );
         }
-    }
-
-    #[test]
-    fn canvas_measurement_override_is_forwarded_by_shared_engines() {
-        struct CanvasOnly;
-        impl crate::TextEngine for CanvasOnly {
-            type Prepared = ();
-            fn prepare(&self, _: &crate::AttributedText) {
-                panic!("Canvas override should handle measurement");
-            }
-            fn measure(&self, _: &(), _: Option<Points>) -> crate::Size<Points> {
-                panic!("Canvas override should handle measurement");
-            }
-            fn layout(&self, _: &(), _: crate::Size<Points>) -> crate::TextLayout {
-                panic!("not used by measurement");
-            }
-            fn measure_canvas(&self, font: &CanvasFont, text: &str) -> Option<Points> {
-                Some(font.size * text.len() as f32)
-            }
-        }
-        let font = CanvasFont::parse("20px sans-serif").unwrap();
-        assert_eq!(
-            measure_line(&std::rc::Rc::new(CanvasOnly), &font, "abc"),
-            Points(60.0)
-        );
-        assert_eq!(
-            measure_line(&std::rc::Rc::new(CanvasOnly), &font, "  "),
-            Points(40.0)
-        );
-        // Engines using the default hook retain their existing prepare/measure path.
-        assert!(
-            (measure_line(&crate::ApproxTextEngine, &font, "abc") - Points(33.0)).abs()
-                < Points(0.001)
-        );
     }
 
     fn consts(op: &PathOp) -> Vec<f32> {

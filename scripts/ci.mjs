@@ -107,7 +107,6 @@ async function main(args) {
       writeFileSync(planFile, JSON.stringify(result));
       output({
         root: Boolean(result.suites.root),
-        desktop: Boolean(result.suites.desktop),
         tooling: Boolean(result.suites.tooling),
         workers: result.workers,
       });

@@ -25,9 +25,12 @@ fn formatting() -> impl IntoElement {
             .items_center()
             .justify_center()
             .rounded(move || theme().radius)
-            .pressed_style(|s| s.bg(move || theme().accent))
+            .border_1()
+            .border_color(transparent_black())
+            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
             .child(text(&label[..1]).text_sm().text_color(move || {
-                if on.get() { theme().accent_foreground } else { theme().muted_foreground }
+                if on.get() { theme().foreground } else { theme().muted_foreground }
             }))
     };
     toggle_group()
@@ -52,9 +55,9 @@ function App() {
       onChange={({ pressed }) =>
         marks.set(pressed ? [...marks(), value] : marks().filter((m) => m !== value))
       }
-      class="group size-8 items-center justify-center rounded-(--radius) aria-pressed:bg-accent"
+      class="group size-8 items-center justify-center rounded-(--radius) border border-transparent hover:bg-foreground/5 aria-pressed:border-border aria-pressed:bg-foreground/10"
     >
-      <Text class="text-sm text-muted-foreground group-aria-pressed:text-accent-foreground">{label[0]}</Text>
+      <Text class="text-sm text-muted-foreground group-aria-pressed:text-foreground">{label[0]}</Text>
     </Toggle>
   );
   return (
@@ -98,6 +101,10 @@ mount(App);
 | 事件 | Rust | 说明 |
 |---|---|---|
 | `onChange`（`Toggle`） | `.on_change(\|pressed: &bool\| ..)` | 开关按钮被按压：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活。`{ pressed }` 是它想要的值，与 `pressed` 相反。它在任何变化之前运行：开关按钮显示应用传回的 `pressed`。 |
+| `onPressDown`（`Toggle`） | `.on_press_down(\|\| ..)` | 一次按压在它上面按下。 |
+| `onPressUp`（`Toggle`） | `.on_press_up(\|\| ..)` | 按压结束：松开、移开或被取消。 |
+
+`onPressDown` 和 `onPressUp` 用于你自己的按压反馈，比如状态样式表达不了的弹簧效果或形状变化。
 
 `ToggleGroup` 的方向键只移动键盘焦点：不按下任何东西。禁用的开关按钮什么也不报告。
 
@@ -109,7 +116,7 @@ mount(App);
 | 开关按钮 | 组里，或任何地方 | `Toggle` 的 `class`、`style` | `aria-pressed:`、`disabled:`、`active:`、`hover:`、`focus:`（或 `pressedStyle`、`disabledStyle` ……） |
 | 图标或标签 | 开关按钮里 | 它自己的元素（`children`） | 开关按钮的 `class` 带 `group` 时的 `group-aria-pressed:`、`group-disabled:` 及其他 `group-*:` 变体 |
 
-`aria-pressed:` 是开关按钮处于开；`active:` 是正在进行的按压，不论开或关。用开关按钮自己的表面显示它已按下：一层填充、一个凸起的胶囊、更醒目的图标（见[设计指南](../docs/design-guides.md)的交互状态一节）。
+`aria-pressed:` 是开关按钮处于开；`active:` 是正在进行的按压，不论开或关。用开关按钮自己的表面显示它已按下，在浅色和深色主题下都要和悬停明显不同：更深的填充加一道边、更醒目的图标或文字（见[设计指南](../docs/design-guides.md)的交互状态一节）。
 
 ## 分段
 
@@ -123,9 +130,9 @@ mount(App);
         pressed={view() === value()}
         accessibilityLabel={`${value()} view`}
         onChange={({ pressed }) => pressed && view.set(value())}
-        class="-ml-px h-8 px-3 border border-border first:ml-0 first:rounded-l-(--radius) last:rounded-r-(--radius) aria-pressed:bg-accent"
+        class="group -ml-px h-8 px-3 border border-border first:ml-0 first:rounded-l-(--radius) last:rounded-r-(--radius) hover:bg-foreground/5 aria-pressed:bg-foreground/10"
       >
-        <Text class="text-sm">{value()}</Text>
+        <Text class="text-sm text-muted-foreground group-aria-pressed:text-foreground">{value()}</Text>
       </Toggle>
     )}
   </Each>

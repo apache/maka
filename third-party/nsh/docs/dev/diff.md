@@ -97,7 +97,10 @@ point ending the echo).
 
 Rows are not of one height: `Geometry` keeps every row's top (a prefix sum), found by binary search for the rows in
 view and a press's row. A row is its lines (one, or with `softWrap` the wrapped lines of its line, in a split row the
-taller side's) times `lineHeight`, plus the annotations under it. Soft wrap counts columns, as widths do: the text box's
+taller side's) times `lineHeight`, plus the annotations under it. In a terminal a line is one Cell, whatever
+`lineHeight` is (`terminal::row_height`): rows on another step would land on the Cell grid unevenly. A terminal's
+`renderHunkActions` take a row of their own after each change's last row (and its annotations: `State::action_rows`),
+since over the change's first row, as elsewhere, they would cover its code. Soft wrap counts columns, as widths do: the text box's
 width (the new side's horizontal scroll view, reported by its layout) less the room around the text, in columns of
 `0`, each line broken after its last whitespace that fits, else at the edge, whitespace hanging past it
 (`geometry::wrap_starts`); the view draws each wrapped line as a `Text` of its spans, so rows' heights and what they
@@ -116,6 +119,19 @@ rows without a line on that side keeping the last one. A press without a drag al
 silently. `renderAddAnnotation` shows at the last selected line and at the hovered one (hovers counted over the rows,
 the gutter and the control itself, the hover ending a frame after the last leaves, so moving onto the control keeps
 it).
+
+**Text selection.** Each side's text box (the `content` part, inside the side's horizontal scroll view) is a
+selectable view (`Element::selectable`, `nsh_core::selection`), and every line's `Text` but a filler's carries
+`userSelect: "text"` and the platform's own highlight (no `selectionColor`, so it stays apart from the line
+selection's tint), so the code selects as any selectable text does on each platform: a drag across rows, a double
+click a word, a triple click a line, Shift to extend, the platform's copy (Ctrl / Cmd+C, the terminal's Ctrl+Shift+C).
+The gutter (numbers, signs, bars), the separators, file headers, hunk actions and annotations are outside those boxes,
+so a copy holds only code, its lines joined by line breaks; a tab copies as the spaces the line shows it as (`expand_tabs`).
+With `softWrap`, a wrapped line's later rows continue its first (`Element::continues_text`): a copy gives the line
+whole, with no break where the wrap cut it, and a triple click selects all of its rows. A split view has two areas, one per side, so a selection
+stays on the side it began on; a unified view has one. Line selection on the gutter is independent of it. Rows leaving
+the row window take their texts with them, as for any selectable view whose texts go: a selection whose end leaves
+is cleared.
 
 **Navigation.** `nextHunk` / `previousHunk` go on from the change navigated to last while the view stays there (it
 reached that place and has not scrolled from it, or is still scrolling to it), else from the top of the view, so a

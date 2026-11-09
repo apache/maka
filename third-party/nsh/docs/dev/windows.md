@@ -83,23 +83,46 @@ tray command messages and checks that closed views, surfaces and engine contexts
   posts one `WM_NSH_WAKE` to the window, and the main thread applies every queued batch in order (`surface.rs`,
   `mount.rs`). The table of views by node id belongs to the mounter and is shared with the surface (`Rc<Views>`), so
   input and hosted items find views by id while a batch is being applied. Worker threads (image decoding, media
-  callbacks, the dev client) run code on the main thread with `window::invoke` (a message-only dispatcher window) and
-  find their surface by key in a thread-local map; no globals are shared between surfaces.
+  callbacks, the dev client) run code back on a UI thread with `UiThread::invoke`: each UI thread has a message-only
+  dispatcher window of its own, a surface records the `UiThread` it was made on (`Surface::ui_thread`), and work
+  started on a UI thread carries that handle to wherever it finishes, so its closure runs where the surface's
+  thread-locals are (the surface is found by key in the thread-local map of that thread). The process-wide image cache
+  returns each load to the thread that asked, and releases a frame's bitmaps on every thread that drew it.
 - **Resizes wait for the layout** (`Surface::resized`, the one place the main thread waits for the engine, as on
   macOS): `WM_SIZE` waits for the layout at the new size (`MountSink::resized`), at most 16 ms, and applies it before
   it draws. An engine that misses the deadline (JS busy, a costly layout) is not waited for again until it reports a
   resize done; the area the window grew by then shows the window's background until the layout arrives.
+  A window's swap chain never stretches (`DXGI_SCALING_NONE`): DWM shows the window at its new size before that frame
+  is presented, and a stretched last frame would move everything by part of a pixel on each step of a resize. The last
+  frame stays where it is, and the swap chain's background color (`system::window_background`) fills the rest.
 - **Text is typeset on the engine thread** with DirectWrite's shared, free-threaded factory; the final layout is plain
   data (glyph runs recorded through a text renderer of NSH's own), which the main thread only draws and hit-tests
   (`text.rs`).
 - **Frames**: a ticker thread waits for each composition (`DwmFlush`) and posts `WM_NSH_TICK` (one at a time) while
   something animates: native animation values (`animation.rs` over `nsh_core::animation`), JS frame requests,
   transitions and keyframes (`transition.rs`; curves, interpolation and timing in `nsh_core::transition`), scroll
-  glides, navigation transitions, video frames (`Surface::on_frame`). The ticker parks when nothing animates. Caret
-  blinking and animated GIF / WebP frames use thread timers instead, so they cost no frames.
+  glides, navigation transitions (`Surface::on_frame`), video frames, shaders and fades (`Surface::on_draw_frame`).
+  The ticker parks when nothing animates. While nothing composes (`DwmFlush` fails: a locked or remote session) it
+  posts no ticks and asks the compositor again every 100 ms. Frame clients report what they have left (`Next`: done,
+  drawing only, or a deadline), and `Surface::keep_deadline` keeps the earliest deadline (the graph's or a client's;
+  batches never wait for a frame, `drain` applies them as they arrive) with one thread timer 50 ms past it: if no
+  frame ran since it came due, it runs one, so animations end and report it on time without frames ("Deadlines" in
+  docs/dev/animation.md), and pauses the ticker once nothing is left. Drawing-only work (an endless animation, a
+  shader, a JS frame request) waits for the compositor. Caret blinking and animated GIF / WebP frames use thread
+  timers instead, so they cost no frames.
 - **Devices**: one Direct3D 11 device (hardware, else WARP) and its Direct2D device and context per thread
   (`gfx.rs`); a lost device (driver update, GPU reset) is made again and `gfx::generation` tells caches of device
-  resources (bitmaps, command lists) to make theirs again.
+  resources (bitmaps, command lists) to make theirs again. Devices are made with
+  `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS`: NSH draws with a device from the thread that made
+  it (video decoding takes Direct3D's multithread lock), and the worker threads drivers otherwise start for each
+  device (about 28 on NVIDIA, 15 on AMD) only contend with the UI threads; the driver does its work on the calling
+  thread instead, and no call becomes unsafe. Measured against the flag's absence on an NVIDIA laptop (RTX 3050, 4K
+  60 Hz), one 1280×800 window: animating lightly, CPU 27% → 12% of a core; redrawing the whole window every frame,
+  78% → 53% and the UI thread's frames 1.4 ms shorter at p95; scrolling text, 52% → 40%; playing a video, 17% → 9%;
+  44 → 25 threads; frame rates unchanged. With a device per thread on several UI threads the contention grows
+  with each: 4 such windows missed 300–500 frames a minute each and recovered fully without the threads, on NVIDIA,
+  Intel UHD and AMD Radeon alike. On WARP, which then rasterizes on the calling thread too, 1 and 4 windows improved
+  and 8 windows missed about 0.3% more of their frames.
 - **The standalone app** (`run_app`, `app.rs`) runs the window and its message loop on a thread of its own
   (`nsh-ui`, 8 MiB of stack for deep trees) and joins it: the devices, font faces and bitmaps cached in that thread's
   thread-locals are released at a plain thread exit. Released by the main thread's thread-local destructors instead,
@@ -108,9 +131,6 @@ tray command messages and checks that closed views, surfaces and engine contexts
 - **Embedding**: `AppView` (`app.rs`) is one surface as a window: a child of the embedding app's window, or top-level;
   the host's message loop runs it. `set_ui_sets` serves the UI sets beside the runtime's modules
   (`nsh/base` by default; an app with Rust components of its own passes `nsh_base::registry()` and its sets).
-  `AppOptions::min_size` constrains the client area in logical points; Win32 adds the current DPI's window chrome.
-  `AppView::choose_directory` uses an owner-bound folder dialog on a dedicated STA thread and delivers its result
-  on the UI thread (`Ok(None)` on cancellation, `Err` on failure).
 
 ## How each area maps to Windows
 
@@ -128,11 +148,13 @@ tray command messages and checks that closed views, surfaces and engine contexts
 | Dialogs (`Dialog`) | `navigation.rs` | Children of the root above the app's views, at the size of the surface, sliding up or fading in: transparent layers with no look of their own, showing only the app's popup and backdrop (`presentation` is ignored); Tab stays inside the newest dialog, and the field that had the focus when a dialog opened leaves it and gets it back when the dialog closes |
 | Alerts (`AlertDialog`) | `system.rs` | Drawn in the surface as items the root hosts, in Windows 11's content dialog style (a rounded card, the default button in the system's accent color), not `MessageBox` / `TaskDialog`: they stay with an embedded surface and never run a modal loop of their own |
 | Video | `native/video.rs` | Media Foundation's media engine in frame-server mode on the thread's Direct3D 11 device (a DXGI device manager); each frame is copied into a texture Direct2D draws, so a video clips, transforms and is covered like any view; `controls` draws NSH's own control bar (play / pause, scrubber, time) |
-| Web views | `native/web.rs`, `compose.rs` | WebView2 composition controllers (`webview2-com`, the loader linked statically: apps ship no `WebView2Loader.dll`) drawing into a visual of the window's composition, between the layers of what NSH draws before and after them, so NSH content covers them; the visual is transformed like the view (affine), clipped to its clipping ancestors (axis-aligned bounds) and its own rounded corners, faded with its and its ancestors' opacity, and out of the tree while the view is not drawn (hidden, concealed screens); a deleted view's page stays while a removal animation keeps the view on screen. Input is NSH's: hit testing gives a point over the page to it only when no NSH content covers it there (`Hosted::raw`), and mouse buttons, moves and wheels go through `SendMouseInput`, touch and pen contacts through `SendPointerInput` (synthesized ones as the mouse); the page's cursor comes from `CursorChanged`; a click gives the page the keyboard focus (`MoveFocus`, WebView2 then takes keys and the IME itself, NSH's fields blur), a click on NSH content or Tab out of the page (`MoveFocusRequested`) gives it back. Rasterized at the window's scale (`RasterizationScale`, monitor changes not followed by WebView2 itself); bounds are the view's window pixels (pop-ups and IME candidates are placed from them). `baseUrl` navigates to the base URL and answers that document's request with the HTML (`WebResourceRequested`); `scrollable={false}` gives the wheel to the scroll views around and keeps the page's viewport from scrolling (`overflow: hidden` on its root, scripts still scroll); `desktop={{ allowsBackForwardNavigationGestures }}` is `IsSwipeNavigationEnabled` (touchscreen swipes). One environment per thread and profile folder (`%LOCALAPPDATA%\<app id>\WebView2`); a placeholder without the WebView2 Runtime |
+| Web views | `native/web.rs`, `compose.rs` | WebView2 composition controllers (`webview2-com`, the loader linked statically: apps ship no `WebView2Loader.dll`) drawing into a visual of the window's composition, between the layers of what NSH draws before and after them, so NSH content covers them; the visual is transformed like the view (affine), clipped to its clipping ancestors (axis-aligned bounds) and its own rounded corners, faded with its and its ancestors' opacity, and out of the tree while the view is not drawn (hidden, concealed screens); a deleted view's page stays while a removal animation keeps the view on screen. Input is NSH's: hit testing gives a point over the page to it only when no NSH content covers it there (`Hosted::raw`), and mouse buttons, moves and wheels go through `SendMouseInput`, touch and pen contacts through `SendPointerInput` (synthesized ones as the mouse); the page's cursor comes from `CursorChanged`; a click gives the page the keyboard focus (`MoveFocus`, WebView2 then takes keys and the IME itself, NSH's fields blur), a click on NSH content or Tab out of the page (`MoveFocusRequested`) gives it back. Rasterized at the window's scale (`RasterizationScale`, monitor changes not followed by WebView2 itself); bounds are the view's window pixels (pop-ups and IME candidates are placed from them). `baseUrl` navigates to the base URL and answers that document's request with the HTML (`WebResourceRequested`); `scrollable={false}` gives the wheel to the scroll views around and keeps the page's viewport from scrolling (`overflow: hidden` on its root, scripts still scroll); `desktop={{ allowsBackForwardNavigationGestures }}` is `IsSwipeNavigationEnabled` (touchscreen swipes). One environment per thread and profile folder (`%LOCALAPPDATA%\<app id>\WebView2`), the controller made from the first props (InPrivate for `incognito`); a placeholder without the WebView2 Runtime |
 | Native components | `native.rs` | `AppView::register_component(name, factory)`; a `NativeComponent` draws with Direct2D in the view (`draw`) or brings a child window (`window`) that follows its view after every frame, clipped with a window region, above everything NSH draws; `ComponentContext::emit` / `set_size` / `redraw` from any thread |
-| Accessibility | `access.rs`, `access/uia.rs` | UI Automation: a server-side provider tree answered on `WM_GETOBJECT`, one provider per exposed view (holding only the surface key and node id); control types from `role` / text / press handlers / labelled images; `testID` as the automation id; Invoke, Toggle, ExpandCollapse, SelectionItem, RangeValue, Value and Scroll patterns; `accessible={true}` groups its content as on iOS and Android; `accessibilityElementsHidden`, `visibility: hidden` (as in a browser) and screens below the top of a stack hide a subtree; property, structure and live-region notification events only while a client listens |
-| Environment | `system.rs` | Re-read on `WM_SETTINGCHANGE` (and theme / DWM color changes). Color scheme: the app's appearance (`nsh.json` `"appearance"`, `setColorScheme`) when it forces one, else `AppsUseLightTheme`, live; the title bar (DWM's immersive dark mode) and the root's background follow it. The locale (`Intl`) from `GetUserDefaultLocaleName` (not `LANG` / `LC_*`); font scale from `TextScaleFactor` (Settings > Accessibility > Text size); reduce motion from `SPI_GETCLIENTAREAANIMATION`; right to left from the UI language's reading direction; the screen reader from `SPI_GETSCREENREADER`; the pixel ratio the window's DPI over 96; `platform.os` `"windows"`, idiom `desktop`, OS version `RtlGetVersion`'s major.minor (10.0 on Windows 11 too); the accent palette for dialogs; safe area and keyboard height 0. The app's state (`lifecycle()`), followed on `WM_ACTIVATEAPP` and the window's `WM_WINDOWPOSCHANGED`, an embedded surface's from its root window, subclassed (`SetWindowSubclass`, only on the root window's own thread: a surface whose root is another thread's follows its own window's messages; the root is the one the surface had when it was made, kept while it lives) to pass them on to the surface's window (`WM_NSH_ROOT` for the moves; `window.rs` `observe_root`): `background` while the window (an embedded surface's root window) is minimized or hidden, `active` while the app is the active one (`WM_ACTIVATEAPP`'s flag, sent per thread; before the first, the foreground window being the process's), `inactive` otherwise |
-| Window chrome (`nsh/desktop`) | `chrome.rs` | The title (`SetWindowTextW`); the hidden title bar: `WM_NCCALCSIZE` gives the client area the window's whole height (the side and bottom resize borders stay non-client; a maximized window's top is moved in by the frame it hangs off the monitor by, another one's by Windows 11's visible top border, which would cover the app's top row), `WM_NCHITTEST` answers the top resize border, the caption buttons (`HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE`, so Windows 11 shows snap layouts) and `windowDrag` views (`HTCAPTION`, with the system title bar too: the system moves, maximizes and opens the window menu); the caption buttons drawn over the app after the tree (46 points wide, as tall as the app's bar: `Window.setTitleBar`'s `height`, 32 by default; Windows 11's glyphs and hover colors, dimmed while inactive), their non-client clicks handled here, never by `DefWindowProc` (which would draw Windows 95's); `WM_NCACTIVATE` with `lparam` -1 so the old caption is not painted over the app; full screen is `window::toggle_full_screen` (F11's), which tells the chrome to hide the menu bar and zero the title bar's area. Menus are Win32 menus: the menu bar (`SetMenu`, removed while the title bar is hidden or in full screen; `&` escaped, the shortcut after a tab), context menus with `TrackPopupMenuEx` (posted as `WM_NSH_MENU`: its modal loop must not run while a batch is applied); dark with the app through uxtheme's `SetPreferredAppMode` / `FlushMenuThemes` (ordinals 135 / 136) and, for the bar, `WM_UAHDRAWMENU` / `WM_UAHDRAWMENUITEM` plus the line under it after `WM_NCPAINT`; shortcuts matched on key downs before the app's key handling (`input::key`) but after `nsh`'s bindings, the editing roles excepted (they send the field its own Ctrl+key) |
+| Accessibility | `access.rs`, `access/uia.rs` | UI Automation: a server-side provider tree answered on `WM_GETOBJECT`, one provider per exposed view (holding only the surface key and node id); control types from `role` / text / press handlers / labelled images; `testID` as the automation id; Invoke, Toggle, ExpandCollapse, SelectionItem, RangeValue, Value and Scroll patterns; `ShowContextMenu` (`IRawElementProviderSimple2`) raises `onContextMenu` with no pointer (`input::show_context_menu`); `accessible={true}` groups its content as on iOS and Android; children in tree order, a scroll view's and a page list's (`ViewProps::screen_order`) as they are on screen (`nsh_core::scroll::reading_order`), as Tab; `accessibilityElementsHidden`, `visibility: hidden` (as in a browser) and screens below the top of a stack hide a subtree; property, structure and live-region notification events only while a client listens |
+| Environment | `system.rs` | Re-read on `WM_SETTINGCHANGE` (and theme / DWM color changes). Color scheme: the app's appearance (`nsh.json` `"appearance"`, `setColorScheme`) when it forces one, else `AppsUseLightTheme`, live; the title bar (DWM's immersive dark mode) and the root's background follow it. The locale (`Intl`) from `GetUserDefaultLocaleName` (not `LANG` / `LC_*`); the preferred languages (`localeSettings()`'s `languages`) from `GetUserPreferredUILanguages` (the display languages, most preferred first); the regional preferences (`localeSettings()`'s `hourCycle` and the like) from the regional format's `LOCALE_STIMEFORMAT` (its hour letter), `LOCALE_IFIRSTDAYOFWEEK` and `LOCALE_IMEASURE` (`GetLocaleInfoEx` with the user's changes); font scale from `TextScaleFactor` (Settings > Accessibility > Text size); reduce motion from `SPI_GETCLIENTAREAANIMATION`; right to left from the UI language's reading direction; the screen reader from `SPI_GETSCREENREADER`; the pixel ratio the window's DPI over 96; `platform.os` `"windows"`, idiom `desktop`, OS version `RtlGetVersion`'s major.minor (10.0 on Windows 11 too); the accent palette for dialogs; safe area and keyboard height 0. The app's state (`lifecycle()`), followed on `WM_ACTIVATEAPP` and the window's `WM_WINDOWPOSCHANGED`, an embedded surface's from its root window, subclassed (`SetWindowSubclass`, only on the root window's own thread: a surface whose root is another thread's follows its own window's messages; the root is the one the surface had when it was made, kept while it lives) to pass them on to the surface's window (`WM_NSH_ROOT` for the moves; `window.rs` `observe_root`): `background` while the window (an embedded surface's root window) is minimized or hidden, `active` while the app is the active one (`WM_ACTIVATEAPP`'s flag, sent per thread; before the first, the foreground window being the process's), `inactive` otherwise. The time zone (`localeSettings()`'s `timeZone`): the setting's zone (`GetDynamicTimeZoneInformation`'s key name) by its IANA name from the ICU Windows ships (`ucal_getTimeZoneIDForWindowsID`, loaded at run time; `UTC` without it), re-read on `WM_TIMECHANGE` |
+| The app's icon | `window.rs`, `notifications.rs` | The window class's icon is the executable's resource 1 (`nsh package` on Windows embeds it); without one, `AppOptions::icon` (an `.ico`: the runner's `nsh\icon.ico`, the development host's `--icon`, which the CLI makes from `nsh.json` `"icon"` in `.nsh/windows/`) is the window's `WM_SETICON` big and small icons at its DPI, so the title bar, the taskbar and Alt+Tab show the app's; the same file is the toasts' `IconUri` |
+| Window chrome (`nsh/desktop`) | `chrome.rs` | The title (`SetWindowTextW`); the hidden title bar: `WM_NCCALCSIZE` gives the client area the window's whole height (the side and bottom resize borders stay non-client; a maximized window's top is moved in by the frame it hangs off the monitor by, another one's by Windows 11's visible top border, which would cover the app's top row), `WM_NCHITTEST` answers the top resize border, the caption buttons (`HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE`, so Windows 11 shows snap layouts) and `windowDrag` views (`HTCAPTION`, with the system title bar too: the system moves, maximizes and opens the window menu); the caption buttons drawn over the app after the tree (46 points wide, as tall as the app's bar: `titleBar`'s `height`, 32 by default; Windows 11's glyphs and hover colors, dimmed while inactive), their non-client clicks handled here, never by `DefWindowProc` (which would draw Windows 95's); `WM_NCACTIVATE` with `lparam` -1 so the old caption is not painted over the app; full screen is `window::toggle_full_screen` (F11's), which tells the chrome to hide the menu bar and zero the title bar's area; quitting (`Application.quit()`, the `quit` role) posts `WM_CLOSE` as closing does, then ends the message loop; `Application.restart()` quits so in the standalone app (`app::request_restart`, nothing in an embedded view) and, when the UI thread's run has ended, starts the executable again with `NSH_RESTART_AFTER` naming this process, whose `run_app` waits for it to exit (at most 10 seconds) before it opens its window (`nsh_core::restart`; a development host, feature `dev`, only quits: `nsh run` ends with it). Menus are Win32 menus: the menu bar (`SetMenu`, removed while the title bar is hidden or in full screen; `&` escaped, the shortcut after a tab), context menus with `TrackPopupMenuEx` (posted as `WM_NSH_MENU`: its modal loop must not run while a batch is applied); dark with the app through uxtheme's `SetPreferredAppMode` / `FlushMenuThemes` (ordinals 135 / 136) and, for the bar, `WM_UAHDRAWMENU` / `WM_UAHDRAWMENUITEM` plus the line under it after `WM_NCPAINT`; shortcuts matched on key downs before the app's key handling (`input::key`) but after `nsh`'s bindings, the editing roles excepted (they send the field its own Ctrl+key). A menu item's `icon` (not the bar's titles) is `SetMenuItemInfoW`'s `hbmpItem`: a 32-bit premultiplied ARGB DIB section (bottom-up) of `SM_CXSMICON` at the window's DPI, made from the images' pipeline (`image::load_menu_icon`, off the main thread) and centered on its square (`desktop::menu_icon::canvas`) so labels line up, freed after its menu (`IconBitmaps`). Win32 has no template bitmaps: an SVG is painted in the menu text's color when it is made (`COLOR_MENUTEXT` / `COLOR_GRAYTEXT`, or the dark theme's), a disabled bitmap dimmed, and the menu bar's made again when the appearance or the DPI changes. Windows does not repaint a popup it is tracking, so a context menu waits for its icons, at most `ICON_WAIT` (100 ms), with the message loop running, before it opens; a failed icon warns and leaves the item as it is |
+| Windows of the app's own (`<Window>`, `Window.open`) | `app_window.rs`, `shell.rs`, `window_state.rs`, `window_close.rs` | A dialog root the runtime opens a window for becomes the root of a top-level window of its own, drawn by `render::window_frame` and sized by `set_root_size`; its input goes through the surface's input in its root (`Surface::input_root`). Each window, the main one included, has a `Shell` (`shell.rs`): its kind's window styles and the attributes applied natively. The close, Escape and blur policies, state and title bar reports, and the main window's close are covered under "Windows" below |
 | Clipboard | `system.rs` | The Win32 clipboard (`CF_UNICODETEXT`); reads are synchronous, so `Clipboard.readText` is answered at once |
 | Networking | `nsh_engine::net` | ureq (rustls, webpki roots), one thread per request, streaming both ways; only connecting and the response head have deadlines |
 | Dev | `dev.rs` | The dev server client on its own thread; the status pill and the error overlay drawn as items the root hosts, above the app and its dialogs; Ctrl+R and F5 reload the latest build |
@@ -159,7 +181,8 @@ tray command messages and checks that closed views, surfaces and engine contexts
 - **Selectable text** (`text.rs`) with a selection: Ctrl+A, Ctrl+C / Ctrl+Insert, Escape.
 - **Navigation** (`navigation::key_pressed`): Escape (which leaves a focused field instead), Alt+Left and the Browser
   Back key (also from a field) go back.
-- **Scrolling** (`scroll.rs`), then **Tab / Shift+Tab** (`input::tab`): the next field in tree order within
+- **Scrolling** (`scroll.rs`), then **Tab / Shift+Tab** (`input::tab`): the next field in tree order (a scroll view's
+  content as it is on screen, `nsh_core::scroll::reading_order`: a list's recycled cells are not in their rows' order) within
   `navigation::focus_scope` (the newest dialog, else the surface), its text selected as in Windows' dialogs.
 
 A handled Alt combination swallows its `WM_SYSCHAR` (Alt+Return makes one, which `DefWindowProc` would beep at) and
@@ -181,7 +204,7 @@ focused text field counts as editing (`when`). With feature `dev`, Ctrl+R is nev
 ## Checking a change: `nsh test --target windows`
 
 The development host takes the steps of `nsh/test` tests (`docs/dev/tooling.md`, "On a real platform"): `agent.rs`
-implements `nsh_testing::agent::Native`, each call on the main thread (`window::invoke`), with the input `synth.rs`
+implements `nsh_testing::agent::Native`, each call on the surface's UI thread (`UiThread::invoke`), with the input `synth.rs`
 makes at the input module's entry points, so it works while the window is in the background or covered (and goes
 through NSH's hit testing to web views, as real input does):
 
@@ -213,14 +236,14 @@ keeps the apps' data there (`nsh test` gives each app a fresh one). Timers are W
 
 ## Performance: `--fps`
 
-`nsh-windows-host --fps` (`nsh run --target windows --fps`, `nsh test --target windows --fps`; `AppOptions::fps`)
+`nsh-windows-host --fps` (`nsh run --target windows --fps`, `nsh test --target windows --fps`; `AppOptions::fps`, `NSH_FPS=1`, the app's `setFpsEnabled`)
 logs one `nsh::perf` line a second (`fps.rs`, on `nsh_engine::perf::PerfMonitor`), in the Linux and macOS
 backends' shape: frames shown over the compositor's rate (`DwmGetCompositionTimingInfo`), the main thread's time per
 shown frame and its phases (`tick`: the ticker's animations and frame callbacks; `drain`: batches applied as they
 arrived; `paint`: Direct2D drawing the tree, of which `canvas` is the canvases' recording and replay; `present`:
-`Present`, which waits for the vertical blank and is not counted as work), the engine's commits, its busy share, and
+`Present`, which queues the frame and is not counted as work), the engine's commits, its busy share, and
 the process' CPU (`GetProcessTimes`) and working set. While it measures, the ticker runs on every refresh: its ticks
-close the frames. `examples/gallery/tools/perf.py` runs the gallery under it (`--target windows` is the default on
+close the frames. While nothing composes, only the frames deadlines run (`Surface::keep_deadline`) are measured. `examples/gallery/tools/perf.py` runs the gallery under it (`--target windows` is the default on
 Windows).
 
 ### Partial frames
@@ -241,6 +264,25 @@ What a frame costs then follows what changed: the gallery's Stocks page (~690 vi
 display) changes ~34 views a frame (pulsing sparklines, prices, the chart's live point), drawn in ~1.4 ms of
 `paint`. Canvases record their animated tail only (see the table above), views without content of their
 own push no clip, and the children of a clipping view out of sight are not drawn.
+
+### Frame pacing
+
+Every swap chain (a window's, a transparent window's composed one, a `Window.open` window's) has a frame latency
+waitable object and one frame in flight (two buffers), and a window draws only when its chain holds the free token
+(`SwapChain::ready`, a non-blocking poll). Otherwise `render::frame` returns before drawing, the damage and the
+invalid flag stay, and a thread pool wait on the object posts `WM_NSH_PAINT` to the window when a frame is free
+(posted, not `InvalidateRect`: a posted message comes before the `WM_PAINT`s that wait for the thread's other
+messages). A resized window draws at once, so it never shows stretched pixels.
+
+The gate is what lets several windows share a UI thread (`Window.open`, several `AppView`s in an embedding app): a
+blocking `Present(1)` waited for the vertical blank of the other windows' frames, about 60 presents a second for the
+whole thread, and the window whose `WM_PAINT` came last kept them: with 2 to 8 windows one showed 60 fps and the others
+stopped at their first frames. Each window now shows 60 fps, with 1 to 8 windows on the thread. With the waitable flag
+`Present` never waits, so the gate is also what bounds the queue: an ungated chain queues frames up to the device's
+limit and shows each about 350 ms late. The device allows 16 queued frames (`MAX_DEVICE_LATENCY`) so its own limit
+(three, for all chains together) never gates a window. The frame is shown about 15 ms sooner than with a blocking
+present (PresentMon's present to display, p50: 47 → 32 ms at 60 Hz, one window or several). Two frames in flight were
+measured and are not used: they bring back that latency (48 ms) for the same frame rate.
 
 ## Not implemented, or different
 
@@ -286,13 +328,47 @@ own push no clip, and the children of a clipping view out of sight are not drawn
 
 ### Programmatic window frame and level
 
-`Window.setFrame` merges supplied fields with `GetWindowRect` and uses
+`WindowRef.setBounds` merges supplied fields with `GetWindowRect` and uses
 `SetWindowPos` without changing activation or z-order. Dimensions include the
 non-client area; points are scaled by the surface's current DPI. Changes are
-immediate. `Window.setLevel` uses `HWND_TOPMOST`, `HWND_NOTOPMOST` or `HWND_BOTTOM`;
+immediate. The `level` attribute uses `HWND_TOPMOST`, `HWND_NOTOPMOST` or `HWND_BOTTOM`;
 the last moves to the bottom of the current z-order, and later activation can
 raise the window. The top-level guard keeps these commands out of embedded child
-windows.
+windows. The `taskbar` attribute (and `AppOptions::skip_taskbar`) calls
+`ITaskbarList::DeleteTab` / `AddTab`; the taskbar adds a tab again whenever a
+window is shown, so the choice is kept in the window's `Shell` and applied again
+whenever the window is shown.
+
+### Windows
+
+Every window, the main one and the app's own, is a top-level Win32 window with
+a `Shell` (`shell.rs`) that holds its attributes and turns them into window
+styles, DWM attributes and taskbar calls; `window_state.rs` reads and sets
+modes, bounds and placements in points across the monitors' scales and reports
+`WindowEvent::State` once a move or resize settles. The window procedure answers
+the close, Escape and blur policies on the spot from the attributes already
+mounted: a close the user asks for reports `ClosePress` first and, with
+`closeOnPress`, closes the window once the engine has run the app's handlers.
+`windowDrag`, `windowControl` and `windowResize` views take part in
+`WM_NCHITTEST`, so the system moves, snaps and resizes the window. A window of
+the app's own opens hidden and shows after its first frame is drawn. Each window
+carries its own content: a UI Automation tree of its own views on
+`WM_GETOBJECT`, its popups and dialogs inside its root, its web views in its own
+composition and the windows of native components as its children. The app's
+keymap, menu shortcuts and the mouse's back button work in whichever window has
+the input. Windows has no per-window control offset or workspaces; those
+attributes are accepted and have no effect there.
+
+### Transparent windows
+
+`AppOptions::transparent` makes a borderless top-level window (`WS_POPUP`, no
+system frame or shadow) with `WS_EX_NOREDIRECTIONBITMAP`, so nothing but
+DirectComposition shows. The surface makes its `Composition` with the window and
+keeps it (`Surface::base`); the window's own swap chain is then a composition
+swap chain with premultiplied alpha (`DXGI_ALPHA_MODE_PREMULTIPLIED`), the
+bottom visual of the tree, below web views and their layers, and frames clear
+to transparent instead of the window background. Web views reuse that
+composition. Example: `cargo run -p nsh-platform-windows --example transparent`.
 
 ## Local file drops
 

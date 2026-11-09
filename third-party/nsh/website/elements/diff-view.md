@@ -1,6 +1,6 @@
 ---
 title: DiffView
-description: "The DiffView component: the changes between two texts or of a patch, side by side or unified, with the words changed within lines highlighted, unchanged lines collapsed into separators that expand, syntax highlighting, soft wrap, per-change actions, line selection and review annotations."
+description: "The DiffView component: the changes between two texts or of a patch, side by side or unified, with the words changed within lines highlighted, unchanged lines collapsed into separators that expand, syntax highlighting, soft wrap, per-change actions, selectable code, line selection and review annotations."
 group: base
 demo: el-diff-view
 ---
@@ -437,6 +437,16 @@ const follow = (pageY: number) => diff.setScrollOffset({ x: 0, y: (pageY - ruler
 A mark's `index` is the change's in `hunks()`, whose `oldLines` and `newLines` tell an added change (no old lines)
 from a deleted one (no new lines), to color its mark.
 
+## Selecting the code
+
+The code is selectable text: dragging over it selects across lines, a double click selects a word and a triple click a
+line, Shift extends the selection, and the platform's copy (Cmd+C or Ctrl+C; Ctrl+Shift+C in a terminal) copies it.
+Each side of a split view selects on its own, so a selection stays on the side it starts on; a unified view's column
+is one text. The line numbers, the `+` / `−` marks and bars, the separators, the file headers and the app's controls
+and annotations stay out of the selection, so a copy holds only code. With `softWrap`, a wrapped line copies whole,
+without a line break where it wraps, and a triple click selects all of its rows. Selecting lines on the line numbers
+works as below, beside it.
+
 ## Review comments
 
 The line numbers select lines of a side: a press selects one, a Shift-press extends the selection to it, and dragging
@@ -536,7 +546,7 @@ set with `fontFamily`, `fontSize` and `lineHeight`.
 | `background` | `.background(..)` | `boolean` | `true` | Changed lines are tinted. |
 | `fontFamily` | `.font_family(..)` | `string` | the theme's `font-mono` | The font of the text. |
 | `fontSize` | `.font_size(..)` | `number` | `13` | The font size, in points. |
-| `lineHeight` | `.line_height(..)` | `number` | `20` | The height of a row, in points. |
+| `lineHeight` | `.line_height(..)` | `number` | `20` | The height of a row, in points; in a terminal a row is one Cell. |
 | `renderSeparator` | `.render_separator(..)` | `(separator: DiffSeparator) => JSX.Element` | | Draws the separators of collapsed lines. |
 | `renderHunkActions` | `.render_hunk_actions(..)` | `(hunk: DiffHunk) => JSX.Element` | | The app's actions on each change. |
 | `softWrap` | `.soft_wrap(..)` | `boolean` | `false` | Long lines wrap at the side's width. |

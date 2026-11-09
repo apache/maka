@@ -4,7 +4,7 @@
 //! records them, generated from the same variants: the methods that push
 //! their code and arguments, and the drawing-state properties that push
 //! their code and value (`nsh-js` `canvas.rs` records natively from the
-//! same specs; [`declarations`] gives their declarations).
+//! same specs; [`typescript`] gives their declarations).
 
 codes! { CODES:
     CV_SAVE = 0,

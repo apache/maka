@@ -95,71 +95,42 @@ impl Mounter {
                 parent,
                 child,
                 before,
-            } => self.insert(surface, *parent, *child, *before),
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
             } => {
-                let before =
-                    self.views
-                        .get(parent)
-                        .zip(self.views.get(id))
-                        .and_then(|(parent, child)| {
-                            if matches!(
-                                child.kind(),
-                                ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
-                            ) {
-                                return None;
-                            }
-                            following.iter().find_map(|id| {
-                                let candidate = self.views.get(id)?;
-                                (candidate.parent().as_ref() == Some(parent.upcast_ref())
-                                    && !matches!(
-                                        candidate.kind(),
-                                        ViewKind::Modal
-                                            | ViewKind::HeaderItem
-                                            | ViewKind::InputAccessory
-                                    )
-                                    && (child.kind() != ViewKind::Screen
-                                        || candidate.kind() == ViewKind::Screen))
-                                    .then_some(*id)
-                            })
-                        });
-                self.insert(surface, *parent, *id, before);
-            }
-            MountItem::RetireListCell { id, request, roots } => {
-                let views: Vec<_> = roots
-                    .iter()
-                    .filter_map(|id| self.views.get(id).cloned())
-                    .collect();
-                let focused = views.iter().find_map(|view| {
-                    let path = crate::input::focus_path(
-                        surface,
-                        view.root().and_then(|root| root.focus()),
-                    );
-                    roots.iter().any(|id| path.contains(id)).then_some(path)
-                });
-                if let Some(path) = focused {
-                    surface.control(|control| {
-                        control.set_focus_path(path);
-                        control.retire_list_cell(*id, *request, false);
-                    });
+                let (Some(parent), Some(child)) = (self.get(*parent), self.get(*child)) else {
                     return;
+                };
+                match child.kind() {
+                    ViewKind::Modal => return crate::navigation::present(surface, child),
+                    ViewKind::HeaderItem => {
+                        return crate::navigation::header_item(surface, parent, child);
+                    }
+                    ViewKind::InputAccessory => {
+                        return crate::text_input::accessory(surface, parent, child);
+                    }
+                    _ => {}
                 }
-                for view in views {
-                    crate::text_input::retire_cell(&view);
-                    crate::input::retire_cell(surface, &view);
-                    crate::scroll::detached(surface, &view);
-                    crate::selectable_view::touched(surface, &view);
-                    crate::navigation::park_retired_root(surface, &view);
+                let before = before
+                    .and_then(|b| self.views.get(&b))
+                    .filter(|b| b.parent().as_ref() == Some(parent.upcast_ref()));
+                if child.parent().is_some() {
+                    child.unparent();
                 }
-                surface.control(|control| control.retire_list_cell(*id, *request, true));
+                child.insert_before(parent, before);
+                parent.queue_allocate();
+                crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+                if parent.kind() == ViewKind::Stack {
+                    crate::navigation::stack_changed(surface, parent, Some(child));
+                }
+                if parent.kind() == ViewKind::Scroll {
+                    crate::scroll::child_inserted(parent);
+                }
+                crate::selectable_view::touched(surface, child);
+                // An attachment's cursor depends on its text's.
+                crate::input::style_changed(child);
             }
-            // The roots were synchronously parked before our true reply.
-            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
+                    crate::text_input::removing(surface, view);
                     crate::selectable_view::touched(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -171,7 +142,7 @@ impl Mounter {
                 crate::file_drop::deleted(surface, *id);
                 crate::navigation::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
-                    crate::navigation::deleted_parked_root(surface, &view);
+                    crate::text_input::removing(surface, &view);
                     crate::selectable_view::touched(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
@@ -185,7 +156,9 @@ impl Mounter {
             }
             MountItem::Frame { id, frame } => {
                 let Some(view) = self.get(*id) else { return };
-                if *id == ROOT_ID {
+                // A window's size is the window's (it reports it with
+                // `set_root_size`).
+                if *id == ROOT_ID || crate::window::is_window(surface, *id) {
                     return;
                 }
                 let mut frame = *frame;
@@ -218,7 +191,6 @@ impl Mounter {
                 );
                 match view.kind() {
                     ViewKind::Stack => crate::navigation::stack_resized(surface, view),
-                    ViewKind::Scroll => crate::scroll::resized(surface, view),
                     ViewKind::Canvas => view.changed(),
                     ViewKind::Image => {
                         crate::shader::resized(view);
@@ -409,45 +381,15 @@ impl Mounter {
             // The animator's (`Surface::apply`).
             MountItem::Animation(_)
             | MountItem::AnimationBindings { .. }
-            | MountItem::ComponentPropSlots { .. } => {}
+            | MountItem::ComponentPropSlots { .. }
+            | MountItem::TreeOrder(_)
+            | MountItem::ProjectStates { .. } => {}
         }
-    }
-
-    /// Inserts through the existing native host for this kind of child.
-    fn insert(&self, surface: &Rc<Surface>, parent: NodeId, child: NodeId, before: Option<NodeId>) {
-        let (Some(parent), Some(child)) = (self.get(parent), self.get(child)) else {
-            return;
-        };
-        match child.kind() {
-            ViewKind::Modal => return crate::navigation::present(surface, child),
-            ViewKind::HeaderItem => return crate::navigation::header_item(surface, parent, child),
-            ViewKind::InputAccessory => {
-                return crate::text_input::accessory(surface, parent, child);
-            }
-            _ => {}
-        }
-        let before = before
-            .and_then(|id| self.views.get(&id))
-            .filter(|before| before.parent().as_ref() == Some(parent.upcast_ref()));
-        if child.parent().is_some() {
-            child.unparent();
-        }
-        child.insert_before(parent, before);
-        parent.queue_allocate();
-        crate::transition::inserted(surface, child, self.layout_animation.as_ref());
-        if parent.kind() == ViewKind::Stack {
-            crate::navigation::stack_changed(surface, parent, Some(child));
-        }
-        if parent.kind() == ViewKind::Scroll {
-            crate::scroll::child_inserted(parent);
-        }
-        crate::selectable_view::touched(surface, child);
-        // An attachment's cursor depends on its text's.
-        crate::input::style_changed(child);
     }
 
     /// Takes `view` out of its parent (a modal is dismissed).
     pub(crate) fn detach(&self, surface: &Rc<Surface>, view: &NshView) {
+        crate::text_input::removing(surface, view);
         match view.kind() {
             ViewKind::Modal => return crate::navigation::dismiss(surface, view),
             ViewKind::HeaderItem => return crate::navigation::header_item_removed(surface, view),
@@ -469,9 +411,14 @@ impl Mounter {
     fn command(&self, surface: &Rc<Surface>, id: NodeId, command: &Command) {
         let view = self.views.get(&id);
         match command {
-            Command::Focus => view.map_or((), crate::text_input::focus),
+            Command::Focus => match view {
+                Some(view) if view.kind() == ViewKind::Input => crate::text_input::focus(view),
+                Some(view) => crate::key_focus::focus(view),
+                None => {}
+            },
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
+                Some(view) if crate::key_focus::blur(view) => {}
                 _ => crate::text_input::blur_all(surface),
             },
             Command::SetSelection { start, end } => {
@@ -490,6 +437,11 @@ impl Mounter {
                     crate::scroll::command(surface, view, command);
                 }
             }
+            // A window of the app's own (`Window.open`) hosts dialog root
+            // `id`.
+            Command::Desktop(desktop) if id != ROOT_ID => {
+                crate::window::command(surface, id, view, desktop)
+            }
             // Here, with the view at hand: `Surface::view` would borrow the
             // mounter again while a batch is applied.
             Command::AccessibilityFocus => {
@@ -507,6 +459,7 @@ impl Mounter {
             | Command::StopLoading
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
+            | Command::Load(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {

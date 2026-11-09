@@ -42,6 +42,9 @@ struct Runtime {
     registries: RefCell<Vec<nsh_core::element::Registry>>,
     tokens: RefCell<Option<std::sync::Arc<nsh_core::element::Tokens>>>,
     theme: RefCell<Option<nsh_core::element::ThemeTokens>>,
+    /// The theme file the app was built with (`setup`), which
+    /// `setTheme(null)` gives back.
+    built_theme: RefCell<Option<String>>,
     host: RefCell<Option<Rc<dyn nsh_core::host_channel::HostBridge>>>,
     wake: RefCell<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
     fonts: RefCell<Vec<String>>,
@@ -67,6 +70,7 @@ impl Default for Runtime {
             registries: RefCell::default(),
             tokens: RefCell::default(),
             theme: RefCell::default(),
+            built_theme: RefCell::default(),
             host: RefCell::default(),
             wake: RefCell::default(),
             fonts: RefCell::default(),
@@ -188,6 +192,79 @@ impl Runtime {
                 if let Some(tokens) = tokens {
                     *self.tokens.borrow_mut() = Some(std::sync::Arc::new(tokens));
                 }
+                *self.built_theme.borrow_mut() = Some(json);
+                Ok(Value(0))
+            }
+            // `setTheme(theme)`, as nsh-js's (`env.rs`): the theme read whole
+            // or a `TypeError` naming what is not; `null`, the one the app
+            // was built with. The page reads `token()` from here at once.
+            406 => {
+                use nsh_core::element::JsError;
+                let value = args.index(0)?;
+                let theme = self.theme.borrow();
+                let (json, tokens) = if value.is_nullish() {
+                    let built = self.built_theme.borrow().clone();
+                    let json = built.unwrap_or_else(|| r#"{"cssVars":{}}"#.to_owned());
+                    let tokens = theme.as_ref().and_then(|t| t.of(&json));
+                    (json, tokens)
+                } else if value.is_object() {
+                    let json = protocol::to_json(&compat::Value::new(value))?.to_string();
+                    match theme.as_ref().and_then(|t| t.checked(&json)) {
+                        Some(Err(what)) => {
+                            return Err(self.throw(JsError::Type(format!("setTheme: {what}"))));
+                        }
+                        Some(Ok(tokens)) => (json, Some(tokens)),
+                        None => (json, None),
+                    }
+                } else {
+                    let message = "setTheme: expected a theme ({ cssVars }) or null";
+                    return Err(self.throw(JsError::Type(message.into())));
+                };
+                self.bindings.ops.borrow_mut().push(nsh_core::Op::SetProp {
+                    id: nsh_core::ROOT_ID,
+                    prop: nsh_core::Prop::UiTheme(json.into()),
+                });
+                if let Some(tokens) = tokens {
+                    *self.tokens.borrow_mut() = Some(std::sync::Arc::new(tokens));
+                }
+                Ok(Value(0))
+            }
+            // `nsh:rt`'s `i18n(json)`: the core's components translate with
+            // the bundle's translations too (`browser/i18n.js` keeps its own
+            // for `t`; the browser's `Intl` has every language).
+            407 => {
+                let json = args.index(0)?.as_string().unwrap_or_default();
+                let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+                let translations = value
+                    .get("translations")
+                    .map(|t| nsh_core::i18n::Translations::from_json(&t.to_string()))
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                self.bindings.ops.borrow_mut().push(nsh_core::Op::Rust(
+                    nsh_core::element::RustOp {
+                        call: 0,
+                        run: nsh_core::element::RustCall::Op(Box::new(move |module| {
+                            module.set_translations(translations);
+                            Ok(Box::new(()))
+                        })),
+                    },
+                ));
+                Ok(Value(0))
+            }
+            // `setLocale(tag | null)`, checked by `i18n.js`: the engine shows
+            // the app in it and sends the environment again.
+            408 => {
+                let tag = args.index(0)?.as_string();
+                let locale = tag.as_deref().and_then(nsh_core::platform::Locale::parse);
+                self.bindings.ops.borrow_mut().push(nsh_core::Op::Rust(
+                    nsh_core::element::RustOp {
+                        call: 0,
+                        run: nsh_core::element::RustCall::Op(Box::new(move |module| {
+                            module.set_locale(locale);
+                            Ok(Box::new(()))
+                        })),
+                    },
+                ));
                 Ok(Value(0))
             }
             404 => {
@@ -200,9 +277,8 @@ impl Runtime {
             }
             405 => {
                 let json = args.index(0)?.as_string().unwrap_or_default();
-                if let Ok(value) = serde_json::from_str(&json)
-                    && let Ok(setting) = nsh_core::StatusBarSetting::from_json(&value)
-                {
+                if let Ok(value) = serde_json::from_str(&json) {
+                    let setting = nsh_core::StatusBarSetting::from_json(&value);
                     self.bindings.ops.borrow_mut().push(nsh_core::Op::Command {
                         id: 1,
                         command: nsh_core::Command::SetStatusBar(setting),

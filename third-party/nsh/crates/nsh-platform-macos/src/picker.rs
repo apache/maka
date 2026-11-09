@@ -87,7 +87,7 @@ pub(crate) fn pick_images(surface: &Rc<Surface>, id: u32, request: PickRequest) 
                 })
                 .ok();
         });
-        match surface.root.ns().window() {
+        match crate::window::sheet_window(surface) {
             Some(window) => {
                 let _: () = msg_send![&panel, beginSheetModalForWindow: &*window, completionHandler: &*handler];
             }

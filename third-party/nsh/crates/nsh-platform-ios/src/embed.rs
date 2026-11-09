@@ -387,6 +387,34 @@ pub unsafe extern "C" fn nsh_app_set_font_scale(app: *mut NshApp, scale: f32) {
         .set_font_scale((scale.is_finite() && scale > 0.0).then_some(scale));
 }
 
+/// Registers a font file (TrueType, OpenType, WOFF or WOFF2) the host
+/// ships. Returns why `bytes` is not a font, or `NULL`.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]. `bytes` must be `NULL` or point
+/// at `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_register_font(
+    app: *mut NshApp,
+    bytes: *const u8,
+    len: usize,
+) -> *mut c_char {
+    // SAFETY: guaranteed by the caller.
+    let app = unsafe { &*app };
+    let data = if bytes.is_null() {
+        if len == 0 {
+            Ok([].as_slice())
+        } else {
+            Err("the font is missing".to_owned())
+        }
+    } else {
+        // SAFETY: guaranteed by the caller.
+        Ok(unsafe { std::slice::from_raw_parts(bytes, len) })
+    };
+    status(data.and_then(|data| app.view.register_font(data)))
+}
+
 /// The embedding app's theme overrides: a theme file of shadcn/ui's
 /// (`{ "cssVars": { "theme": { … }, "light": { … }, "dark": { … } } }`, as
 /// `nsh.json`'s `"theme"`), whose tokens win over the app's of the same
@@ -1079,6 +1107,22 @@ pub unsafe extern "C" fn nsh_app_send_host_event(
         )
     };
     status(name.and_then(|name| app.view.host().send(name, data?)))
+}
+
+/// Hands `url`, one the embedding app was opened with, to the running app
+/// (`UrlScheme.on("open")`, `nsh`); before an app runs, the next one loaded
+/// gets it. Returns why it cannot (`url` is not UTF-8), or `NULL`.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`]; `url` must be a NUL-terminated
+/// string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_open_url(app: *mut NshApp, url: *const c_char) -> *mut c_char {
+    main_thread();
+    // SAFETY: guaranteed by the caller.
+    let (app, url) = unsafe { (&*app, utf8(url, "the URL")) };
+    status(url.map(|url| app.view.open_url(url)))
 }
 
 /// A call of the app (`host.call`) its handler answers (opaque to C): once,

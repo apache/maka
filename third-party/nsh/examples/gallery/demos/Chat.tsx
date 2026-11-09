@@ -6,7 +6,8 @@ import { Picker } from "nsh";
 import { Input } from "nsh/base";
 import { keyboardFrame, safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
-import { alpha, Appear, Badge, colors, desktop, finish, IconTile, motion, Press, radius, RoundButton, Segmented, toneTint } from "../ui";
+import { alpha, Appear, backdrop, Badge, colors, desktop, finish, IconTile, motion, Press, radius, RoundButton, Segmented, toneTint } from "../ui";
+import { play as sound } from "../../nsh-gallery-ui/sound";
 import { localReply, type Provider } from "./chat/local";
 import { Glyph } from "./chat/glyphs";
 import { Markdown } from "./chat/markdown";
@@ -53,6 +54,7 @@ export function Chat() {
   const messages = signal<Msg[]>([]);
   const model = signal<Model>("Swift");
   const native = platform.desktop && platform.os !== "web";
+  const terminal = platform.idiom === "terminal";
   const provider = signal<Provider>("Codex");
   let cancelLocal: (() => void) | undefined;
   const draft = signal("");
@@ -155,6 +157,8 @@ export function Chat() {
       error,
     };
     run = null;
+    // A finished reply is a result arriving, said quietly.
+    if (status === "done") sound("ready", { volume: 0.35 });
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     batch(() => {
       messages.set(messages().map((m) => (m.id === r.id ? final : m)));
@@ -260,6 +264,7 @@ export function Chat() {
     const offline = !native && s.steps.find((step) => "offline" in step) as { offline: number } | undefined;
     const user: User = { kind: "user", id: nextId(), text, image, file, waiting: !!offline };
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    sound("tap");
     batch(() => {
       const start: Msg[] = messages().length ? [] : [{ kind: "date", id: nextId(), label: "Today" }];
       messages.set([...messages(), ...start, user]);
@@ -486,6 +491,12 @@ export function Chat() {
     );
   };
 
+  // A terminal Cell is 8 pt wide.
+  const titleColumn = Math.max(...featured.map((f) => scenarios.find((x) => x.id === f.id)!.chip.length)) * 8 + 8;
+  /** The list's width: the titles' column, the gap and the longest note, so
+   * the list centers as a block and its notes keep their lines. */
+  const listWidth = titleColumn + 16 + Math.max(...featured.map((f) => f.note.length)) * 8;
+
   const empty = (
     <View style={{ ...column, flex: 1, justifyContent: "center", paddingHorizontal: 16, paddingVertical: 24, gap: 24 }}>
         <Appear>
@@ -497,7 +508,30 @@ export function Chat() {
             </Text>
           </View>
         </Appear>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
+        {/* The terminal lists the suggestions, a line each: four cards of
+            a quarter's width would wrap their titles unevenly. */}
+        <If when={terminal}>
+          {/* The notes in a column of their own, two Cells after the
+              longest title; with less than 16 Cells left beside it, a
+              note goes under its title. Centered as a block under the
+              centered heading, its rows still aligned with each other. */}
+          <View style={{ alignSelf: "center", width: listWidth, maxWidth: "100%" }}>
+            <Each of={featured}>
+              {(f) => {
+                const s = scenarios.find((x) => x.id === f().id)!;
+                return (
+                  <Press onPress={() => play(s.id)} accessibilityLabel={s.chip}>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 16 }}>
+                      <Text style={{ width: titleColumn, flexShrink: 0, fontWeight: "600", color: colors.text }}>{s.chip}</Text>
+                      <Text style={{ flexGrow: 1, flexShrink: 1, flexBasis: 16 * 8, color: colors.muted }}>{f().note}</Text>
+                    </View>
+                  </Press>
+                );
+              }}
+            </Each>
+          </View>
+        </If>
+        <View style={{ display: terminal ? "none" : "flex", flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
           <Each of={featured}>
             {(f, i) => {
               const s = scenarios.find((x) => x.id === f().id)!;
@@ -552,7 +586,7 @@ export function Chat() {
                 each={messages()}
                 keyExtractor={(m) => m.id}
                 estimatedItemSize={140}
-                initialScrollIndex={Math.max(0, messages().length - 1)}
+                alignment="bottom"
                 style={{ flex: 1 }}
                 contentStyle={{ paddingTop: 8, paddingBottom: 16 }}
                 keyboardDismissMode="interactive"
@@ -653,7 +687,7 @@ export function Chat() {
           {/* The "+" menu: attachments and the scenarios, to replay them. */}
           <View
             onPress={() => menu.set(false)}
-            style={{ pointerEvents: menu() ? "auto" : "none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.45)", opacity: menuValue }}
+            style={{ pointerEvents: menu() ? "auto" : "none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, ...backdrop(), opacity: menuValue }}
           />
           <View
             style={{
@@ -704,8 +738,9 @@ export function Chat() {
           </View>
         </View>
 
-        {/* Suggestions while the conversation is empty. */}
-        <If when={!messages().length}>
+        {/* Suggestions while the conversation is empty (a terminal lists
+            them in the empty state instead, one per row). */}
+        <If when={!messages().length && !terminal}>
           <Scroll horizontal scrollbar={false} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}>
             <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingVertical: 8 }}>
               <Each of={chips}>
@@ -744,7 +779,8 @@ export function Chat() {
           </If>
           <View
             style={{
-              borderRadius: 24,
+              // Square in the terminal, framed as its cards are.
+              borderRadius: terminal ? 0 : 24,
               borderCurve: "continuous",
               // Glass like the menu above it, without the blur: nothing scrolls under it.
               ...finish.menu,

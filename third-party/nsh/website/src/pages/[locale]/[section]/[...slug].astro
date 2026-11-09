@@ -1,0 +1,18 @@
+---
+import DocPage from '../../../components/DocPage.astro';
+import { machineLocales } from '../../../lib/locales';
+import { pages, type Page } from '../../../lib/sections';
+
+// Machine translations; a build without them has no such pages.
+export async function getStaticPaths() {
+  const all = await Promise.all(machineLocales.map(({ code }) => pages(code)));
+  return all.flat().map((page) => ({
+    params: { locale: page.lang, section: page.section, slug: page.slug === 'index' ? undefined : page.slug },
+    props: { page },
+  }));
+}
+
+const { page } = Astro.props as { page: Page };
+---
+
+<DocPage page={page} />

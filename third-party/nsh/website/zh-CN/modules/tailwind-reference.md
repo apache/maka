@@ -318,6 +318,7 @@ view()
 | `border-solid`、`border-dashed`、`border-dotted` | `borderStyle` |
 | `border-none`、`border-hidden` | `borderStyle: "none"` / `"hidden"`：无论宽度类如何、顺序如何都没有边框（`md:border-solid` 会重新显示） |
 | `rounded`、`rounded-<size>`、`rounded-none`、`rounded-full`、`rounded-[<length>]` | `borderRadius`（不带值为 `sm`） |
+| `corner-squircle`、`corner-round` | `borderCurve`：`"continuous"`、`"circular"` |
 | `rounded-t-`、`-r-`、`-b-`、`-l-`、`-tl-`、`-tr-`、`-br-`、`-bl-` | 对应的角 |
 | `rounded-s-`、`-e-`、`-ss-`、`-se-`、`-es-`、`-ee-` | 起始 / 结束侧的角（随书写方向）：`borderTopStartRadius`、`borderTopEndRadius`、`borderBottomStartRadius`、`borderBottomEndRadius` |
 | `outline`、`outline-<n>`、`outline-[<length>]` | `outlineWidth`（不带值为 1），字符串中任何位置有样式类时用该样式，否则为实线（`outline-dashed outline-2` 是虚线，`outline-none outline-2` 不绘制） |

@@ -130,8 +130,9 @@ impl Update {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nsh_core::Color;
+
+    use super::*;
 
     /// `AnimValues` is non-exhaustive: built from the default here.
     fn values(f: impl FnOnce(&mut AnimValues)) -> AnimValues {

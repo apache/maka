@@ -1,4 +1,0 @@
-# Built into the repository's `target/` (shared with the main workspace and
-# the GPUI one), so `cargo run` here reuses what they built.
-[build]
-target-dir = "../../target"

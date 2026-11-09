@@ -1,0 +1,78 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+platform macos
+# window-open
+tap id:case-window-open
+expect Windows: main
+expect Get: true none none
+tap id:open
+expect Result: same true, main false, parent true, state null
+expect Windows: main,first,second
+expect Get: true first second
+expect In first: main false, parent none, shared 0
+expect In second: main false, parent main, shared 0
+# One engine renders every window: the app's signals reach them.
+tap id:shared
+expect In first: main false, parent none, shared 1
+tap id:close
+expect Result: closed, state null, get null
+expect Windows: main
+expect Closes: 1
+absent In first: main false, parent none, shared 1
+covers [nsh/desktop] Window
+covers [nsh/desktop] windows
+covers [nsh/desktop] currentWindow
+# window-element
+tap id:case-window-element
+expect Windows: main
+expect Open: false changes none events none
+absent Never shown
+tap id:toggle
+expect Windows: main,inspector
+expect Inside inspector
+tap id:rename
+expect Inside inspector
+# The app closed it: no onOpenChange.
+tap id:toggle
+expect Windows: main
+expect Open: false changes none events none
+tap id:toggle
+expect Inside inspector
+tap id:close
+expect Windows: main
+expect Open: false changes false close events none
+absent Inside inspector
+covers [nsh/desktop] Window
+# window-ref
+tap id:case-window-ref
+expect Result: not called
+tap id:calls
+expect Result: done, state null, title bar 0 0 0, wrong mode TypeError
+expect Document
+tap id:close
+expect Result: closed null
+absent Document
+# window-access
+tap id:case-window-access
+tap id:overlay
+expect Result: overlay ERR_ACCESS_DENIED windows hud
+tap id:many
+expect Result: fourth ERR_ACCESS_DENIED windows d
+expect a
+expect c
+absent d
+tap id:cleanup
+expect Result: closed
+tap id:outside
+expect Result: outside TypeError
+covers [nsh/desktop] currentWindow
+# window-props
+tap id:case-window-props
+expect Document
+prop id:bar desktop.windowDrag true
+prop id:minimize desktop.windowControl minimize
+prop id:maximize desktop.windowControl maximize
+prop id:close desktop.windowControl close
+prop id:edge desktop.windowResize right
+prop id:corner desktop.windowResize bottomRight
+covers [props] desktop.windowControl
+covers [props] desktop.windowResize

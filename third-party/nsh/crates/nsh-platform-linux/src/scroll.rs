@@ -6,9 +6,11 @@
 //! change of the offset reaches [`Host::moved`], which re-places the
 //! children, pins the sticky cells and feeds the native scroll value in
 //! the same frame. Reports are coalesced to one per frame by the view's
-//! own tick callback, which also runs glides, animated scrolls, the
-//! indicator's fade and the refresh spinner, and stops when none of them
-//! is left.
+//! frame callback on its surface ([`Surface::add_frame_callback`]), which
+//! also runs glides, animated scrolls, the indicator's fade and the
+//! refresh spinner, stops when none of them is left, and tells when the
+//! motion next ends ([`shared::deadline`]), so a scroll ends and reports
+//! it on time while the window draws no frames.
 //!
 //! Here are what GTK does: drawing the indicator and the refresh spinner,
 //! the sticky cells' widgets, the keys the window gets, and finding the
@@ -26,7 +28,7 @@ use nsh_core::{
 };
 
 use crate::{
-    surface::Surface,
+    surface::{Next, Surface},
     view::{NshView, ViewState},
 };
 
@@ -107,22 +109,26 @@ impl ScrollHost for Host<'_> {
     }
 
     fn attached(&self) -> bool {
-        // No frames come while unmapped.
+        // Unmapped, nothing shows its moves: each is reported at once
+        // rather than with a frame.
         self.view.is_mapped()
     }
 
     fn start_ticking(&self) {
-        let weak = Rc::downgrade(self.surface);
-        self.view.add_tick_callback(move |view, clock| {
-            let Some(surface) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
+        // Weak: a deleted view's callback does not keep it.
+        let view = self.view.downgrade();
+        self.surface.add_frame_callback(move |surface, now| {
+            let Some(view) = view.upgrade() else {
+                return Next::Done;
             };
-            let now = clock.frame_time() as f64 / 1000.0;
-            if shared::frame(&Host::new(&surface, view), now) {
-                glib::ControlFlow::Continue
-            } else {
-                glib::ControlFlow::Break
+            let host = Host::new(surface, &view);
+            // The frame clock's time, in ms as `Host::now`'s.
+            let now = now * 1000.0;
+            if !shared::frame(&host, now) {
+                return Next::Done;
             }
+            // Only the indicator's fade or the spinner left: they only draw.
+            shared::deadline(&host, now).map_or(Next::Frame, |ms| Next::At(ms / 1000.0))
         });
     }
 
@@ -354,16 +360,6 @@ pub(crate) fn drag_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::drag_begin(&Host::new(surface, view));
 }
 
-/// Stops the row's scroll owners before its recycling acknowledgement.
-pub(crate) fn detached(surface: &Rc<Surface>, view: &NshView) {
-    if view.kind() == ViewKind::Scroll {
-        shared::detached(&Host::new(surface, view));
-    }
-    for child in view.child_views() {
-        detached(surface, &child);
-    }
-}
-
 /// The drag moved by `(dx, dy)` points since it began.
 pub(crate) fn drag_move(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
     shared::drag_to(&Host::new(surface, view), point(Points(dx), Points(dy)));
@@ -535,33 +531,72 @@ pub(crate) fn install_keyboard(surface: &Rc<Surface>) {
             return;
         }
         installed.borrow().set(Some(&window));
-        let keys = gtk::EventControllerKey::new();
-        let pressed = weak.clone();
-        keys.connect_key_pressed(move |_, key, _, modifiers| match pressed.upgrade() {
-            Some(surface) if key_pressed(&surface, key, modifiers) => glib::Propagation::Stop,
-            _ => glib::Propagation::Proceed,
-        });
-        window.add_controller(keys);
-        let weak = weak.clone();
-        window.connect_focus_widget_notify(move |window| {
-            if let Some(surface) = weak.upgrade() {
-                let focus = GtkWindowExt::focus(window);
-                surface.control(|control| {
-                    control.set_focus_path(crate::input::focus_path(&surface, focus.clone()));
-                });
-                if let Some(focus) = focus {
-                    reveal(&surface, &focus);
+        if let Some(surface) = weak.upgrade() {
+            watch_keys(&surface, &window, root);
+        }
+    });
+}
+
+/// Lets the keyboard scroll the scroll views under `root` in `window`
+/// (the main one, or one of the app's own with its own root view).
+pub(crate) fn watch_keys(surface: &Rc<Surface>, window: &gtk::Window, root: &NshView) {
+    let keys = gtk::EventControllerKey::new();
+    let pressed = Rc::downgrade(surface);
+    let on = root.downgrade();
+    keys.connect_key_pressed(move |keys, key, _, modifiers| {
+        match (pressed.upgrade(), on.upgrade()) {
+            (Some(surface), Some(root)) => {
+                if key_pressed(&surface, &root, key, modifiers)
+                    || crate::navigation::key_pressed_in(&surface, root.id(), key, modifiers)
+                {
+                    return glib::Propagation::Stop;
+                }
+                let plain = !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SHIFT_MASK
+                        | gdk::ModifierType::SUPER_MASK,
+                );
+                let window_closes = root.id() != nsh_core::ROOT_ID
+                    && key == gdk::Key::Escape
+                    && plain
+                    && surface
+                        .windows
+                        .borrow()
+                        .get(&root.id())
+                        .is_some_and(|w| w.attributes.close_on_escape == Some(true));
+                if !window_closes
+                    && crate::keymap::unhandled(&surface, &root, keys.current_event().as_ref())
+                {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
                 }
             }
-        });
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    window.add_controller(keys);
+    let weak = Rc::downgrade(surface);
+    let on = root.downgrade();
+    window.connect_focus_widget_notify(move |window| {
+        if let (Some(surface), Some(root)) = (weak.upgrade(), on.upgrade()) {
+            let focus = GtkWindowExt::focus(window);
+            surface.control(|control| {
+                control.set_focus_path(crate::input::focus_path(&surface, &root, focus.clone()));
+            });
+            if let Some(focus) = focus {
+                reveal(&surface, &root, &focus);
+            }
+        }
     });
 }
 
 /// Scrolls the scroll views around the newly focused `focus` (animated)
 /// so that the view hosting it shows, as iOS and Android do for the
 /// focused field.
-fn reveal(surface: &Rc<Surface>, focus: &gtk::Widget) {
-    let root = surface.root.upcast_ref::<gtk::Widget>();
+fn reveal(surface: &Rc<Surface>, root: &NshView, focus: &gtk::Widget) {
+    let root = root.upcast_ref::<gtk::Widget>();
     if focus == root || !focus.is_ancestor(root) {
         return;
     }
@@ -598,11 +633,15 @@ fn reveal(surface: &Rc<Surface>, focus: &gtk::Widget) {
 }
 
 /// A key reached the window: whether it scrolled a view.
-fn key_pressed(surface: &Rc<Surface>, key: gdk::Key, modifiers: gdk::ModifierType) -> bool {
+pub(crate) fn key_pressed(
+    surface: &Rc<Surface>,
+    root: &NshView,
+    key: gdk::Key,
+    modifiers: gdk::ModifierType,
+) -> bool {
     let Some((horizontal, m)) = key_move(key, modifiers) else {
         return false;
     };
-    let root = &surface.root;
     if !root.is_mapped() {
         return false;
     }
@@ -623,8 +662,14 @@ fn key_pressed(surface: &Rc<Surface>, key: gdk::Key, modifiers: gdk::ModifierTyp
     let target = from_focus
         .and_then(|v| key_scroll_view(&v, horizontal, dx, dy))
         .or_else(|| {
-            let (x, y) = pointer(root)
-                .unwrap_or_else(|| (root.width() as f32 / 2.0, root.height() as f32 / 2.0));
+            // Under a test, the agent's pointer, not the user's.
+            let at = if surface.testing() {
+                crate::input::last_pointer(surface)
+            } else {
+                pointer(root)
+            };
+            let (x, y) =
+                at.unwrap_or_else(|| (root.width() as f32 / 2.0, root.height() as f32 / 2.0));
             let widget = root.pick(x as f64, y as f64, gtk::PickFlags::DEFAULT)?;
             key_scroll_view(&nearest_view(&widget)?, horizontal, dx, dy)
         });

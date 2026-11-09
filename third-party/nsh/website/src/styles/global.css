@@ -5,7 +5,7 @@
 /* ====================================================================
    Tokens. The shared graphite look (examples/nsh-gallery-ui): dark
    surfaces lit from above, one citrus accent, tinted status colours; and
-   its light variant (`html.light`, below), warm-neutral surfaces with the
+   its light variant (`html.light`, below), a white page and neutral grays with the
    same finishes. The pre-paint script in BaseLayout picks the class. See
    DESIGN.md before adding one.
    ==================================================================== */
@@ -15,24 +15,29 @@
   --radius-card: var(--nsh-gallery-radius);
   --radius-surface: var(--nsh-gallery-radius-card);
 
-  /* Surfaces: page, card, inset (recessed), raised (controls). */
-  --background: var(--nsh-gallery-background);
+  /* Surfaces: page, card, inset (recessed), raised (controls). The site's
+     own ground, the home page's ink blue-black (light: plain white), with
+     every surface stepped from it in the same hue, so every page sits on
+     one ground. The controls keep the gallery's finishes (ui.css); the
+     demo frames' screens keep the demos' own background (`--screen`). */
+  --background: #0e1016;
   --foreground: var(--nsh-gallery-foreground);
-  --card: var(--nsh-gallery-card);
-  --popover: var(--nsh-gallery-popover);
-  --inset: var(--nsh-gallery-inset);
-  --raised: var(--nsh-gallery-raised);
-  --secondary: var(--nsh-gallery-secondary);
-  --muted: var(--nsh-gallery-muted);
+  --card: #161920;
+  --popover: #181b22;
+  --inset: #0b0d12;
+  --raised: #1c1f27;
+  --secondary: var(--raised);
+  --muted: #1a1d24;
   --muted-foreground: var(--nsh-gallery-muted-foreground);
   --faint: var(--nsh-gallery-faint);
-  --border: var(--nsh-gallery-border);
-  --divider: var(--nsh-gallery-line);
-  --line: var(--nsh-gallery-line);
-  --border-hover: color-mix(in srgb, var(--nsh-gallery-border) 80%, var(--nsh-gallery-foreground));
+  --border: #282c35;
+  --input: #30343e;
+  --divider: #1f222a;
+  --line: #1f222a;
+  --border-hover: color-mix(in srgb, var(--border) 80%, var(--foreground));
   --ring: var(--nsh-gallery-ring);
-  --sidebar: var(--nsh-gallery-sidebar);
-  --sidebar-accent: var(--nsh-gallery-sidebar-accent);
+  --sidebar: #0c0e13;
+  --sidebar-accent: var(--raised);
 
   /* The one accent (text, lines and small fills), and the light primary
      button. The bright citrus fill is `--finish-accent-bg` in both themes. */
@@ -43,7 +48,7 @@
   --brand-contrast: var(--nsh-gallery-primary-foreground);
   --brand-line: color-mix(in srgb, var(--foreground) 26%, transparent);
 
-  --data-1: color-mix(in srgb, var(--nsh-gallery-info) 65%, var(--nsh-gallery-background));
+  --data-1: color-mix(in srgb, var(--nsh-gallery-info) 65%, var(--background));
   --data-2: var(--nsh-gallery-info);
   --data-3: var(--nsh-gallery-info);
   --doc-link: var(--nsh-gallery-brand);
@@ -57,7 +62,8 @@
 
   /* Shared finishes (`finishes.json` in nsh-gallery-ui): gentle top-to-bottom gradients, a
      highlight along the top edge, soft shadows. */
-  --finish-card-bg: var(--nsh-gallery-finish-card-background-image);
+  /* The card's fill is the site's card, not the gallery's. */
+  --finish-card-bg: linear-gradient(var(--card), var(--card));
   --finish-card: var(--nsh-gallery-finish-card-box-shadow);
   --finish-flat: 0 1px 2px rgb(0 0 0 / 30%);
   --finish-inset: var(--nsh-gallery-finish-inset-box-shadow);
@@ -78,16 +84,18 @@
   /* Code: Shiki emits the allsum-light colours (src/light.theme.json, the
      palette of TextView's built-in highlighting); the rules below map them
      onto these, so every snippet shares one palette. */
-  --code-bg: #0c0d0f;
-  --code-fg: #d6d9dd;
-  --code-keyword: #c4a7ff;
-  --code-string: #9fd68a;
-  --code-comment: #7d7a72;
-  --code-fn: #82b8ff;
-  --code-type: #6fd3d8;
-  --code-number: #f5b27a;
+  /* The theme's own palette: keywords in the citrus accent, names in the
+     ink's blue, strings a quiet sea green, numbers amber, comments gray. */
+  --code-bg: #0a0c10;
+  --code-fg: #d3d7de;
+  --code-keyword: #c8f26d;
+  --code-string: #93cdbf;
+  --code-comment: #6b717c;
+  --code-fn: #8fb2f5;
+  --code-type: #b6c8f0;
+  --code-number: #e9b872;
   --code-constant: var(--code-number);
-  --code-property: #f0c674;
+  --code-property: #d9c9a3;
   --code-variable: var(--code-property);
   --code-deletion: #f87171;
   --code-link: var(--doc-link);
@@ -109,25 +117,28 @@
   --nav-shadow: 0 1px 0 rgb(0 0 0 / 35%);
   --nav-bg: color-mix(in srgb, var(--background) 72%, transparent);
   --nav-line: var(--line);
-  --page-light: rgb(255 255 255 / 3.5%);
   /* Surfaces are nearly flat, so their top light is a faint 1px inset highlight: bright enough to read as an
      edge catching light, faint enough not to double the border under it. */
   --highlight: rgb(255 255 255 / 5%);
-  --band-tinted: linear-gradient(180deg, #0c0d0f, #0c0d0f);
-  --logo-dot: #eef0f2;
-  --logo-ring: transparent;
+  --band-tinted: #12141b;
+  --logo-top: #d3f07c;
+  --logo-body: #a9d63f;
+  --logo-low: #b9e24f;
+  --logo-edge: #55800c;
+  --logo-shine: #eefcc0;
+  --logo-bead-lo: #c9ced4;
+  --logo-bead-hi: #ffffff;
+  --logo-bead-rim: #7c838c;
   --code-surface: rgb(0 0 0 / 14%);
   --code-shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 22px rgb(0 0 0 / 22%);
   --chip-bg: rgb(255 255 255 / 6.5%);
   --chip-edge: rgb(255 255 255 / 5%);
   /* Liquid glass, for floating and layered surfaces only: a translucent
      fill, a lit rim (top light, bottom dark) and a gentle shadow. */
-  --glass-fill: rgb(30 32 36 / 55%);
+  --glass-fill: rgb(24 27 35 / 55%);
   --glass-thumb: linear-gradient(180deg, rgb(255 255 255 / 12.4%), rgb(255 255 255 / 8.6%));
   --glass-edge: inset 0 1px 0 rgb(255 255 255 / 12%), inset 0 -1px 0 rgb(0 0 0 / 25%), inset 0 0 0 1px rgb(255 255 255 / 6%), 0 2px 8px rgb(0 0 0 / 25%);
   --glass-thumb-edge: inset 0 1px 0 rgb(255 255 255 / 22%), inset 0 -1px 0 rgb(0 0 0 / 20%), 0 1px 3px rgb(0 0 0 / 35%);
-  --logo-top: #e2fb9f;
-  --logo-bottom: #a9d63f;
   --accent-border: transparent;
   --nav-active: rgb(255 255 255 / 6%);
   --nav-hover: rgb(255 255 255 / 3.5%);
@@ -137,9 +148,9 @@
   --callout-edge: rgb(255 255 255 / 6%);
   --active-shadow: 0 1px 2px rgb(0 0 0 / 35%);
   --callout-shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px -12px rgb(0 0 0 / 45%);
-  /* A faint grain over the page, as on the gallery's surfaces. */
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  .07 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 
+  /* Headings everywhere are set in the banner's Figtree; CJK falls back to the sans stack. */
+  --font-display: "Figtree Variable", var(--font-sans);
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto,
     "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, "Cascadia Mono", Consolas, monospace;
@@ -152,27 +163,40 @@
   color-scheme: dark;
 }
 
-/* The light variant: warm-neutral surfaces, the same finishes, the accent
+/* The light variant: a white page, neutral gray panels and hairlines, the
+   same finishes, the accent
    darkened so it reads as text. */
 html.light {
+  --background: #ffffff;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --inset: #f2f2f4;
+  --raised: #f7f7f8;
+  --muted: #f2f2f4;
+  --border: #e2e2e6;
+  --input: #d8d8dd;
+  --divider: #ececef;
+  --line: #ececef;
+  --sidebar: #fafafa;
+  --sidebar-accent: #ffffff;
 
   --brand-hover: #000000;
   --brand-line: color-mix(in srgb, var(--foreground) 26%, transparent);
 
 
 
-  --finish-flat: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 2.5%), 0 1px 2px rgb(20 20 10 / 5%);
+  --finish-flat: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 2.5%), 0 1px 2px rgb(16 20 30 / 5%);
   --accent-border: #a7cf3f;
 
-  --code-bg: #f0f0eb;
-  --code-fg: #24262a;
-  --code-keyword: #8250df;
-  --code-string: #116329;
-  --code-comment: #6e7781;
-  --code-fn: #0550ae;
-  --code-type: #0a7285;
-  --code-number: #953800;
-  --code-property: #7d4e00;
+  --code-bg: #f7f8fa;
+  --code-fg: #1d2129;
+  --code-keyword: #4a7d06;
+  --code-string: #2a7166;
+  --code-comment: #8a909a;
+  --code-fn: #2c53a8;
+  --code-type: #3c5f9e;
+  --code-number: #a35f00;
+  --code-property: #5b4a2a;
   --code-deletion: #cf222e;
 
   --grid-line: rgb(21 22 26 / 5%);
@@ -180,29 +204,49 @@ html.light {
   --scrollbar-thumb-hover: rgb(21 22 26 / 34%);
 
   --shadow-hairline: 0 0 0 0.5px rgb(0 0 0 / 14%);
-  --shadow-raise: 0 1px 2px rgb(20 20 10 / 8%);
-  --shadow-window: 0 1px 2px rgb(20 20 10 / 5%), 0 12px 28px -8px rgb(20 20 10 / 12%), 0 40px 72px -28px rgb(20 20 10 / 16%);
-  --shadow-panel: 0 20px 50px -24px rgb(20 20 10 / 24%);
-  --shadow-dialog: 0 25px 60px -12px rgb(20 20 10 / 28%);
+  --shadow-raise: 0 1px 2px rgb(16 20 30 / 8%);
+  --shadow-window: 0 1px 2px rgb(16 20 30 / 5%), 0 12px 28px -8px rgb(16 20 30 / 12%), 0 40px 72px -28px rgb(16 20 30 / 16%);
+  --shadow-panel: 0 20px 50px -24px rgb(16 20 30 / 24%);
+  --shadow-dialog: 0 25px 60px -12px rgb(16 20 30 / 28%);
 
   --nav-shadow: 0 1px 0 rgb(40 40 20 / 4%);
-  --nav-bg: color-mix(in srgb, #ffffff 74%, transparent);
-  --nav-line: rgb(40 40 20 / 13%);
-  --page-light: rgb(255 255 255 / 70%);
+  --nav-bg: color-mix(in srgb, var(--background) 74%, transparent);
+  --nav-line: var(--line);
   --highlight: #ffffff;
-  --band-tinted: linear-gradient(180deg, #edede8, #ecece6);
-  --logo-dot: #15161a;
-  --logo-ring: transparent;
-  --code-surface: rgb(120 120 90 / 4%);
-  --code-shadow: 0 1px 2px rgb(20 20 10 / 5%), 0 6px 18px rgb(20 20 10 / 5%);
+  --band-tinted: #f7f7f8;
+  --logo-top: #a7d834;
+  --logo-body: #7cb015;
+  --logo-low: #8cc01d;
+  /* The primary is the logo's green: its gradient on buttons, and as text the
+     same hue deepened until it reads on white (4.6:1). */
+  --citrus: #4a840a;
+  --doc-link: #4a840a;
+  --doc-link-hover: #3b6c06;
+  --important: #4a840a;
+}
+/* Over the gallery theme's light tokens, which load after this file. */
+html.light:root {
+  /* The primary button as in dark: one flat citrus with a fine top light,
+     only its edge a touch darker so it holds on white. */
+  --nsh-gallery-primary: #c2ea62;
+  --nsh-gallery-primary-foreground: #13160c;
+  --nsh-gallery-finish-light-background-color: #c2ea62;
+  --nsh-gallery-finish-light-background-image: linear-gradient(180deg, #c2ea62 0%, #c2ea62 100%);
+  --nsh-gallery-finish-light-border-color: rgb(60 90 0 / 45%);
+  --nsh-gallery-finish-light-box-shadow: inset 0 0 0 1px rgb(255 255 255 / 22%), inset 0 1px 1px rgb(255 255 255 / 35%), 0 1px 1px rgb(0 0 0 / 8%);
+  --logo-edge: #3f6606;
+  --logo-shine: #d4f178;
+  --logo-bead-lo: #1b1e24;
+  --logo-bead-hi: #565c66;
+  --logo-bead-rim: #07080a;
+  --code-surface: rgb(24 24 27 / 2.5%);
+  --code-shadow: 0 1px 2px rgb(16 20 30 / 5%), 0 6px 18px rgb(16 20 30 / 5%);
   --chip-bg: rgb(21 22 26 / 5.5%);
   --chip-edge: rgb(21 22 26 / 4%);
   --glass-fill: rgb(255 255 255 / 62%);
   --glass-thumb: linear-gradient(180deg, #ffffff, rgb(255 255 255 / 81.1%));
-  --glass-edge: inset 0 1px 0 rgb(255 255 255 / 95%), inset 0 -1px 0 rgb(0 0 0 / 5%), inset 0 0 0 1px rgb(0 0 0 / 6%), 0 2px 8px rgb(20 20 10 / 8%);
-  --glass-thumb-edge: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 6%), 0 1px 3px rgb(20 20 10 / 14%);
-  --logo-top: #a3d13a;
-  --logo-bottom: #6a9a12;
+  --glass-edge: inset 0 1px 0 rgb(255 255 255 / 95%), inset 0 -1px 0 rgb(0 0 0 / 5%), inset 0 0 0 1px rgb(0 0 0 / 6%), 0 2px 8px rgb(16 20 30 / 8%);
+  --glass-thumb-edge: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 6%), 0 1px 3px rgb(16 20 30 / 14%);
   --nav-active: rgb(0 0 0 / 4.5%);
   --nav-hover: rgb(0 0 0 / 2.8%);
   --callout-tint: 7%;
@@ -211,7 +255,6 @@ html.light {
   --callout-edge: var(--highlight);
   --active-shadow: 0 1px 2px rgb(40 40 20 / 8%);
   --callout-shadow: 0 0 0 transparent;
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.1  0 0 0 0 0.1  0 0 0 0 0.05  .09 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 
   color-scheme: light;
 }
@@ -235,17 +278,26 @@ html {
 }
 
 body {
+  /* One flat ground on every page, the home page's. */
   background: var(--background);
-  /* A faint light from above, as on the gallery's page. */
-  background-image: var(--grain), radial-gradient(120% 60rem at 50% -20rem, var(--page-light), transparent 70%);
-  background-repeat: repeat, no-repeat;
   color: var(--foreground);
   font-size: 15px;
   letter-spacing: -0.003em;
 }
 
+h1, h2, h3 { font-family: var(--font-display); }
+
 html[lang^="zh"] body { letter-spacing: normal; }
 html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
+/* Joined scripts (Arabic) and Devanagari's headline break apart when tracked. */
+html:is([lang^="ar"], [lang^="hi"]) :is(body, h1, h2, h3, h4, .doc-content h2, .doc-content h3, .doc-header h1) { letter-spacing: normal; }
+
+/* Right-to-left pages (`dir` in the translations' locales.json): the layout
+   mirrors through logical properties; code, demos and the language-neutral
+   parts stay left to right. */
+html[dir="rtl"] :is(pre, .code-tabs, .demo, .phone, kbd) { direction: ltr; }
+html[dir="rtl"] code { direction: ltr; unicode-bidi: isolate; }
+html[dir="rtl"] .doc-pager__arrow { display: inline-block; transform: scaleX(-1); }
 
 :is(table, kbd, time, .num) { font-variant-numeric: tabular-nums; }
 
@@ -350,7 +402,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   text-decoration: none;
 }
 
-.site-nav__projects { position: relative; margin-left: -1rem; flex-shrink: 0; }
+.site-nav__projects { position: relative; margin-inline-start: -1rem; flex-shrink: 0; }
 .site-nav__projects summary {
   display: inline-flex; align-items: center; justify-content: center;
   width: 1.5rem; height: 1.5rem; border-radius: 6px; cursor: pointer; list-style: none;
@@ -360,7 +412,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 .site-nav__projects summary:hover { background: var(--nav-hover); color: var(--foreground); }
 .site-nav__projects summary svg { width: 1rem; height: 1rem; }
 .site-nav__projects-menu {
-  position: absolute; top: calc(100% + 0.5rem); left: 0; z-index: 50; min-width: 16rem; padding: 0.35rem;
+  position: absolute; top: calc(100% + 0.5rem); inset-inline-start: 0; z-index: 50; width: max-content; padding: 0.35rem;
   border: 1px solid var(--line); border-radius: 10px; background: var(--background);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
 }
@@ -370,7 +422,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 }
 .site-nav__project-logo { display: block; flex-shrink: 0; width: 1.75rem; height: 1.75rem; }
 .site-nav__project-copy { display: flex; flex-direction: column; gap: 0.1rem; }
-.site-nav__projects-menu a span { color: var(--muted-foreground); font-size: 0.75rem; }
+.site-nav__projects-menu a span { color: var(--muted-foreground); font-size: 0.75rem; white-space: nowrap; }
 .site-nav__projects-menu a:hover, .site-nav__projects-menu a.is-current { background: var(--nav-hover); }
 
 .site-nav__versions { position: relative; flex-shrink: 0; }
@@ -383,7 +435,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 .site-nav__versions summary:hover, .site-nav__versions[open] summary { background: var(--nav-hover); color: var(--foreground); }
 .site-nav__versions summary svg { width: 0.875rem; height: 0.875rem; }
 .site-nav__versions-menu {
-  position: absolute; top: calc(100% + 0.5rem); right: 0; z-index: 50; min-width: 9rem; padding: 0.35rem;
+  position: absolute; top: calc(100% + 0.5rem); inset-inline-end: 0; z-index: 50; min-width: 9rem; padding: 0.35rem;
   border: 1px solid var(--line); border-radius: 10px; background: var(--background);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
 }
@@ -413,7 +465,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 }
 .site-nav__link:hover { background: var(--nav-hover); color: var(--foreground); }
 
-.site-nav__actions { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; }
+.site-nav__actions { display: flex; align-items: center; gap: 0.25rem; margin-inline-start: auto; }
 
 .site-nav__burger { display: none; }
 .site-nav__burger-close { display: none; }
@@ -427,27 +479,28 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   gap: 0.45rem;
   width: 13rem;
   height: 2rem;
-  margin-right: 0.35rem;
-  padding: 0 0.4rem 0 0.6rem;
+  margin-inline-end: 0.35rem;
+  padding-block: 0;
+  padding-inline: 0.6rem 0.4rem;
   /* Opens the search dialog; it looks like the Input it leads to (ui.css). */
-  border: 1px solid var(--nsh-gallery-input);
+  border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  background: var(--nsh-gallery-card);
+  background: var(--card);
   color: var(--faint);
   font-size: 0.8125rem;
   cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
 }
-.site-nav__search-btn:hover { border-color: color-mix(in srgb, var(--nsh-gallery-input) 70%, var(--foreground)); color: var(--muted-foreground); }
-.site-nav__search-hint { margin-right: auto; white-space: nowrap; }
+.site-nav__search-btn:hover { border-color: color-mix(in srgb, var(--input) 70%, var(--foreground)); color: var(--muted-foreground); }
+.site-nav__search-hint { margin-inline-end: auto; white-space: nowrap; }
 
 @media (max-width: 1080px) {
   .site-nav__search-btn { width: 9.5rem; }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 940px) {
   .site-nav__inner { gap: 1rem; }
-  .site-nav__projects { margin-left: -0.5rem; }
+  .site-nav__projects { margin-inline-start: -0.5rem; }
   .site-nav__burger { display: inline-flex; }
   .site-nav__links {
     display: none;
@@ -465,7 +518,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   }
   .site-nav__links.is-open { display: flex; }
   .site-nav__link { height: 2.5rem; padding: 0 0.6rem; font-size: 0.95rem; color: var(--foreground); }
-  .site-nav__search-btn { width: 2rem; margin-right: 0; padding: 0; justify-content: center; border-color: transparent; background: transparent; box-shadow: none; color: var(--muted-foreground); }
+  .site-nav__search-btn { width: 2rem; margin-inline-end: 0; padding: 0; justify-content: center; border-color: transparent; background: transparent; box-shadow: none; color: var(--muted-foreground); }
   .site-nav__search-btn:hover { border-color: transparent; }
   .site-nav__search-btn .site-nav__search-key { display: none; }
   .site-nav__search-hint { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -478,10 +531,22 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   .site-nav__actions > a[aria-label="GitHub"] { display: none; }
 }
 
-@media (max-width: 380px) {
+/* The name goes before the actions stop fitting, with room for a longer
+   version label. */
+@media (max-width: 460px) {
   .site-nav__inner { gap: 0.5rem; }
-  .site-nav__projects { display: none; }
+  .site-nav__projects { margin-inline-start: 0; }
+  .site-nav__projects-menu { position: fixed; top: 3.5rem; left: 1rem; right: 1rem; width: auto; }
+  .site-nav__projects-menu a span { white-space: normal; }
   .site-nav__brand > span { display: none; }
+}
+
+@media (max-width: 380px) {
+  .site-nav__projects { display: none; }
+}
+
+@media (max-width: 340px) {
+  .site-nav__versions { display: none; }
 }
 
 /* ====================================================================
@@ -524,7 +589,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   --pagefind-ui-font: inherit;
 }
 /* Pagefind's field, as the site's Input (ui.css). */
-#search-ui .pagefind-ui__search-input { border: 1px solid var(--nsh-gallery-input); background: var(--nsh-gallery-card); color: var(--foreground); font-size: 0.95rem; outline: none; transition: border-color 140ms ease, box-shadow 140ms ease; }
+#search-ui .pagefind-ui__search-input { border: 1px solid var(--input); background: var(--card); color: var(--foreground); font-size: 0.95rem; outline: none; transition: border-color 140ms ease, box-shadow 140ms ease; }
 #search-ui .pagefind-ui__search-input:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent); }
 #search-ui .pagefind-ui__search-input::placeholder { color: var(--faint); opacity: 1; }
 #search-ui .pagefind-ui__search-clear { background: transparent; color: var(--muted-foreground); }
@@ -552,8 +617,9 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   width: var(--sidebar-width);
   height: calc(100vh - var(--nav-height));
   overflow-y: auto;
-  padding: 2rem 1rem 2rem 0.5rem;
-  border-right: 1px solid var(--line);
+  padding-block: 2rem;
+  padding-inline: 0.5rem 1rem;
+  border-inline-end: 1px solid var(--line);
   /* The links keep their place whether or not the list overflows. */
   scrollbar-gutter: stable;
 }
@@ -622,26 +688,28 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   width: var(--toc-width);
   max-height: calc(100vh - var(--nav-height));
   overflow-y: auto;
-  padding: 2.75rem 0 2rem 1.5rem;
+  padding-block: 2.75rem 2rem;
+  padding-inline: 1.5rem 0;
   font-size: 0.8125rem;
   scrollbar-width: none;
 }
 .toc::-webkit-scrollbar { display: none; }
 .toc__label { margin: 0 0 0.7rem; color: var(--faint); font: 620 0.68rem/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
-.toc ul { margin: 0; padding: 0; border-left: 1px solid var(--line); list-style: none; }
+.toc ul { margin: 0; padding: 0; border-inline-start: 1px solid var(--line); list-style: none; }
 .toc__item a {
   display: block;
-  margin-left: -1px;
-  padding: 0.22rem 0 0.22rem 0.8rem;
-  border-left: 1px solid transparent;
+  margin-inline-start: -1px;
+  padding-block: 0.22rem;
+  padding-inline: 0.8rem 0;
+  border-inline-start: 1px solid transparent;
   color: var(--muted-foreground);
   line-height: 1.4;
   text-decoration: none;
   transition: color 140ms ease, border-color 140ms ease;
 }
-.toc__item a:hover { border-left-color: var(--border-hover); color: var(--foreground); }
-.toc__item a.is-current { border-left-color: var(--citrus); color: var(--foreground); }
-.toc__item--sub a { padding-left: 1.55rem; font-size: 0.78rem; }
+.toc__item a:hover { border-inline-start-color: var(--border-hover); color: var(--foreground); }
+.toc__item a.is-current { border-inline-start-color: var(--citrus); color: var(--foreground); }
+.toc__item--sub a { padding-inline-start: 1.55rem; font-size: 0.78rem; }
 
 @media (max-width: 1180px) {
   .toc { display: none; }
@@ -659,7 +727,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
     margin-inline: -1.5rem;
     padding: 0.6rem 1.5rem;
     overflow: visible;
-    border-right: 0;
+    border-inline-end: 0;
     border-bottom: 1px solid var(--line);
     background: color-mix(in srgb, var(--background) 88%, transparent);
     backdrop-filter: blur(18px);
@@ -674,7 +742,7 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
     padding: 0.35rem 0;
     color: var(--foreground);
     font: inherit;
-    text-align: left;
+    text-align: start;
     cursor: pointer;
   }
   .docs-sidebar__toggle svg { flex-shrink: 0; color: var(--muted-foreground); transition: transform 160ms ease; }
@@ -723,8 +791,8 @@ html[lang^="zh"] .sidebar-group__title,
 html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
 .doc-header h1 {
   margin: 0;
-  font-size: clamp(1.8rem, 2.8vw, 2.25rem);
-  font-weight: 680;
+  font-size: clamp(1.9rem, 3vw, 2.5rem);
+  font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.15;
 }
@@ -741,8 +809,8 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
 
   p, ul, ol, blockquote { max-width: 46rem; }
   p, li { line-height: 1.75; }
-  ul { list-style: disc; padding-left: 1.25rem; }
-  ol { list-style: decimal; padding-left: 1.35rem; }
+  ul { list-style: disc; padding-inline-start: 1.25rem; }
+  ol { list-style: decimal; padding-inline-start: 1.35rem; }
   ul ul { list-style: circle; }
   li::marker { color: var(--muted-foreground); }
   li + li { margin-top: 0.25rem; }
@@ -765,8 +833,8 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   :is(h2, h3, h4)[id] { position: relative; scroll-margin-top: calc(var(--nav-height) + 1.25rem); }
   .heading-anchor {
     position: absolute;
-    right: 100%;
-    padding-right: 0.4rem;
+    inset-inline-end: 100%;
+    padding-inline-end: 0.4rem;
     color: var(--muted-foreground);
     font-weight: 400;
     opacity: 0;
@@ -941,7 +1009,7 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   }
   thead tr { background: color-mix(in srgb, var(--foreground) 3.5%, var(--card)); }
   th { color: var(--muted-foreground); font-size: 0.8125rem; font-weight: 560; white-space: nowrap; }
-  th, td { padding: 0.55rem 0.85rem; line-height: 1.55; text-align: left; vertical-align: top; }
+  th, td { padding: 0.55rem 0.85rem; line-height: 1.55; text-align: start; vertical-align: top; }
   thead th { border-bottom: 1px solid var(--line); }
   tbody tr + tr td { border-top: 1px solid var(--line); }
   /* Code in a cell keeps to one line and prose keeps a readable width: a
@@ -965,12 +1033,12 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   .data-table td:last-child { min-width: 0; }
   /* Status dots: green available, yellow partial, red not provided. */
   .status { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; vertical-align: 0.05em; background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 18%, transparent); }
-  .status + * , td .status { margin-right: 0.15rem; }
+  .status + * , td .status { margin-inline-end: 0.15rem; }
   .status--yes { --tone: var(--success); }
   .status--partial { --tone: var(--warning); }
   .status--no { --tone: var(--destructive); }
 
-  blockquote { padding: 0.1rem 0 0.1rem 1.1rem; border-left: 2px solid var(--citrus); color: var(--muted-foreground); }
+  blockquote { padding-block: 0.1rem; padding-inline: 1.1rem 0; border-inline-start: 2px solid var(--citrus); color: var(--muted-foreground); }
   blockquote > p { margin-block: 0.5rem; }
 
   kbd {
@@ -1058,7 +1126,7 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
   transition: border-color 150ms ease;
 }
 .doc-pager__link:hover { border-color: var(--border-hover); }
-.doc-pager__link--next { grid-column: 2; text-align: right; }
+.doc-pager__link--next { grid-column: 2; text-align: end; }
 .doc-pager__label { color: var(--faint); font-size: 0.75rem; }
 .doc-pager__title { font-size: 0.925rem; font-weight: 600; }
 
@@ -1272,4 +1340,40 @@ html[lang^="zh"] .toc__label { letter-spacing: 0.05em; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+}
+
+.doc-machine-notice {
+  margin: 0 0 1.5rem; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem;
+  color: var(--muted-foreground); font-size: 0.8125rem;
+}
+.doc-machine-notice a { color: var(--foreground); text-decoration: underline; }
+
+/* ====================================================================
+   Page heads: the inner pages open as the home page's sections do, a
+   Figtree title over a quiet lead, with the banner's halftone fading in
+   at the top right.
+   ==================================================================== */
+.page-head { position: relative; isolation: isolate; }
+.page-head::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -3rem;
+  right: calc(-1 * min(40vw, 32rem));
+  width: min(70vw, 52rem);
+  height: calc(100% + 5rem);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--foreground) 16%, transparent) 1.1px, transparent 1.6px);
+  background-size: 15px 15px;
+  mask-image: radial-gradient(55% 65% at 70% 25%, black, transparent);
+  pointer-events: none;
+}
+html.light .page-head::before { background-image: radial-gradient(circle, rgb(52 60 78 / 20%) 1.1px, transparent 1.6px); }
+.page-head h1 { margin: 0; font-size: clamp(2.4rem, 4.6vw, 3.6rem); font-weight: 600; line-height: 1.04; letter-spacing: -0.03em; text-wrap: balance; }
+.page-head--compact h1 { font-size: clamp(1.9rem, 3vw, 2.4rem); }
+.page-head--compact::before { top: -2rem; height: calc(100% + 3rem); }
+.page-head__kicker { color: var(--muted-foreground); }
+.page-head__lead { max-width: 40rem; color: var(--muted-foreground); font-size: 1.05rem; line-height: 1.6; }
+html[lang^="zh"] .page-head h1 { letter-spacing: 0; line-height: 1.2; }
+@media (max-width: 900px) {
+  .page-head::before { right: 0; width: 100%; }
 }

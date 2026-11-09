@@ -3,8 +3,18 @@
   "id": "com.longbridge.nsh.gallery",
   "version": "1.0.0",
   "build": 1,
+  "schemes": [
+    "nsh-gallery"
+  ],
   "icon": "icon.png",
   "appearance": "system",
+  "window": {
+    "title": "Gallery",
+    "titleBar": {
+      "style": "hidden",
+      "height": 44
+    }
+  },
   "theme": "../nsh-gallery-ui/theme.json",
   "capabilities": {
     "network": {
@@ -28,6 +38,9 @@
       "execute": [
         "echo",
         "cat",
+        "sh",
+        "bash",
+        "zsh",
         "cmd.exe",
         "claude",
         "codex"
@@ -46,10 +59,21 @@
     "clipboard": true,
     "openUrl": {
       "schemes": [
-        "https"
+        "https",
+        "nsh-gallery"
       ]
     },
     "picker": true,
-    "speech": true
+    "speech": true,
+    "notifications": true,
+    "audio": true,
+    "windows": {
+      "kinds": [
+        "normal",
+        "dialog",
+        "panel",
+        "popup"
+      ]
+    }
   }
 }

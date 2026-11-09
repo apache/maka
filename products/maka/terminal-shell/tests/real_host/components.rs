@@ -61,10 +61,8 @@ async fn component(scenario: &'static str) -> AppView {
     })
     .await
     .unwrap();
-    let mut view = AppView::new(nsh_platform_tui::AppOptions {
-        size: (120, 36),
-        ..Default::default()
-    });
+    let mut view = AppView::new(nsh_platform_tui::AppOptions::default());
+    view.resize(120, 36);
     view.load_with_config(nsh_engine::EngineConfig {
         ui_sets: vec![nsh_base::registry(), registry],
         runtime: Some(tokio::runtime::Handle::current()),
@@ -106,7 +104,6 @@ async fn activity_resumes_following_after_reading_an_expanded_tool() {
             row,
             modifiers: KeyModifiers::NONE,
         }));
-        view.poll().unwrap();
         support::tick(&mut view);
         tokio::task::yield_now().await;
     }

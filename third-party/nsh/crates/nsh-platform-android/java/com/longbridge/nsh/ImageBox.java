@@ -20,6 +20,16 @@ import android.view.View;
 @SuppressLint("ViewConstructor")
 final class ImageBox extends View implements Node {
     final Decor decor = new Decor();
+
+    /** An outer box shadow draws outside the bounds, and compositing the
+     * view at alpha < 1 into the bounds-clipped offscreen buffer would cut
+     * it; such a view reports no overlapping rendering, so the alpha
+     * applies per draw op and the shadow fades with the content. */
+    @Override
+    public boolean hasOverlappingRendering() {
+        return !decor.hasOuterShadows();
+    }
+
     final int id;
     int resizeMode; // 0 cover, 1 contain, 2 stretch, 3 center, 4 scale-down
     /**

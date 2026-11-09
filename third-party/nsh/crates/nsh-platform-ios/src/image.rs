@@ -211,6 +211,11 @@ pub(crate) struct ImageLoader {
 }
 
 impl ImageLoader {
+    /// Where `asset:/` URIs resolve.
+    pub(crate) fn asset_base(&self) -> Option<&AssetBase> {
+        self.asset_base.as_ref()
+    }
+
     pub(crate) fn new(
         asset_base: Option<AssetBase>,
         notify: Notify,

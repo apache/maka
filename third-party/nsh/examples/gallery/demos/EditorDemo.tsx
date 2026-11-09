@@ -134,6 +134,8 @@ const SEVERITY = {
 
 const same = (a: EditorRange, b: EditorRange) =>
   a.start.line === b.start.line && a.start.column === b.start.column && a.end.line === b.end.line && a.end.column === b.end.column;
+/** A terminal: no icons, and its lines read as words. */
+const terminal = platform.idiom === "terminal";
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 || word === "info" ? "" : "s"}`;
 
 const pointer = platform.desktop;
@@ -178,7 +180,7 @@ function Tool(props: { label: string; name: string; onPress: () => void; on?: bo
 
 /** An icon button of the toolbar, its label for screen readers and as its
  * tooltip: `on` lights it while what it toggles is on. */
-function IconTool(props: { label: string; icon: IconName; onPress: () => void; on?: boolean; size?: "small" }) {
+function IconTool(props: { label: string; icon: IconName; onPress: () => void; on?: boolean; size?: "small"; word?: string }) {
   return (
     <Button
       onPress={props.onPress}
@@ -186,8 +188,10 @@ function IconTool(props: { label: string; icon: IconName; onPress: () => void; o
       accessibilityLabel={props.label}
       tooltip={<Tip label={props.label} />}
       class={`${props.size === "small" ? "size-5" : "size-7"} items-center justify-center rounded-md hover:bg-foreground/10 active:opacity-70 selected:bg-foreground/15`}
+      style={terminal && props.word ? { width: "auto" } : undefined}
     >
-      <Icon name={props.icon} size={props.size === "small" ? 13 : 16} tint={props.on ? colors.text : colors.muted} />
+      {/* A terminal has no icons: the tool is its word there, which the painter bands while on. */}
+      {terminal && props.word ? <Text>{props.word}</Text> : <Icon name={props.icon} size={props.size === "small" ? 13 : 16} tint={props.on ? colors.text : colors.muted} />}
     </Button>
   );
 }
@@ -649,12 +653,17 @@ export function EditorDemo() {
   const menuOpen = signal<"language" | "options" | null>(null);
   return (
     <View class="flex-1 bg-background">
-      <View ref={(node: ViewRef) => (toolbar = node)} class="h-10 flex-row items-center gap-0.5 border-b border-border px-1.5">
+      {/* A terminal's 6pt is no column: its language menu would touch the line before it, so it keeps one. */}
+      <View
+        ref={(node: ViewRef) => (toolbar = node)}
+        class="h-10 flex-row items-center gap-0.5 border-b border-border px-1.5"
+        style={platform.idiom === "terminal" ? { paddingHorizontal: 8 } : undefined}
+      >
         <Menu
           offset={4}
           margin={8}
           popupClass={popup}
-          backdropClass="bg-black/40"
+          backdropClass="bg-scrim"
           onOpenChange={({ open }) => menuOpen.set(open ? "language" : null)}
           trigger={
             <View
@@ -687,7 +696,7 @@ export function EditorDemo() {
           offset={4}
           margin={8}
           popupClass={popup}
-          backdropClass="bg-black/40"
+          backdropClass="bg-scrim"
           onOpenChange={({ open }) => menuOpen.set(open ? "options" : null)}
           trigger={
             <View
@@ -734,7 +743,7 @@ export function EditorDemo() {
           handleThumbClass={handleThumb}
           dockClass="bg-card"
           sheetClass="h-72 rounded-t-2xl border-t border-border bg-card"
-          backdropClass="bg-black/40"
+          backdropClass="bg-scrim"
           renderTab={(tab) => (
             <View class="h-7 flex-row items-center gap-2 px-3">
               <Text style={{ numberOfLines: 1 }} class={`text-xs font-medium ${tab.active ? "text-foreground" : "text-muted-foreground"}`}>
@@ -794,7 +803,8 @@ export function EditorDemo() {
                         )}
                       </If>
                     </View>
-                    <View class="flex-row flex-wrap gap-x-3 pl-3.5">
+                    {/* A terminal starts its fixes' bands at the card's first column, as the code block's below. */}
+                    <View class="flex-row flex-wrap gap-x-3 pl-3.5" style={terminal ? { paddingLeft: 0 } : undefined}>
                       <Each of={fixesFor(d())}>
                         {(fix) => (
                           <Button
@@ -849,7 +859,8 @@ export function EditorDemo() {
         )}
       </If>
 
-      <View class="h-6 flex-row items-center gap-3 overflow-hidden border-t border-border pl-2.5 pr-1">
+      {/* A terminal's status line reads as words two columns apart (12pt is one), its edges one column in, as a pager's. */}
+      <View class="h-6 flex-row items-center gap-3 overflow-hidden border-t border-border pl-2.5 pr-1" style={terminal ? { gap: 24, paddingHorizontal: 8 } : undefined}>
         <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] tabular-nums text-foreground">
           {caret()}
         </Text>
@@ -862,13 +873,15 @@ export function EditorDemo() {
         <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] text-info">
           {plural(count("info"), "info")}
         </Text>
-        <Text style={{ numberOfLines: 1 }} class="min-w-0 shrink font-mono text-[11px] text-muted-foreground">
-          {last()}
-        </Text>
+        <If when={!terminal || last() !== "—"}>
+          <Text style={{ numberOfLines: 1 }} class="min-w-0 shrink font-mono text-[11px] text-muted-foreground">
+            {last()}
+          </Text>
+        </If>
         <Text style={{ numberOfLines: 1 }} class="ml-auto min-w-0 shrink font-mono text-[11px] text-muted-foreground">
           {typescript() && analyzing() ? "Analyzing…" : LANGUAGES.find((l) => l.value === language())!.label}
         </Text>
-        <IconTool label="Toggle problems" icon="diagnostics" size="small" on={problemsShown()} onPress={() => area?.toggleDock("bottom")} />
+        <IconTool label="Toggle problems" word="Problems" icon="diagnostics" size="small" on={problemsShown()} onPress={() => area?.toggleDock("bottom")} />
       </View>
     </View>
   );

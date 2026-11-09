@@ -222,7 +222,7 @@ form.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `color` | `.color(..)` | `string` | none | The color it shows; a press picks it in the picker around it. Without it, the picker's own color: a preview. |
+| `color` | `.color(..)` | `string` | none | The color it shows; a press picks it in the picker around it. Without it, the picker's own color: a preview, which is no stop of Tab. |
 | `selectedStyle` | `.selected_style(..)` | `StyleProp<ViewStyle>` | none | The style while it is the picker's color, as `selected:` classes. |
 | `checkerboardColor` | `.checkerboard_color(..)` | `string` | none | A checkerboard under a translucent color. |
 | `checkerboardSize` | `.checkerboard_size(..)` | `number` | `4` | The side of its squares. |

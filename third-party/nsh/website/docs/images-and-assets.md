@@ -44,7 +44,7 @@ fn native(registry: &mut Registry) {
 ```tsx tabs
 import logo from "./assets/logo@2x.png";
 
-logo; // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
+logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
 ```
 
 Supported files: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic`, and `.svg` ([SVG images](#svg-images)).
@@ -53,10 +53,10 @@ Supported files: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic`, and `.svg` (
 
 **Natural size.** An image from an asset lays out at its natural size when its style leaves the width or height open, so `image(LOGO)` and `<Image src={logo} />` need no style. Set one dimension and the aspect ratio, or both, to size it differently.
 
-In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, including files outside the entry directory. Their compiled `url` uses `asset:/imports/<digest>/<filename>`, where the digest covers the filenames and contents of the entire resource family. Pixel-density variants keep their sibling names, and moving the checkout does not change these logical paths. `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
+In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, and their `url` is relative to the app's root (the entry's directory). `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
 
 > [!TIP]
-> In TSX, `src` also accepts `asset:/path` strings, and imported files are the ones guaranteed to ship. A path that is never imported works with the dev server, which serves the whole app directory, and is missing from packaged apps. Import every image you use. A Rust crate ships its whole `assets/` directory through `assets!()`.
+> In TSX, `src` also accepts `asset:/path` strings, and imported files are the ones guaranteed to ship. A path that is never imported works with the dev server for images, fonts, audio and video in the app's directory (outside hidden directories), and is missing from packaged apps. Import every image you use. A Rust crate ships its whole `assets/` directory through `assets!()`.
 
 ### Pixel densities
 
@@ -78,7 +78,7 @@ const LOGO: ImageAsset = asset!("logo.png");
 ```tsx tabs
 import logo from "./assets/logo.png";
 
-logo; // { url: "asset:/imports/<digest>/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
+logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
 ```
 
 - `asset!` and the bundler look for `@1.5x`, `@2x`, `@3x` and `@4x` siblings of an image named without a suffix. `scales` lists them, with 1 for the named file; an image without siblings has no scales (in TSX it imports as `{ url, size }`). The bundler ships the siblings it finds, and `assets!()` ships the whole directory.
@@ -92,15 +92,13 @@ One file is fine too: export it at the highest density you need (`@3x` for the s
 
 ## SVG images
 
-The terminal backend does not support SVG image sources yet; use a bitmap image there.
-
 Import an `.svg` file like any image. Its size in points is its `width` and `height` (or one of them, with the other from the `viewBox`'s aspect ratio), else its `viewBox`: a CSS pixel of the SVG is a point, and `@2x` suffixes leave SVG files as they are.
 
 ```tsx
 import logo from "./assets/logo.svg"; // <svg width="120" height="40" …>
 import star from "./assets/star.svg"; // <svg viewBox="0 0 24 24" …>
 
-logo; // { url: "asset:/imports/<digest>/logo.svg", size: { width: 120, height: 40 } }
+logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 
 <Image src={logo} />
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />
@@ -361,6 +359,7 @@ function RemoteImage(props: { url: string }) {
 | File | Rust (`asset!`) | TSX import | Page |
 |---|---|---|---|
 | `.ttf`, `.otf`, `.woff`, `.woff2` | A `FontAsset` with its family name | The font's family name | [Fonts](./fonts.md) |
+| `.wav`, `.m4a`, `.aac`, `.mp3` | A `FileAsset` with its URI | The file's `asset:/` URL | [Sound](../modules/nsh.md#sound) |
 | `.json` and other files | A `FileAsset` with its URI | `.json`: the parsed value, bundled into the script | [Project structure](./project-structure.md#modules) |
 
 Fonts are registered before the first frame in both.
@@ -391,7 +390,7 @@ import flag from "./images/flag.png";
 const bytes = await (await fetch(flag.url)).bytes();
 ```
 
-The engine reads the file from the app's files off its thread (from the dev server during `nsh run`), with no capability needed: they are the app's own. A web app downloads what the page did not preload from where it serves its assets. The response is `200` with the file's bytes, its `Content-Length` and the `Content-Type` its extension gives (`image/png`, `application/json`, ...), and its `url` is the `asset:/` URL however the file arrived; a file the app does not ship rejects as a network error that names it. The URL names the file by its path inside the app's files, and the request reads it with `GET` (or `HEAD`): a URL whose path leaves them (`..`, an absolute path) and a request with another method reject the same way, before anything is read or downloaded.
+The engine reads the file from the app's files off its thread (from the dev server during `nsh run`), with no capability needed: they are the app's own. A web app downloads what the page did not preload from where it serves its assets. The response is `200` with the file's bytes, its `Content-Length` and the `Content-Type` its extension gives (`image/png`, `application/json`, ...), and its `url` is the `asset:/` URL asked for, without its fragment, however the file arrived; a file the app does not ship rejects as a network error that names it. The URL names the file by its path inside the app's files, on every platform alike: the scheme reads in any case, as URLs' schemes do, and a query or a fragment leaves the file the same (`asset:/locales/en.json?v=2` reads `locales/en.json`). The request reads the file with `GET` (or `HEAD`): a URL whose path leaves the app's files (`..`, an absolute path) and a request with another method reject the same way, before anything is read or downloaded.
 
 ### A module's own URL
 

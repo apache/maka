@@ -533,7 +533,10 @@ unsafe extern "C" fn gc_mark(rt: *mut qjs::JSRuntime, obj: JsValue, mark: qjs::J
         return;
     }
     let (id, generation) = unpack(p);
-    if g.live(id, generation, GENERATION_MASK) {
+    // Only what the object owns: the value of a live memo is its node's,
+    // which its owner keeps after the object goes. Marked as the object's,
+    // a cycle through the object would free it under the graph.
+    if g.live(id, generation, GENERATION_MASK) && g.held_by_handle(id) {
         unsafe { qjs::JS_MarkValue(rt, *g.value(id), mark) };
         if let Some(f) = g.custom_equals(id) {
             unsafe { qjs::JS_MarkValue(rt, *f, mark) };
@@ -901,13 +904,24 @@ pub(crate) fn new_graph(raw: *mut JsContext) -> Graph {
             id
         };
         // A signal's methods: `count.set(1)`, `count.update(n => n + 1)`.
+        // Getters, so that each signal has its own, bound to it: passed on
+        // their own (`onChange={count.set}`) they still write `count`.
         let signal_proto = qjs::JS_NewObjectProto(raw, function_proto);
-        for (name, f, length) in [
-            (c"set", signal_set as Native, 1),
-            (c"update", signal_update as Native, 1),
+        for (name, getter) in [
+            (c"set", signal_set_getter as Native),
+            (c"update", signal_update_getter as Native),
         ] {
-            let func = new_function(raw, name, f, length);
-            qjs::JS_SetPropertyStr(raw, signal_proto, name.as_ptr(), func);
+            let get = new_function(raw, name, getter, 0);
+            let atom = qjs::JS_NewAtom(raw, name.as_ptr());
+            qjs::JS_DefinePropertyGetSet(
+                raw,
+                signal_proto,
+                atom,
+                get,
+                UNDEFINED,
+                qjs::JS_PROP_CONFIGURABLE as c_int,
+            );
+            qjs::JS_FreeAtom(raw, atom);
         }
         let classes = Classes {
             signal: class(c"Signal", Some(signal_call), true, signal_proto),
@@ -1043,6 +1057,95 @@ pub(crate) fn signal_kind(cx: *mut JsContext, v: JsValue) -> (bool, bool) {
     (class == classes.signal, class == classes.memo)
 }
 
+/// `signal.set` and `signal.update`: methods of a signal of their own,
+/// bound to it (cached on the signal on first use). They hold the node's
+/// handle, not the signal, so they keep nothing alive and write nothing
+/// once the signal is gone. Read off anything but a signal (the
+/// prototype), they are the unbound methods, which throw.
+fn bound_method(cx: *mut JsContext, this: JsValue, name: &CStr, update: bool) -> JsValue {
+    let class = unsafe { graph(cx) }.data.classes.signal;
+    let Some(id) = (unsafe { node_of(cx, this, class) }) else {
+        let f: Native = if update { signal_update } else { signal_set };
+        return new_function(cx, name, f, 1);
+    };
+    let generation = unsafe { graph(cx) }.generation(id);
+    // SAFETY: plain values as the function's data; `this` is a live signal.
+    unsafe {
+        let mut data = [
+            qjs::JS_NewFloat64(id.into()),
+            qjs::JS_NewFloat64(generation.into()),
+        ];
+        let func = qjs::JS_NewCFunctionData(
+            cx,
+            Some(bound_call),
+            1,
+            update as c_int,
+            2,
+            data.as_mut_ptr(),
+        );
+        qjs::JS_DefinePropertyValueStr(
+            cx,
+            func,
+            c"name".as_ptr(),
+            qjs::JS_NewStringLen(cx, name.as_ptr(), name.count_bytes() as _),
+            qjs::JS_PROP_CONFIGURABLE as c_int,
+        );
+        qjs::JS_DefinePropertyValueStr(
+            cx,
+            this,
+            name.as_ptr(),
+            qjs::JS_DupValue(cx, func),
+            qjs::JS_PROP_CONFIGURABLE as c_int,
+        );
+        func
+    }
+}
+
+unsafe extern "C" fn signal_set_getter(
+    cx: *mut JsContext,
+    this: JsValue,
+    _argc: c_int,
+    _argv: *mut JsValue,
+) -> JsValue {
+    bound_method(cx, this, c"set", false)
+}
+
+unsafe extern "C" fn signal_update_getter(
+    cx: *mut JsContext,
+    this: JsValue,
+    _argc: c_int,
+    _argv: *mut JsValue,
+) -> JsValue {
+    bound_method(cx, this, c"update", true)
+}
+
+/// A bound `set` (`magic` 0) or `update` (1); `data` is the node's id and
+/// generation.
+unsafe extern "C" fn bound_call(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+    magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    let (mut id, mut generation) = (0.0, 0.0);
+    // SAFETY: the two numbers `bound_method` gave.
+    unsafe {
+        qjs::JS_ToFloat64(cx, &mut id, *data);
+        qjs::JS_ToFloat64(cx, &mut generation, *data.add(1));
+    }
+    let (id, generation) = (id as u32, generation as u32);
+    if !unsafe { graph(cx) }.live(id, generation, u32::MAX) {
+        return UNDEFINED;
+    }
+    if magic == 0 {
+        write_value(cx, id, arg(argc, argv, 0))
+    } else {
+        update_value(cx, id, arg(argc, argv, 0))
+    }
+}
+
 /// The signal `this` names, or a thrown `TypeError`.
 fn this_signal(cx: *mut JsContext, this: JsValue) -> Result<u32, JsValue> {
     let class = unsafe { graph(cx) }.data.classes.signal;
@@ -1053,34 +1156,41 @@ fn this_signal(cx: *mut JsContext, this: JsValue) -> Result<u32, JsValue> {
     }
 }
 
-/// `signal.set(value)`.
+/// `signal.set(value)`, unbound.
 unsafe extern "C" fn signal_set(
     cx: *mut JsContext,
     this: JsValue,
     argc: c_int,
     argv: *mut JsValue,
 ) -> JsValue {
-    let id = match this_signal(cx, this) {
-        Ok(id) => id,
-        Err(e) => return e,
-    };
-    let value = unsafe { qjs::JS_DupValue(cx, arg(argc, argv, 0)) };
-    r::write(Js(cx), id, value);
-    finish(cx, UNDEFINED)
+    match this_signal(cx, this) {
+        Ok(id) => write_value(cx, id, arg(argc, argv, 0)),
+        Err(e) => e,
+    }
 }
 
-/// `signal.update(fn)`: sets `fn(current value)`.
+/// `signal.update(fn)`, unbound.
 unsafe extern "C" fn signal_update(
     cx: *mut JsContext,
     this: JsValue,
     argc: c_int,
     argv: *mut JsValue,
 ) -> JsValue {
-    let id = match this_signal(cx, this) {
-        Ok(id) => id,
-        Err(e) => return e,
-    };
-    let f = arg(argc, argv, 0);
+    match this_signal(cx, this) {
+        Ok(id) => update_value(cx, id, arg(argc, argv, 0)),
+        Err(e) => e,
+    }
+}
+
+/// Sets signal `id` to `value` (borrowed).
+fn write_value(cx: *mut JsContext, id: u32, value: JsValue) -> JsValue {
+    let value = unsafe { qjs::JS_DupValue(cx, value) };
+    r::write(Js(cx), id, value);
+    finish(cx, UNDEFINED)
+}
+
+/// Sets signal `id` to `f(current value)`.
+fn update_value(cx: *mut JsContext, id: u32, f: JsValue) -> JsValue {
     let prev = unsafe { qjs::JS_DupValue(cx, *graph(cx).value(id)) };
     let mut args = [prev];
     // SAFETY: a live value; the graph is not borrowed across the call.
@@ -1499,6 +1609,37 @@ mod tests {
         });
         assert!(slots < 5000, "{slots} nodes for 5000 signals");
         assert_eq!(after, before, "every signal collected");
+    }
+
+    #[test]
+    fn a_live_memo_keeps_its_value_when_its_object_is_collected() {
+        // The memo's object goes, but its root does not: the node (and the
+        // value it holds) lives on in the graph. A cycle through the value
+        // must not let the collector free the value under the graph, which
+        // frees it again when the memo runs again or the graph goes.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let cx = rquickjs::Context::full(&rt).unwrap();
+        cx.with(|cx| {
+            crate::state::install(&cx, std::rc::Rc::default(), &[], Default::default());
+            super::install_globals(&cx);
+            let _: () = cx
+                .eval(
+                    r#"
+                    const R = globalThis.__nsh_reactive;
+                    R.createRoot(() => {
+                        const m = R.createMemo(() => ({ n: 1 }));
+                        // A cycle: the value holds the memo's object.
+                        m().memo = m;
+                        globalThis.weak = new WeakRef(m());
+                    });
+                    "#,
+                )
+                .unwrap();
+        });
+        rt.run_gc();
+        let kept: bool = cx.with(|cx| cx.eval("globalThis.weak.deref()?.n === 1").unwrap());
+        assert!(kept, "the live memo's value was collected");
+        cx.with(|cx| crate::state::uninstall(&cx));
     }
 
     #[test]

@@ -14,6 +14,10 @@ pub(crate) const NOT_FOUND: &str = "ERR_NSH_TEST_NOT_FOUND";
 /// scroll, a disabled menu item).
 #[cfg(feature = "js")]
 pub(crate) const DISABLED: &str = "ERR_NSH_TEST_DISABLED";
+/// Another view is drawn over the one the selector names and would take
+/// a real press (an overlay over a button).
+#[cfg(feature = "js")]
+pub(crate) const COVERED: &str = "ERR_NSH_TEST_COVERED";
 /// `back()` found nothing to go back from.
 #[cfg(feature = "js")]
 pub(crate) const NO_BACK: &str = "ERR_NSH_TEST_NO_BACK";
@@ -40,6 +44,12 @@ pub(crate) fn disabled(selector: impl std::fmt::Display, what: &str) -> String {
     } else {
         format!("`{selector}` is disabled")
     }
+}
+
+/// The view `selector` names is under `cover`, which a press there
+/// reaches instead.
+pub(crate) fn covered(selector: impl std::fmt::Display, cover: &str) -> String {
+    format!("`{selector}` is covered: a press there reaches {cover}")
 }
 
 /// The menu item `label` (a submenu's when `submenu`) is disabled.
@@ -111,6 +121,8 @@ pub(crate) fn code_of(message: &str) -> Option<&'static str> {
             && message.ends_with(" is disabled")
     {
         Some(DISABLED)
+    } else if quoted && message.contains("` is covered: ") {
+        Some(COVERED)
     } else if quoted && message.contains(" never happened in ")
         || message.starts_with("the app rendered nothing in ")
     {
@@ -144,6 +156,7 @@ mod tests {
             ),
             (disabled("id:list", "scroll view"), Some(DISABLED)),
             (menu_disabled("Paste", false), Some(DISABLED)),
+            (covered("Save", "the view `Overlay`"), Some(COVERED)),
             (menu_disabled("Share", true), Some(DISABLED)),
             (
                 never_happened("`Saved` showing", Duration::from_millis(5)) + on_screen,

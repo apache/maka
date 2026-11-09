@@ -33,7 +33,7 @@ mod ui;
 
 use input::Inbox;
 use nsh_engine::EngineConfig;
-use nsh_platform_tui::CellMetrics;
+use nsh_platform_tui::{AppView, CellSize, Input};
 use output::Output;
 use std::{
     io::{self, IsTerminal},
@@ -54,7 +54,87 @@ const TICK: Duration = Duration::from_millis(16);
 // One existing best-effort restoration window, shared by IME release and IO.
 const RESTORATION_WAIT: Duration = Duration::from_millis(100);
 
-pub(crate) type GpuWorker = thread::JoinHandle<Result<(), String>>;
+pub fn cell_viewport(columns: u16, rows: u16) -> nsh_core::Size<nsh_core::Points> {
+    let cells = CellSize::default();
+    nsh_core::Size::new(
+        cells.width() * f32::from(columns),
+        cells.height() * f32::from(rows),
+    )
+}
+
+pub fn input_from_crossterm(event: crossterm::event::Event) -> Option<Input> {
+    use crossterm::event::{
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    };
+    let modifiers = |keys: KeyModifiers| nsh_platform_tui::Modifiers {
+        ctrl: keys.contains(KeyModifiers::CONTROL),
+        alt: keys.contains(KeyModifiers::ALT),
+        shift: keys.contains(KeyModifiers::SHIFT),
+        cmd: keys.contains(KeyModifiers::SUPER),
+    };
+    let button = |button: MouseButton| match button {
+        MouseButton::Left => nsh_platform_tui::MouseButton::Left,
+        MouseButton::Right => nsh_platform_tui::MouseButton::Right,
+        MouseButton::Middle => nsh_platform_tui::MouseButton::Middle,
+    };
+    match event {
+        Event::Resize(..) => None,
+        Event::FocusGained => Some(Input::Focus(true)),
+        Event::FocusLost => Some(Input::Focus(false)),
+        Event::Paste(text) => Some(Input::Paste(text)),
+        Event::Mouse(mouse) => {
+            let mut input = nsh_platform_tui::MouseInput::default();
+            input.column = mouse.column;
+            input.row = mouse.row;
+            input.modifiers = modifiers(mouse.modifiers);
+            input.kind = match mouse.kind {
+                MouseEventKind::Down(b) => nsh_platform_tui::MouseKind::Down(button(b)),
+                MouseEventKind::Up(b) => nsh_platform_tui::MouseKind::Up(button(b)),
+                MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                    nsh_platform_tui::MouseKind::Move
+                }
+                MouseEventKind::ScrollUp => nsh_platform_tui::MouseKind::Wheel { x: 0, y: -1 },
+                MouseEventKind::ScrollDown => nsh_platform_tui::MouseKind::Wheel { x: 0, y: 1 },
+                MouseEventKind::ScrollLeft => nsh_platform_tui::MouseKind::Wheel { x: -1, y: 0 },
+                MouseEventKind::ScrollRight => nsh_platform_tui::MouseKind::Wheel { x: 1, y: 0 },
+            };
+            Some(Input::Mouse(input))
+        }
+        Event::Key(key) => {
+            let release = key.kind == KeyEventKind::Release;
+            let name = match key.code {
+                KeyCode::Char(c) => c.to_string(),
+                KeyCode::Esc => "Escape".into(),
+                KeyCode::BackTab => "Tab".into(),
+                KeyCode::F(number) => format!("F{number}"),
+                other => format!("{other:?}"),
+            };
+            let mut modifiers = modifiers(key.modifiers);
+            if key.code == KeyCode::BackTab {
+                modifiers.shift = true;
+            }
+            if key.kind == KeyEventKind::Repeat {
+                Some(Input::KeyRepeat {
+                    key: name,
+                    modifiers,
+                })
+            } else {
+                Some(Input::Key {
+                    key: name,
+                    modifiers,
+                    release,
+                })
+            }
+        }
+    }
+}
+
+pub fn handle_event(view: &mut AppView, event: crossterm::event::Event) -> bool {
+    input_from_crossterm(event)
+        .is_some_and(|input| view.handle(input) == nsh_platform_tui::Handled::Yes)
+}
+
+pub(crate) type NativeJob = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, Default)]
 struct Presentation {
@@ -62,7 +142,11 @@ struct Presentation {
     activation: activation::Activation,
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     host: nsh_engine::HostChannel,
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    native_jobs: Option<tokio::sync::mpsc::UnboundedSender<NativeJob>>,
     tmux: bool,
 }
 
@@ -80,8 +164,10 @@ impl Presentation {
 }
 
 /// Per-engine display control. Business configuration remains with the Host.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) struct UiScaleControl(Presentation);
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl UiScaleControl {
     pub(crate) fn current(&self) -> Result<f32, String> {
         self.0
@@ -128,7 +214,7 @@ impl UiScaleControl {
 pub(crate) fn run(
     mut config: EngineConfig,
     stop: Arc<AtomicBool>,
-    _gpu_worker: &mut Option<GpuWorker>,
+    _native_jobs: tokio::sync::mpsc::UnboundedSender<NativeJob>,
 ) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the terminal shell requires a terminal on stdin and stdout".into());
@@ -141,7 +227,7 @@ pub(crate) fn run(
         .get_dimensions()
         .map_err(|error| error.to_string())?;
     let (columns, rows) = (size.cols, size.rows);
-    config.viewport = CellMetrics::default().viewport(columns.max(1), rows.max(1));
+    config.viewport = cell_viewport(columns.max(1), rows.max(1));
     config.environment.window = config.viewport;
     terminal
         .enter_raw_mode()
@@ -151,7 +237,10 @@ pub(crate) fn run(
     let presentation = Presentation {
         stop: stop.clone(),
         driver: Some(thread::current()),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         host: config.host.clone(),
+        #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+        native_jobs: Some(_native_jobs),
         tmux,
         ..Default::default()
     };
@@ -198,13 +287,7 @@ pub(crate) fn run(
                 return Ok(());
             }
             if let Some(capabilities) = capabilities {
-                return pixels::run(
-                    &mut output,
-                    &presentation,
-                    config,
-                    capabilities,
-                    _gpu_worker,
-                );
+                return pixels::run(&mut output, &presentation, config, capabilities);
             }
         }
         let pending = Arc::new(AtomicBool::new(false));

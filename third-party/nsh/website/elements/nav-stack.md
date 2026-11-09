@@ -158,6 +158,9 @@ stack's state, dialogs, the Android back button and tabs.
 - When the user leaves a page natively (the back button, swipe back, Android back, the desktops' back keys, the
   browser's back), the page goes. In TSX the stack removes its route from the state, so `nav.routes()` always matches
   what the user sees. In Rust the page reports `on_dismiss`, where you drop its route (and the routes above it).
+- Android back, the desktops' back keys and the browser's back act on the stack that shows: a stack laid out at no
+  size, or inside a view laid out so (a tab that is not selected, `display: none`), keeps its pages until it shows
+  again.
 - In TSX, a child function that returns something other than a `<NavPage>` gets a page with default options. Return
   a `<NavPage>` to set its header and other options.
 

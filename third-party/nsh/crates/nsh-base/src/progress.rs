@@ -1,6 +1,10 @@
 //! `Progress`: a linear progress bar with no look of its own.
 
+use std::time::Duration;
+
 use nsh_core::{AccessibilityValue, element::Style, prelude::*};
+
+use crate::terminal::{ACCENT, filled_line, is_terminal, progress_bar, progress_indeterminate};
 
 /// The range of [`ProgressProps::value`], as `gpui-base`'s: a percentage.
 const MAX: f32 = 100.0;
@@ -48,6 +52,12 @@ pub struct ProgressProps {
 /// and an indicator inside it, then its children; the app's `class` and
 /// `style` style the progress bar, `trackClass` / `trackStyle` and
 /// `indicatorClass` / `indicatorStyle` the parts.
+///
+/// In a terminal it shows the terminal's bar in place of the track and
+/// indicator: one row as wide as the progress bar, a heavy line `━` in the
+/// indicator's color to the nearest whole Cell, then a light `─` in the
+/// theme's line color; while indeterminate a segment of `━` moves along
+/// it (still with reduced motion: `─` only) ([`crate::terminal`]).
 #[component]
 pub fn Progress(props: ProgressProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let (value, indeterminate) = (props.value, props.indeterminate);
@@ -69,8 +79,10 @@ pub fn Progress(props: ProgressProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 text: None,
             })
         })
-        .child(
-            view()
+        .child(match is_terminal() {
+            // The terminal's own bar, in place of the track and indicator.
+            true => terminal_bar(clamped, indeterminate, props.indicator_style).into_element(),
+            false => view()
                 .app_class(props.track_class)
                 .inline_style(props.track_style)
                 .child(
@@ -81,7 +93,42 @@ pub fn Progress(props: ProgressProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                         })
                         .app_class(props.indicator_class)
                         .inline_style(props.indicator_style),
-                ),
-        )
+                )
+                .into_element(),
+        })
         .child(props.children)
+}
+
+/// How often an indeterminate bar's segment moves a Cell in a terminal.
+const STEP: Duration = Duration::from_millis(120);
+
+/// A progress bar's terminal form.
+fn terminal_bar(
+    clamped: impl Fn() -> f32 + Copy + 'static,
+    indeterminate: Prop<bool>,
+    indicator: Prop<Style>,
+) -> View {
+    let step = signal(0usize);
+    // The segment moves only while indeterminate and motion is welcome:
+    // no ticks otherwise.
+    effect(move || {
+        if indeterminate.get() && !reduce_motion() {
+            let task = set_interval(STEP, move || step.update(|s| *s = s.wrapping_add(1)));
+            cleanup(move || task.cancel());
+        }
+    });
+    filled_line(
+        move |columns| match indeterminate.get() {
+            true if reduce_motion() => progress_indeterminate(columns, 0),
+            true => progress_indeterminate(columns, step.get()),
+            false => progress_bar(Percentage(clamped() / MAX), columns),
+        },
+        // The app's indicator color (a level's danger), else the
+        // terminal's accent.
+        move || {
+            indicator
+                .with(Style::background_color)
+                .unwrap_or_else(|| ACCENT.into())
+        },
+    )
 }

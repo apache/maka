@@ -187,6 +187,43 @@ extern "system" fn Java_com_longbridge_nsh_Native_runPackage(
     host.load(package.bundle);
 }
 
+/// The package a packaged app (`AppActivity`) runs instead of `shipped`,
+/// the bundle in its APK: a newer signed package of its code it downloaded,
+/// verified against the roots `updater` (its `nsh-updater.json`) trusts
+/// (`nsh_engine::updates`); the view then reads the package's assets.
+/// `None`: the shipped bundle runs (it reads `updater` either way).
+pub(crate) fn downloaded(
+    env: &mut JNIEnv<'_>,
+    host: &crate::host::Host,
+    shipped: &mut Bundle,
+    updater: &JString<'_>,
+) -> Option<Bundle> {
+    let updater = String::from(env.get_string(updater).ok()?);
+    let run = nsh_engine::updates::package_to_run(
+        shipped,
+        Some(updater.into_bytes()),
+        host.data_dir.as_deref(),
+    )?;
+    // Before the engine starts: it may read assets (fonts) at once.
+    let set = env
+        .new_string(run.assets.to_string_lossy())
+        .and_then(|dir| {
+            env.call_method(
+                host.view.as_obj(),
+                "usePackageAssets",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&dir)],
+            )
+        });
+    match set {
+        Ok(_) => Some(run.bundle),
+        Err(err) => {
+            log::error!("cannot set the package's assets, running the app's own: {err}");
+            None
+        }
+    }
+}
+
 /// Frees a package that will not run.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_packageFree(

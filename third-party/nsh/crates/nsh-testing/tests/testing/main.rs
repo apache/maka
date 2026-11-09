@@ -126,7 +126,7 @@ fn headless_runs_play_the_platform_s_part() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 10);
+    assert_eq!(results.len(), 11);
 }
 
 #[test]
@@ -154,7 +154,16 @@ fn open_sets_the_environment_and_routes_answer_requests() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 8);
+    assert_eq!(results.len(), 13);
+}
+
+#[test]
+fn fonts_registered_while_the_app_runs_name_their_family() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/fonts");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 3);
 }
 
 #[test]
@@ -234,6 +243,15 @@ fn a_manual_clock_moves_as_the_test_says() {
 }
 
 #[test]
+fn a_press_fails_on_a_view_another_covers() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/hit");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
 fn animations_that_loop_forever_hold_no_step() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/loops");
     let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
@@ -267,6 +285,15 @@ fn the_page_s_host_answers_the_apps_tests_open() {
     assert_eq!(run(Some("host.js"), "Host.test.tsx"), 7);
     assert_eq!(run(None, "NoHost.test.tsx"), 1);
     assert_eq!(run(Some("none.js"), "Broken.test.tsx"), 1);
+}
+
+#[test]
+fn headless_desktops_play_the_platform_s_windows() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/windows");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 7);
 }
 
 #[test]

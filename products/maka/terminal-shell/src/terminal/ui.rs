@@ -18,15 +18,12 @@
  */
 
 use super::output::FrameWriter;
-use crossterm::event::{Event, MouseEventKind};
-use nsh_core::{
-    MountBatch,
-    platform::{Environment, Lifecycle},
-};
-use nsh_engine::{EngineConfig, LocalEngine, MountSink};
+use crossterm::event::Event;
+use nsh_core::clipboard::ClipboardBackend;
+use nsh_engine::EngineConfig;
 use nsh_platform_tui::{
-    CellMetrics, ImageProtocol, ProtocolType, ServiceOutput, ServiceRequest, Surface, SurfaceEvent,
-    TerminalTextEngine,
+    AppOptions, AppView, CellSize, ColorDepth, Handled, ImageProtocol, ProtocolType,
+    TerminalCapabilities,
 };
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
@@ -44,25 +41,24 @@ use std::{
     time::Instant,
 };
 
-#[derive(Default)]
-struct Commits {
-    batches: Vec<MountBatch>,
-    error: Option<String>,
-    frame: bool,
+struct Osc52Clipboard {
+    effects: Arc<Mutex<Vec<u8>>>,
+    tmux: bool,
 }
 
-#[derive(Clone, Default)]
-struct Sink(Arc<Mutex<Commits>>);
+impl ClipboardBackend for Osc52Clipboard {
+    fn text(&self) -> Option<String> {
+        None
+    }
 
-impl MountSink for Sink {
-    fn submit(&self, batch: MountBatch) {
-        self.0.lock().unwrap().batches.push(batch);
-    }
-    fn report_error(&self, message: &str) {
-        self.0.lock().unwrap().error = Some(message.into());
-    }
-    fn request_frame(&self) {
-        self.0.lock().unwrap().frame = true;
+    fn set_text(&self, text: Option<String>) {
+        if let Some(text) = text {
+            let sequence = super::output::osc52(&text, self.tmux);
+            self.effects
+                .lock()
+                .unwrap()
+                .extend_from_slice(sequence.as_bytes());
+        }
     }
 }
 
@@ -137,54 +133,45 @@ pub(super) fn spawn(
 }
 
 struct Session {
-    engine: Option<LocalEngine<TerminalTextEngine>>,
     config: EngineConfig,
     reloading: Option<tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     host: nsh_engine::HostChannel,
-    surface: Surface,
-    environment: Environment,
-    sink: Sink,
+    surface: AppView,
     terminal: Terminal<CrosstermBackend<FrameWriter>>,
     area: Rect,
     dirty: bool,
-    started: Instant,
-    effects: Vec<u8>,
-    tmux: bool,
-    deadline: Option<Instant>,
-    frame_requested: bool,
-    last_sent_focus_path: Option<Vec<nsh_core::NodeId>>,
+    effects: Arc<Mutex<Vec<u8>>>,
     image_protocol: Option<ImageProtocol>,
 }
 
 impl Session {
-    fn new(mut config: EngineConfig, tmux: bool) -> Result<Self, String> {
-        let metrics = CellMetrics::default();
-        let columns = (config.viewport.width / metrics.width()).round() as u16;
-        let rows = (config.viewport.height / metrics.height()).round() as u16;
+    fn new(config: EngineConfig, tmux: bool) -> Result<Self, String> {
+        let cells = CellSize::default();
+        let columns = (config.viewport.width / cells.width()).round() as u16;
+        let rows = (config.viewport.height / cells.height()).round() as u16;
         let area = viewport(columns, rows)?;
-        let mut surface = Surface::new(area.width, area.height, metrics);
-        let access = match &config.app {
-            nsh_engine::App::Js(bundle) => bundle.policy.access(),
-            nsh_engine::App::Rust(_) => nsh_engine::Policy::default().access(),
-        };
-        surface.set_access(access);
-        surface.set_host_services_enabled(true);
-        config.environment.fallback_key_bindings = true;
-        surface.set_assets(config.assets.clone());
-        let sink = Sink::default();
-        let environment = config.environment;
+        let effects = Arc::new(Mutex::new(Vec::new()));
+        let clipboard: Arc<dyn ClipboardBackend> = Arc::new(Osc52Clipboard {
+            effects: effects.clone(),
+            tmux,
+        });
+        let mut capabilities = TerminalCapabilities::default();
+        capabilities.background = config.environment.color_scheme;
+        capabilities.colors = ColorDepth::TrueColor;
+        let mut options = AppOptions::default();
+        options.cells = cells;
+        options.capabilities = capabilities;
+        options.clipboard = Some(clipboard);
+        options.image_protocol = Some(ImageProtocol::halfblocks());
+        let mut surface = AppView::new(options);
+        surface.resize(area.width, area.height);
         let host = config.host.clone();
         let reloading = config
             .context
             .get::<maka_workbench::reload::UiReload>()
             .map(|reload| reload.take_requests());
-        let engine = LocalEngine::start(
-            config.clone(),
-            TerminalTextEngine::new(metrics),
-            sink.clone(),
-        )
-        .ok_or("NSH UI engine failed to start")?;
+        surface.load_local(config.clone())?;
         let terminal = Terminal::with_options(
             CrosstermBackend::new(FrameWriter::default()),
             TerminalOptions {
@@ -193,38 +180,21 @@ impl Session {
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
-            engine: Some(engine),
             config,
             reloading,
             wake: None,
             host,
             surface,
-            environment,
-            sink,
             terminal,
             area,
             dirty: false,
-            started: Instant::now(),
-            effects: Vec::new(),
-            tmux,
-            // The first advance obtains the engine's actual timer deadline.
-            deadline: Some(Instant::now()),
-            frame_requested: false,
-            last_sent_focus_path: None,
+            effects,
             image_protocol: None,
         })
     }
 
-    fn engine(&self) -> &LocalEngine<TerminalTextEngine> {
-        self.engine.as_ref().expect("the UI engine is running")
-    }
-
-    fn engine_mut(&mut self) -> &mut LocalEngine<TerminalTextEngine> {
-        self.engine.as_mut().expect("the UI engine is running")
-    }
-
     fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.engine_mut().set_wake(wake.clone());
+        self.surface.set_wake_callback(Some(wake.clone()));
         self.wake = Some(wake);
     }
 
@@ -238,18 +208,16 @@ impl Session {
             match request {
                 maka_workbench::reload::Request::Pause(ready) => {
                     self.surface.set_input_paused(true);
-                    self.engine()
-                        .control()
-                        .advance_clock(std::time::Duration::ZERO, || {});
-                    self.deadline = self.engine_mut().pump();
-                    changed |= self.apply_commits()?;
-                    self.engine()
-                        .control()
-                        .advance_clock(std::time::Duration::ZERO, move || {
+                    if let Some(control) = self.surface.control() {
+                        control.advance_clock(std::time::Duration::ZERO, || {});
+                    }
+                    changed |= self.surface.pump()?;
+                    if let Some(control) = self.surface.control() {
+                        control.advance_clock(std::time::Duration::ZERO, move || {
                             let _ = ready.send(Ok(()));
                         });
-                    self.deadline = self.engine_mut().pump();
-                    changed |= self.apply_commits()?;
+                    }
+                    changed |= self.surface.pump()?;
                 }
                 maka_workbench::reload::Request::Resume => self.surface.set_input_paused(false),
                 maka_workbench::reload::Request::Reload => {
@@ -264,57 +232,43 @@ impl Session {
     fn reload(&mut self) -> Result<(), String> {
         let mut config = self.config.clone();
         config.viewport = self.surface.viewport();
-        config.environment = self.environment;
-        let metrics = self.surface.metrics();
-        let sink = Sink::default();
-        let mut surface = Surface::new(self.area.width, self.area.height, metrics);
-        surface.set_access(match &config.app {
-            nsh_engine::App::Js(bundle) => bundle.policy.access(),
-            nsh_engine::App::Rust(_) => nsh_engine::Policy::default().access(),
-        });
-        surface.set_host_services_enabled(true);
-        surface.set_assets(config.assets.clone());
-        surface.set_image_protocol(self.image_protocol);
+        let protocol = self
+            .image_protocol
+            .unwrap_or_else(ImageProtocol::halfblocks);
         // Detach the old VM before another attaches to the same host channel.
-        drop(self.engine.take());
-        let mut engine = LocalEngine::start(config, TerminalTextEngine::new(metrics), sink.clone())
-            .ok_or("NSH UI engine failed to reload")?;
+        self.surface.stop();
+        self.surface.set_input_paused(false);
+        self.surface.resize(self.area.width, self.area.height);
+        self.surface.set_image_protocol(Some(protocol));
+        self.surface.load_local(config)?;
         if let Some(wake) = &self.wake {
-            engine.set_wake(wake.clone());
+            self.surface.set_wake_callback(Some(wake.clone()));
         }
-        self.engine = Some(engine);
-        self.surface = surface;
-        self.sink = sink;
-        self.started = Instant::now();
-        self.last_sent_focus_path = None;
-        self.frame_requested = true;
-        self.deadline = Some(Instant::now());
+        changed_after_reload(&mut self.surface)?;
         self.dirty = true;
         Ok(())
     }
 
     fn initial_frame(&mut self) -> Result<Frame, String> {
-        self.apply_commits()?;
-        self.begin_frame();
+        self.surface.pump()?;
+        if self.surface.frame_requested() {
+            self.surface.begin_frame();
+        }
         self.encode(true)
     }
 
     fn advance(&mut self, command: Advance) -> Result<Frame, String> {
         let mut changed = false;
         if command.cancel_pointer {
-            self.cancel_pointer()?;
+            self.surface.cancel_pointer();
             changed = true;
         }
         if let Some((columns, rows)) = command.resize {
-            self.surface.set_image_protocol(None);
+            self.surface
+                .set_image_protocol(Some(ImageProtocol::halfblocks()));
             self.image_protocol = None;
             self.area = viewport(columns, rows)?;
             self.surface.resize(self.area.width, self.area.height);
-            self.sync_focus_path();
-            self.environment.window = self.surface.viewport();
-            let control = self.engine().control();
-            control.resize(self.environment.window);
-            control.set_environment(self.environment);
             // The supplied area is authoritative. Ratatui's resize path queries
             // the process TTY even for a Fixed viewport, but this backend only
             // encodes into memory for the separate physical output owner.
@@ -343,44 +297,23 @@ impl Session {
         }
         for event in command.inputs {
             super::interrupt::activity(&self.host, &event);
-            let lifecycle = match event {
-                Event::FocusGained => Some(Lifecycle::Active),
-                Event::FocusLost => Some(Lifecycle::Inactive),
-                _ => None,
-            };
-            if let Some(lifecycle) = lifecycle.filter(|now| *now != self.environment.lifecycle) {
-                self.environment.lifecycle = lifecycle;
-                self.engine().control().set_environment(self.environment);
+            if let Some(input) = super::input_from_crossterm(event) {
+                changed |= self.surface.handle(input) == Handled::Yes;
             }
-            changed |= match event {
-                Event::Mouse(mouse)
-                    if matches!(
-                        mouse.kind,
-                        MouseEventKind::ScrollUp
-                            | MouseEventKind::ScrollDown
-                            | MouseEventKind::ScrollLeft
-                            | MouseEventKind::ScrollRight
-                    ) =>
-                {
-                    self.surface.handle_wheel(mouse, 1) != 0
-                }
-                event => self.surface.handle_event(event),
-            };
-            self.forward_events()?;
             // The next physical event sees the ordinary native tree after
             // every callback from this event has reached the application.
-            self.deadline = self.engine_mut().pump();
+            changed |= self.surface.pump()?;
             changed |= self.reload_requests()?;
-            changed |= self.apply_commits()?;
+            changed |= self.surface.pump()?;
         }
-        if command.draw {
-            self.begin_frame();
+        if command.draw && self.surface.frame_requested() {
+            self.surface.begin_frame();
         }
-        self.deadline = self.engine_mut().pump();
+        changed |= self.surface.pump()?;
         changed |= self.reload_requests()?;
-        changed |= self.apply_commits()?;
-        changed |= self.surface.tick(self.started.elapsed().as_secs_f64());
-        self.forward_events()?;
+        if self.surface.needs_pump() {
+            changed |= self.surface.pump()?;
+        }
         self.dirty |= changed;
         if command.draw {
             let dirty = std::mem::take(&mut self.dirty);
@@ -390,112 +323,23 @@ impl Session {
         }
     }
 
-    fn cancel_pointer(&mut self) -> Result<(), String> {
-        self.surface.pointer_left();
-        self.forward_events()
-    }
-
-    fn begin_frame(&mut self) {
-        // Paced List overscan and animation callbacks advance once per draw,
-        // independently of how often input or engine work needs pumping.
-        if std::mem::take(&mut self.frame_requested) {
-            self.engine().control().frame();
-        }
-    }
-
-    fn forward_events(&mut self) -> Result<(), String> {
-        let events: Vec<_> = self.surface.drain_events().collect();
-        self.dispatch_events(events)
-    }
-
-    fn dispatch_events(&mut self, events: Vec<SurfaceEvent>) -> Result<(), String> {
-        self.sync_focus_path();
-        let control = self.engine().control();
-        for event in events {
-            match event {
-                SurfaceEvent::Event(id, event, payload) => {
-                    control.dispatch_event(id, event, payload)
-                }
-                SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
-                SurfaceEvent::Scroll(id, offset, applied) => control.scroll(id, offset, applied),
-                SurfaceEvent::InputScroll(id, offset, content, viewport) => {
-                    control.input_scroll(id, offset, content, viewport);
-                }
-                SurfaceEvent::ListCellRetired(id, request, retired) => {
-                    control.set_focus_path(self.surface.focus_path());
-                    control.retire_list_cell(id, request, retired);
-                }
-                SurfaceEvent::States(id, states) => control.set_states(id, states),
-                SurfaceEvent::AnimationsFinished(finished) => control.animations_finished(finished),
-                SurfaceEvent::ComponentSize(id, size) => control.set_component_size(id, size),
-                SurfaceEvent::Zoom(id, scale) => control.zoom(id, scale),
-                SurfaceEvent::RootSize(id, size, insets) => control.set_root_size(id, size, insets),
-                SurfaceEvent::Service(ServiceRequest::ClipboardWrite(text)) => {
-                    let sequence = ServiceOutput::Clipboard(text).terminal_sequence(self.tmux);
-                    self.effects.extend_from_slice(sequence.as_bytes());
-                }
-                SurfaceEvent::Service(ServiceRequest::ClipboardRead { id, has_only }) => {
-                    self.surface.complete_clipboard(
-                        id,
-                        has_only,
-                        Err("this shell cannot read the system clipboard".into()),
-                    );
-                }
-                SurfaceEvent::Service(ServiceRequest::ClipboardPaste(edit)) => {
-                    self.surface.complete_paste(
-                        edit,
-                        Err("paste through the terminal's bracketed-paste command".into()),
-                    );
-                }
-                SurfaceEvent::Service(_) => {
-                    return Err("terminal host services are unavailable in this slice".into());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn sync_focus_path(&mut self) {
-        let path = self.surface.focus_path();
-        if self.last_sent_focus_path.as_ref() != Some(&path) {
-            self.engine().control().set_focus_path(path.clone());
-            self.last_sent_focus_path = Some(path);
-        }
-    }
-
-    fn apply_commits(&mut self) -> Result<bool, String> {
-        let mut commits = std::mem::take(&mut *self.sink.0.lock().unwrap());
-        if let Some(error) = commits.error {
-            return Err(error);
-        }
-        let changed = !commits.batches.is_empty();
-        // Every delta is necessary. In particular Create/Insert and later
-        // prop/text deltas cannot be coalesced to the last MountBatch.
-        for batch in commits.batches.drain(..) {
-            self.surface.apply(batch);
-        }
-        self.forward_events()?;
-        self.frame_requested |= commits.frame;
-        Ok(changed)
-    }
-
     fn encode(&mut self, changed: bool) -> Result<Frame, String> {
-        if !changed && self.effects.is_empty() {
+        let has_effects = !self.effects.lock().unwrap().is_empty();
+        if !changed && !has_effects {
             return Ok(self.frame(None));
         }
         // The UI paints its caret; the hidden terminal cursor still anchors IME.
         let writer = self.terminal.backend_mut().writer_mut();
         crossterm::queue!(writer, crossterm::terminal::BeginSynchronizedUpdate)
             .map_err(|error| error.to_string())?;
-        self.surface
-            .render(self.area, self.terminal.current_buffer_mut());
+        *self.terminal.current_buffer_mut() = self.surface.buffer().clone();
         self.terminal.flush().map_err(|error| error.to_string())?;
         self.terminal
             .hide_cursor()
             .map_err(|error| error.to_string())?;
         let cursor = self
             .surface
-            .input_cursor_position(self.area)
+            .cursor_position()
             .unwrap_or_else(|| (self.area.x, self.area.y).into());
         self.terminal
             .set_cursor_position(cursor)
@@ -510,12 +354,13 @@ impl Session {
         let mut bytes = std::mem::take(&mut self.terminal.backend_mut().writer_mut().0);
         // Complete clipboard effects share this immutable physical write
         // and its original flush receipt.
-        bytes.append(&mut self.effects);
+        bytes.append(&mut *self.effects.lock().unwrap());
         Ok(self.frame(Some(bytes)))
     }
 
     fn frame(&self, bytes: Option<Vec<u8>>) -> Frame {
-        let redraw_at = if self.dirty || self.frame_requested || !self.effects.is_empty() {
+        let has_effects = !self.effects.lock().unwrap().is_empty();
+        let redraw_at = if self.dirty || self.surface.frame_requested() || has_effects {
             Some(Instant::now())
         } else if self.surface.animating() {
             // Native jobs expose pending work, not completion notifications.
@@ -534,15 +379,23 @@ impl Session {
         };
         Frame {
             bytes,
-            quit: self.surface.should_quit(),
-            deadline: if self.engine().needs_pump() {
+            quit: self.surface.exit_requested(),
+            deadline: if self.surface.needs_pump() {
                 Some(Instant::now())
             } else {
-                self.deadline
+                self.surface.timer_deadline()
             },
             redraw_at,
         }
     }
+}
+
+fn changed_after_reload(surface: &mut AppView) -> Result<(), String> {
+    surface.pump()?;
+    if surface.frame_requested() {
+        surface.begin_frame();
+    }
+    Ok(())
 }
 
 fn viewport(columns: u16, rows: u16) -> Result<Rect, String> {
@@ -565,8 +418,8 @@ mod tests {
 
     fn config(source: &str) -> EngineConfig {
         let mut config = EngineConfig::new(App::Js(Bundle::source(source.to_owned())));
-        config.viewport = CellMetrics::default().viewport(40, 8);
-        config.environment.renderer = nsh_core::platform::Renderer::Terminal;
+        config.viewport = super::super::cell_viewport(40, 8);
+        config.environment.idiom = nsh_core::platform::Idiom::Terminal;
         config.header_heights = nsh_core::NO_NATIVE_HEADER;
         config.limits = Limits::default();
         config.ui_sets = vec![nsh_base::registry()];
@@ -584,7 +437,7 @@ mod tests {
     }
 
     fn collapsed_workspace_pages(scenario: &'static str) {
-        use nsh_core::platform::{Idiom, Renderer};
+        use nsh_core::platform::Idiom;
         use nsh_core::prelude::{Instance, class};
 
         #[class]
@@ -636,9 +489,8 @@ mod tests {
         })
         .unwrap();
         let mut options = config(&bundle.code);
-        options.viewport = CellMetrics::default().viewport(120, 36);
+        options.viewport = super::super::cell_viewport(120, 36);
         options.environment.window = options.viewport;
-        options.environment.renderer = Renderer::Native;
         options.environment.idiom = Idiom::Desktop;
         options.environment.native_focus_scopes = true;
         options.ui_sets.push(registry);
@@ -891,7 +743,7 @@ mod tests {
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         for clear in [false, true] {
             if clear {
-                session.sink.submit(MountBatch {
+                session.surface.submit_batch(nsh_core::MountBatch {
                     items: vec![MountItem::Command {
                         id: editor.node,
                         command: nsh_core::Command::Blur,
@@ -899,13 +751,16 @@ mod tests {
                 });
             }
             let mut frame = session.advance(command([])).unwrap();
-            while session.engine().needs_pump() {
+            while session.surface.needs_pump() {
                 assert!(Instant::now() < deadline, "native focus never settled");
                 frame = session.advance(command([])).unwrap();
             }
             assert!(frame.deadline.is_none_or(|due| due > Instant::now()));
             assert_eq!(frame.redraw_at, None);
-            assert_eq!(session.surface.focused(), (!clear).then_some(editor.node));
+            assert_eq!(
+                session.surface.focused_node(),
+                (!clear).then_some(editor.node)
+            );
         }
         assert!(session.surface.focus_path().is_empty());
         assert!(session.surface.snapshot().contains("kept draft"));
@@ -1114,8 +969,12 @@ mod tests {
         }
         let prefix = prepare(&mut session);
         let original = "Image and copied text 中😀".to_owned();
-        let effect = ServiceOutput::Clipboard(original).terminal_sequence(false);
-        session.effects.extend_from_slice(effect.as_bytes());
+        let effect = super::super::output::osc52(&original, false);
+        session
+            .effects
+            .lock()
+            .unwrap()
+            .extend_from_slice(effect.as_bytes());
         let frame = session.encode(true).unwrap().bytes.unwrap();
         assert!(
             frame.starts_with(&prefix),
@@ -1130,7 +989,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(session.effects.is_empty());
+        assert!(session.effects.lock().unwrap().is_empty());
         assert!(session.encode(false).unwrap().bytes.is_none());
     }
 
@@ -1144,7 +1003,7 @@ mod tests {
         }
     }
 
-    fn mouse(surface: &Surface, label: &str, kind: MouseEventKind, column: u16) -> Event {
+    fn mouse(surface: &AppView, label: &str, kind: MouseEventKind, column: u16) -> Event {
         let node = surface
             .accessibility_snapshot()
             .into_iter()
@@ -1158,7 +1017,7 @@ mod tests {
         })
     }
 
-    fn click(surface: &Surface, label: &str) -> Vec<Event> {
+    fn click(surface: &AppView, label: &str) -> Vec<Event> {
         let node = surface
             .accessibility_snapshot()
             .into_iter()
@@ -1738,7 +1597,10 @@ mod tests {
         .unwrap();
         session.initial_frame().unwrap();
         let mut input = command([
-            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )),
             Event::Paste("你好😀".into()),
         ]);
         input.draw = false;
@@ -1748,7 +1610,7 @@ mod tests {
         assert_eq!(editor.selection, 4..4);
         let bytes = session.advance(command([])).unwrap().bytes.unwrap();
         assert!(bytes.ends_with(b"\x1b[1;7H\x1b[?2026l"));
-        session.sink.submit(MountBatch {
+        session.surface.submit_batch(nsh_core::MountBatch {
             items: vec![MountItem::Command {
                 id: editor.node,
                 command: nsh_core::Command::Blur,
@@ -1913,7 +1775,11 @@ mod tests {
     fn mount_deltas_are_applied_in_order_including_create_and_later_value() {
         let mut session = Session::new(config("import { mount } from 'nsh'; import { element } from 'nsh:rt'; mount(() => element('view')); "), false).unwrap();
         session.initial_frame().unwrap();
-        session.sink.submit(MountBatch {
+        let bounds = nsh_core::Bounds::new(
+            nsh_core::geometry::point(nsh_core::geometry::px(0.0), nsh_core::geometry::px(0.0)),
+            nsh_core::geometry::size(nsh_core::geometry::px(160.0), nsh_core::geometry::px(16.0)),
+        );
+        session.surface.submit_batch(nsh_core::MountBatch {
             items: vec![
                 MountItem::Create {
                     id: 900,
@@ -1924,29 +1790,28 @@ mod tests {
                     child: 900,
                     before: None,
                 },
+                MountItem::Input {
+                    id: 900,
+                    config: Box::default(),
+                },
                 MountItem::Frame {
                     id: 900,
-                    frame: nsh_core::Bounds::new(
-                        nsh_core::geometry::point(
-                            nsh_core::geometry::px(0.0),
-                            nsh_core::geometry::px(0.0),
-                        ),
-                        nsh_core::geometry::size(
-                            nsh_core::geometry::px(160.0),
-                            nsh_core::geometry::px(16.0),
-                        ),
-                    ),
+                    frame: bounds,
+                },
+                MountItem::InputContent {
+                    id: 900,
+                    content: bounds,
                 },
             ],
         });
-        session.sink.submit(MountBatch {
+        session.surface.submit_batch(nsh_core::MountBatch {
             items: vec![MountItem::InputValue {
                 id: 900,
                 text: "ordered".into(),
                 count: 0,
             }],
         });
-        assert!(session.apply_commits().unwrap());
+        assert!(session.surface.pump().unwrap());
         assert!(session.surface.snapshot().contains("ordered"));
     }
 
@@ -1973,6 +1838,28 @@ mod tests {
             )
             .unwrap();
             session.initial_frame().unwrap();
+            session
+                .advance(Advance {
+                    image_protocol: None,
+                    inputs: vec![
+                        Event::Mouse(MouseEvent {
+                            kind: MouseEventKind::Down(MouseButton::Left),
+                            column: 0,
+                            row: 0,
+                            modifiers: KeyModifiers::NONE,
+                        }),
+                        Event::Mouse(MouseEvent {
+                            kind: MouseEventKind::Up(MouseButton::Left),
+                            column: 0,
+                            row: 0,
+                            modifiers: KeyModifiers::NONE,
+                        }),
+                    ],
+                    resize: None,
+                    cancel_pointer: false,
+                    draw: true,
+                })
+                .unwrap();
             let command = |key| Advance {
                 image_protocol: None,
                 inputs: vec![Event::Key(KeyEvent::new(
@@ -2026,13 +1913,16 @@ mod tests {
             draw: true,
         };
         session
-            .advance(command('a', KeyModifiers::CONTROL))
+            .advance(command('a', KeyModifiers::CONTROL | KeyModifiers::SHIFT))
             .unwrap();
         let original = "x".repeat(1_048_577) + "😀";
         for key in ['c', 'x'] {
-            let frame = session
-                .advance(command(key, KeyModifiers::CONTROL))
-                .unwrap();
+            let modifiers = if key == 'x' {
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::CONTROL
+            };
+            let frame = session.advance(command(key, modifiers)).unwrap();
             assert!(!frame.quit);
             assert_eq!(
                 session.surface.input_context().unwrap().text,
@@ -2043,7 +1933,7 @@ mod tests {
                 })
             );
             let bytes = frame.bytes.unwrap();
-            let sequence = ServiceOutput::Clipboard(original.clone()).terminal_sequence(false);
+            let sequence = super::super::output::osc52(&original, false);
             assert!(
                 bytes
                     .windows(sequence.len())
@@ -2056,16 +1946,16 @@ mod tests {
             Some("z")
         );
         session
-            .advance(command('a', KeyModifiers::CONTROL))
+            .advance(command('a', KeyModifiers::CONTROL | KeyModifiers::SHIFT))
             .unwrap();
         let cut = session
-            .advance(command('x', KeyModifiers::CONTROL))
+            .advance(command('x', KeyModifiers::CONTROL | KeyModifiers::SHIFT))
             .unwrap();
         assert_eq!(
             session.surface.input_context().unwrap().text.as_deref(),
             Some("")
         );
-        let sequence = ServiceOutput::Clipboard("z".into()).terminal_sequence(false);
+        let sequence = super::super::output::osc52("z", false);
         assert!(
             cut.bytes
                 .unwrap()

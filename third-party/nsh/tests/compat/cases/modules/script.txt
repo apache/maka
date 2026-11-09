@@ -46,17 +46,37 @@ expect Calls: done, remove function
 covers [nsh/mobile] BackHandler
 # mod-clipboard
 tap id:case-mod-clipboard
-# the headless runtime: writes and reads return promises; reads stay
+# the headless runtime: writes go through, reads are promises that stay
 # pending (and none fails).
 expect Calls: not called
 expect Failed: none
-expect Writes: not called
 tap id:copy
-expect Writes: 2 promises
 expect Calls: 5 promises
 wait 300
 expect Failed: none
 covers [nsh] Clipboard
+# mod-i18n
+tap id:case-mod-i18n
+# en-US shows English; a missing key reads as its locale and key; German
+# formats with the data nsh.json lists, French (not listed) as English.
+expect Shown: en-US
+expect Hello: Hello
+expect Greet: Hello, Ada!
+expect Missing: en-US.missing
+expect Asked: 你好
+expect Locales: en zh zh-CN
+expect German: 1.234,5
+expect French: 1,234.5
+tap id:chinese
+expect Shown: zh-CN
+expect Hello: 你好
+expect Greet: 你好，Ada！
+tap id:device
+expect Shown: en-US
+expect Hello: Hello
+covers [nsh/i18n] t
+covers [nsh/i18n] setLocale
+covers [nsh/i18n] availableLocales
 # mod-picker
 tap id:case-mod-picker
 # a pick is a promise that never throws: options out of range reject it with
@@ -67,6 +87,10 @@ expect Refused: rejected RangeError
 expect Picked: pending
 wait 300
 expect Picked: pending
+expect Files: not picked
+tap id:pick-files
+expect Files refused: rejected RangeError
+expect Files: pending
 covers [nsh] Picker
 # mod-speech
 tap id:case-mod-speech
@@ -78,25 +102,84 @@ tap id:start
 expect Refused: threw RangeError
 expect Speech: end unavailable "" true
 covers [nsh] Speech
+# mod-audio
+tap id:case-mod-audio
+# nothing plays sound there: available() resolves false, a sound's load
+# rejects and a player's play() rejects as its error listener hears
+# "unavailable"; a volume out of range throws a RangeError.
+expect Available: false
+expect Sound: not loaded
+# an imported audio file is its URL
+expect Imported: asset:/sounds/click.wav
+tap id:play
+expect Refused: threw RangeError
+expect Sound: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Player: rejected, error unavailable, idle true 1.5
+covers [nsh] Sound
+covers [nsh] AudioPlayer
+# mod-notifications
+tap id:case-mod-notifications
+# nothing shows notifications there: the permission is unavailable and nothing
+# shows, the badge and close do nothing, and bad arguments reject.
+expect Permission: unknown
+tap id:notify
+expect Permission: unavailable unavailable
+expect Refused: RangeError RangeError
+expect Shown: false false
+covers [nsh] Notifications
+# mod-url-scheme
+tap id:case-mod-url-scheme
+# the domain claims `compat`: no link opened it, and the listener stops.
+expect Links: none
+expect Listener: listening
+tap id:stop-links
+expect Listener: stopped
+covers [nsh] UrlScheme
+# mod-updater
+tap id:case-mod-updater
+# no packaged app: no package runs, none is offered, there is nothing to
+# download or restart into, and the shell has no packaged version.
+expect Running package: none
+expect Shell: none build none, packages false
+expect NSH version: semver
+expect Check: null
+expect Download: rejected
+expect Restart: rejected
+covers [nsh/updater] checkForPackage
+covers [nsh/updater] downloadPackage
+covers [nsh/updater] restartToPackage
+covers [nsh/updater] runningPackage
+covers [nsh/updater] shellInfo
 # mod-desktop
 tap id:case-mod-desktop
-# no title bar area, the window and menu functions do nothing, and a popup
-# closes at once.
+# no title bar area, the main window is the only one, a window of the app's
+# own neither renders nor opens, the window, app and menu functions do
+# nothing, and a popup closes at once.
 expect Desktop: false
 expect Title bar: 0 0 0
+expect Window state: null displays 0
+expect Current: main true null state null
+expect Windows: main focused null get true null
+absent Inside a window
 expect Calls: not called
 expect Popup: not shown
 tap id:window
-expect Calls: window done, close function, minimize function
+expect Calls: window done, open ERR_FEATURE_UNAVAILABLE_ON_PLATFORM, close function
 tap id:menu
 expect Calls: menu done
 expect Popup: closed
-tap id:toggles
-expect Calls: toggles done
+tap id:application
+expect Calls: application done, quit function, restart function
 covers [nsh/desktop] isAvailable
 covers [nsh/desktop] titleBar
+covers [nsh/desktop] windowState
+covers [nsh/desktop] displays
 covers [nsh/desktop] Window
+covers [nsh/desktop] currentWindow
+covers [nsh/desktop] windows
+covers [nsh/desktop] focusedWindow
 covers [nsh/desktop] Menu
+covers [nsh/desktop] Application
 # mod-device
 tap id:case-mod-device
 # iOS phone at 1 pixel per point, in the light scheme.
@@ -112,6 +195,10 @@ expect Font scale: 1
 expect Window: 390x844
 expect Scheme: light
 expect Lifecycle: active
+expect Time zone: UTC
+expect Intl local time: its zone
+expect Languages: en-US
+expect Regional: h12, week from 7, us, fahrenheit
 tap id:dark
 expect Scheme: dark
 absent Scheme: light
@@ -130,6 +217,7 @@ covers [nsh] setColorScheme
 covers [nsh] fontScale
 covers [nsh] windowSize
 covers [nsh] lifecycle
+covers [nsh] localeSettings
 # mod-host-channel
 tap id:case-mod-host-channel
 # no embedding app: no parameters, posts go nowhere and calls reject at
@@ -206,3 +294,13 @@ event id:heard onHost type=event event=tick payload=2
 wait 50
 expect Host heard: [1]
 covers [nsh] host
+# mod-fps
+tap id:case-mod-fps
+# no performance monitor headless: it reports none, and the calls go through.
+expect Fps enabled: false
+expect Calls: not called
+tap id:toggle
+expect Calls: done
+expect Fps enabled: false
+covers [nsh] fpsEnabled
+covers [nsh] setFpsEnabled

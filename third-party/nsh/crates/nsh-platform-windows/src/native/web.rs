@@ -2,7 +2,10 @@
 //! composition.
 //!
 //! Each web view is a WebView2 composition controller ("visual hosting")
-//! drawing into a visual of the surface's [`Composition`] ([`Portal`]):
+//! drawing into a visual of its window's [`Composition`] ([`Portal`]): the
+//! main window's, or that of the window of the app's own its view is in
+//! ([`crate::app_window::compose`]), bound when its view is first in a
+//! window:
 //! the frame records where the view goes as it draws the tree, the visual
 //! is clipped, transformed and faded like the view, and what nsh draws
 //! after it goes on a layer above it, so dialogs, sheets, toasts, the dev
@@ -22,12 +25,14 @@
 //!
 //! WebView2 is asynchronous: the environment (one per thread and profile
 //! folder, `%LOCALAPPDATA%\<app id>\WebView2`) and then the controller are
-//! made in the background. Props and commands that come before the
-//! controller is ready wait for it ([`WebItem::ready`]). The WebView2
-//! loader is linked statically (`WebView2LoaderStatic.lib`), so apps do not
-//! ship `WebView2Loader.dll`; the WebView2 runtime itself comes with
-//! Windows 11 (and Edge's installer on Windows 10). Without it, a web view
-//! draws a neutral placeholder, as on Linux.
+//! made in the background, from the first props (`incognito` makes an
+//! InPrivate controller, whose website data stays in memory). Props and
+//! commands that come before the controller is ready wait for it
+//! ([`WebItem::ready`]). The WebView2 loader is linked statically
+//! (`WebView2LoaderStatic.lib`), so apps do not ship `WebView2Loader.dll`;
+//! the WebView2 runtime itself comes with Windows 11 (and Edge's installer
+//! on Windows 10). Without it, a web view draws a neutral placeholder, as
+//! on Linux.
 //!
 //! Pages talk to the app through `window.nsh`: the bridge script
 //! defines `window.nsh.postMessage(data)` (`onMessage`), and
@@ -59,7 +64,9 @@ use std::{
     },
 };
 
-use nsh_core::{Color, Command, EventKind, EventPayload, PayloadValue, WebProps, WebSource};
+use nsh_core::{
+    Color, Command, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID, WebProps, WebSource,
+};
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2CompositionControllerCompletedHandler,
@@ -81,9 +88,10 @@ use webview2_com::{
         COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_UP,
         COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
         COREWEBVIEW2_POINTER_EVENT_KIND, COREWEBVIEW2_WEB_ERROR_STATUS,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2, ICoreWebView2_2,
         ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Controller2,
-        ICoreWebView2Controller3, ICoreWebView2Environment, ICoreWebView2Environment3,
+        ICoreWebView2Controller3, ICoreWebView2Environment, ICoreWebView2Environment2,
+        ICoreWebView2Environment3, ICoreWebView2Environment10,
         ICoreWebView2ExecuteScriptCompletedHandler, ICoreWebView2Settings2, ICoreWebView2Settings6,
     },
     MoveFocusRequestedEventHandler, NavigationCompletedEventHandler,
@@ -92,7 +100,7 @@ use webview2_com::{
 };
 use windows::{
     Win32::{
-        Foundation::{POINT, RECT},
+        Foundation::{HWND, POINT, RECT},
         Graphics::{
             Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
             DirectComposition::IDCompositionVisual2,
@@ -148,6 +156,11 @@ unsafe extern "system" {
 pub(crate) struct WebItem {
     emitter: Emitter,
     surface: Weak<Surface>,
+    /// Its view.
+    id: NodeId,
+    /// The window it is in (`ROOT_ID`: the main one) and its native window,
+    /// once its view is in one: its page is composed and parented there.
+    host: Cell<Option<(NodeId, HWND)>>,
     /// The visuals the page is composed in (`None` once closed, or when the
     /// window has no composition).
     portal: RefCell<Option<Portal>>,
@@ -157,6 +170,8 @@ pub(crate) struct WebItem {
     webview: RefCell<Option<ICoreWebView2>>,
     /// No web view can be made (no WebView2 runtime): a placeholder.
     failed: Cell<bool>,
+    /// Its environment was asked for (with the first props).
+    started: Cell<bool>,
     /// Closed (its view was deleted and is not drawn anymore, or the app
     /// stopped).
     closed: Cell<bool>,
@@ -203,20 +218,18 @@ impl WebItem {
     }
 
     pub(crate) fn new(surface: &Rc<Surface>, view: &NshView) -> Rc<Self> {
-        let portal = surface
-            .compose()
-            .and_then(Portal::new)
-            .map_err(|err| log::warn!("web view: no composition: {err}"))
-            .ok();
-        let item = Rc::new(WebItem {
+        Rc::new(WebItem {
             emitter: Emitter::new(surface, view.id()),
             surface: Rc::downgrade(surface),
-            portal: RefCell::new(portal),
+            id: view.id(),
+            host: Cell::new(None),
+            portal: RefCell::new(None),
             env: RefCell::new(None),
             composition: RefCell::new(None),
             controller: RefCell::new(None),
             webview: RefCell::new(None),
             failed: Cell::new(false),
+            started: Cell::new(false),
             closed: Cell::new(false),
             retired: Cell::new(false),
             props: RefCell::new(None),
@@ -235,19 +248,69 @@ impl WebItem {
             hovered: Cell::new(false),
             focused: Cell::new(false),
             buttons: Cell::new(0),
-        });
-        if item.portal.borrow().is_none() {
-            item.unavailable("the window cannot compose it");
-            return item;
+        })
+    }
+
+    /// The native window its page is in, once bound.
+    pub(crate) fn hwnd(&self) -> Option<HWND> {
+        self.host.get().map(|(_, hwnd)| hwnd)
+    }
+
+    /// Binds it to the window its view is in: its page's visuals go into
+    /// that window's composition. False while its view is in no window
+    /// (or when the window cannot compose it: the placeholder shows).
+    fn bind(&self, surface: &Surface) -> bool {
+        if self.host.get().is_some() {
+            return true;
         }
+        let Some(view) = surface.view(self.id).filter(NshView::attached) else {
+            return false;
+        };
+        let window = crate::app_window::window_of(surface, &view);
+        let made = if window == ROOT_ID {
+            surface.compose().map(|c| (surface.hwnd(), c))
+        } else {
+            crate::app_window::compose(surface, window)
+        };
+        match made.and_then(|(hwnd, c)| Ok((hwnd, Portal::new(c)?))) {
+            Ok((hwnd, portal)) => {
+                *self.portal.borrow_mut() = Some(portal);
+                self.host.set(Some((window, hwnd)));
+                true
+            }
+            Err(err) => {
+                log::warn!("web view: no composition: {err}");
+                self.unavailable("the window cannot compose it");
+                false
+            }
+        }
+    }
+
+    /// Its view changed how it draws: the window it is in draws again.
+    fn invalidate(&self) {
+        let Some(surface) = self.surface.upgrade() else {
+            return;
+        };
+        match surface.view(self.id) {
+            Some(view) => view.changed(),
+            None => surface.invalidate(),
+        }
+    }
+
+    /// Asks for the environment, once the first props say how to make the
+    /// controller (`incognito`) and its view is in a window.
+    fn start(self: &Rc<Self>, surface: &Surface) {
+        if self.started.get() || self.failed.get() || self.closed.get() || !self.bind(surface) {
+            return;
+        }
+        self.started.set(true);
         let folder = profile_folder(&surface.native.app_id.borrow());
-        let weak = Rc::downgrade(&item);
+        let weak = Rc::downgrade(self);
         with_environment(&folder, move |env| {
             if let Some(item) = weak.upgrade() {
                 item.environment_ready(env);
             }
         });
-        item
     }
 
     /// No web view: the placeholder shows.
@@ -261,9 +324,7 @@ impl WebItem {
                 "WebView is not available ({why}; is the WebView2 runtime installed?): it shows a placeholder"
             );
         }
-        if let Some(surface) = self.surface.upgrade() {
-            surface.invalidate();
-        }
+        self.invalidate();
     }
 
     fn environment_ready(self: &Rc<Self>, env: Option<ICoreWebView2Environment>) {
@@ -273,11 +334,21 @@ impl WebItem {
         let Some(env) = env else {
             return self.unavailable("no WebView2 environment");
         };
-        let (Ok(env3), Some(surface)) = (
-            env.cast::<ICoreWebView2Environment3>(),
-            self.surface.upgrade(),
-        ) else {
+        let (Ok(env3), Some(parent)) = (env.cast::<ICoreWebView2Environment3>(), self.hwnd())
+        else {
             return self.unavailable("the WebView2 runtime cannot host it in a visual");
+        };
+        let incognito = self.props.borrow().as_ref().is_some_and(|p| p.incognito);
+        // InPrivate needs the controller options of WebView2 101 or later;
+        // an older runtime would keep the page's data on disk.
+        let private = match incognito.then(|| env.cast::<ICoreWebView2Environment10>()) {
+            None => None,
+            Some(Ok(env10)) => Some(env10),
+            Some(Err(_)) => {
+                return self.unavailable(
+                    "the WebView2 runtime cannot make an incognito web view; version 101 or later can",
+                );
+            }
         };
         *self.env.borrow_mut() = Some(env);
         let weak = Rc::downgrade(self);
@@ -303,11 +374,22 @@ impl WebItem {
                 Ok(())
             },
         ));
-        // SAFETY: a call on a live environment with the live window of
-        // this thread.
-        if let Err(err) =
-            unsafe { env3.CreateCoreWebView2CompositionController(surface.hwnd(), &handler) }
-        {
+        // SAFETY: calls on a live environment with the live window of this
+        // thread.
+        let made = unsafe {
+            match &private {
+                Some(env10) => env10
+                    .CreateCoreWebView2ControllerOptions()
+                    .and_then(|options| {
+                        options.SetIsInPrivateModeEnabled(true)?;
+                        env10.CreateCoreWebView2CompositionControllerWithOptions(
+                            parent, &options, &handler,
+                        )
+                    }),
+                None => env3.CreateCoreWebView2CompositionController(parent, &handler),
+            }
+        };
+        if let Err(err) = made {
             log::warn!("web view: cannot create a controller: {err}");
             self.unavailable("cannot create a WebView2 controller");
         }
@@ -533,12 +615,11 @@ impl WebItem {
         }
     }
 
-    /// Gives the keyboard back to the surface's window.
+    /// Gives the keyboard back to the window it is in.
     fn focus_window(&self) {
-        let Some(surface) = self.surface.upgrade() else {
+        let Some(hwnd) = self.hwnd() else {
             return;
         };
-        let hwnd = surface.hwnd();
         // SAFETY: plain calls on this thread's window.
         unsafe {
             let focus = GetFocus();
@@ -547,7 +628,9 @@ impl WebItem {
             }
         }
         self.focused.set(false);
-        surface.sync_focus();
+        if let Some(surface) = self.surface.upgrade() {
+            surface.sync_focus();
+        }
     }
 
     /// True when the app may show `url` at the top level.
@@ -569,14 +652,16 @@ impl WebItem {
         access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview(url))
     }
 
-    pub(crate) fn set(&self, surface: &Rc<Surface>, view: &NshView, p: &WebProps) {
+    pub(crate) fn set(self: &Rc<Self>, surface: &Rc<Surface>, view: &NshView, p: &WebProps) {
         self.background.set(view.state().style.background_color);
         *self.props.borrow_mut() = Some(p.clone());
+        // The core keeps `incognito` from changing once it is made.
+        self.start(surface);
         if self.webview.borrow().is_some() {
             self.paint_background();
             self.apply(p);
         }
-        surface.invalidate();
+        self.invalidate();
     }
 
     /// Applies `p` to the web view (it is ready).
@@ -743,7 +828,7 @@ impl WebItem {
     }
 
     /// `reload()`, `goBack()`, `goForward()`, `stopLoading()`,
-    /// `injectJavaScript()` and `postMessage()`.
+    /// `injectJavaScript()`, `postMessage()` and `load()`.
     pub(crate) fn command(&self, command: &Command) {
         let Some(webview) = self.webview.borrow().clone() else {
             if !self.failed.get() {
@@ -763,9 +848,43 @@ impl WebItem {
                 Command::PostMessage(data) => {
                     webview.ExecuteScript(&HSTRING::from(post_message(data)), none)
                 }
+                Command::Load(load) => self.load(&webview, load),
                 _ => Ok(()),
             }
         };
+    }
+
+    /// `load()`: a navigation whose own request carries the app's headers
+    /// (WebView2 adds none of them to the page's subresources or later
+    /// navigations). Runtimes before `ICoreWebView2_2` cannot: an error.
+    fn load(&self, webview: &ICoreWebView2, load: &nsh_core::WebLoad) -> windows::core::Result<()> {
+        let env = self.env.borrow().clone();
+        let (Some(env2), Ok(webview2)) = (
+            env.and_then(|e| e.cast::<ICoreWebView2Environment2>().ok()),
+            webview.cast::<ICoreWebView2_2>(),
+        ) else {
+            self.emitter.emit(EventKind::Error, || {
+                error("this WebView2 runtime cannot send request headers".into())
+            });
+            return Ok(());
+        };
+        // `Name: value` lines; `WebLoad` has no CR or LF in them.
+        let headers: String = load
+            .headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
+        // SAFETY: WebView2 calls on the live environment and web view, on
+        // their thread.
+        unsafe {
+            let request = env2.CreateWebResourceRequest(
+                &HSTRING::from(load.src.as_str()),
+                w!("GET"),
+                None::<&windows::Win32::System::Com::IStream>,
+                &HSTRING::from(headers),
+            )?;
+            webview2.NavigateWithWebResourceRequest(&request)
+        }
     }
 
     /// The view's background behind the page until it paints (when the
@@ -808,7 +927,7 @@ impl WebItem {
         // SAFETY: WebView2 calls on the live controller, on its thread.
         unsafe {
             if let Some(b) = bounds {
-                let scale = self.surface.upgrade().map_or(1.0, |s| s.scale());
+                let scale = self.scale();
                 if self.raster.replace(scale) != scale
                     && let Ok(c) = controller.cast::<ICoreWebView2Controller3>()
                 {
@@ -857,24 +976,25 @@ impl WebItem {
         }
         // Its visuals leave the composition (gone with the last web view).
         self.portal.borrow_mut().take();
-        if let Some(surface) = self.surface.upgrade() {
-            surface.invalidate();
-        }
+        self.invalidate();
     }
 
-    /// Pixels per point of the window.
+    /// Pixels per point of the window it is in.
     fn scale(&self) -> f32 {
-        self.surface.upgrade().map_or(1.0, |s| s.scale())
+        match self.host.get() {
+            Some((window, hwnd)) if window != ROOT_ID => crate::window::dpi(hwnd) as f32 / 96.0,
+            _ => self.surface.upgrade().map_or(1.0, |s| s.scale()),
+        }
     }
 
     /// A touch or pen contact through `SendPointerInput`, with the
     /// system's data of pointer `id` moved to `point` (the page's pixels).
     /// False when the system has no data for it (synthesized input).
     fn send_pointer(&self, event: &ItemPointer, point: POINT) -> bool {
-        let (Some(composition), Some(env), Some(surface)) = (
+        let (Some(composition), Some(env), Some(hwnd)) = (
             self.composition.borrow().clone(),
             self.env.borrow().clone(),
-            self.surface.upgrade(),
+            self.hwnd(),
         ) else {
             return false;
         };
@@ -901,7 +1021,7 @@ impl WebItem {
                 return false;
             };
             let mut client = info.ptPixelLocation;
-            let _ = ScreenToClient(surface.hwnd(), &mut client);
+            let _ = ScreenToClient(hwnd, &mut client);
             // From where the contact is in the window to where nsh put it
             // on the page.
             let (dx, dy) = (point.x - client.x, point.y - client.y);
@@ -1080,7 +1200,9 @@ impl Hosted for WebItem {
     }
 
     fn composed(&self) -> bool {
-        !self.failed.get() && !self.closed.get() && self.portal.borrow().is_some()
+        // Before it is bound too: the first frame that reaches it binds it
+        // ([`Hosted::compose_at`]).
+        !self.failed.get() && !self.closed.get()
     }
 
     fn visual(&self) -> Option<IDCompositionVisual2> {
@@ -1088,6 +1210,21 @@ impl Hosted for WebItem {
     }
 
     fn compose_at(&self, at: Option<&Placement>) {
+        if at.is_some()
+            && self.host.get().is_none()
+            && let Some(surface) = self.surface.upgrade()
+        {
+            // Drawn in a window: its page goes there, and the window draws
+            // again with it in its composition.
+            if let Some(item) = super::web_item(&surface, self.id) {
+                if self.props.borrow().is_some() {
+                    item.start(&surface);
+                } else {
+                    self.bind(&surface);
+                }
+            }
+            self.invalidate();
+        }
         self.at.set(at.copied());
         if let Some(portal) = &*self.portal.borrow() {
             match at {

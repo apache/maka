@@ -1,0 +1,32 @@
+{
+  "numbers": {
+    "decimal": ".",
+    "group": ",",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": "",
+    "compactShort": [[3, "K"], [6, "M"], [9, "B"], [12, "T"]],
+    "compactLong": [[3, " thousand"], [6, " million"], [9, " billion"], [12, " trillion"]]
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": null,
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": " ",
+    "names": null,
+    "cjk": false
+  }
+}

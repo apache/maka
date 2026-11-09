@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Dot, Grid, Plot, PlotAxis } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, tint, ui, sectionSurface, categoryColors, plotAxisText, plotBaseline, plotGrid } from "./palette";
 
 // Dots placed by two values of each row: a `Dot` per row at its `x` on a
 // linear x scale and its `value` up the y axis. Its `color` names each
@@ -70,7 +70,7 @@ const REGIONS: Region[] = ["Asia", "Africa", "Americas", "Europe", "Oceania"];
 const num = { fontVariant: ["tabular-nums" as const] };
 /** The room under a plot for its x axis' labels: their 12 above a line of 14. */
 const AXIS_BELOW = 12 + 14;
-const axisLabel = () => ({ fontSize: 11, color: ui().muted, ...num });
+const axisLabel = plotAxisText;
 
 function App() {
   const chart = signal<"scatter" | "bubbles">("scatter");
@@ -78,8 +78,9 @@ function App() {
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 5));
   const height = desktop ? 220 : 200;
-  const platformColors = () => [ui().accent, ui().info, ui().warn];
-  const regionColors = () => [ui().info, ui().warn, ui().accent, ui().violet, ui().muted];
+  // Categories that read apart at a glance: the shared plot look's.
+  const platformColors = () => categoryColors().slice(0, 3);
+  const regionColors = categoryColors;
   const session = () => (hovered() == null || chart() !== "scatter" ? undefined : SESSIONS[hovered()!]);
   const country = () => (hovered() == null || chart() !== "bubbles" ? undefined : COUNTRIES[hovered()!]);
   // A ring around the dot under the pointer, in the text's color, a little out from its edge.
@@ -112,7 +113,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
           <If
             when={chart() === "scatter"}
             else={
@@ -132,7 +133,7 @@ function App() {
                   x="gdp"
                   xScale={{ type: "linear", domain: [-10, 95] }}
                   yScale={{ type: "linear", domain: [48, 90] }}
-                  colorScale={{ type: "ordinal", domain: REGIONS, range: regionColors().map((c) => tint(c, 0.75)) }}
+                  colorScale={{ type: "ordinal", domain: REGIONS, range: regionColors().map((c) => tint(c, 0.78)) }}
                   accessibilityLabel={`${COUNTRIES.length} countries by GDP per person and life expectancy, sized by population`}
                   accessibilityValue={{ text: country() && `${country()!.name}: $${country()!.gdp}k per person, ${country()!.life} years` }}
                   appearGeneration="bubbles"
@@ -144,7 +145,7 @@ function App() {
                   }}
                   style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
                 >
-                  <Grid x={[20, 40, 60, 80]} y={[60, 70, 80]} style={{ stroke: tint(ui().text, 0.08) }} />
+                  <Grid x={[20, 40, 60, 80]} y={[60, 70, 80]} style={plotGrid()} />
                   {/* A bubble's area is its population: radii from 3 to the largest's, over 0 to the most people. */}
                   <Dot
                     value="life"
@@ -190,8 +191,8 @@ function App() {
               }}
               style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
             >
-              <Grid x={[10, 20, 30, 40]} y={[5, 10, 15, 20]} style={{ stroke: tint(ui().text, 0.08) }} />
-              <Grid y={[0]} style={{ stroke: tint(ui().text, 0.2) }} />
+              <Grid x={[10, 20, 30, 40]} y={[5, 10, 15, 20]} style={plotGrid()} />
+              <Grid y={[0]} style={plotBaseline()} />
               <Dot
                 value="trades"
                 r={desktop ? 4 : 4.5}

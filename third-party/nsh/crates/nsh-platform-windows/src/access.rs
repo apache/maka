@@ -350,12 +350,13 @@ fn part_of(view: &NshView) -> Part {
     view.try_state().map_or(Part::Hidden, |s| part(&s))
 }
 
-/// The elements under `view` (it excluded), in reading order, as the
+/// The elements under `view` (it excluded), in reading order (a scroll
+/// view's content as it is on screen), as the
 /// children of the element `view` is (or the root): plain containers are
 /// looked through, hidden subtrees skipped, and inside a grouping element
 /// its content is folded into it.
 pub(crate) fn children(view: &NshView, grouping: bool, out: &mut Vec<NshView>) {
-    view.with_children(|kids| {
+    view.with_children_in_reading_order(|kids| {
         for child in kids {
             match part_of(child) {
                 Part::Hidden => {}
@@ -605,9 +606,7 @@ pub(crate) fn prepare(batch: &MountBatch) {
                 item,
                 MountItem::Create { .. }
                     | MountItem::Insert { .. }
-                    | MountItem::ProjectRoot { .. }
                     | MountItem::Remove { .. }
-                    | MountItem::RetireListCell { .. }
                     | MountItem::Delete { .. }
             )
         });
@@ -855,14 +854,17 @@ fn action_or_press(surface: &Surface, view: &NshView, name: &str, press: bool) -
     }
 }
 
-/// `WM_GETOBJECT`: the root of the provider tree for UI Automation.
+/// `WM_GETOBJECT`: the root of window `window`'s provider tree for UI
+/// Automation (`ROOT_ID`: the main window; each window of the app's own
+/// exposes the tree of its dialog root).
 pub(crate) fn get_object(
     surface: &Rc<Surface>,
+    window: NodeId,
     hwnd: HWND,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
-    uia::get_object(surface, hwnd, wparam, lparam)
+    uia::get_object(surface, window, hwnd, wparam, lparam)
 }
 
 #[cfg(test)]
@@ -1105,6 +1107,35 @@ mod tests {
         assert_eq!(exposed(&find(&all, 14)), Err(()));
         find(&all, 6).state_mut().style.hidden = false;
         assert_eq!(ids(&element_children(&root, true)), [4, 6, 22]);
+    }
+
+    /// A list's recycled cells are read in the order they show, not in the
+    /// order they were made (bound to rows further down as the list
+    /// scrolled): a scroll view's content is read as it is on screen.
+    #[test]
+    fn a_scroll_views_content_is_read_in_screen_order() {
+        let root = view(0, ViewKind::View, Accessibility::default());
+        root.set_invalidate(Rc::new(|_| {}));
+        let list = view(2, ViewKind::Scroll, Accessibility::default());
+        list.insert_before(&root, None);
+        for (id, y) in [(4, 160.0), (6, 200.0), (8, 80.0), (10, 120.0)] {
+            let cell = pressable(id, Accessibility::default());
+            cell.state_mut().frame = crate::geom::rect(0.0, y, 100.0, 40.0);
+            cell.insert_before(&list, None);
+        }
+        assert_eq!(ids(&element_children(&list, false)), [8, 10, 4, 6]);
+        // Elsewhere the tree's order stays.
+        assert_eq!(ids(&element_children(&root, true)), [2]);
+        // A list in its parent's viewport is a plain view, looked through:
+        // its cells are read in screen order too.
+        list.unparent();
+        let page = view(12, ViewKind::View, Accessibility::default());
+        page.state_mut().props.screen_order = Some(nsh_core::geometry::Axis::Vertical);
+        page.insert_before(&root, None);
+        for cell in list.child_views() {
+            cell.insert_before(&page, None);
+        }
+        assert_eq!(ids(&element_children(&root, true)), [8, 10, 4, 6]);
     }
 
     #[test]

@@ -63,6 +63,27 @@ fn typing_at_the_end_appends() {
 }
 
 #[test]
+fn typing_the_same_text_after_moving_the_caret_inserts_it() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+    keys(&mut app, &["left"]);
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("aa"))"#));
+}
+
+#[test]
+fn typing_the_same_text_after_backspace_inserts_it() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+    keys(&mut app, &["backspace"]);
+    see(&mut app, &tree("doc(paragraph)"));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+}
+
+#[test]
 fn typing_in_the_second_block_leaves_the_first() {
     let mut app = start(paragraphs(&["one", "two"]));
     focus(&mut app);
@@ -484,9 +505,10 @@ fn the_placeholder_hides_while_an_input_method_composes() {
 #[test]
 fn a_read_only_editor_ignores_typing_and_deleting() {
     let mut app = start_configured(paragraphs(&["ab"]), None, false);
-    let _ = app.type_text("id:editor", "xyz");
+    assert!(app.type_text("id:editor", "xyz").is_err());
+    app.press_at("text:ab", point(px(1.0), px(1.0))).unwrap();
     keys(&mut app, &["end", "backspace", "enter"]);
-    let _ = app.type_text("id:editor", "q");
+    assert!(app.type_text("id:editor", "q").is_err());
     app.wait(Duration::from_millis(200)).unwrap();
     see(&mut app, &doc("ab"));
     see(&mut app, "Types paragraph");
@@ -495,9 +517,69 @@ fn a_read_only_editor_ignores_typing_and_deleting() {
 #[test]
 fn a_read_only_editor_still_moves_the_caret() {
     let mut app = start_configured(paragraphs(&["ab"]), None, false);
-    let _ = app.type_text("id:editor", "");
+    app.press_at("text:ab", point(px(1.0), px(1.0))).unwrap();
+    see(&mut app, "Sel 1-1");
     keys(&mut app, &["end"]);
     see(&mut app, "Sel 3-3");
+}
+
+#[test]
+fn reactive_editable_updates_sink_input_config() {
+    #[derive(Clone, PartialEq, Props)]
+    struct ReactiveEditableProps {
+        session: Option<EditorSession>,
+    }
+
+    #[component]
+    fn ReactiveEditable(props: ReactiveEditableProps) -> impl IntoElement {
+        let session = props.session.clone().expect("a session");
+        let ready = signal(false);
+        let doc_shown = {
+            let session = session.clone();
+            signal(doc_text(session.state().doc()))
+        };
+        let on_change_session = session.clone();
+        view()
+            .child(
+                view()
+                    .test_id("enable")
+                    .on_press(move || ready.set(true))
+                    .child(text("Enable")),
+            )
+            .child(
+                view().test_id("editor").w(px(600.0)).h(px(400.0)).child(
+                    rich_editor()
+                        .editor(session)
+                        .editable(move || ready.get())
+                        .size_full()
+                        .on_change(move |_: &_| {
+                            doc_shown.set(doc_text(on_change_session.state().doc()));
+                        }),
+                ),
+            )
+            .child(text(move || format!("Doc {:?}", doc_shown.get())))
+    }
+
+    let session = session(paragraphs(&["ab"]));
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<ReactiveEditable>(move || {
+            ReactiveEditableProps {
+                session: Some(session.clone()),
+            }
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for(&format!("text:{}", doc("ab"))).unwrap();
+
+    assert!(app.type_text("id:editor", "x").is_err());
+    see(&mut app, &doc("ab"));
+
+    app.press("id:enable").unwrap();
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, &doc("xab"));
 }
 
 // Atoms.

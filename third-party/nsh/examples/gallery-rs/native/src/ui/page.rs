@@ -7,7 +7,7 @@ use nsh_core::{element::Reactive, prelude::*};
 
 use super::{
     animated::appear,
-    layout::{columns_for, desktop, pane_width},
+    layout::{TERMINAL_COLUMN, TERMINAL_ROW, columns_for, desktop, pane_width, terminal},
     theme::colors,
 };
 
@@ -139,41 +139,55 @@ impl IntoElement for DemoPage {
             // changes.
             let count = computed(move || columns_for(380.0, most, pane_width(), 20.0));
             let cards = Rc::new(cards);
+            // The terminal's gutters are a Cell wide, its spaces whole rows,
+            // two Cells between columns (from 24 pt), and its columns take
+            // the pane's width: a cap would leave a band of blank Cells.
+            let cell = terminal();
             vec![dynamic(move || {
                 let n = count.get();
                 let columns = (0..n as usize).map(|column| {
-                    view().flex_1().min_w(px(0.0)).gap(px(20.0)).children(
-                        cards
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| i % n as usize == column)
-                            .map(|(i, make)| place(make, i, appears)),
-                    )
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(if cell { TERMINAL_ROW } else { 20.0 }))
+                        .children(
+                            cards
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| i % n as usize == column)
+                                .map(|(i, make)| place(make, i, appears)),
+                        )
                 });
-                view()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(20.0))
-                    .p_6()
-                    .pb(px(48.0))
-                    .w_full()
-                    .max_w(px(n as f32 * 560.0 + 48.0))
-                    .self_center()
-                    .children(columns)
+                let page = view().flex_row().items_start().w_full().children(columns);
+                if cell {
+                    page.gap(px(3.0 * TERMINAL_COLUMN))
+                        .px(px(TERMINAL_COLUMN))
+                        .py(px(TERMINAL_ROW))
+                } else {
+                    page.gap(px(20.0))
+                        .p_6()
+                        .pb(px(48.0))
+                        .max_w(px(n as f32 * 560.0 + 48.0))
+                        .self_center()
+                }
             })]
         } else {
-            vec![
+            let page = if terminal() {
                 view()
-                    .p_4()
-                    .pb(px(bottom))
-                    .gap_4()
-                    .children(
-                        cards
-                            .iter()
-                            .enumerate()
-                            .map(|(i, make)| place(make, i, appears)),
-                    )
-                    .into_element(),
+                    .px(px(TERMINAL_COLUMN))
+                    .py(px(TERMINAL_ROW))
+                    .gap(px(TERMINAL_ROW))
+            } else {
+                view().p_4().pb(px(bottom)).gap_4()
+            };
+            vec![
+                page.children(
+                    cards
+                        .iter()
+                        .enumerate()
+                        .map(|(i, make)| place(make, i, appears)),
+                )
+                .into_element(),
             ]
         };
         // The page scrolls inside the component's view.

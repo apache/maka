@@ -212,8 +212,8 @@ mod tests {
                 quit_app();
             }
         });
-        let code = run_app(
-            AppSource::Config(config),
+        let code = run_app_with_config(
+            config,
             AppOptions {
                 app_id: "org.apache.maka.direct2d-test".into(),
                 title: "Direct2D exit bridge test".into(),

@@ -6,7 +6,7 @@ import { AlertDialog, Dialog, NavPage, Input } from "nsh/base";
 import { safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
-import { Appear, Badge, Button, Card, colors, DemoPage, density, Figure, finish, header, hint, hovered, IconTile, Inset, isDark, mono, motion, PageHeader, Press, radius, Section, Stat, tints, Toggle } from "../ui";
+import { Appear, backdrop, Badge, Button, Card, colors, DemoPage, density, dialogCard, dialogText, dialogTitle, Figure, finish, header, hint, hovered, IconTile, Inset, isDark, mono, motion, PageHeader, Press, radius, Section, Stat, tints, Toggle } from "../ui";
 import { TitleBar } from "../TitleBar";
 
 const edges = ["top", "bottom", "left", "right"] as const;
@@ -348,7 +348,7 @@ const modals: { key: Exclude<Sheet, null>; title: string; note: string; icon: Ic
   { key: "pageSheet", title: "Page sheet", note: hint("iOS sheet", "A tall centered card"), icon: "components" },
   { key: "formSheet", title: "Form sheet", note: hint("iOS, centered", "A smaller centered card"), icon: "form" },
   { key: "fade", title: "Fade", note: "Fades in", icon: "spark" },
-  { key: "dialog", title: "Dialog", note: "See-through", icon: "bell" },
+  { key: "dialog", title: "Card dialog", note: "Over the page", icon: "bell" },
   { key: "kept", title: "Kept open", note: hint("No swipe to close", "Escape does not close"), icon: "arrow-down" },
 ];
 
@@ -392,7 +392,7 @@ export function Navigation() {
     });
   });
   const push = (page: () => JSX.Element) => () => nav.push({ name: "page", page });
-  // The dialog springs up from a little smaller each time it opens.
+  // The card dialog springs up from a little smaller each time it opens.
   const pop = createAnimatedValue(0);
   effect(() => {
     if (sheet() !== "dialog") return;
@@ -482,24 +482,26 @@ export function Navigation() {
           onClose={close}
         />
       </Dialog>
-      <Dialog open={sheet() === "dialog"} animation="fade" onOpenChange={({ open }) => !open && close()} style={{ flex: 1 }}>
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.62)", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <View
-            style={{
-              alignSelf: "stretch",
-              opacity: pop,
-              scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }),
-            }}
-          >
-            <Card icon="bell" title="A dialog" subtitle='animation="fade"'>
-              <Text style={{ fontSize: 15, lineHeight: 21, color: colors.muted }}>
-                A dialog owns no look: what is behind it shows through, and the card springs in natively.
-              </Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                <Button flex={1} label="Cancel" variant="secondary" onPress={close} />
-                <Button flex={1} label="OK" onPress={close} />
-              </View>
-            </Card>
+      {/* A card in the middle of the window over the scrim: the backdrop, Escape and back close it. */}
+      <Dialog
+        open={sheet() === "dialog"}
+        animation="fade"
+        onOpenChange={({ open }) => !open && close()}
+        backdropStyle={backdrop()}
+        style={{ margin: "auto", width: platform.desktop ? 360 : 340, maxWidth: "90%" }}
+      >
+        <View style={{ ...dialogCard(), opacity: pop, scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <IconTile name="trash" size={36} tint={colors.danger} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={dialogTitle()}>Delete “Launch notes”?</Text>
+              <Text style={{ fontSize: 12, color: colors.faint }}>Edited 2 hours ago · 3 collaborators</Text>
+            </View>
+          </View>
+          <Text style={dialogText()}>The note and its 14 comments go for everyone it is shared with. This cannot be undone.</Text>
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
+            <Button flex={platform.desktop ? undefined : 1} label="Cancel" variant="secondary" onPress={close} />
+            <Button flex={platform.desktop ? undefined : 1} label="Delete" icon="trash" variant="danger" onPress={close} />
           </View>
         </View>
       </Dialog>

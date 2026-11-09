@@ -25,9 +25,31 @@ on reload; changes to the Rust runtime need a restart.
 
 Set `PUBLIC_SITE_BASE=/sub/path/` to build for a sub-path.
 
+## Other languages
+
+This repository holds English and Chinese only, and a change updates only those.
+Every other language is machine translated in
+[longbridge/nsh-website-translates](https://github.com/longbridge/nsh-website-translates),
+which also lists the languages and runs the translation. The published root clones
+it to `translations/` (git-ignored); older versions, pull requests and local builds
+do without. The home page is translated too: its words are `src/home/en.json`
+(Chinese beside it in `zh-CN.json`), and each language's `home.json` there holds
+them in the same keys, so `/<code>` is the home page in that language. Keep
+numbers, commands and code out of these files (they stay in `Home.astro`), and
+give a new string to both English and Chinese. Each translated page says it is a
+machine translation and links to the English; a page with no translation shows
+the English, not indexed.
+A language the registry marks `"dir": "rtl"` (Arabic) is laid out mirrored:
+the site's styles use logical properties (`margin-inline-start`,
+`inset-inline-end`, `text-align: start`), so keep to them; code, demos and
+keys stay left to right.
+
+Translation pull requests are not accepted: a fix goes to the English page.
+
 ## Writing documentation
 
-Content is Markdown in three sections, each in English and Chinese:
+Content is Markdown in three sections, each in English and Chinese; other
+languages are machine translated ("Other languages" below):
 
 | Directory | URL | Nav label |
 | --- | --- | --- |
@@ -146,9 +168,9 @@ checkout's site (layouts, components, styles); a release takes from its tag
 only its pages (`docs`, `elements`, `modules`, `zh-CN`) and its demos, which
 run on the player its own `cargo xtask web` builds, so a page and its demo
 always match. Releases' builds are kept in `.versions/` (cached in CI) and
-rebuilt only when the site's own files change. Versions other than the latest
-are not indexed (their canonical link is the latest's page) and link to the
-latest's App Stories. The Release workflow's completion deploys the site, so
+rebuilt only when the site's own files change or, for the latest, the catalog's
+commit. Versions other than the latest are not indexed (their canonical link is
+the latest's page) and link to the latest's App Stories. The Release workflow's completion deploys the site, so
 a new release moves to the root. `NSH_SITE_VERSIONS=main,v0.3.0` limits a
 local run to those versions.
 
@@ -196,8 +218,9 @@ after its first paragraph, and a section with a demo of its own shows it where
 its `<!-- demo: <name> -->` line is (on the English and the Chinese page alike): a frame with the app running in an iframe of
 `play/index.html?idiom=…#<name>`, beside its source (wide pages, Mobile) or
 behind a Preview / Source switch (narrow ones), and two icon buttons: edit in
-the playground, open in a new tab. The home page runs `demos/counter.tsx` the
-same way (`src/components/DemoFrame.astro`, `variant="phone"`).
+the playground, open in a new tab. The home
+page runs `demos/home-chat.tsx` in two frames of its own, at the desktop and the
+phone idioms.
 
 The panel switches the demo between two layouts (`LAYOUTS` in
 `src/lib/demo.js`, `demo-client.ts`), and the app runs again with the idiom

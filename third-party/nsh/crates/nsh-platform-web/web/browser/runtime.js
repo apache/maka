@@ -12,6 +12,33 @@ function moduleURL(code, name, sourceMap) {
   return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
+// The module that stands for a native one: `names` are its exports, read
+// from the realm's namespace when the module runs; those in `late` are
+// live bindings, set again when a later gate registers them.
+function facadeURL(specifier, names, late) {
+  const key = JSON.stringify(specifier);
+  const updates = [];
+  const declarations = names.map((name, index) => {
+    const value = `host.get(${key})[${JSON.stringify(name)}]`;
+    if (!late.includes(name)) {
+      if (name === "default") return `export default ${value};`;
+      return `const e${index}=${value};export{e${index} as ${JSON.stringify(name)}};`;
+    }
+    updates.push(`e${index}=${value};`);
+    return `let e${index}=${value};export{e${index} as ${JSON.stringify(name)}};`;
+  });
+  if (updates.length) declarations.push(`globalThis.__nsh_browser_realm.watch(()=>{${updates.join("")}});`);
+  const source = `const host=globalThis.__nsh_browser_realm.modules;\n${declarations.join("\n")}`;
+  return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+}
+
+function addImportMap(doc, imports) {
+  const importMap = doc.createElement("script");
+  importMap.type = "importmap";
+  importMap.textContent = JSON.stringify({ imports });
+  doc.head.append(importMap);
+}
+
 export function createBrowserHost(player) {
   let current, pageRealmUsed = false;
   return {
@@ -29,9 +56,10 @@ export function createBrowserHost(player) {
       return current.imports.value(...args);
     } },
     // `owned`: blob URLs that go with the app. `nativeExports`
-    // (`{ specifier: [name] }`): names chunks import from native modules
-    // that a gate called after the start registers (a side module loaded
-    // before the chunk); their bindings are live and filled then.
+    // (`{ specifier: [name] }`): what the app imports by name from native
+    // modules (a published app's, `web::native_exports`). Their bindings
+    // are live, so what a gate called after the start registers (a side
+    // module loaded before the chunk) is filled then.
     async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {}, nativeExports = {} } = {}, owned = []) {
       if (current?.stopping) throw new Error("cannot start an app during disposal");
       const [width, height] = player.reset();
@@ -90,25 +118,60 @@ export function createBrowserHost(player) {
         }
         if (frame) {
           const baseElement = doc.createElement("base");
-          baseElement.href = document.baseURI;
+          // The page's URL as the player started (`player.baseURL`).
+          baseElement.href = player.baseURL;
           doc.head.append(baseElement);
+        }
+        // Firefox and older WebKit ignore import maps after the first module
+        // script. Bootstrap runs as a classic script in this realm; its
+        // factories let us build the complete map before loading any module.
+        const map = { ...moduleMap };
+        const entryURL = new URL(entry, player.baseURL);
+        // Chunks are named relative to the entry; one given as source (a
+        // blob) has them relative to the page.
+        const chunkBase = entryURL.protocol === "blob:" ? new URL(player.baseURL) : entryURL;
+        if (chunkBase === entryURL) map[new URL("bundle.js", entryURL).href] = entryURL.href;
+        for (const [id, url] of Object.entries(chunks)) map[new URL(id, chunkBase).href] = new URL(url, player.baseURL).href;
+        for (const [specifier, names] of Object.entries(nativeExports)) {
+          const url = facadeURL(specifier, names, names);
+          urls.push(url);
+          map[specifier] = url;
         }
         // Construct the facade in the app realm, so Error, Promise, Buffer,
         // typed arrays and class identities use the same intrinsics as its code.
         const scope = await new Promise((resolve, reject) => {
-          rejectLoad = reject;
-          Object.defineProperty(realm, "__nsh_browser_bootstrap", { value: resolve, configurable: true });
+          let settled = false;
           const bootstrap = doc.createElement("script");
-          bootstrap.type = "module";
+          const finish = (ok, value) => {
+            if (settled) return;
+            settled = true;
+            realm.removeEventListener("error", failed);
+            bootstrap.onload = bootstrap.onerror = null;
+            if (ok) resolve(value); else reject(value);
+          };
+          // Classic script execution errors reach the Window, not the script's
+          // error handler. Observe only this bootstrap, not unrelated page code.
+          const failed = event => {
+            if (event.filename !== bootstrap.src) return;
+            event.preventDefault();
+            finish(false, event.error ?? new Error(event.message));
+          };
+          rejectLoad = error => finish(false, error);
+          Object.defineProperty(realm, "__nsh_browser_bootstrap", { value: scope => finish(true, scope), configurable: true });
+          // Match module scripts' CORS loading so a CDN bootstrap's execution
+          // errors retain their filename and original rejection value.
+          bootstrap.crossOrigin = "anonymous";
           bootstrap.src = new URL("./bootstrap.js", import.meta.url).href;
-          bootstrap.onerror = () => reject(new Error("could not load the browser facade"));
-          doc.head.append(bootstrap);
+          bootstrap.onerror = () => finish(false, new Error("could not load the browser facade"));
+          bootstrap.onload = () => finish(false, new Error("the browser facade did not initialize"));
+          realm.addEventListener("error", failed);
+          try { doc.head.append(bootstrap); } catch (error) { finish(false, error); }
         });
         if (!active()) throw new Error("the app was disposed");
         rejectLoad = null;
         delete realm.__nsh_browser_bootstrap;
         const { Values, createReactive, createModules, createDom, createComponents, createGestures,
-          createCanvas, createAnimation, createNavigation, createKeymap, createEnvironment,
+          createCanvas, createAnimation, createNavigation, createKeymap, createEnvironment, createI18n,
           createHost, createStandard, createResource, createLists, configureAPIs, createHot } = scope;
         values = new Values();
         values.trace = () => player.wasm.nsh_browser_trace();
@@ -125,6 +188,8 @@ export function createBrowserHost(player) {
         const gestures = createGestures(call, values, reactive, dom, active, requestPump);
         dom.setTouches(gestures);
         dom.rt.setup = env.setup;
+        const i18n = createI18n(reactive, call, env);
+        dom.rt.i18n = i18n.setup;
         dom.rt.font = (uri, family) => call(404, [uri, family]);
         stopped.push(() => dom.dispose(), () => modules?.dispose(), () => host?.dispose(), () => animation?.dispose(), () => player.wasm.nsh_stop(), () => player.wasm.nsh_browser_dispose());
         const event = (name, args) => {
@@ -190,43 +255,23 @@ export function createBrowserHost(player) {
           if (!Object.hasOwn(realm, "__nsh_hot")) Object.defineProperty(realm, "__nsh_hot", { value: hot.hot, configurable: true });
           return hot.hot;
         } });
-        namespaces.set("nsh/device", Object.fromEntries(["windowSize", "colorScheme", "setColorScheme", "fontScale", "pixelRatio", "locale", "platform"].map(name => [name, nsh[name]])));
-        namespaces.set("nsh/accessibility", { reduceMotion: nsh.reduceMotion, screenReaderEnabled: nsh.screenReaderEnabled });
+        for (const [specifier, namespace] of Object.entries(env.modules)) namespaces.set(specifier, namespace);
+        namespaces.set("nsh/i18n", i18n.api);
         namespaces.set("nsh/host", { host: nsh.host });
         namespaces.set("nsh/native", { nativeComponent: nsh.nativeComponent, nativeModule: nsh.nativeModule });
         namespaces.set("nsh/keymap", { keymap: nsh.keymap });
         namespaces.set("nsh/animated", animation.api);
         namespaces.set("nsh/gesture", { PanResponder: gestures.PanResponder });
-        const map = { ...moduleMap };
-        const entryURL = new URL(entry, document.baseURI);
-        // Chunks are named relative to the entry; one given as source (a
-        // blob) has them relative to the page.
-        const chunkBase = entryURL.protocol === "blob:" ? new URL(document.baseURI) : entryURL;
-        if (chunkBase === entryURL) map[new URL("bundle.js", entryURL).href] = entryURL.href;
-        for (const [id, url] of Object.entries(chunks)) map[new URL(id, chunkBase).href] = new URL(url, document.baseURI).href;
+        // Namespace imports and development bundles need the full module
+        // catalog too. One map covers these and the late-bound exports of
+        // published chunks, including browsers that accept only one map.
         for (const [specifier, namespace] of namespaces) {
-          const names = Object.keys(namespace);
-          const late = (nativeExports[specifier] ?? []).filter(name => !Object.hasOwn(namespace, name));
-          const declarations = names.map((name, index) => {
-            if (name === "default") return `export default host.get(${JSON.stringify(specifier)})["default"];`;
-            return `const e${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];export{e${index} as ${JSON.stringify(name)}};`;
-          });
-          // Live bindings: what a later gate registers reaches modules
-          // that imported the name before it.
-          const updates = late.map((name, index) => {
-            declarations.push(`let l${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];export{l${index} as ${JSON.stringify(name)}};`);
-            return `l${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];`;
-          });
-          if (updates.length) declarations.push(`globalThis.__nsh_browser_realm.watch(()=>{${updates.join("")}});`);
-          const source = `const host=globalThis.__nsh_browser_realm.modules;\n${declarations.join("\n")}`;
-          const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+          if (Object.hasOwn(nativeExports, specifier)) continue;
+          const url = facadeURL(specifier, Object.keys(namespace), []);
           urls.push(url);
           map[specifier] = url;
         }
-        const importMap = doc.createElement("script");
-        importMap.type = "importmap";
-        importMap.textContent = JSON.stringify({ imports: map });
-        doc.head.append(importMap);
+        addImportMap(doc, map);
         const finished = new Promise((resolve, reject) => {
           rejectLoad = reject;
           Object.defineProperty(realm, "__nsh_browser_realm", { value: Object.freeze({

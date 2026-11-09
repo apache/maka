@@ -12,7 +12,7 @@ beforeEach(async () => {
 test("shows its sections", () => {
   for (const text of [
     "Resize modes",
-    "A 2:1 image in square frames",
+    "A portrait photo in wide frames",
     "cover",
     "center",
     "Corners and borders",

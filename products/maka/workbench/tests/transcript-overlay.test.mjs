@@ -607,6 +607,25 @@ test('an agent-started turn folds with its work without being treated as human s
   assert.equal(reloaded.entries[0].key, previous.key, 'history refresh retains disclosure state');
 });
 
+test('a turn has work to fold only beside its final answer', () => {
+  const worked = (rows) =>
+    projectProcessGroups({ rows, toolActivity: [], activeTurnId: null }).turns.get('run').worked;
+  const request = row('request', 'Summarize', 1, { role: 'user' });
+  const answer = row('answer', 'Done', 4, { finalOutput: true });
+  assert.equal(worked([request, answer]), false);
+  assert.equal(worked([request, row('draft', 'Reading first', 2), answer]), true);
+  assert.equal(
+    worked([request, row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' })]),
+    true,
+  );
+  assert.equal(worked([request, row('draft', 'Streaming', 2)]), true, 'a running reply is work');
+  assert.equal(
+    worked([request, row('limit', 'Rate limited', 2, { role: 'failure' }), answer]),
+    true,
+    'a recovered failure folds away',
+  );
+});
+
 test('agent attribution arriving with canonical metadata invalidates the live grouping', () => {
   const pending = row('input', 'Task', 1, { role: 'user' });
   const canonical = {

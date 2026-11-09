@@ -235,9 +235,21 @@ nsh run App.tsx --target macos --fps --release
 ```
 
 (`AppOptions { fps: true, .. }` in a Rust app's `run_app`) shows the frame rate and what frames and commits cost over the running app, with CPU, GPU and memory
-([macOS: performance monitor](./macos.md#performance-monitor)). On Linux and Windows, `--target linux --fps` and
-`--target windows --fps` log the same readings once a second, with the time of each phase of a frame;
+([macOS: performance monitor](./macos.md#performance-monitor)). Linux also shows a panel with FPS, frame time and p95, JS/core time, CPU and RSS, plus a
+120-frame cost chart and a refresh-budget line. On Linux and Windows, `--target linux --fps` and
+`--target windows --fps` also log readings once a second, with the time of each phase of a frame;
 `nsh test --target linux --fps -v` (or `windows`) takes them while a test drives the app.
+
+The environment variable `NSH_FPS=1` turns the monitor on however the app is started: a development host, a packaged
+app, a Rust app, an app that embeds NSH. A packaged macOS app opened from the Dock or Finder gets it from its
+`Info.plist`'s `LSEnvironment` (`nsh.json`: `"macos": { "infoPlist": { "LSEnvironment": { "NSH_FPS": "1" } } }`). The
+app turns it on and off itself with `setFpsEnabled(enabled)` and reads it with `fpsEnabled()`
+([`nsh`](../modules/nsh.md#fpsenabled-and-setfpsenabled)); the gallery's sidebar menu has a switch for it.
+
+On the terminal target, `nsh run examples/gallery --target tui --fps` shows one line in a corner.
+`C-h p` toggles it outside text fields. It shows active FPS, `idle` when the app rests, frame time and p95,
+apply / draw / flush times, bytes written and changed Cells per frame. The same readings appear in the
+`C-h e` log panel. Measuring is enabled only while the line is shown.
 
 > [!TIP]
 > Single measurements are dominated by the CPU's clock state: a thread that just slept runs slower for a while.

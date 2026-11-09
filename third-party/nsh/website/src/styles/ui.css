@@ -28,15 +28,15 @@
   --color-popover-foreground: var(--foreground);
   --color-primary: var(--nsh-gallery-primary);
   --color-primary-foreground: var(--nsh-gallery-primary-foreground);
-  --color-secondary: var(--nsh-gallery-raised);
+  --color-secondary: var(--raised);
   --color-secondary-foreground: var(--foreground);
-  --color-muted: var(--nsh-gallery-muted);
+  --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--nsh-gallery-accent);
   --color-accent-foreground: var(--foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
-  --color-input: var(--nsh-gallery-input);
+  --color-input: var(--input);
   --color-ring: var(--ring);
   --color-field: var(--nsh-gallery-field);
   --color-track: var(--nsh-gallery-track);
@@ -79,8 +79,8 @@
 }
 /* Flat on the surface it sits on: the site's fields are never sunken wells. */
 @utility finish-field {
-  border-color: var(--nsh-gallery-input);
-  background-color: var(--nsh-gallery-card);
+  border-color: var(--input);
+  background-color: var(--card);
   background-image: none;
   box-shadow: none;
 }
@@ -91,8 +91,8 @@
   @apply shadow-(--nsh-gallery-finish-track-box-shadow);
 }
 @utility finish-menu {
-  border-color: var(--nsh-gallery-finish-menu-border-color);
-  background-color: var(--nsh-gallery-finish-menu-background-color);
+  border-color: var(--border);
+  background-color: var(--popover);
   @apply shadow-(--nsh-gallery-finish-menu-box-shadow);
 }
 @utility finish-chip {
@@ -163,7 +163,7 @@
    -------------------------------------------------------------------- */
 
 [data-slot="input"] {
-  @apply h-9 w-full min-w-0 rounded-md border finish-field px-3 py-1 text-sm text-foreground transition-[color,box-shadow,border-color] focus-ring placeholder:text-faint selection:bg-primary selection:text-primary-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 hover:not-focus-visible:border-[color-mix(in_srgb,var(--nsh-gallery-input)_70%,var(--foreground))];
+  @apply h-9 w-full min-w-0 rounded-md border finish-field px-3 py-1 text-sm text-foreground transition-[color,box-shadow,border-color] focus-ring placeholder:text-faint selection:bg-primary selection:text-primary-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 hover:not-focus-visible:border-[color-mix(in_srgb,var(--input)_70%,var(--foreground))];
   font-family: inherit;
   &[data-size="sm"] { @apply h-8 text-[0.8125rem]; }
   /* The browser's clear button; the input group has room for the app's own. */
@@ -189,7 +189,7 @@
 [data-slot="select"] { @apply relative inline-flex min-w-0; }
 
 [data-slot="select-trigger"] {
-  @apply flex h-9 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border finish-field px-3 py-2 text-sm whitespace-nowrap text-foreground transition-[color,box-shadow,border-color] focus-ring disabled:cursor-not-allowed disabled:opacity-50 aria-expanded:border-ring aria-expanded:ring-[3px] aria-expanded:ring-ring/50 hover:not-focus-visible:border-[color-mix(in_srgb,var(--nsh-gallery-input)_70%,var(--foreground))];
+  @apply flex h-9 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border finish-field px-3 py-2 text-sm whitespace-nowrap text-foreground transition-[color,box-shadow,border-color] focus-ring disabled:cursor-not-allowed disabled:opacity-50 aria-expanded:border-ring aria-expanded:ring-[3px] aria-expanded:ring-ring/50 hover:not-focus-visible:border-[color-mix(in_srgb,var(--input)_70%,var(--foreground))];
   font-family: inherit;
   &[data-size="sm"] { @apply h-8 text-[0.8125rem]; }
   & > svg { @apply size-4 shrink-0 text-muted-foreground opacity-80 transition-transform duration-150; }

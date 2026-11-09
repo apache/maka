@@ -43,7 +43,6 @@ fn config(app: App) -> EngineConfig {
         refuse_connections: None,
         filesystem: None,
         assets: None,
-        chunk_loader: None,
         environment: Environment::default(),
         header_heights: (Points(44.0), Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -59,6 +58,9 @@ fn config(app: App) -> EngineConfig {
         host: Default::default(),
         picker: None,
         speech: None,
+        chunk_loader: None,
+        audio: None,
+        windows: None,
     }
 }
 
@@ -77,19 +79,12 @@ fn a_popover_shows_its_content_over_the_box_that_clips_its_trigger() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut parents: Vec<(NodeId, NodeId)> = Vec::new();
     let mut frames: Vec<(NodeId, Bounds<Points>)> = Vec::new();
-    let mut focus_parents = Vec::new();
     let mut body = None;
     while let Ok(batch) = rx.recv_deadline(deadline) {
         for item in &batch.items {
             match item {
-                MountItem::Insert { parent, child, .. }
-                | MountItem::ProjectRoot {
-                    parent, id: child, ..
-                } => parents.push((*parent, *child)),
+                MountItem::Insert { parent, child, .. } => parents.push((*parent, *child)),
                 MountItem::Frame { id, frame } => frames.push((*id, *frame)),
-                MountItem::ViewProps { id, props } if props.focus_return_parent.is_some() => {
-                    focus_parents.push((*id, props.focus_return_parent));
-                }
                 MountItem::Text { id, text, .. } if &*text.text == "Body" => body = Some(*id),
                 _ => {}
             }
@@ -110,7 +105,6 @@ fn a_popover_shows_its_content_over_the_box_that_clips_its_trigger() {
     let content = parent(body).unwrap();
     let overlay = parent(content).unwrap();
     assert_eq!(parent(overlay), Some(ROOT_ID));
-    assert!(focus_parents.contains(&(overlay, Some(ROOT_ID))));
     let frame = frames
         .iter()
         .rev()
@@ -170,10 +164,7 @@ fn a_toast_stack_from_rust_lays_its_toasts_out_as_layers() {
                     command: nsh_core::Command::Announce(m),
                     ..
                 } => announced.push(m.clone()),
-                MountItem::Insert { parent, child, .. }
-                | MountItem::ProjectRoot {
-                    parent, id: child, ..
-                } => parents.push((*parent, *child)),
+                MountItem::Insert { parent, child, .. } => parents.push((*parent, *child)),
                 MountItem::Frame { id, frame } => frames.push((*id, *frame)),
                 MountItem::Text { id, text, .. } => texts.push((*id, text.text.to_string())),
                 _ => {}

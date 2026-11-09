@@ -84,7 +84,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `each` | `virtual_list(count, ..)` | `readonly T[] \| ReadonlyListSource<T>` | | 条目：数组或[索引快照](../modules/nsh-list.md#数据与渲染)。 |
+| `each` | `virtual_list(count, ..)` | `readonly T[]` | | 条目。 |
 | `children` | `virtual_list(.., \|at\| row)` | `(item: () => T, index: () => number) => JSX.Element` | | 渲染一行。 |
 | `estimatedItemSize` | `.estimated_item_size(px(..))` | `number` | `50` | 尚未测量的条目尺寸（点）。估值越接近，滚动条越稳定。 |
 | `horizontal` | `.horizontal()` | `boolean` | `false` | 横向滚动。 |
@@ -100,7 +100,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `empty` | `.empty(el)` | `ListSlot` | | `each` 为空时代替条目显示。 |
 | `separator` | `.separator(\|\| el)` | `ListSlot` | | 条目之间的分隔（单列）。 |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | 第一帧之前先滚动到该条目。 |
-| `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。在 Rust 中是各行的标识，前面的行增删时，行保留自己的单元格和尺寸。 |
+| `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。在 Rust 中是各行的标识，前面的行增删时，行保留自己的单元格和尺寸。在 TSX 中，key 相同的行就算 `each` 换成了新对象也视为同一行，因此重建行数据（例如在 `computed` 里）不会丢掉行高和阅读位置；不设置时按对象是否相同比较。 |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | 快到末端了：加载更多。 |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | 距末端多近（以视口为单位）时触发 `onLoadMore`。 |
 | `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | 用户或滚动命令移动列表后快到开头了：加载第一项之前的内容。 |
@@ -111,7 +111,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | 用户下拉刷新。 |
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | 应用自己绘制指示器，高 `height` 点：平台的转圈隐藏，下拉到 `height` 即刷新，刷新中在内容上方留出 `height`。`height` 不大于 0 时视为未设。 |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | 一个动画值，写入列表被拉过顶部的距离（静止为 0，随下拉增大；刷新中为内容上方留出的空间，设了 `refreshIndicator` 时等于 `height`），用来绘制应用的指示器。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | 接收滚动偏移的动画值，用于随滚动变化的动画。 |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | 拖动时是否收起键盘。 |
 | `style` | `Styled` 方法 | `StyleProp<ViewStyle>` | | 列表自身的样式（需要有确定的尺寸：`flex: 1` 或高度）。 |

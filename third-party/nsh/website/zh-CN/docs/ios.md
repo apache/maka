@@ -195,6 +195,7 @@ final class EmbedController: UIViewController {
 | `locale: Locale?` | 代替用户设置的语言和地区：`Intl`、`locale()` 和组件立即跟随，此后加载的应用也从它开始。`nil` 跟随系统。 |
 | `fontScale: CGFloat?` | 代替动态字体的文字大小（1 为默认）：文字和输入框按它重新排版，`fontScale()` 读到它，立即生效，此后加载的应用也一样；长度保持原样。`nil` 跟随系统。 |
 | `setThemeOverrides(_ json: String?) throws` | 把宿主的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件。其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变。立即生效，并作用于之后加载的应用；`nil` 恢复应用自己的主题。文件无法解析时抛出 `NshError`。 |
+| `registerFont(_ data: Data) throws` | 注册宿主自带的字体文件（TrueType、OpenType、WOFF 或 WOFF2）。应用在 `fontFamily` 里写它的字体族名，不必把文件打进 bundle。加载前注册的字体在该应用的第一帧就可用；应用运行中注册的，从下一次排版开始使用。`data` 不是字体时抛出 `NshError`。 |
 | `storageDirectory: URL?` | 此后加载的应用保存其[存储](../modules/nsh.md#storage)的目录；`nil`：`Library/Application Support/nsh/<app id>`，按应用自己的 id。 |
 | `cacheOptions: NshCacheOptions` | 此后加载的应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`location` 为 `.system`（`Library/Caches/nsh`，每个应用在 `<app id>`）、`.directory(URL)` 或 `.off`；`images` 为 `.default`（256 MB）、`.maxSize(megabytes:)` 或 `.off`。 |
 | `loadBundle(at url: URL) throws` | 运行 `nsh build` 写出的 bundle。资源取自同目录下的 `assets/`；同目录下的 `bundle.js.map` 和 `capabilities.json` 也会被读取。 |

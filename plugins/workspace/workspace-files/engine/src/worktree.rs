@@ -95,6 +95,7 @@ impl Worktrees {
         valid_id(id)?;
         interrupted(&cancel)?;
         let (source, source_identity) = crate::directory::capture(source)?;
+        let source = dunce::simplified(&source).to_path_buf();
         let repo = git::discover(&source)?;
         if repo
             .workdir()

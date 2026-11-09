@@ -47,7 +47,7 @@ function Sandbox() {
   } as AgentSession);
   const saved = signal('No permission change');
   return (
-    <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+    <View style={{ flex: 1, justifyContent: 'space-between' }}>
       <Text>{saved()}</Text>
       <SessionPermissionsSelect
         owner={{
@@ -412,7 +412,7 @@ function WorkspacePages(props: { busy: boolean }) {
   return (
     <View style={{ flex: 1 }}>
       <Text>
-        {platform.isTerminal ? 'TERMINAL_BRANCH' : 'DESKTOP_BRANCH'} requests:{calls()}
+        {platform.idiom === 'terminal' ? 'TERMINAL_BRANCH' : 'DESKTOP_BRANCH'} requests:{calls()}
       </Text>
       <Button
         accessibilityLabel="Publish requested page"
@@ -508,8 +508,10 @@ function ActivityFollow() {
             active: true,
             finalOutputIds: [],
             interleavedInput: false,
+            worked: true,
           })}
           toolActivity={() => undefined}
+          liveTools={() => []}
           toolProgress={() => null}
           state={state}
           row={(id) => {

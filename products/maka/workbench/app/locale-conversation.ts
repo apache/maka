@@ -1565,6 +1565,11 @@ export const conversationMessages = {
     '工作目录：{path}',
     '工作目錄：{path}',
   ],
+  'Working for {duration}': [
+    'Working for {duration}',
+    '正在处理 · {duration}',
+    '正在處理 · {duration}',
+  ],
   'Working…': msg_working,
   'Workspace files': ['Workspace files', '工作区文件', '工作區檔案'],
   'Workspace write': msg_sandboxWorkspace,

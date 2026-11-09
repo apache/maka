@@ -52,17 +52,6 @@ test("a fallback binding fires in a masked field", async () => {
   await app.waitFor("text:interrupts: 1");
 });
 
-test("a replacement clipped to maxLength leaves the caret after what it inserted", async () => {
-  const app = await open("./app.tsx");
-  await app.type("id:limited", "abcdef");
-  await app.keyboard.press("ctrl+g");
-  await app.wait(100);
-  expect(app.value("id:limited")).toBe("WXcdef");
-  await app.keyboard.press("backspace");
-  await app.wait(100);
-  expect(app.value("id:limited")).toBe("Wcdef");
-});
-
 test("a narrow native sink keeps its caret anchored after committed text", async () => {
   const app = await open("./app.tsx");
   await app.type("id:sink", "你好");

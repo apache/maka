@@ -137,6 +137,24 @@ pub struct TestEnvironment {
     /// The locale, a BCP 47 tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
+    /// The time zone, an IANA name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    /// The preferred languages, BCP 47 tags, most preferred first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<String>>,
+    /// The hour cycle, as `Intl` names it (`h23`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hour_cycle: Option<String>,
+    /// The first day of the week: 1 for Monday to 7 for Sunday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_day_of_week: Option<u8>,
+    /// The measurement system: `metric`, `us` or `uk`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_system: Option<String>,
+    /// The temperature unit: `celsius` or `fahrenheit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_unit: Option<String>,
     /// Whether the user asked for less motion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduced_motion: Option<bool>,
@@ -310,6 +328,10 @@ pub enum ServerMessage {
         /// data.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_id: Option<String>,
+        /// The main window's launch-time options (`nsh.json` `"window"`,
+        /// JSON): `nsh_engine::Bundle::with_main_window` reads them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
         /// The VM limits to run the app with, as an embedding app would
         /// set them (`nsh run --limits`, in `nsh_core::js::HostLimits`'
         /// syntax: `memory=128MB,call=500ms`; empty: the embedding
@@ -583,8 +605,8 @@ pub enum TestStep {
         /// The button's text (`None`: close it without one).
         button: Option<String>,
     },
-    /// A picture of the app's window: a PNG, base64-encoded (the test's
-    /// side saves it: the host may run on another machine).
+    /// A picture of the app, base64-encoded: PNG on graphical targets, UTF-8
+    /// Cell JSON on the terminal target. The test's side saves these bytes.
     Screenshot,
     /// Makes the window `width` × `height` points (`app.setViewport`).
     SetViewport {
@@ -603,6 +625,27 @@ pub enum TestStep {
     },
     /// Closes the app: the host exits.
     Quit,
+    /// The state of the app's window `id` as the platform reports it
+    /// (`app.window(id).state()`): a `WindowState` object, `null` while it
+    /// is not open. Desktops.
+    WindowState {
+        /// The app's id for the window (`"main"`: the main window).
+        id: String,
+    },
+    /// Presses the close button of the app's window `id` as the user does
+    /// (`app.window(id).pressClose()`): the platform reports the press and
+    /// closes the window when its `closeOnPress` lets it. Desktops.
+    PressWindowClose {
+        /// The app's id for the window (`"main"`: the main window).
+        id: String,
+    },
+    /// A picture of the app's window `id` (`app.window(id).screenshot()`):
+    /// PNG of its content, base64-encoded, as [`TestStep::Screenshot`] is
+    /// of the main window. Desktops.
+    WindowScreenshot {
+        /// The app's id for the window (`"main"`: the main window).
+        id: String,
+    },
     /// A question about the host's model of the app or about its views,
     /// from a test agent that runs elsewhere (the web: `nsh` acts through
     /// the browser, the page knows the app).
@@ -995,6 +1038,7 @@ mod tests {
             source_map: true,
             capabilities: None,
             app_id: None,
+            window: None,
             limits: None,
         };
         // No declaration: the field is left out (older hosts read the same).

@@ -82,11 +82,11 @@ const LIGHT: typeof DARK = {
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
 /** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
  * terminals keep the dark colors. */
-export const isDark = () => platform.isTerminal || colorScheme() !== 'light';
+export const isDark = () => platform.idiom === 'terminal' || colorScheme() !== 'light';
 // The desktop palette's tokens, made once per recipe and appearance.
 let made: { recipe: PaletteRecipe; dark: boolean; tokens: PaletteTokens } | null = null;
 const paletteColor = (key: string, dark: boolean): string | undefined => {
-  if (platform.isTerminal) return undefined;
+  if (platform.idiom === 'terminal') return undefined;
   const recipe = appearance.recipe();
   if (!recipe) return undefined;
   if (made?.recipe !== recipe || made.dark !== dark)
@@ -121,23 +121,26 @@ export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGION
   ...Object.fromEntries(
     Object.entries(REGIONS).map(([key, [light, dark]]) => [
       key,
-      { enumerable: true, get: () => C[!platform.isTerminal && isDark() ? dark : light] },
+      { enumerable: true, get: () => C[platform.idiom !== 'terminal' && isDark() ? dark : light] },
     ]),
   ),
 });
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
-export const bodyTextStyle = { fontSize: 14, lineHeight: platform.isTerminal ? 16 : 24 };
-export const secondaryTextStyle = { fontSize: 13, lineHeight: platform.isTerminal ? 16 : 20 };
-export const inputTextStyle = { fontSize: 14, lineHeight: platform.isTerminal ? 16 : 20 };
+export const bodyTextStyle = { fontSize: 14, lineHeight: platform.idiom === 'terminal' ? 16 : 24 };
+export const secondaryTextStyle = {
+  fontSize: 13,
+  lineHeight: platform.idiom === 'terminal' ? 16 : 20,
+};
+export const inputTextStyle = { fontSize: 14, lineHeight: platform.idiom === 'terminal' ? 16 : 20 };
 export const captionTextStyle = { fontSize: 13, lineHeight: 16 };
 export const codeTextStyle = {
   fontFamily: 'monospace',
   fontSize: 13,
-  lineHeight: platform.isTerminal ? 16 : 20,
+  lineHeight: platform.idiom === 'terminal' ? 16 : 20,
 };
 // Rounded Input clipping rasterizes the editor on a cell surface.
-export const inputBorderRadius = platform.isTerminal ? 0 : 8;
+export const inputBorderRadius = platform.idiom === 'terminal' ? 0 : 8;
 export const compact = () => windowSize().height < 480;
 /** A control's name and its shortcut, in the keys of the platform the app runs on. */
 export const shortcut = (label: string, keystroke: string) =>
@@ -151,36 +154,38 @@ export const controlStyle = {
 } as const;
 export const toolbarControlStyle = {
   ...controlStyle,
-  paddingHorizontal: platform.isTerminal ? 12 : 8,
+  paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
 } as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and
  * trailing states line up; the terminal keeps its own cell layout.
  */
-export const disclosureInset = (terminal: number) => (platform.isTerminal ? terminal : 8);
+export const disclosureInset = (terminal: number) => (platform.idiom === 'terminal' ? terminal : 8);
 /**
  * Where a disclosure row's text starts, past its 16-point glyph and gap: the
  * text lane its expanded content shares. The terminal keeps each row's own
  * cell layout.
  */
-export const disclosureContentInset = (terminal: number) => (platform.isTerminal ? terminal : 24);
+export const disclosureContentInset = (terminal: number) =>
+  platform.idiom === 'terminal' ? terminal : 24;
 /**
  * A switch or action row among labelled text fields. On the desktop it gets the
  * fields' box, so its inset text lines up with the text typed in them.
  */
 export const fieldBoxStyle = () =>
-  platform.isTerminal ? {} : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
+  platform.idiom === 'terminal'
+    ? {}
+    : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
 export const controlHoverStyle = () => ({ backgroundColor: C.raised });
 export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor: C.accent });
 /** Focus for a control that rests on a card: one step above the card. */
 export const cardFocusStyle = () => ({ ...controlFocusStyle(), backgroundColor: C.cardRaised });
-export const controlDisabledStyle = platform.isTerminal
-  ? { backgroundColor: C.background }
-  : { opacity: 0.4 };
+export const controlDisabledStyle =
+  platform.idiom === 'terminal' ? { backgroundColor: C.background } : { opacity: 0.4 };
 // Focus styles apply to keyboard focus only, so a ring keeps it apart from hover.
-const quietFocusStyle = () =>
-  platform.isTerminal
+export const quietFocusStyle = () =>
+  platform.idiom === 'terminal'
     ? { backgroundColor: C.raised }
     : {
         outlineStyle: 'solid' as const,
@@ -188,8 +193,8 @@ const quietFocusStyle = () =>
         outlineColor: C.accent,
         outlineOffset: -2,
       };
-const quietHoverStyle = () => ({ backgroundColor: C.card });
-const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
+export const quietHoverStyle = () => ({ backgroundColor: C.card });
+export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
   label: string;
@@ -237,14 +242,14 @@ export function Disclosure(props: {
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
-  const icon = () => (platform.isTerminal ? undefined : props.icon);
+  const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
   return (
     <View
       style={{
         flexDirection: 'row',
         alignItems: 'center',
         minWidth: 0,
-        marginHorizontal: platform.isTerminal ? 0 : -8,
+        marginHorizontal: platform.idiom === 'terminal' ? 0 : -8,
       }}
     >
       <Button
@@ -275,7 +280,7 @@ export function Disclosure(props: {
               when={props.foldable !== false}
               else={
                 // The label stays on the text lane where there is nothing to fold.
-                <If when={!platform.isTerminal}>
+                <If when={platform.idiom !== 'terminal'}>
                   <View style={{ width: 16, height: 16 }} />
                 </If>
               }
@@ -313,15 +318,17 @@ export function SidebarToggle(props: { expanded: boolean; toggle(): void }) {
       tooltip={textTooltip(label)}
       selected={props.expanded}
       style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-      hoverStyle={platform.isTerminal ? { backgroundColor: C.surface } : controlHoverStyle()}
-      focusStyle={platform.isTerminal ? { backgroundColor: C.raised } : quietFocusStyle()}
+      hoverStyle={
+        platform.idiom === 'terminal' ? { backgroundColor: C.surface } : controlHoverStyle()
+      }
+      focusStyle={platform.idiom === 'terminal' ? { backgroundColor: C.raised } : quietFocusStyle()}
     >
       <View
         accessibilityElementsHidden
         style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
       >
         <View class="group-hover/sidebar-toggle:opacity-0">
-          <Icon name="sidebar" color={platform.isTerminal ? C.secondary : C.muted} />
+          <Icon name="sidebar" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
         </View>
         <View
           class="opacity-0 group-hover/sidebar-toggle:opacity-100"
@@ -329,7 +336,7 @@ export function SidebarToggle(props: { expanded: boolean; toggle(): void }) {
         >
           <Icon
             name={props.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
-            color={platform.isTerminal ? C.secondary : C.muted}
+            color={platform.idiom === 'terminal' ? C.secondary : C.muted}
           />
         </View>
       </View>
@@ -387,7 +394,7 @@ export function Header(props: {
   actions?: JSX.Element;
   views?: JSX.Element;
 }) {
-  const desktop = !platform.isTerminal;
+  const desktop = platform.idiom !== 'terminal';
   const workspaceName = () => {
     const path = props.workspace;
     if (!path) return tr('Files');

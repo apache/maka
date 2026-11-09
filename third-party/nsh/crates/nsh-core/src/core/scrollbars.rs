@@ -182,6 +182,8 @@ impl<M: TextEngine> Core<M> {
         }
         self.decorated.retain(|&k| k != key);
         self.sticky_changed |= !input;
+        // Its component disposes its owners: in the runtime it was made in.
+        let _entered = self.components.runtime.enter();
         self.release_instance(id);
         let _ = self.release(id);
     }

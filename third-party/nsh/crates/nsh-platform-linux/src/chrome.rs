@@ -1,5 +1,7 @@
-//! The window's chrome (`nsh/desktop`): its title, the hidden title bar,
-//! drag regions, full screen, the menu bar and context menus.
+//! The main window's chrome (`nsh/desktop`): the hidden title bar, drag
+//! regions (in every window of the app), full screen, the menu bar and
+//! context menus; its other attributes and requests are
+//! [`crate::window`]'s.
 //!
 //! - **Hidden title bar** ([`TitleBarStyle::Hidden`]): the window's header
 //!   is hidden, which keeps GTK's client-side decorations (shadows, resize
@@ -15,10 +17,12 @@
 //!   window again when it gains or loses a title bar of its own: everything
 //!   here is idempotent and applied again when the root is realized.
 //! - **Drag regions**: a primary press on a view marked `windowDrag`
-//!   ([`crate::input::window_drag`]) moves the window
+//!   ([`crate::input::window_drag`]) moves the window it is in (not one
+//!   whose `movable` is false)
 //!   (`gdk::Toplevel::begin_move`); a double press does what
 //!   `gtk-titlebar-double-click` says (maximize by default); a secondary
-//!   press opens the window menu. Such presses never reach the app.
+//!   press opens the window menu. A single click without dragging reaches
+//!   the app on release, so overlays can close.
 //! - **Menus** are `gio::Menu` models: separators split sections, each
 //!   item is an action of a group inserted on the window (`nsh.item-N`;
 //!   checkable items are stateful boolean actions, so the menu shows the
@@ -38,8 +42,11 @@ use std::{
 
 use gtk4::{self as gtk, gdk, gio, glib, prelude::*};
 use nsh_core::{
-    EventKind, EventPayload, PayloadValue, ROOT_ID,
-    desktop::{DesktopCommand, Key, MenuItem, MenuRole, Shortcut, TitleBarStyle},
+    EventKind, EventPayload, ImageSource, PayloadValue, ROOT_ID,
+    desktop::{
+        CloseReason, DesktopCommand, Key, MenuItem, MenuRole, Shortcut, TitleBarOptions,
+        TitleBarStyle,
+    },
     geometry::{Edges, Points},
 };
 
@@ -55,7 +62,7 @@ const MARGIN: i32 = 6;
 #[derive(Default)]
 pub(crate) struct Chrome {
     style: Cell<TitleBarStyle>,
-    /// The app's title bar's height (`Window.setTitleBar`'s).
+    /// The app's title bar's height (its `titleBar` attribute's).
     height: Cell<Option<f32>>,
     /// The `AppView`'s overlay (the window buttons go in it) and the box
     /// above it that holds the menu bar.
@@ -123,7 +130,8 @@ fn apply(surface: &Rc<Surface>) {
     install_menu(surface, &window);
 }
 
-/// Follows the window's full screen state.
+/// Follows the window's full screen state, and its state for the app
+/// ([`crate::window::watch_main`]).
 fn watch(surface: &Rc<Surface>, window: &gtk::Window) {
     let c = &surface.chrome;
     if c.watched.borrow().upgrade().as_ref() == Some(window) {
@@ -135,8 +143,10 @@ fn watch(surface: &Rc<Surface>, window: &gtk::Window) {
         if let Some(surface) = weak.upgrade() {
             update_area(&surface);
             show_menu_bar(&surface);
+            crate::window::main_state_changed(&surface);
         }
     });
+    crate::window::watch_main(surface, window);
 }
 
 // --- Commands ---------------------------------------------------------------------------
@@ -145,19 +155,10 @@ fn watch(surface: &Rc<Surface>, window: &gtk::Window) {
 pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
     let c = &surface.chrome;
     match command {
-        DesktopCommand::SetTitleBar { style, height } => {
-            let height = height.map(|h| h.0);
-            let resized = c.height.replace(height) != height;
-            if resized && c.style.get() == *style {
-                update_area(surface);
-            }
-            if c.style.replace(*style) != *style
-                && let Some(window) = window(surface)
-            {
-                apply_title_bar(surface, &window);
-                show_menu_bar(surface);
-            }
+        DesktopCommand::SetAttributes(attributes) => {
+            crate::window::main_attributes(surface, attributes)
         }
+        DesktopCommand::Request(request) => crate::window::main_request(surface, request),
         DesktopCommand::SetMenu(menu) => {
             *c.menu.borrow_mut() = menu.clone();
             if let Some(window) = window(surface) {
@@ -167,67 +168,54 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         DesktopCommand::PopupMenu { items, at } => {
             popup(surface, items, at.map(|p| (p.x.0, p.y.0)))
         }
-        DesktopCommand::SetTitle(title) => {
-            if let Some(window) = window(surface) {
-                window.set_title(Some(title));
-            }
+        DesktopCommand::Quit => {
+            crate::app::quit();
         }
-        DesktopCommand::Minimize => {
-            if let Some(window) = window(surface) {
-                window.minimize();
-            }
-        }
-        DesktopCommand::ToggleMaximize => toggle_maximize(surface),
-        DesktopCommand::ToggleFullScreen => toggle_fullscreen(surface),
-        DesktopCommand::SetFrame(frame) => {
-            // Merge with the requested size: GTK applies it asynchronously,
-            // so the allocation may still reflect an earlier frame.
-            if (frame.width.is_some() || frame.height.is_some())
-                && let Some(window) = window(surface)
-            {
-                let (width, height) = window.default_size();
-                window.set_default_size(
-                    frame.width.map_or(width, |v| v.0.round() as i32),
-                    frame.height.map_or(height, |v| v.0.round() as i32),
-                );
-            }
-        }
-        // GTK 4 has no window levels.
-        DesktopCommand::SetLevel(_) => {}
-        DesktopCommand::OrderFront => {
-            if let Some(window) = window(surface) {
-                window.present();
-            }
-        }
-        DesktopCommand::Close => close(surface),
+        // Quits as above, then the runner starts the app again.
+        DesktopCommand::Restart => crate::app::restart(),
+        // Addressed to a dialog root ([`crate::window`]).
+        DesktopCommand::OpenWindow(_) => {}
         // GTK's menu bar always shows.
         DesktopCommand::SetMenuBar(_) => {}
-    }
-}
-
-fn toggle_maximize(surface: &Surface) {
-    if let Some(window) = window(surface) {
-        if window.is_maximized() {
-            window.unmaximize();
-        } else {
-            window.maximize();
+        DesktopCommand::SetTray(tray) => crate::tray::set(surface, tray.as_ref()),
+        DesktopCommand::RegisterGlobalShortcut { id, shortcut } => {
+            crate::global_shortcut::register(surface, *id, *shortcut)
+        }
+        DesktopCommand::UnregisterGlobalShortcut(id) => {
+            crate::global_shortcut::unregister(surface, *id)
         }
     }
 }
 
-fn toggle_fullscreen(surface: &Surface) {
-    if let Some(window) = window(surface) {
-        if window.is_fullscreen() {
-            window.unfullscreen();
-        } else {
-            window.fullscreen();
-        }
+/// The main window's title bar (its `titleBar` attribute).
+pub(crate) fn set_title_bar(surface: &Rc<Surface>, options: &TitleBarOptions) {
+    let c = &surface.chrome;
+    let style = options.style;
+    let height = options.height.map(|h| h.0);
+    let resized = c.height.replace(height) != height;
+    if resized && c.style.get() == style {
+        update_area(surface);
+    }
+    if c.style.replace(style) != style
+        && let Some(window) = window(surface)
+    {
+        apply_title_bar(surface, &window);
+        show_menu_bar(surface);
+    }
+}
+
+/// Maximizes `window`, or restores it when it is maximized.
+fn toggle_maximize(window: &gtk::Window) {
+    if window.is_maximized() {
+        window.unmaximize();
+    } else {
+        window.maximize();
     }
 }
 
 /// Closes the window: not while the surface applies a batch (closing
 /// destroys the window, whose handler stops the surface).
-fn close(surface: &Surface) {
+pub(crate) fn close(surface: &Surface) {
     if let Some(window) = window(surface) {
         glib::idle_add_local_once(move || window.close());
     }
@@ -324,7 +312,7 @@ fn hide_header(surface: &Surface, window: &gtk::Window) {
 /// what `gtk_window_set_titlebar` does then (unrealize, set, map again if
 /// it was mapped), without the warning it prints on every launch and
 /// toggle.
-fn set_titlebar(window: &gtk::Window, titlebar: Option<&gtk::Widget>) {
+pub(crate) fn set_titlebar(window: &gtk::Window, titlebar: Option<&gtk::Widget>) {
     let widget = window.upcast_ref::<gtk::Widget>();
     let mapped = widget.is_mapped();
     if widget.is_realized() {
@@ -405,8 +393,8 @@ fn update_area(surface: &Surface) {
     }
 }
 
-/// A button press at `(x, y)` (root coordinates): true when it was on a
-/// view that drags the window, which handled it.
+/// Handles a drag region's window menu or double click. A single primary
+/// press waits in input routing until it becomes a click or native drag.
 pub(crate) fn press(surface: &Surface, event: &gdk::Event, x: f32, y: f32) -> bool {
     let Some(button_event) = event.downcast_ref::<gdk::ButtonEvent>() else {
         return false;
@@ -417,7 +405,8 @@ pub(crate) fn press(surface: &Surface, event: &gdk::Event, x: f32, y: f32) -> bo
     {
         return false;
     }
-    let Some(window) = window(surface) else {
+    // The window the press is in: the main one or one of the app's own.
+    let Some(window) = crate::input::event_window(surface) else {
         return false;
     };
     let Some(toplevel) = window.surface().and_downcast::<gdk::Toplevel>() else {
@@ -446,21 +435,41 @@ pub(crate) fn press(surface: &Surface, event: &gdk::Event, x: f32, y: f32) -> bo
         let action = settings
             .and_then(|s| s.gtk_titlebar_double_click())
             .map(|a| a.to_string());
+        let allowed = crate::window::allowed(surface, &window);
         match action.as_deref().unwrap_or("toggle-maximize") {
-            "minimize" => window.minimize(),
-            "none" | "lower" => {}
+            "minimize" if allowed.minimizable => window.minimize(),
+            "none" | "lower" | "minimize" => {}
             "menu" => {
                 let _ = toplevel.show_window_menu(event);
             }
-            _ => toggle_maximize(surface),
+            _ if allowed.maximizable => toggle_maximize(&window),
+            _ => {}
         }
         return true;
     }
     c.last_press.set(Some((time, sx, sy)));
-    if let Some(device) = event.device() {
-        toplevel.begin_move(&device, button as i32, sx, sy, time);
+    false
+}
+
+/// Starts native movement once a draggable background press crosses GTK's threshold.
+pub(crate) fn begin_move(surface: &Surface, event: &gdk::Event) {
+    let Some(window) = crate::input::event_window(surface) else {
+        return;
+    };
+    surface.chrome.last_press.set(None);
+    if !crate::window::allowed(surface, &window).movable {
+        return;
     }
-    true
+    let Some(toplevel) = window.surface().and_downcast::<gdk::Toplevel>() else {
+        return;
+    };
+    let Some((sx, sy)) = event.position() else {
+        return;
+    };
+    surface.chrome.last_press.set(None);
+    if let Some(device) = event.device() {
+        toplevel.begin_move(&device, gdk::BUTTON_PRIMARY as i32, sx, sy, event.time());
+    }
 }
 
 // --- Menus ------------------------------------------------------------------------------
@@ -474,7 +483,7 @@ fn unsupported(role: Option<MenuRole>) -> bool {
 }
 
 /// The shortcut as a GTK accelerator (`<Control><Shift>n`).
-fn accelerator(shortcut: &Shortcut) -> Option<String> {
+pub(crate) fn accelerator(shortcut: &Shortcut) -> Option<String> {
     let mut out = String::new();
     for (on, name) in [
         (shortcut.ctrl, "<Control>"),
@@ -547,6 +556,20 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
+    /// Sets `item`'s `icon` attribute. GTK shows none today: `GtkModelButton`
+    /// shows its image only without text or in an iconic section
+    /// (`update_visibility`: `has_icon && (iconic || !has_text)`). The
+    /// attribute keeps the model complete for a change there, or for the
+    /// custom rows that would show it.
+    fn set_icon(&self, item: &gio::MenuItem, icon: Option<&ImageSource>) {
+        let surface = self.surface.upgrade();
+        if let (Some(surface), Some(icon)) = (surface, icon)
+            && let Some(icon) = crate::image::menu_icon(&surface, icon)
+        {
+            item.set_icon(&icon);
+        }
+    }
+
     fn menu(&mut self, items: &[MenuItem]) -> gio::Menu {
         let menu = gio::Menu::new();
         let mut section = gio::Menu::new();
@@ -562,9 +585,11 @@ impl Builder<'_> {
                     label,
                     enabled,
                     items,
+                    icon,
                 } => {
                     let sub = self.menu(items);
                     let item = gio::MenuItem::new_submenu(Some(&label.replace('_', "__")), &sub);
+                    self.set_icon(&item, icon.as_ref());
                     if !enabled {
                         // A submenu opens while its `submenu-action` is
                         // enabled.
@@ -603,6 +628,7 @@ impl Builder<'_> {
                     };
                     let detailed = format!("{}.{name}", self.prefix);
                     let item = gio::MenuItem::new(Some(&label.replace('_', "__")), Some(&detailed));
+                    self.set_icon(&item, a.icon.as_ref());
                     if let Some(accel) = a.shortcut.as_ref().and_then(accelerator) {
                         item.set_attribute_value("accel", Some(&accel.to_variant()));
                         // The editing roles' keys stay the text field's.
@@ -755,7 +781,10 @@ pub(crate) fn close_open_menu(surface: &Surface) -> Result<(), String> {
 }
 
 fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
-    let Some(window) = window(surface) else {
+    // In the window the user acted in last (one of the app's own or the
+    // main one), at a point of its content.
+    let root = crate::input::event_root(surface);
+    let Some(window) = root.root().and_downcast::<gtk::Window>() else {
         return;
     };
     let group = gio::SimpleActionGroup::new();
@@ -776,7 +805,7 @@ fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
     {
         *surface.chrome.open_popup.borrow_mut() = Some((items.into(), menu.clone()));
     }
-    menu.set_parent(&surface.root);
+    menu.set_parent(&root);
     menu.set_has_arrow(false);
     menu.set_halign(gtk::Align::Start);
     menu.set_position(gtk::PositionType::Bottom);
@@ -808,16 +837,34 @@ fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
 
 /// An item was chosen: the platform carries out its role, the app hears
 /// about the rest.
-fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>) {
+pub(crate) fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>) {
     match role {
-        Some(MenuRole::Quit | MenuRole::Close) => close(surface),
+        Some(MenuRole::Quit) if crate::app::quit() => {}
+        // A view embedded in another app closes its window, as before.
+        Some(MenuRole::Quit) => close(surface),
+        // As the user closing it from a menu (`closeOnPress` applies).
+        Some(MenuRole::Close) => {
+            if let Some(window) = window(surface) {
+                glib::idle_add_local_once(move || {
+                    crate::window::press_close(&window, CloseReason::Menu)
+                });
+            }
+        }
         Some(MenuRole::Minimize) => {
             if let Some(window) = window(surface) {
                 window.minimize();
             }
         }
-        Some(MenuRole::Zoom) => toggle_maximize(surface),
-        Some(MenuRole::ToggleFullScreen) => toggle_fullscreen(surface),
+        Some(MenuRole::Zoom) => {
+            if let Some(window) = window(surface) {
+                toggle_maximize(&window);
+            }
+        }
+        Some(MenuRole::ToggleFullScreen) => {
+            if let Some(window) = window(surface) {
+                window.set_fullscreened(!window.is_fullscreen());
+            }
+        }
         Some(role) if role.edits_text() => {
             let name = match role {
                 MenuRole::Undo => "text.undo",

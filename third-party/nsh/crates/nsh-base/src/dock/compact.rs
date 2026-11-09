@@ -221,15 +221,30 @@ fn drawer(a: AreaCx, placement: DockPlacement) -> AnyElement {
                 .bind_translate_x(&motion.x)
                 .bind_translate_y(&motion.y)
                 .on_layout(move |frame: &Bounds<Points>| motion.laid_out(frame.size))
-                .on_cancel(close)
-                .child(dynamic(move || {
-                    let info = info.get()?;
-                    a.props
-                        .render_dock
-                        .get()
-                        .map(|r| r.render(dock_key(placement), info))
-                }))
-                .child(view().flex_1().min_h(px(0.0)).child(region(a, placement)));
+                .on_cancel(close);
+            let header = dynamic(move || {
+                let info = info.get()?;
+                a.props
+                    .render_dock
+                    .get()
+                    .map(|r| r.render(dock_key(placement), info))
+            });
+            let content = view().flex_1().min_h(px(0.0)).child(region(a, placement));
+            // A terminal sizes a box that holds content by its content
+            // (`docs/dev/styles.md` "Layout in a terminal"), which would
+            // leave a dock's list no rows: there the drawer's content is
+            // one layer filling it, so its size is the drawer's own.
+            let panel = match crate::terminal::is_terminal() {
+                true => panel.child(
+                    view()
+                        .absolute()
+                        .inset_0()
+                        .flex_col()
+                        .child(header)
+                        .child(content),
+                ),
+                false => panel.child(header).child(content),
+            };
             // Out of view while closed, and placed: hidden around the
             // overlays, which are then not shown (nor take Escape).
             view()

@@ -1,44 +1,31 @@
-import { cleanup, mount, signal, Text, View } from "nsh";
-import { reduceMotion } from "nsh";
+import { mount, signal, Text, View } from "nsh";
 import { Button, Progress, Switch } from "nsh/base";
-import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
+import { button, buttonText, desktop, Log, Panel, progressLook, progressSweep, Split, switchLook, ui, controlSize, listRow, plainRow, RowLabel, sectionSurface, type ProgressSweep } from "./palette";
 
-// The parts: geometry and motion in classes, colors from the palette. The
-// label row comes first (`flex-col-reverse`: the children follow the track),
-// its value tabular and at the trailing edge. An indeterminate indicator is a
-// third of the track that sweeps from end to end (the app flips its
-// translation, a transition moves it), and rests in the middle with reduced
-// motion. A determinate one is the whole track, slid back by what is left to
-// do, so a new value glides there (the track clips it). The pointer's hover
-// and the keyboard's focus ring come from the palette. Buttons are as wide as
-// their labels with a pointer.
-const pad = desktop ? "px-3 py-3" : "px-4 py-4";
-const track = "h-1.5 overflow-hidden rounded-full";
-const SWEEP = 800;
-const indicator = (indeterminate: boolean, end: boolean) =>
-  !indeterminate
-    ? "h-full w-full rounded-full transition-transform duration-180 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none"
-    : reduceMotion()
-      ? "h-full w-1/3 rounded-full translate-x-full"
-      : `h-full w-1/3 rounded-full transition-transform duration-700 ease-in-out ${end ? "translate-x-[200%]" : "translate-x-0"}`;
+// The parts come from the shared look (`progressLook`): the slider's sunk
+// rail and its citrus fill, which glides to each new value (the whole track,
+// slid back by what is left to do; the track clips it). An indeterminate bar
+// is a third of the track sweeping from end to end and back, looped natively
+// (`progressSweep`), and rests in the middle with reduced motion. The label
+// row comes first (`column-reverse`: the children follow the track), its
+// value tabular and at the trailing edge. The rows and the switch's row are
+// the shared ones (`plainRow`, `listRow`). Buttons are as wide as their
+// labels with a pointer.
 
-function Transfer(props: { label: string; detail: string; value: number; indeterminate?: boolean; end: boolean }) {
+function Transfer(props: { label: string; detail: string; value: number; indeterminate?: boolean; sweep: ProgressSweep; first?: boolean }) {
   return (
+    // A row has no padding at its sides, so the bar's width is the track's:
+    // the sweep crosses two thirds of it.
     <Progress
       value={props.value}
       indeterminate={props.indeterminate}
-      class={`flex-col-reverse gap-2 ${pad}`}
-      trackClass={track}
-      trackStyle={ui().inset}
-      indicatorClass={indicator(!!props.indeterminate, props.end)}
-      indicatorStyle={{ backgroundColor: ui().accent, translate: props.indeterminate ? undefined : `${props.value - 100}% 0` }}
+      onLayout={props.sweep.onLayout}
+      style={{ ...plainRow({ first: props.first }), flexDirection: "column-reverse", alignItems: "stretch", gap: controlSize.padding }}
+      {...progressLook(() => props.value, { indeterminate: () => props.indeterminate, sweep: props.sweep })}
     >
-      <View class="flex-row items-baseline gap-3">
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={{ fontSize: size.label, fontWeight: "500", color: ui().text }}>{props.label}</Text>
-          <Text style={{ fontSize: size.detail, color: ui().muted }}>{props.detail}</Text>
-        </View>
-        <Text style={{ fontSize: size.label, color: ui().muted, fontVariant: ["tabular-nums"], textAlign: "right" }}>
+      <View class="flex-row items-center gap-3">
+        <RowLabel label={props.label} detail={props.detail} />
+        <Text style={{ fontSize: controlSize.label, color: ui().muted, fontVariant: ["tabular-nums"], textAlign: "right" }}>
           {props.indeterminate ? "—" : `${Math.round(props.value)}%`}
         </Text>
       </View>
@@ -51,7 +38,7 @@ function Action(props: { label: string; disabled?: boolean; onPress: () => void 
     <Button
       onPress={props.onPress}
       disabled={props.disabled}
-      {...button("secondary", { style: desktop ? {} : { flex: 1 } })}
+      {...button("secondary", { disabled: () => !!props.disabled, style: desktop ? {} : { flex: 1 } })}
     >
       <Text style={buttonText()}>{props.label}</Text>
     </Button>
@@ -64,12 +51,8 @@ function App() {
   const unknown = signal(false);
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 5));
-  // The sweep of the indeterminate bars: still with reduced motion.
-  const end = signal(false);
-  const sweep = setInterval(() => {
-    if (!reduceMotion()) end.set(!end());
-  }, SWEEP);
-  cleanup(() => clearInterval(sweep));
+  // The sweep of the indeterminate bars, one for all three.
+  const sweep = progressSweep();
   let timer: ReturnType<typeof setInterval> | undefined;
   const stop = () => {
     if (timer !== undefined) clearInterval(timer);
@@ -88,7 +71,6 @@ function App() {
       }
     }, 200);
   };
-  const line = () => <View style={{ height: 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} />;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>progress</Text>
@@ -121,33 +103,27 @@ function App() {
                   if (checked) stop();
                   log(checked ? "Size unknown: indeterminate" : "Size known: value " + sent());
                 }}
-                class={`-mx-2 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`}
-                hoverStyle={hoverFill()}
-                focusStyle={focusRing()}
-                trackClass={`${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`}
-                trackStyle={unknown() ? ui().accentFill : ui().inset}
-                thumbClass={desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5"}
-                thumbStyle={unknown() ? { backgroundColor: ui().onAccent } : ui().raised}
+                {...listRow({ first: true, style: { flexDirection: "row-reverse" } })}
+                {...switchLook(() => unknown())}
               >
-                <Text style={{ flex: 1, fontSize: size.label, color: ui().text }}>Size unknown</Text>
+                <RowLabel label="Size unknown" />
               </Switch>
             </Panel>
             <Log title="events" lines={events()} minHeight={92} />
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, overflow: "hidden" }}>
+        <View style={sectionSurface({ padded: true })}>
           <Transfer
+            first
             label="Sending 24 photos"
             detail={unknown() ? "Counting what to send" : sent() >= 100 ? "Sent" : `${Math.round((sent() / 100) * 24)} of 24`}
             value={sent()}
             indeterminate={unknown()}
-            end={end()}
+            sweep={sweep}
           />
-          {line()}
-          <Transfer label="Preparing the backup" detail="Its size is not known yet" value={0} indeterminate end={end()} />
-          {line()}
-          <Transfer label="Library" detail="212 GB of 256 GB" value={83} end={end()} />
+          <Transfer label="Preparing the backup" detail="Its size is not known yet" value={0} indeterminate sweep={sweep} />
+          <Transfer label="Library" detail="212 GB of 256 GB" value={83} sweep={sweep} />
         </View>
       </Split>
     </View>

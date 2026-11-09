@@ -242,13 +242,7 @@ impl Matrix {
         let mut out = [0.0; 16];
         for r in 0..4 {
             for c in 0..4 {
-                // Preserve Sum's seed and left-to-right order without the fixed-size iterator chain.
-                let mut dot = -0.0;
-                dot += a[r * 4] * b[c];
-                dot += a[r * 4 + 1] * b[4 + c];
-                dot += a[r * 4 + 2] * b[8 + c];
-                dot += a[r * 4 + 3] * b[12 + c];
-                out[r * 4 + c] = dot;
+                out[r * 4 + c] = (0..4).map(|k| a[r * 4 + k] * b[k * 4 + c]).sum();
             }
         }
         Matrix(out)
@@ -665,38 +659,6 @@ mod tests {
             (x * a[0] + y * a[4] + a[12]) / w,
             (x * a[1] + y * a[5] + a[13]) / w,
         )
-    }
-
-    #[test]
-    fn matrix_product_preserves_ordered_ieee_sum() {
-        let a = Matrix([
-            -0.0,
-            -0.0,
-            -0.0,
-            -0.0,
-            1e16,
-            1.0,
-            -1e16,
-            1.0,
-            f64::INFINITY,
-            1.0,
-            1.0,
-            1.0,
-            2.0,
-            3.0,
-            4.0,
-            5.0,
-        ]);
-        let b = Matrix([
-            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-        ]);
-        let result = a.mul(&b);
-        // These distinguish the negative-zero seed, cancellation order and non-finite products.
-        assert_eq!(result.0[0].to_bits(), 0x8000_0000_0000_0000);
-        assert_eq!(result.0[4], 1.0);
-        assert_eq!(result.0[8], f64::INFINITY);
-        assert!(result.0[9].is_nan());
-        assert_eq!(result.0[12], 14.0);
     }
 
     #[test]

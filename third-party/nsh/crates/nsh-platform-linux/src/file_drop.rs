@@ -58,20 +58,15 @@ fn destination_changed(surface: &Rc<Surface>, id: NodeId, enabled: bool) {
         None => {}
     }
     if !enabled {
-        invalidate(surface, id);
-    }
-}
-
-/// Ends the old destination's drag state without disabling future drops.
-pub(crate) fn invalidate(surface: &Surface, id: NodeId) {
-    let matches = surface
-        .file_drop
-        .target
-        .borrow()
-        .as_ref()
-        .is_some_and(|view| view.id() == id);
-    if matches {
-        set_target(surface, None);
+        let matches = surface
+            .file_drop
+            .target
+            .borrow()
+            .as_ref()
+            .is_some_and(|view| view.id() == id);
+        if matches {
+            set_target(surface, None);
+        }
     }
 }
 
@@ -117,6 +112,10 @@ fn install(surface: &Rc<Surface>) {
 }
 
 fn update(surface: &Surface, x: f64, y: f64) -> gdk::DragAction {
+    if surface.input_paused.get() {
+        set_target(surface, None);
+        return gdk::DragAction::empty();
+    }
     let target = input::file_drop_target(surface, x as f32, y as f32);
     let action = if target.is_some() {
         gdk::DragAction::COPY
@@ -162,6 +161,10 @@ pub(crate) fn reset(surface: &Surface) {
 /// listens, as a drop from a file manager does: whether one took them. The
 /// test agent's `dropFiles` comes here too.
 pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) -> bool {
+    if surface.input_paused.get() {
+        set_target(surface, None);
+        return false;
+    }
     let Some(destination) = input::file_drop_target(surface, x, y) else {
         set_target(surface, None);
         return false;

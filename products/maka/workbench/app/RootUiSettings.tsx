@@ -78,11 +78,11 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
               accessibilityLabel={tr('Choose interface')}
               disabled={owner.disabled()}
               style={{
-                minHeight: platform.isTerminal ? 16 : 28,
-                paddingLeft: platform.isTerminal ? 0 : 10,
-                paddingRight: platform.isTerminal ? 0 : 6,
+                minHeight: platform.idiom === 'terminal' ? 16 : 28,
+                paddingLeft: platform.idiom === 'terminal' ? 0 : 10,
+                paddingRight: platform.idiom === 'terminal' ? 0 : 6,
                 borderRadius: 8,
-                backgroundColor: platform.isTerminal ? undefined : C.raised,
+                backgroundColor: platform.idiom === 'terminal' ? undefined : C.raised,
                 flexDirection: 'row',
                 gap: 6,
                 alignItems: 'center',

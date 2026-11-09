@@ -1,18 +1,29 @@
 import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
 import { windowSize } from "nsh";
-import { button, buttonText, ui } from "./palette";
+import { Button, Toggle } from "nsh/base";
+import { button, buttonText, toggleLabel, toggleLook, ui } from "./palette";
 
 // A short CC0 clip from MDN's examples.
 const FLOWER = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 
-function Toggle(props: { label: string; on: boolean; onPress: () => void }) {
+/** The look of a video option: a small toggle with a label, on a field's edge while off. */
+const option = { size: "small", variant: "outline", text: true } as const;
+
+/** A video option that is on or off: a `Toggle`, the on fill while on. */
+function Option(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
-    <View
-      onPress={props.onPress}
-      {...button("secondary", { on: () => props.on, size: "sm" })}
-    >
-      <Text style={buttonText("secondary", { on: () => props.on })}>{props.label}</Text>
-    </View>
+    <Toggle pressed={props.on} onChange={({ pressed }) => props.onChange(pressed)} {...toggleLook(option)}>
+      <Text style={toggleLabel(() => props.on, option)}>{props.label}</Text>
+    </Toggle>
+  );
+}
+
+/** A command to the video (play or pause, seek): a `Button`. */
+function Action(props: { label: string; onPress: () => void }) {
+  return (
+    <Button onPress={props.onPress} {...button("secondary", { size: "sm" })}>
+      <Text style={buttonText("secondary", { size: "sm" })}>{props.label}</Text>
+    </Button>
   );
 }
 
@@ -69,13 +80,17 @@ function App() {
           <Text style={{ color: ui().muted, fontFamily: "monospace", fontSize: 13 }}>
             {status()} · onEnd {ends()}×
           </Text>
+          {/* The commands, then the options: a raised button and an option
+              that is on are both filled, so each kind keeps a row of its own. */}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            <Toggle label={paused() ? "Play" : "Pause"} on={!paused()} onPress={() => paused.set(!paused())} />
-            <Toggle label="muted" on={muted()} onPress={() => muted.set(!muted())} />
-            <Toggle label="repeat" on={repeat()} onPress={() => repeat.set(!repeat())} />
-            <Toggle label="rate 2" on={fast()} onPress={() => fast.set(!fast())} />
-            <Toggle label="controls" on={controls()} onPress={() => controls.set(!controls())} />
-            <Toggle label="seek(0)" on={false} onPress={() => video.seek(0)} />
+            <Action label={paused() ? "Play" : "Pause"} onPress={() => paused.set(!paused())} />
+            <Action label="seek(0)" onPress={() => video.seek(0)} />
+          </View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            <Option label="muted" on={muted()} onChange={(on) => muted.set(on)} />
+            <Option label="repeat" on={repeat()} onChange={(on) => repeat.set(on)} />
+            <Option label="rate 2" on={fast()} onChange={(on) => fast.set(on)} />
+            <Option label="controls" on={controls()} onChange={(on) => controls.set(on)} />
           </View>
         </View>
       </View>

@@ -28,7 +28,7 @@
 use std::cell::{Cell, RefCell};
 
 use nsh_core::{
-    AttributedText, Bounds, Color, Point, Points,
+    AttributedText, Bounds, Color, EventKind, EventPayload, NodeId, PayloadValue, Point, Points,
     geometry::{bounds, point, px, size},
     selection::{
         Handle, KeptRows, SelectionModel, SelectionTexts, TextPosition, reading_order, reorder,
@@ -74,6 +74,8 @@ struct Entry {
     text: std::sync::Arc<AttributedText>,
     /// The content box, in the area's coordinates.
     frame: Bounds<Points>,
+    /// It continues the text before it (`ViewProps::continues_text`).
+    continues: bool,
 }
 
 /// The texts of an area as the model sees them.
@@ -117,6 +119,10 @@ impl SelectionTexts for AreaTexts {
         // The text's node id.
         self.entries[i].view.tag() as u64
     }
+
+    fn continues(&self, i: usize) -> bool {
+        self.entries[i].continues
+    }
 }
 
 impl AreaTexts {
@@ -151,6 +157,7 @@ impl AreaTexts {
                     };
                     let r = text.convertRect_toView(rect, Some(area));
                     out.push(Entry {
+                        continues: text.continues_text(),
                         view: text.retain(),
                         text: content,
                         frame: bounds(
@@ -260,6 +267,12 @@ pub(crate) struct AreaIvars {
     edit_menu: RefCell<Option<Retained<AnyObject>>>,
     /// The interaction's menu shows (its delegate hears).
     menu_shown: Cell<bool>,
+    /// The area's node id.
+    id: Cell<NodeId>,
+    /// JS listens to the area's `onSelectionChange`.
+    listens: Cell<bool>,
+    /// The selected text last reported to `onSelectionChange`.
+    reported: RefCell<String>,
 }
 
 define_class!(
@@ -549,9 +562,13 @@ impl AreaResponder {
         area: &UIView,
         mtm: MainThreadMarker,
         control: EngineControl,
+        id: NodeId,
+        listens: bool,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AreaIvars {
             control: RefCell::new(Some(control)),
+            id: Cell::new(id),
+            listens: Cell::new(listens),
             ..AreaIvars::default()
         });
         // SAFETY: UIView's designated initializer.
@@ -607,6 +624,18 @@ impl AreaResponder {
         area.setUserInteractionEnabled(true);
         update_texts(area);
         this
+    }
+
+    /// Whether JS listens to the area's `onSelectionChange`.
+    pub(crate) fn set_listens(&self, listens: bool) {
+        self.ivars().listens.set(listens);
+    }
+
+    /// The area's view is deleted: [`Self::detach`] without reporting the
+    /// cleared selection to a view that is gone.
+    pub(crate) fn delete(&self) {
+        self.ivars().listens.set(false);
+        self.detach();
     }
 
     /// The area is no longer one: its gestures, handles and highlight go.
@@ -825,6 +854,40 @@ impl AreaResponder {
         }
         *self.ivars().highlighted.borrow_mut() = now;
         self.place_handles();
+        self.report();
+    }
+
+    /// Reports the selected text (`""` once nothing is) to the area's
+    /// `onSelectionChange` when it changed and JS listens.
+    fn report(&self) {
+        if !self.ivars().listens.get() {
+            return;
+        }
+        let (text, start) = {
+            let model = self.ivars().model.borrow();
+            if model.is_empty() {
+                (String::new(), 0)
+            } else {
+                let texts = self.ivars().texts.borrow();
+                (model.text(&*texts), model.start_offset(&*texts))
+            }
+        };
+        if *self.ivars().reported.borrow() == text {
+            return;
+        }
+        *self.ivars().reported.borrow_mut() = text.clone();
+        // Not borrowed while the handler runs: it may detach the area.
+        let control = self.ivars().control.borrow().clone();
+        if let Some(control) = control {
+            control.dispatch_event(
+                self.ivars().id.get(),
+                EventKind::SelectionChange,
+                EventPayload::Map(vec![
+                    ("text", PayloadValue::Str(text)),
+                    ("start", PayloadValue::Number(f64::from(start))),
+                ]),
+            );
+        }
     }
 
     /// Puts the handles on the ends of a touch selection (hides them

@@ -18,7 +18,6 @@
 //! mount items, the signing commands' lines).
 
 use std::{
-    collections::VecDeque,
     fmt::Display,
     io::{BufRead as _, BufReader, IsTerminal as _, Write as _},
     path::Path,
@@ -83,7 +82,7 @@ pub(crate) fn verbose() -> bool {
 
 /// Whether output is colored.
 pub(crate) fn color() -> bool {
-    term().color
+    term().color && !LOGGING.load(Ordering::Acquire)
 }
 
 /// Mirrors [`Out::drawn`] for the signal handler, which cannot lock.
@@ -350,13 +349,12 @@ pub(crate) fn duration(d: Duration) -> String {
 
 /// What is printed, and the spinner drawn below it.
 struct Out {
-    terminal_sessions: usize,
-    deferred: VecDeque<String>,
     /// Running steps; the last one is drawn.
     spinners: Vec<Spinner>,
     /// The spinner line is on screen.
     drawn: bool,
     frame: usize,
+    log: Option<std::fs::File>,
 }
 
 struct Spinner {
@@ -370,9 +368,36 @@ static OUT: Mutex<Out> = Mutex::new(Out {
     spinners: Vec::new(),
     drawn: false,
     frame: 0,
-    terminal_sessions: 0,
-    deferred: VecDeque::new(),
+    log: None,
 });
+
+static LOGGING: AtomicBool = AtomicBool::new(false);
+
+/// Routes CLI diagnostics and tool output away from the terminal until dropped.
+pub(crate) struct LogFile;
+
+impl LogFile {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let mut out = out();
+        out.clear(&mut std::io::stderr().lock());
+        out.log = Some(file);
+        LOGGING.store(true, Ordering::Release);
+        Ok(Self)
+    }
+}
+
+impl Drop for LogFile {
+    fn drop(&mut self) {
+        let mut out = out();
+        out.log = None;
+        out.spinners.clear();
+        LOGGING.store(false, Ordering::Release);
+    }
+}
 
 const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -390,7 +415,7 @@ impl Out {
     }
 
     fn draw(&mut self, err: &mut impl std::io::Write) {
-        if self.terminal_sessions > 0 {
+        if self.log.is_some() {
             return;
         }
         let Some(spinner) = self.spinners.last() else {
@@ -426,13 +451,8 @@ impl Out {
 /// Prints `text` (whole lines) above the spinner.
 fn print(text: &str) {
     let mut out = out();
-    if out.terminal_sessions > 0 {
-        // Keep diagnostics for after the child restores the screen, with
-        // bounded memory even when the app logs every animation frame.
-        out.deferred.push_back(text.chars().take(4096).collect());
-        if out.deferred.len() > 128 {
-            out.deferred.pop_front();
-        }
+    if let Some(log) = &mut out.log {
+        let _ = writeln!(log, "{text}");
         return;
     }
     let mut err = std::io::stderr().lock();
@@ -442,36 +462,6 @@ fn print(text: &str) {
         let _ = err.write_all(b"\n");
     }
     out.draw(&mut err);
-}
-
-/// Gives an interactive child exclusive access to the terminal. Parent
-/// progress and device logs are buffered until the child restores it.
-pub(crate) struct TerminalSession(());
-
-impl TerminalSession {
-    pub(crate) fn new() -> Self {
-        let mut out = out();
-        out.clear(&mut std::io::stderr().lock());
-        out.terminal_sessions += 1;
-        Self(())
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let mut out = out();
-        out.terminal_sessions -= 1;
-        if out.terminal_sessions == 0 {
-            let mut err = std::io::stderr().lock();
-            for line in out.deferred.drain(..) {
-                let _ = err.write_all(line.as_bytes());
-                if !line.ends_with('\n') {
-                    let _ = err.write_all(b"\n");
-                }
-            }
-            out.draw(&mut err);
-        }
-    }
 }
 
 /// The terminal's width, when stderr is one.
@@ -657,7 +647,7 @@ impl Step {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let start = Instant::now();
-        if term().tty && !verbose() {
+        if term().tty && !verbose() && !LOGGING.load(Ordering::Acquire) {
             spin();
             let mut out = out();
             out.spinners.push(Spinner {
@@ -794,7 +784,7 @@ pub(crate) fn capture(
     cmd: &mut Command,
     on_line: impl FnMut(&str),
 ) -> std::io::Result<(ExitStatus, String)> {
-    if verbose() {
+    if verbose() && !LOGGING.load(Ordering::Acquire) {
         return Ok((cmd.status()?, String::new()));
     }
     capture_all(cmd, on_line)
@@ -905,7 +895,7 @@ impl Tail {
 pub(crate) fn quiet(cmd: &mut Command) -> std::io::Result<(std::process::Child, Tail)> {
     const KEEP: usize = 200;
     let tail = Tail::default();
-    if verbose() {
+    if verbose() && !LOGGING.load(Ordering::Acquire) {
         return Ok((cmd.spawn()?, tail));
     }
     let (reader, writer) = std::io::pipe()?;
@@ -919,6 +909,9 @@ pub(crate) fn quiet(cmd: &mut Command) -> std::io::Result<(std::process::Child, 
         .spawn(move || {
             for line in BufReader::new(reader).lines() {
                 let Ok(line) = line else { break };
+                if verbose() {
+                    plain(&line);
+                }
                 let mut lines = lines.0.lock().unwrap_or_else(|e| e.into_inner());
                 if lines.len() == KEEP {
                     lines.pop_front();

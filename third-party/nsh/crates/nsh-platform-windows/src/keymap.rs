@@ -14,10 +14,13 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use nsh_core::{
     EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
+    keymap::{Key, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
-use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_CHAR, WM_SYSCHAR};
+use windows::Win32::UI::{
+    Input::KeyboardAndMouse::GetFocus,
+    WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_CHAR, WM_SYSCHAR},
+};
 
 use crate::{input::KeyEvent, surface::Surface};
 
@@ -37,8 +40,9 @@ pub(crate) fn clear(surface: &Surface) {
     surface.keymap.table.borrow_mut().take();
 }
 
-/// A key down: whether it fired (or, held, repeats) one of the bindings;
-/// then it is consumed.
+/// A key down: whether one of the bindings consumes it (it fired one, or,
+/// held, repeats one). A binding passing the key through fires and leaves
+/// it to the window.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     key_in_phase(surface, event, false)
 }
@@ -58,6 +62,9 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
     if cfg!(feature = "dev") && keystroke.reloads(Os::Windows) {
         return false;
     }
+    if keystroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
+        return false;
+    }
     let editing = crate::text_input::focused(surface).is_some();
     let path = surface.focus_path();
     let found = if fallback {
@@ -65,12 +72,15 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
     } else {
         table.find_with(keystroke, editing, event.repeat, |id| path.contains(&id))
     };
-    if let KeyMatch::Fire(id) = found {
+    if let Some(id) = found.fired() {
         surface.event(
             ROOT_ID,
             EventKind::KeyCommand,
             EventPayload::Value(PayloadValue::Number(id as f64)),
         );
+        if keystroke.key != Key::Escape {
+            crate::text_input::arm(surface);
+        }
     }
     if found.consumed() {
         drop_char(surface);
@@ -78,13 +88,23 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
     found.consumed()
 }
 
-/// Removes the character `TranslateMessage` queued for the consumed key.
+/// Removes the character `TranslateMessage` queued for the consumed key:
+/// in the window that has the keyboard (the main one or a window of the
+/// app's own; every window's keys go through the app's keymap).
 pub(crate) fn drop_char(surface: &Surface) {
+    // SAFETY: a plain query of this thread's focus.
+    let focus = unsafe { GetFocus() };
+    let hwnd = if focus.is_invalid() {
+        surface.hwnd()
+    } else {
+        focus
+    };
     let mut msg = MSG::default();
     for kind in [WM_CHAR, WM_SYSCHAR] {
-        // SAFETY: a plain call with a local out value, for our own window.
+        // SAFETY: a plain call with a local out value, for a window of
+        // this thread.
         unsafe {
-            let _ = PeekMessageW(&mut msg, Some(surface.hwnd()), kind, kind, PM_REMOVE);
+            let _ = PeekMessageW(&mut msg, Some(hwnd), kind, kind, PM_REMOVE);
         }
     }
 }

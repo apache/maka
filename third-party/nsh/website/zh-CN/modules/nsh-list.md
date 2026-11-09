@@ -9,7 +9,7 @@ order: 2.1
 `nsh` 导出 `List`：一个基于原生滚动视图的虚拟化列表。只有视口附近的行才真正存在，滚动时单元格会被复用。哪些行存在、它们的位置、多列布局、吸顶标题和可见性都在原生侧计算，因此滚动一个上万条目的列表时，除了单元格被复用时变化的行绑定之外，不会运行任何 JS。
 
 ```ts
-import { List, type ListProps, type ReadonlyListSource, type ViewToken, type ViewabilityConfig } from "nsh";
+import { List, type ListProps, type ViewToken, type ViewabilityConfig } from "nsh";
 ```
 
 教程见[列表](../docs/lists.md)，元素的属性见 [`<List>`](../elements/list.md)。
@@ -55,7 +55,7 @@ mount(App);
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `each` | `readonly T[] \| ReadonlyListSource<T>` | （必填） | 条目。传入 signal 的值（`each={items()}`）即可跟随变化；在可见行之上插入数组条目时，可见行保持不动。 |
+| `each` | `readonly T[]` | （必填） | 条目数组。传入 signal 的值（`each={items()}`）即可跟随变化；在可见行之上插入条目时，可见行保持不动。 |
 | `children` | `(item: () => T, index: () => number) => JSX.Element` | （必填） | 渲染一行（见上文）。 |
 | `estimatedItemSize` | `number` | `50` | 尚未测量的行沿列表方向的尺寸（点）。估计越准，滚动条和 `scrollToIndex` 越准确。 |
 | `numColumns` | `number` | `1` | 每行的条目数（纵向列表）：即网格。 |
@@ -75,19 +75,6 @@ mount(App);
 | `ref` | `ListRef \| ((node: ListRef) => void)` | | 见 [ref 方法](#ref-方法)。 |
 
 `ListSlot` 是一个组件（`Header`）或一个元素（`<Header />`）。
-
-`ReadonlyListSource<T>` 提供按索引读取的快照；条目在行渲染或报告为可见时读取：
-
-```ts
-interface ReadonlyListSource<T> {
-  readonly length: number;
-  at(index: number): T;
-}
-```
-
-`length` 是 0 到 4,294,967,295 的整数，与数组长度范围一致。`at` 接收此范围内小于 `length` 的索引，
-其接收者为 source 本身。快照的长度和内容保持固定；替换快照时传入新的 source 对象。新的 source 会替换
-整个条目范围；数组继续通过条目身份比较公共前后缀。source 可以直接从原生数据生成每个被请求的条目。
 
 ### 加载、刷新与可见性
 

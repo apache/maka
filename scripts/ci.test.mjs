@@ -97,15 +97,7 @@ function fixture() {
       [
         'maka-desktop-shell',
         'products/maka/desktop-shell',
-        [
-          'third-party/nsh/crates/nsh-platform-windows',
-          'third-party/nsh/crates/nsh-platform-macos',
-        ],
-      ],
-      [
-        'nsh-platform-macos',
-        'third-party/nsh/crates/nsh-platform-macos',
-        ['third-party/nsh/crates/nsh-core'],
+        ['third-party/nsh/crates/nsh-platform-windows'],
       ],
       [
         'nsh-platform-windows',
@@ -118,7 +110,8 @@ function fixture() {
     ]),
     nsh: workspace([
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
-      ['nsh-cli', 'third-party/nsh/crates/nsh-cli', ['third-party/nsh/crates/nsh-core']],
+      ['nsh-cli', 'third-party/nsh/crates/nsh-cli', ['external-nsh']],
+      ['nsh-terminal', 'third-party/nsh/crates/nsh-terminal', ['external-nsh']],
       [
         'nsh-platform-windows',
         'third-party/nsh/crates/nsh-platform-windows',
@@ -135,28 +128,19 @@ function fixture() {
         ['third-party/nsh/crates/nsh-platform-windows'],
       ],
     ]),
-    gpui: workspace([
-      [
-        'nsh-platform-gpui',
-        'third-party/nsh/crates/gpui/nsh-platform-gpui',
-        ['external-nsh', 'third-party/gpui-fast/crates/gpui'],
-      ],
-      ['gpui-fast', 'third-party/gpui-fast/crates/gpui'],
-    ]),
     termina: workspace([['termina', 'third-party/termina']]),
-    gpuiFast: workspace([['gpui-fast', 'third-party/gpui-fast/crates/gpui']]),
   };
   metadata.root.workspace_members = metadata.root.workspace_members.filter(
     (id) => !id.startsWith('third-party/'),
   );
   // The same path dependency has a different Cargo package ID in this graph.
-  metadata.gpui.packages.push({
+  metadata.nsh.packages.push({
     id: 'external-nsh',
     name: 'nsh-core',
     manifest_path: `${root}/third-party/nsh/crates/nsh-core/Cargo.toml`,
     source: null,
   });
-  metadata.gpui.resolve.nodes.push({ id: 'external-nsh', deps: [] });
+  metadata.nsh.resolve.nodes.push({ id: 'external-nsh', deps: [] });
   return (changes) => createPlan({ root, changes, metadata, revision: 'head', baseline: 'base' });
 }
 
@@ -178,7 +162,7 @@ test('a transitive Computer Use dependency selects all native OS checks and CLI 
 test('a path dependency affects consumers across owning workspaces', () => {
   const plan = fixture()(['third-party/nsh/crates/nsh-core/src/lib.rs']);
   assert.ok(plan.suites.nsh);
-  assert.ok(plan.suites.gpui);
+  assert.ok(plan.suites['windows-nsh']);
   assert.equal(plan.suites.root.filter, 'package(=maka-cli) | package(=maka-desktop-shell)');
   assert.equal(plan.full, false);
 });
@@ -192,6 +176,7 @@ test('Windows backend changes select the native tests and default desktop consum
       .filter((worker) => worker.id.startsWith('native-'))
       .map(({ id, suites }) => ({ id, suites })),
     [
+      { id: 'native-ubuntu', suites: ['linux-desktop'] },
       { id: 'native-macos', suites: ['macos-desktop'] },
       { id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] },
     ],
@@ -202,42 +187,6 @@ test('Windows backend changes select the native tests and default desktop consum
   const template = fixture()(['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs']);
   assert.ok(template.suites['windows-nsh']);
   assert.equal(template.full, false);
-});
-
-test('GPUI lifecycle changes execute the original native regression and embedding consumers', async () => {
-  const plan = fixture()(['third-party/gpui-fast/crates/gpui/src/window.rs']);
-  assert.equal(plan.full, false);
-  assert.deepEqual(plan.workers.find((worker) => worker.id === 'gpui').suites, [
-    'gpui',
-    'gpui-fast',
-  ]);
-  const commands = [];
-  const exec = executor(
-    root,
-    { id: 'gpui', workspace: 'gpui' },
-    {
-      run: async (command, args) => {
-        commands.push({ command, args });
-      },
-    },
-  );
-  await exec.prepare('gpui-fast');
-  await exec.verify('gpui-fast');
-  assert.equal(commands.length, 2);
-  for (const { args } of commands) {
-    assert.deepEqual(args.slice(0, 2), ['nextest', 'run']);
-    assert.ok(args.includes('third-party/gpui-fast/Cargo.toml'));
-    assert.ok(args.includes('--locked'));
-    assert.ok(
-      args.some((arg) =>
-        arg.includes(
-          'closing_a_painted_window_releases_its_input_handler_and_view_before_native_cleanup',
-        ),
-      ),
-    );
-  }
-  assert.ok(commands[0].args.includes('--no-run'));
-  assert.ok(!commands[1].args.includes('--no-run'));
 });
 
 test('compiler cache pruning and both archive paths retain V8 native outputs', () => {
@@ -397,18 +346,6 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
   }
 });
 
-test('desktop native backends and embedded tray artwork reach their platform consumers', () => {
-  const select = fixture();
-  const appkit = select(['third-party/nsh/crates/nsh-platform-macos/src/status_menu.rs']);
-  assert.equal(appkit.full, false);
-  assert.ok(
-    appkit.workers.find((worker) => worker.id === 'native-macos')?.suites.includes('macos-desktop'),
-  );
-  const artwork = select(['products/maka/workbench/app/assets/maka.png']);
-  for (const id of ['root', 'desktop', 'native-build', 'windows-desktop', 'macos-desktop'])
-    assert.ok(artwork.suites[id], id);
-});
-
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
   for (const id of ['root', 'bridge', 'desktop', 'windows-desktop', 'contracts', 'product'])
@@ -469,16 +406,17 @@ test('documentation is cheap while shared and unknown source inputs request full
     const plan = select([path]);
     assert.equal(plan.full, true, path);
     assert.ok(plan.suites.root, path);
-    assert.ok(plan.suites.gpui, path);
+    assert.ok(plan.suites['linux-nsh'], path);
   }
 });
 
 test('the aggregate accepts only successful planned work, including every selected matrix', () => {
   const full = createPlan({ root, revision: 'head' });
   const results = Object.fromEntries(
-    ['plan', 'tooling', 'suites', 'root-build', 'root-tests', 'desktop-build', 'desktop-tests'].map(
-      (id) => [id, { result: 'success' }],
-    ),
+    ['plan', 'tooling', 'suites', 'root-build', 'root-tests'].map((id) => [
+      id,
+      { result: 'success' },
+    ]),
   );
   checkResults(full, results, true);
   for (const id of Object.keys(results)) {
@@ -521,9 +459,7 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
     assert(selected.suites.desktop, input);
     assert(selected.suites.contracts, input);
   }
-  assert(
-    plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
-  );
+  assert(plan(['products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf']).suites.root);
 });
 
 test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
@@ -732,7 +668,17 @@ test('skill publication changes run the existing behavior tests on Windows', asy
     },
     {
       executable: 'cargo',
-      args: ['nextest', 'run', '--locked', '-p', 'maka-skills-native', '--lib', '-j', '1'],
+      args: [
+        'nextest',
+        'run',
+        '--locked',
+        '-p',
+        'maka-skills-native',
+        '--lib',
+        '--no-tests=fail',
+        '-j',
+        '1',
+      ],
     },
   ]);
 });
@@ -1261,4 +1207,56 @@ test('product verification reaches the reviewed notice gate and propagates its f
   covered = true;
   await exec.verify('product');
   assert.equal(noticeChecks, 2);
+});
+
+test('native pixel and desktop regressions run only on their native OS workers', () => {
+  const plan = createPlan({ root, revision: 'head' });
+  for (const id of ['desktop', 'pixels']) {
+    assert.deepEqual(
+      plan.workers.filter((worker) => worker.suites.includes(id)).map((worker) => worker.runner),
+      ['macos-latest', 'windows-latest'],
+    );
+  }
+  assert.deepEqual(
+    plan.workers
+      .filter((worker) => worker.suites.includes('linux-nsh'))
+      .map((worker) => worker.runner),
+    ['ubuntu-latest'],
+  );
+  assert.equal(plan.suites.gpui, undefined);
+});
+
+test('native regression commands fail empty selections and GTK runs under Xvfb', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (exe, args) => {
+        calls.push({ exe, args });
+        return '';
+      },
+    },
+  );
+  for (const id of ['desktop', 'pixels', 'linux-nsh', 'macos-nsh', 'macos-surface', 'windows-nsh'])
+    await exec.verify(id);
+  for (const call of calls) assert(call.args.includes('--no-tests=fail'));
+  assert(calls.some(({ args }) => args.includes('native-desktop')));
+  assert(calls.some(({ args }) => args.includes('native-pixels')));
+  assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
+  assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
+});
+
+test('Linux desktop and its embedded icon select a display-backed native consumer', () => {
+  for (const path of [
+    'products/maka/desktop-shell/src/linux.rs',
+    'products/maka/cli/icons/maka.png',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['linux-desktop'], path);
+    const worker = plan.workers.find((worker) => worker.id === 'native-ubuntu');
+    assert.ok(worker.suites.includes('linux-desktop'), path);
+    assert.equal(worker.dependencies, 'headless');
+    assert.equal(worker.javascript, true);
+  }
 });

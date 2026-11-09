@@ -41,7 +41,7 @@ Published apps behave as desktop apps in desktop browsers and as phone apps in p
 
 - **Wheels and touchpads** scroll the innermost scroll view along their axis that can still move (a vertical wheel scrolls a horizontal list when nothing vertical can), and stay on it until the scroll ends; wheel notches glide, paging and snapping views move one page per scroll. Ctrl + wheel and touchpad pinches pinch views with native pinch values instead of zooming the page. Dragging with the mouse does not scroll, as on the desktop platforms: mouse drags go to pans, the responder system and text selection. Scroll views report `onScrollDragStart` / `onScrollDragEnd`, `onMomentumStart` / `End` and `onScrollEnd` as on the desktop platforms.
 - **Keyboard**: Tab and Shift+Tab move between pressables and inputs (the app's `focus:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
-- **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost stack, as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every pushed page and open dialog is a browser history entry, so the browser's back button goes back in the app.
+- **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost shown stack (a stack in a tab that is not selected keeps its pages), as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every page pushed on a shown stack and every open dialog is a browser history entry, so the browser's back button goes back in the app.
 - **Touch**: only scroll views pan; the page itself never scrolls, zooms or pulls to refresh under the app, and taps have no delay. In an iframe, swipes the app does not take scroll the embedding page. Drags on views with native pans, pinches and the responder system are the app's.
 - **Accessibility**: `role`, `accessibilityLabel`, `accessibilityHint`, `accessibilityState`, `accessibilityValue`, `accessibilityLiveRegion` and `accessibilityElementsHidden` become ARIA; `announce` speaks through a live region and `setAccessibilityFocus` moves the focus. Views under a dialog or alert are inert.
 - **Selection and menus**: in desktop browsers text is selectable by default, as on a web page, except inside interactive elements (views with press or touch handlers: buttons, pressable rows, tabs) and text with `userSelect: "none"` or `select-none`; dragging the mouse over it selects it, Ctrl/Cmd+C copies it line by line and Ctrl/Cmd+A selects all of the text the selection is in. In phone and tablet browsers only text with `userSelect: "text"` is selectable, as in native apps. The browser's context menu appears only in selectable text and inputs.
@@ -161,8 +161,33 @@ page and files named after their content.
 | `icons/<size>.<digest>.png` | The icon of `nsh.json` at 32 (favicon), 180 (`apple-touch-icon`), 192 and 512 pixels |
 
 `<digest>` is the start of the SHA-256 of the file's content: a file's name changes exactly when its content does, so a
-new release changes only `index.html` and the files that really changed. Everything uses relative URLs, so the site
-works from any directory of any host (`https://example.com/apps/counter/`).
+new release changes only `index.html` and the files that really changed. By default everything uses relative URLs,
+so the site works from any directory of any host (`https://example.com/apps/counter/`). The page resolves them once
+as it starts, so the files still load after the app moves the address to another path.
+
+To serve the files from a CDN while the page is served at the app's own address, give the CDN's URL with
+`--asset-url`: the page names each of its files under it, and the page's `connect-src` allows its origin; the CDN
+answers with `Access-Control-Allow-Origin`, as the page loads modules and fetches from it. `index.html` and
+`manifest.webmanifest`, whose names carry no digest, stay at the page's address, which keeps resolving the app's own
+relative URLs (the manifest is named relatively, as without the flag: at a deeper path `web.base`, above, resolves it
+at the site's path). As the files' names are then whole URLs,
+they load the same at every path the page opens at (`/debugger/logs/3`):
+
+```sh
+nsh package --target web --asset-url https://cdn.example.com/debugger/
+```
+
+An app that is opened at its own paths ([links into the app](#links-into-the-app)) names the path its site is served
+under in `nsh.json`:
+
+```json
+{ "web": { "base": "/apps/counter/" } }
+```
+
+The page then has a `<base href="/apps/counter/">`, and loads at `https://example.com/apps/counter/sports/football` as at
+`https://example.com/apps/counter/`. `"base": "/"` is a site at the host's root. `nsh package --target web --run` serves
+the site under that path. The path's segments are ASCII letters, digits, `-`, `.`, `_` and `~`, with other characters
+percent-encoded as browsers send them (`/%E5%BA%94%E7%94%A8/` for `/应用/`).
 
 ### Runtime size
 
@@ -192,9 +217,27 @@ copies to browsers that accept them: nginx's `brotli_static on; gzip_static on;`
 precompressed br gzip }`, or a CDN that compresses with Brotli. With Brotli the runtime is about a quarter smaller
 than with gzip. `nsh package --target web --run` serves the site this way on `http://127.0.0.1:4173/`.
 
+#### Links into the app
+
+An app whose own paths show in the address bar (`https://example.com/sports/football`) is a single-page app: a link to
+one of those paths, or a reload there, loads `index.html`, and the app shows the page the path names. The host rewrites
+such requests to `index.html`: a `GET` whose path has no file extension in its last segment and whose `Accept` header
+asks for `text/html`. Files keep their own URLs and the app's own requests (`fetch` accepts `*/*`) get the host's
+answer. `nsh package --target web --run` and the dev server (`nsh run --target web`) follow this rule; on a host:
+
+| Host | The rewrite |
+|---|---|
+| nginx | `location / { try_files $uri /index.html; }` |
+| Netlify | `/*  /index.html  200` in `_redirects` (files that exist are served as they are) |
+| Cloudflare Pages | built in for a site without a top-level `404.html` |
+| GitHub Pages | a copy of `index.html` as `404.html` |
+
+At a path with several segments (`/sports/football`), the page loads its files from the site's own path when
+`nsh.json` names it (`web.base`, above); the dev server's page loads them from `/`.
+
 An app published for the web runs like a packaged native app: as a release, with the capabilities its `nsh.json` declares
 ([Sandbox and capabilities](./sandbox-and-capabilities.md)), a TSX app on the browser's JavaScript engine. When they restrict `network`, the page also carries a
-Content-Security-Policy `connect-src` with the declared hosts (and the page's own origin), so the browser itself
+Content-Security-Policy `connect-src` with the declared hosts (and the page's own origin, and the origin of `--asset-url`), so the browser itself
 refuses requests and redirect hops to any other host. An error that keeps it from starting is shown on the page;
 later errors go to the browser's console.
 
@@ -273,7 +316,7 @@ const player = await createPlayer(document.querySelector("#phone"), {
 await player.runModule(new URL("./bundle.js", location.href).href);
 ```
 
-`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.runModule(url, { capabilities, appId })` runs the app under the capabilities it declares (its `capabilities.json`) and keeps its storage under its `nsh.json` id (without one, under the page's path). The page `nsh package --target web` writes uses all of them.
+`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.runModule(url, { capabilities, appId })` runs the app under the capabilities it declares (its `capabilities.json`) and keeps its storage under its `nsh.json` id (without one, under the page's path). Relative URLs, in these options and the app's images alike, resolve against the page's URL as the player is made (`player.baseURL`), so they still load after the page moves the address to another directory. The page `nsh package --target web` writes uses all of them.
 
 `runModule(url, { chunks })` also takes where the chunks of a [split bundle](#split-bundles) are.
 
@@ -358,7 +401,7 @@ The host looks each name up as it is in a table of its functions, as above, and 
 
 Events sent before the app runs, such as from `createHost` itself, are delivered in order as soon as it starts, so the app's top-level `host.on` listeners receive them. An event sent before a listener registers is not replayed to it: an app reads the state it starts with through a call (`host.call("user.info")`) and follows its changes through events.
 
-The host module runs in the app's page and shares its Content-Security-Policy: when the app's capabilities restrict `network`, the page's `connect-src` holds the page's origin, the hosts `capabilities.network` lists and the hosts `web.connect` lists. `web.connect` names the hosts the host module's own requests (`fetch`, `XMLHttpRequest`, `WebSocket`) reach, as patterns like those of `capabilities.network.hosts` (`api.example.com`, `*.example.com`, `"*"`), as `api.example.com` above; the app's own requests stay checked against its `capabilities`.
+The host module runs in the app's page and shares its Content-Security-Policy: when the app's capabilities restrict `network`, the page's `connect-src` holds the page's origin, the origin of `--asset-url`, the hosts `capabilities.network` lists and the hosts `web.connect` lists. `web.connect` names the hosts the host module's own requests (`fetch`, `XMLHttpRequest`, `WebSocket`) reach, as patterns like those of `capabilities.network.hosts` (`api.example.com`, `*.example.com`, `"*"`), as `api.example.com` above; the app's own requests stay checked against its `capabilities`.
 
 The module is copied as it is, so it imports other code by absolute URL. The app still needs its `host` [capability](./sandbox-and-capabilities.md) for each function it calls. `nsh run --target web` runs it on the development page, and `nsh test` runs the same module for every app its tests open, headless or in a browser (`--target web`), so the app and its host are tested together ([Testing](./testing-and-trace.md#the-pages-host)).
 
@@ -391,7 +434,7 @@ The page reports the rest of the environment, and keeps it current:
 
 `fetch` (with streams, `AbortController` and `FormData`) and `<Image>` URLs go through the browser's own network stack, after NSH has checked the app's [capabilities](./sandbox-and-capabilities.md). Since the requests are the browser's, the browser's rules apply:
 
-- **Relative URLs** resolve against the page's URL, as in the browser: a published app reaches its own API with `fetch("/api/items")`, and `<Image src="/photos/a.jpg" />` loads from its own server. (Native platforms have no page, so they need absolute URLs.)
+- **Relative URLs** resolve against the page's URL as the app started (its `<base href>` when it has one), as in the browser: a published app reaches its own API with `fetch("/api/items")`, and `<Image src="/photos/a.jpg" />` loads from its own server. (Native platforms have no page, so they need absolute URLs.)
 - **CORS.** A request to another origin than the page's only succeeds if that server allows the page's origin (`Access-Control-Allow-Origin`); otherwise `fetch` rejects with a network error. Only the response headers the server exposes are visible.
 - **Cookies** (and HTTP authentication) are sent to the page's own origin only (`credentials: "same-origin"`), and headers browsers forbid (`Cookie`, `User-Agent`, `Host`, ...) are dropped.
 - **Redirects** are followed by the browser. A redirected request that must not follow it fails: `redirect: "manual"` and `"error"`, and requests of an app whose capabilities restrict `network` (NSH checks every hop, and browsers do not reveal a redirect before following it).

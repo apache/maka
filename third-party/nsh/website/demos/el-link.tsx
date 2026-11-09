@@ -1,11 +1,13 @@
 import { mount, signal, Text, View } from "nsh";
 import { Link } from "nsh/base";
-import { desktop, focusRing, Icon, Log, Panel, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, size, Split, ui, sectionSurface, linkColor, linkLook, linkSize, LinkText } from "./palette";
 
-// Links of the app's look: the accent with a quiet underline that fills in
-// under the pointer, violet once visited (the app remembers what it
-// opened), the palette's focus ring, dimmed while disabled. The color and
-// the underline move with `transition-colors`, still with reduced motion.
+// Links of the shared look (`linkLook`, `LinkText`, `linkColor`): the
+// accent with a quiet underline that a bar grows over from the left under
+// the pointer (always there on the current page), violet once visited (the
+// app remembers what it opened), the palette's focus ring, faint while
+// disabled; a site outside the app has an arrow that nudges out under the
+// pointer. The color fades and the bar slides, still with reduced motion.
 const visited = signal(new Set<string>());
 const events = signal<string[]>([]);
 const route = signal("/docs/link");
@@ -16,8 +18,7 @@ const opened = ({ href }: { href: string }) => {
 };
 
 function DocLink(props: { href: string; label: string; openWith?: "system" | "app"; disabled?: boolean; current?: boolean; icon?: boolean; inline?: boolean }) {
-  const seen = () => visited().has(props.href);
-  const color = () => (props.disabled ? ui().faint : props.current ? ui().text : seen() ? ui().violet : ui().accent);
+  const color = () => linkColor({ disabled: props.disabled, current: props.current, visited: visited().has(props.href) });
   return (
     <Link
       href={props.href}
@@ -28,30 +29,16 @@ function DocLink(props: { href: string; label: string; openWith?: "system" | "ap
         opened(e);
         if ((props.openWith ?? "app") === "app") route.set(e.href);
       }}
-      class={`flex-row items-center gap-1 rounded-sm transition-colors motion-reduce:transition-none active:opacity-60 ${props.inline ? "align-text-bottom" : "self-start"}`}
-      focusStyle={focusRing(2)}
+      {...linkLook({ inline: props.inline })}
     >
-      <Text
-        class="transition-colors motion-reduce:transition-none"
-        style={{
-          fontSize: props.inline ? 15 : size.label,
-          fontWeight: props.current ? "600" : "500",
-          color: color(),
-          textDecorationLine: props.current || props.disabled ? "none" : "underline",
-          textDecorationColor: tint(color(), 0.4),
-        }}
-        hoverStyle={props.disabled || props.current ? undefined : { textDecorationColor: color() }}
-      >
-        {props.label}
-      </Text>
-      {props.icon ? <Icon name="external" size={13} tint={color()} /> : null}
+      <LinkText label={props.label} color={color()} size={props.inline ? 15 : undefined} current={props.current} disabled={props.disabled} icon={props.icon} />
     </Link>
   );
 }
 
 function App() {
   const crumb = (href: string, label: string) => <DocLink href={href} label={label} current={route() === href} />;
-  const slash = () => <Text style={{ color: ui().faint, fontSize: size.label }}>/</Text>;
+  const slash = () => <Text style={{ color: ui().faint, fontSize: linkSize }}>/</Text>;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>link</Text>
@@ -70,7 +57,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 18, gap: 14 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 14 }}>
           <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
             {crumb("/docs", "Docs")}
             {slash()}

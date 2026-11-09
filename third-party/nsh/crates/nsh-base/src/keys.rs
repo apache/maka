@@ -69,7 +69,11 @@ fn bind<A: Copy + 'static>(
             let run = run.clone();
             on_key_with(
                 &directed(keystroke, rtl),
-                KeyOptions { when, repeat },
+                KeyOptions {
+                    when,
+                    repeat,
+                    ..Default::default()
+                },
                 move |_| run(action),
             );
         }

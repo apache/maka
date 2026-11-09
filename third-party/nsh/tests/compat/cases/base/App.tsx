@@ -30,6 +30,7 @@ import BasePopups from "./base-popups";
 import BaseMenuChecked from "./base-menu-checked";
 import BasePlot from "./base-plot";
 import BaseProgress from "./base-progress";
+import BaseTerminal from "./base-terminal";
 import BaseTable from "./base-table";
 import BaseRadio from "./base-radio";
 import BaseResizable from "./base-resizable";
@@ -54,6 +55,7 @@ import BaseToggle from "./base-toggle";
 import BaseToolbar from "./base-toolbar";
 import BaseTree from "./base-tree";
 import BaseToken from "./base-token";
+import BaseSetTheme from "./base-set-theme";
 import BaseTransitionShader from "./base-transition-shader";
 
 const cases: Record<string, () => JSX.Element> = {
@@ -99,6 +101,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-collapsible-reveal": BaseCollapsibleReveal,
   "base-plot": BasePlot,
   "base-progress": BaseProgress,
+  "base-terminal": BaseTerminal,
   "base-combobox": BaseCombobox,
   "base-command": BaseCommand,
   "base-date-picker": BaseDatePicker,
@@ -108,6 +111,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-table": BaseTable,
   "base-toast": BaseToast,
   "base-token": BaseToken,
+  "base-set-theme": BaseSetTheme,
   "base-transition-shader": BaseTransitionShader,
 };
 const shown = signal("");

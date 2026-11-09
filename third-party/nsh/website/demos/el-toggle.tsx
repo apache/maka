@@ -1,6 +1,6 @@
 import { Canvas, mount, signal, Text, View } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, Split, tint, ui } from "./palette";
+import { desktop, Log, Split, tint, toggleGlyph, toggleLabel, toggleLook, toolbarRule, toolbarTrack, ui, sectionSurface } from "./palette";
 
 type Mark = "bold" | "italic" | "underline";
 type Align = "left" | "center" | "right";
@@ -16,13 +16,14 @@ const aligns: { id: Align; label: string }[] = [
   { id: "right", label: "Align right" },
 ];
 
-/** Three lines of a paragraph, set as `align` sets them. */
-function Lines(props: { align: Align; color: string }) {
+/** Three lines of a paragraph, set as `align` sets them, drawn on a 16-point grid. */
+function Lines(props: { align: Align; tint: string; size: number }) {
   return (
     <Canvas
-      style={{ pointerEvents: "none", width: 16, height: 16 }}
+      style={{ pointerEvents: "none", width: props.size, height: props.size }}
       draw={(cx) => {
-        cx.strokeStyle = props.color;
+        cx.scale(props.size / 16, props.size / 16);
+        cx.strokeStyle = props.tint;
         cx.lineWidth = 1.6;
         cx.lineCap = "round";
         [12, 7, 10].forEach((w, i) => {
@@ -44,14 +45,8 @@ function App() {
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 3));
   const has = (m: Mark) => on().includes(m);
-  // A toolbar toggle: bare while off, raised while pressed (`pressedStyle`).
-  const look = (pressed: boolean) => ({
-    style: { width: desktop ? 28 : 34, height: desktop ? 28 : 34, borderRadius: 7, alignItems: "center", justifyContent: "center" } as const,
-    class: "transition-colors active:opacity-70 motion-reduce:transition-none",
-    pressedStyle: ui().raised,
-    hoverStyle: pressed ? undefined : hoverFill(),
-    focusStyle: focusRing(),
-  });
+  // A toolbar toggle in the toggles' look (`toggleLook`): bare while off,
+  // the on fill while pressed, its label or icon muted until it is on.
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>toggle</Text>
@@ -61,7 +56,7 @@ function App() {
 
       <Split gap={14} inspector={<Log title={`onChange · ${on().join(", ") || "none"}, ${align()}`} lines={events()} minHeight={76} />}>
         {/* One toolbar: the marks any number at once, the alignment exactly one. */}
-        <ToggleGroup style={{ flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 2, padding: 3, borderRadius: 10, ...ui().inset }}>
+        <ToggleGroup style={{ ...toolbarTrack(), alignSelf: "flex-start" }}>
           <Each of={marks}>
             {(m) => (
               <Toggle
@@ -71,12 +66,11 @@ function App() {
                   on.set(pressed ? [...on(), m().id] : on().filter((x) => x !== m().id));
                   log(`${m().label}: ${pressed}`);
                 }}
-                {...look(has(m().id))}
+                {...toggleLook()}
               >
                 <Text
                   style={{
-                    fontSize: 14,
-                    color: has(m().id) ? ui().text : ui().muted,
+                    ...toggleLabel(() => has(m().id)),
                     fontWeight: m().id === "bold" ? "800" : "500",
                     fontStyle: m().id === "italic" ? "italic" : "normal",
                     textDecorationLine: m().id === "underline" ? "underline" : "none",
@@ -87,7 +81,7 @@ function App() {
               </Toggle>
             )}
           </Each>
-          <View style={{ width: 1, height: 16, marginHorizontal: 4, backgroundColor: ui().line }} />
+          <View style={toolbarRule()} />
           <Each of={aligns}>
             {(a) => (
               <Toggle
@@ -98,16 +92,16 @@ function App() {
                   if (pressed) align.set(a().id);
                   log(`${a().label}: ${pressed}`);
                 }}
-                {...look(align() === a().id)}
+                {...toggleLook()}
               >
-                <Lines align={a().id} color={align() === a().id ? ui().text : ui().muted} />
+                <Lines align={a().id} {...toggleGlyph(() => align() === a().id)} />
               </Toggle>
             )}
           </Each>
         </ToggleGroup>
 
         {/* The text the toolbar formats: the app reads its own values. */}
-        <View style={{ ...ui().card, borderRadius: 14, padding: 14 }}>
+        <View style={{ ...sectionSurface({ padded: true }) }}>
           <Text
             style={{
               fontSize: 15,
@@ -123,21 +117,19 @@ function App() {
           </Text>
         </View>
 
-        {/* A toggle on its own, with a label: `aria-pressed:` tints it. */}
+        {/* A toggle on its own, with a label: the toggles' look, a favorite's
+            accent tint in place of the on fill (`pressedStyle`). */}
         <Toggle
           pressed={starred()}
           onChange={({ pressed }) => {
             starred.set(pressed);
             log(`Star: ${pressed}`);
           }}
-          class="transition-colors active:opacity-70 motion-reduce:transition-none"
-          style={{ flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, height: desktop ? 28 : 34, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: ui().line }}
-          pressedStyle={{ backgroundColor: tint(ui().accent, 0.16), borderColor: tint(ui().accent, 0.4) }}
-          hoverStyle={starred() ? undefined : hoverFill()}
-          focusStyle={focusRing()}
+          {...toggleLook({ text: true, style: { alignSelf: "flex-start" } })}
+          pressedStyle={{ backgroundColor: tint(ui().accent, 0.12), borderColor: tint(ui().accent, 0.3) }}
         >
-          <Text style={{ fontSize: 14, color: starred() ? ui().accent : ui().muted }}>{starred() ? "★" : "☆"}</Text>
-          <Text style={{ fontSize: 13, fontWeight: "500", color: starred() ? ui().accent : ui().text }}>{starred() ? "Starred" : "Star"}</Text>
+          <Text style={{ ...toggleLabel(starred), color: starred() ? ui().accent : ui().muted }}>{starred() ? "★" : "☆"}</Text>
+          <Text style={toggleLabel(starred, { text: true })}>{starred() ? "Starred" : "Star"}</Text>
         </Toggle>
       </Split>
     </View>

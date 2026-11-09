@@ -26,12 +26,9 @@ import { manifests } from './suites.mjs';
 const role = process.env.MAKA_CI_ROLE;
 const workspace = process.env.MAKA_CI_WORKSPACE;
 const version = process.env.MAKA_CI_NEXTEST;
-const selectedManifests =
-  role === 'native-windows'
-    ? [manifests.root, manifests.nsh]
-    : role === 'gpui'
-      ? [manifests.gpui, manifests.gpuiFast]
-      : [manifests[workspace]];
+const selectedManifests = ['native-windows', 'native-macos'].includes(role)
+  ? [manifests.root, manifests.nsh]
+  : [manifests[workspace]];
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
@@ -42,7 +39,7 @@ const tools =
           'desktop',
           'termina',
           'nsh',
-          'gpui',
+          'linux-nsh',
           'native-windows',
           'native-macos',
         ].includes(role)
@@ -123,12 +120,20 @@ async function main(action) {
     ];
     const headless = [
       'bubblewrap',
+      'libgtk-4-dev',
+      'libgstreamer1.0-dev',
+      'libgstreamer-plugins-base1.0-dev',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
+      'xvfb',
       'ripgrep',
       'libx11-dev',
       'libxi-dev',
       'libxtst-dev',
       'libxext-dev',
       'libxcb1-dev',
+      'libxrandr-dev',
+      'libxfixes-dev',
       'libxkbcommon-dev',
       'libxkbcommon-x11-dev',
       'libwayland-dev',
@@ -148,13 +153,7 @@ async function main(action) {
             'libxkbcommon-dev',
             'libwayland-dev',
           ]
-        : [
-            ...shared,
-            ...headless,
-            ...(dependencies === 'gpui'
-              ? ['build-essential', 'libasound2-dev', 'libx11-xcb-dev', 'libzstd-dev']
-              : []),
-          ];
+        : [...shared, ...headless];
     await command('sudo', ['apt-get', 'update']);
     await command('sudo', ['apt-get', 'install', '-y', ...packages]);
     if (dependencies !== 'computer-use')

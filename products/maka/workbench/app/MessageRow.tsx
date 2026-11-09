@@ -22,7 +22,8 @@ import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
-import { TextView } from 'nsh/base';
+import { ContextMenu, MenuItem, TextView } from 'nsh/base';
+import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import { messageKey, senderSession, type Row } from './history';
@@ -33,6 +34,10 @@ import { SkillMessage } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
+  captionTextStyle,
+  controlDisabledStyle,
+  controlHoverStyle,
+  controlStyle,
   secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
@@ -119,9 +124,9 @@ export function MessageRow({
   toolMaxHeight: () => number;
   toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
-  finalActions?(row: () => Row, ownerKey: () => string): JSX.Element;
+  finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** An action on a user message, beside its copy button. */
-  editMessage?(row: () => Row, ownerKey: () => string): JSX.Element;
+  editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** An action beside a failure notice. */
   failureActions?(row: () => Row): JSX.Element;
 }) {
@@ -166,7 +171,7 @@ export function MessageRow({
         };
         // On the desktop the replies between tool calls carry no actions, so
         // only the final reply (or one already showing its source) has a row.
-        const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
+        const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
         if (sender())
@@ -261,8 +266,17 @@ export function MessageRow({
             ? ''
             : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
         };
-        return (
-          <View style={{ paddingVertical: user() ? 16 : 0, gap: 0, width: '100%' }}>
+        // On the desktop a message's actions show while the pointer is on it or
+        // the keyboard focus is in them; its context menu has the same commands.
+        const menu = platform.idiom === 'terminal' || compact() ? undefined : createMessageMenu();
+        const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
+        const toggleSource = () =>
+          inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
+        const message = (
+          <View
+            class={menu && 'group'}
+            style={{ paddingVertical: user() ? 16 : 0, gap: 0, width: '100%' }}
+          >
             <If
               when={user()}
               else={
@@ -302,6 +316,7 @@ export function MessageRow({
                       </If>
                       <If when={actionRow()}>
                         <View
+                          class={revealed}
                           style={{
                             flexDirection: 'row',
                             flexWrap: 'wrap',
@@ -311,7 +326,7 @@ export function MessageRow({
                             alignItems: 'center',
                             gap: 8,
                             // The first glyph starts where the message does.
-                            marginLeft: platform.isTerminal ? 0 : -8,
+                            marginLeft: platform.idiom === 'terminal' ? 0 : -8,
                           }}
                         >
                           <If
@@ -330,10 +345,11 @@ export function MessageRow({
                                   ownerKey={() => rowKey(row())}
                                   sessionId={sessionId}
                                   through={through}
+                                  menu={menu}
                                 />
                               }
                             >
-                              {finalActions?.(row, () => rowKey(row()))}
+                              {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
                           </If>
                           <IconButton
@@ -344,11 +360,7 @@ export function MessageRow({
                             }
                             icon={sourceMode() ? 'file' : 'markdown'}
                             selected={sourceMode()}
-                            onPress={inputAction(setSourceMode, {
-                              sessionId,
-                              key: rowKey(row()),
-                              value: !sourceMode(),
-                            })}
+                            onPress={toggleSource()}
                           />
                         </View>
                       </If>
@@ -389,7 +401,7 @@ export function MessageRow({
                             </If>
                           }
                         >
-                          <If when={platform.isTerminal}>
+                          <If when={platform.idiom === 'terminal'}>
                             <Icon name="thinking" color={C.muted} />
                           </If>
                           <Text
@@ -480,6 +492,7 @@ export function MessageRow({
                 </If>
               </View>
               <View
+                class={revealed}
                 style={{
                   alignSelf: 'flex-end',
                   width: '78%',
@@ -491,7 +504,7 @@ export function MessageRow({
                   gap: 8,
                   paddingTop: 4,
                   // The last glyph ends where the bubble does.
-                  marginRight: platform.isTerminal ? 0 : -8,
+                  marginRight: platform.idiom === 'terminal' ? 0 : -8,
                 }}
               >
                 <If when={timestamp()}>
@@ -504,11 +517,59 @@ export function MessageRow({
                   ownerKey={() => rowKey(row())}
                   sessionId={sessionId}
                   through={through}
+                  menu={menu}
                 />
-                {editMessage?.(row, () => rowKey(row()))}
+                {editMessage?.(row, () => rowKey(row()), menu)}
               </View>
             </If>
           </View>
+        );
+        if (!menu) return message;
+        const Item = (props: { label: string; disabled?: boolean; select(): void }) => (
+          <MenuItem
+            accessibilityLabel={props.label}
+            disabled={props.disabled}
+            onSelect={props.select}
+            style={{ ...controlStyle, minWidth: 160 }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlHoverStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
+          </MenuItem>
+        );
+        return (
+          <ContextMenu
+            offset={4}
+            margin={8}
+            popupStyle={{
+              padding: 4,
+              backgroundColor: C.surface,
+              borderWidth: 1,
+              borderColor: C.line,
+              borderRadius: 12,
+            }}
+            trigger={message}
+          >
+            <Each
+              of={menu.commands().filter((command) => command.action() !== null)}
+              key={(command) => command.kind}
+            >
+              {(command) => (
+                <Item
+                  label={command().label()}
+                  disabled={command().busy()}
+                  select={command().action()!}
+                />
+              )}
+            </Each>
+            <If when={!user()}>
+              <Item
+                label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}
+                select={toggleSource()}
+              />
+            </If>
+          </ContextMenu>
         );
       }}
     </Each>

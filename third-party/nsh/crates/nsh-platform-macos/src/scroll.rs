@@ -54,7 +54,7 @@ use objc2_quartz_core::CALayer;
 
 use crate::{
     input::later,
-    surface::Surface,
+    surface::{Next, Surface},
     view::{NshView, ScrollState, ViewState},
 };
 
@@ -665,7 +665,7 @@ fn animate_to(
     settle(surface, view);
     let (min, max) = limits(&view.state());
     let to = to.clamp(min, max.max(min));
-    let from = view.state().scroll.as_ref().map_or(0.0, main);
+    let from = view.state().scroll.as_deref().map_or(0.0, main);
     if (to - from).abs() < 0.5 || duration <= 0.0 {
         set_phase(view, Phase::Idle);
         moved_to(surface, view, to);
@@ -770,7 +770,7 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
             surface.cosmetic_frame(fading);
         }
         if matches!(left, Tick::Busy | Tick::Fading) {
-            return true;
+            return deadline(&view).map_or(Next::Frame, |ms| Next::At(ms / 1000.0));
         }
         if let Some(s) = view.state_mut().scroll.as_mut() {
             s.live.ticking = false;
@@ -778,7 +778,7 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
         if let Tick::Hold(ms) = left {
             wake_after_hold(surface, &view, ms);
         }
-        false
+        Next::Done
     });
 }
 
@@ -813,19 +813,28 @@ fn wake_after_hold(surface: &Rc<Surface>, view: &NshView, ms: u64) {
     });
 }
 
-/// A recycling row must have no deferred scroll events after its owner is
-/// released. Its native offset is kept for a cancelled retirement/reinsert.
-pub(crate) fn detached(view: &NshView) {
-    if let Some(scroll) = view.state_mut().scroll.as_mut() {
-        scroll.live.phase = Phase::Idle;
-        scroll.live.report = false;
-        scroll.live.resampled = None;
-        scroll.live.commit_armed = false;
-        scroll.live.rested_at = None;
-    }
-    for child in view.child_views() {
-        detached(&child);
-    }
+/// When `view`'s motion next comes to something (ms, the frames' clock):
+/// an eased move's end, a mouse wheel's or a touchpad's rest; what runs
+/// its frame while no frames are drawn ([`Next::At`]). `None` while only
+/// drawing is left (the indicator's fade, the spinner) or input it waits
+/// for.
+fn deadline(view: &NshView) -> Option<f64> {
+    let state = view.state();
+    let end = match state.scroll.as_ref()?.live.phase {
+        Phase::Animate {
+            start, duration, ..
+        } => start + duration,
+        Phase::Wheel {
+            last,
+            gesture: false,
+            ..
+        } => last + WHEEL_IDLE,
+        Phase::AwaitMomentum { since } => since + MOMENTUM_WAIT,
+        _ => return None,
+    };
+    // A millisecond past it: the frame there finds it ended whatever the
+    // rounding.
+    Some(end + 1.0)
 }
 
 /// What a scroll view has left to do after a frame ([`tick`]).
@@ -843,11 +852,6 @@ enum Tick {
 
 /// One frame of `view`'s motion.
 fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
-    // A retired native subtree may still have its already-scheduled frame
-    // callback. It must stop before emitting events into a reused node id.
-    if !mapped(view) {
-        return Tick::Done;
-    }
     let sampled = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
@@ -1344,11 +1348,12 @@ pub(crate) fn config(
             return;
         };
         s.horizontal = horizontal;
-        // A horizontal view keeps its indicator: it is the mouse's scroll
-        // bar, and a mouse without a horizontal wheel has no other way
-        // to move it (mouse drags do not scroll); a built-in bar of the
-        // app's (`replaced`) is the mouse's then.
-        s.indicator = indicator || (horizontal && !replaced);
+        // The view shows its indicator only when it asks to, on either
+        // axis: a mouse without a horizontal wheel still moves a
+        // horizontal view with Shift + wheel, with the vertical wheel
+        // where nothing around scrolls vertically, and with the keys. A
+        // built-in bar of the app's (`replaced`) takes its place.
+        s.indicator = indicator && !replaced;
         if !indicator {
             s.live.alpha = 0.0;
         }
@@ -1777,7 +1782,7 @@ pub(crate) fn wheel_begin(surface: &Rc<Surface>, view: &NshView) {
         return;
     }
     interrupt(surface, view);
-    let raw = view.state().scroll.as_ref().map_or(0.0, main);
+    let raw = view.state().scroll.as_deref().map_or(0.0, main);
     set_phase(
         view,
         Phase::Wheel {
@@ -1806,7 +1811,7 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
         } => (gesture, total, raw),
         _ => {
             interrupt(surface, view);
-            let raw = view.state().scroll.as_ref().map_or(0.0, main);
+            let raw = view.state().scroll.as_deref().map_or(0.0, main);
             (false, 0.0, raw)
         }
     };
@@ -1876,7 +1881,7 @@ pub(crate) fn wheel_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32)
     // After the refresh check: refreshing lowers the top limit.
     let (pos, (min, max)) = {
         let state = view.state();
-        (state.scroll.as_ref().map_or(0.0, goal), limits(&state))
+        (state.scroll.as_deref().map_or(0.0, goal), limits(&state))
     };
     let outside = pos < min - 0.5 || pos > max.max(min) + 0.5;
     if gesture && !outside && !snaps {

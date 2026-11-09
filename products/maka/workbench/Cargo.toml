@@ -47,10 +47,12 @@ maka-ui-support.workspace = true
 nsh-core.workspace = true
 nsh-engine = { workspace = true, features = ["net"] }
 nsh-base.workspace = true
+regex.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+unicode-segmentation.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]

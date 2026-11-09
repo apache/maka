@@ -8,8 +8,8 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player } = await import(
-  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player };`)}`
+const { Player, keyCode } = await import(
+  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode };`)}`
 );
 
 /** A player on a fake engine; `sent` holds `[name, payload]` of the events it got. */
@@ -22,12 +22,15 @@ function fakePlayer(options = {}) {
   Object.assign(player, {
     // What the constructor sets that these paths read.
     options: { idiom: "phone", ...options },
+    baseURL: "https://example.test/app/",
+    assetBase: "https://example.test/app/",
+    assets: options.assets,
+    data: options.data,
+    inlineImages: new Map(),
     hostEvents: [],
     fileOperations: new Map(),
     requests: new Map(),
     websockets: new Map(),
-    shaderViews: new Set(),
-    shaderFrameRequest: 0,
     environment: () => ({}),
     updateRootClasses() {},
     wasm: {
@@ -54,6 +57,43 @@ const failing = () => {
 };
 const events = (sent) =>
   sent.filter(([name, p]) => name === "onHost" && p.type === "event").map(([, p]) => p.event);
+
+test("keyboard context menus have no pointer even when Chromium names a mouse", () => {
+  const { player } = fakePlayer();
+  const el = {
+    _id: 2,
+    _events: new Set(["onContextMenu"]),
+    getBoundingClientRect: () => ({ left: 10, right: 90, top: 20, bottom: 60 }),
+  };
+  player.viewOf = () => el;
+  player.ancestors = () => [el];
+  player.point = (at) => [at.clientX, at.clientY];
+  let payload;
+  player.event = (_, name, value) => { assert.equal(name, "onContextMenu"); payload = value; };
+  const saved = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({ direction: "ltr" });
+  try {
+    for (const [pointerType, button, keyboard] of [
+      ["mouse", -1, true],
+      ["", -1, true],
+      ["", 0, true],
+      ["mouse", 2, false],
+      [undefined, 2, false],
+      ["mouse", 0, false],
+    ]) {
+      let prevented = false;
+      assert.equal(player.contextMenu({
+        target: el, pointerType, button, clientX: 40, clientY: 30,
+        preventDefault() { prevented = true; },
+      }), true);
+      assert.equal(prevented, true);
+      assert.equal(payload.pointerType, keyboard ? null : "mouse");
+      assert.deepEqual(payload.pagePosition, keyboard ? { x: 10, y: 60 } : { x: 40, y: 30 });
+    }
+  } finally {
+    globalThis.getComputedStyle = saved;
+  }
+});
 
 test("input autofill hints are set, changed and cleared on both field kinds", () => {
   const { player } = fakePlayer();
@@ -265,6 +305,40 @@ test("a browser-cancelled pan reports cancellation rather than a release", () =>
     assert.deepEqual(sent, [[12, phase, 0, 100, 0, 400]]);
     assert.equal(player.pointers.size, 0);
   }
+});
+
+test("a face registered while another loads keeps the app hidden until both have loaded", async () => {
+  const { player } = fakePlayer();
+  const classes = new Set();
+  player.root = {
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+  player.starting = true;
+  player.metricsCache = new Map();
+  let loaded = 0;
+  player.call = (f) => f({ nsh_fonts_loaded: () => loaded++ });
+  const face = () => {
+    let resolve;
+    const loading = new Promise((r) => (resolve = r));
+    return { loading, resolve };
+  };
+  const first = face();
+  const second = face();
+  player.fontLoading(first.loading);
+  player.fontLoading(second.loading);
+  first.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(loaded, 0);
+  assert.ok(classes.has("nsh-hidden"));
+  second.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(loaded, 1);
+  assert.ok(!classes.has("nsh-hidden"));
+  clearTimeout(player.fontTimer);
 });
 
 test("compileAndRun hands the compiled module to runSource, or returns the compile error", async () => {
@@ -610,6 +684,17 @@ test("the runtime's data comes from the URL the page names and reaches the engin
   assert.deepEqual(handed, [["syntaxes", [1, 2, 3], 1]]);
 });
 
+test("relative URLs are the page's as the player started", () => {
+  const { player } = fakePlayer({ assets: { "logo.png": "https://cdn.test/logo.0123456789.png" } });
+  // The address has moved to another directory since (`history.pushState`).
+  assert.equal(player.asset("photos/a.jpg"), "https://example.test/app/photos/a.jpg");
+  assert.equal(player.asset("/photos/a.jpg"), "https://example.test/photos/a.jpg");
+  assert.equal(player.asset("https://photos.test/a.jpg"), "https://photos.test/a.jpg");
+  assert.equal(player.asset("blob:https://example.test/1"), "blob:https://example.test/1");
+  assert.equal(player.asset("asset:/logo.png"), "https://cdn.test/logo.0123456789.png");
+  assert.equal(player.asset("asset:/icons/x.png"), "https://example.test/app/icons/x.png");
+});
+
 test("data that does not load reaches the engine as none", async () => {
   const { player } = fakePlayer({ data: { syntaxes: "https://example.test/missing.bin" } });
   const handed = dataSink(player);
@@ -664,243 +749,13 @@ test("a paused WebSocket holds its events, in order, until the engine resumes it
   }
 });
 
-/** Minimal DOM tree + IntersectionObserver + RAF harness for `op_sh` / `op_d` / `stop` / `reset`. */
-function withShaderDom(run) {
-  const saved = {
-    document: globalThis.document,
-    IntersectionObserver: globalThis.IntersectionObserver,
-    requestAnimationFrame: globalThis.requestAnimationFrame,
-    cancelAnimationFrame: globalThis.cancelAnimationFrame,
-  };
-  let nextFrame = 0;
-  const frames = new Map();
-  const requested = new Set();
-  const cancelled = new Set();
-  const disconnected = new Set();
-  function node(tagName) {
-    return {
-      tagName: tagName.toUpperCase(),
-      parentNode: null,
-      children: [],
-      style: {},
-      className: "",
-      classList: { add() {}, remove() {}, contains() { return false; }, toggle() {} },
-      addEventListener() {},
-      get firstChild() {
-        return this.children[0] ?? null;
-      },
-      get nextSibling() {
-        if (!this.parentNode) return null;
-        const at = this.parentNode.children.indexOf(this);
-        return at >= 0 ? (this.parentNode.children[at + 1] ?? null) : null;
-      },
-      get isConnected() {
-        for (let cur = this; cur; cur = cur.parentNode) {
-          if (cur === body) return true;
-        }
-        return false;
-      },
-      set textContent(_value) {
-        for (const child of this.children) child.parentNode = null;
-        this.children.length = 0;
-      },
-      contains(other) {
-        for (let cur = other; cur; cur = cur.parentNode) {
-          if (cur === this) return true;
-        }
-        return false;
-      },
-      insertBefore(child, before) {
-        child.remove();
-        const at = before ? this.children.indexOf(before) : -1;
-        if (at >= 0) this.children.splice(at, 0, child);
-        else this.children.push(child);
-        child.parentNode = this;
-        return child;
-      },
-      append(...items) {
-        for (const item of items) this.insertBefore(item, null);
-      },
-      remove() {
-        if (!this.parentNode) return;
-        const at = this.parentNode.children.indexOf(this);
-        if (at >= 0) this.parentNode.children.splice(at, 1);
-        this.parentNode = null;
-      },
-    };
-  }
-  const body = node("body");
-  globalThis.document = {
-    body,
-    activeElement: null,
-    createElement: (tag) => node(tag),
-  };
-  globalThis.IntersectionObserver = class {
-    constructor(callback) {
-      this.callback = callback;
-    }
-    observe(target) {
-      this.target = target;
-    }
-    disconnect() {
-      disconnected.add(this);
-    }
-  };
-  globalThis.requestAnimationFrame = (callback) => {
-    const id = ++nextFrame;
-    requested.add(id);
-    frames.set(id, callback);
-    return id;
-  };
-  globalThis.cancelAnimationFrame = (id) => {
-    cancelled.add(id);
-    frames.delete(id);
-  };
-  const flushAnimationFrames = (time = 16) => {
-    const batch = [...frames.entries()];
-    frames.clear();
-    const fired = new Set();
-    for (const [id, callback] of batch) {
-      fired.add(id);
-      callback(time);
-    }
-    return fired;
-  };
-  try {
-    run({ body, requested, cancelled, disconnected, flushAnimationFrames });
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete globalThis[key];
-      else globalThis[key] = value;
-    }
-  }
-}
-
-test("deleting a shader releases its canvas and observer before an ID is reused", () => {
-  withShaderDom(({ body, disconnected }) => {
-    for (const deferred of [false, true]) {
-      const root = document.createElement("div");
-      root._id = 1;
-      root._kind = "root";
-      body.append(root);
-      const player = Object.create(Player.prototype);
-      Object.assign(player, {
-        root,
-        views: new Map([[1, root]]),
-        mouseTracked: new Set(),
-        shaderViews: new Set(),
-        shaderFrameRequest: 0,
-        removals: [],
-        disappearing: [],
-        changedStacks: new Set(),
-        shaderGl: () => ({ isContextLost: () => false }),
-        shaderProgram: () => ({}),
-        layoutAnimation: deferred ? { delete: { duration: 100 } } : null,
-      });
-      const mount = () => {
-        player.op_c(["c", 2, "view"]);
-        player.op_i(["i", 1, 2, null]);
-        player.op_sh(["sh", 2, { role: 0, key: "test", words: [], slots: [], pictures: [], progress: 0, paused: true, animated: false }]);
-        return player.view(2);
-      };
-      const old = mount();
-      const canvas = old._shaderCanvas;
-      const observer = old._shaderObserver;
-      assert.equal(canvas.parentNode, old);
-      assert.equal(player.shaderViews.has(old), true);
-      player.op_d(["d", 2]);
-      assert.equal(player.views.has(2), false);
-      assert.equal(player.shaderViews.has(old), false);
-      assert.equal(canvas.parentNode, null);
-      assert.equal(disconnected.has(observer), true);
-      if (deferred) {
-        assert.equal(old.isConnected, true, "exit keeps the host, not its shader");
-      } else {
-        player.finishRemovals();
-        assert.equal(old.isConnected, false);
-      }
-      const replacement = mount();
-      assert.notEqual(replacement, old);
-      assert.equal(replacement._shaderCanvas.parentNode, replacement);
-      assert.equal(disconnected.has(replacement._shaderObserver), false);
-      player.op_d(["d", 2]);
-      assert.equal(player.shaderViews.size, 0);
-      root.remove();
-    }
-  });
-});
-
-test("stop and reset cancel owned shader frames and release old observers across reloads", () => {
-  withShaderDom(({ body, requested, cancelled, disconnected, flushAnimationFrames }) => {
-    const root = document.createElement("div");
-    const live = document.createElement("div");
-    root._id = 1;
-    root._kind = "root";
-    root.append(live);
-    body.append(root);
-    const player = Object.create(Player.prototype);
-    Object.assign(player, {
-      root,
-      live,
-      views: new Map([[1, root]]),
-      mouseTracked: new Set(),
-      shaderViews: new Set(),
-      shaderFrameRequest: 0,
-      removals: [],
-      disappearing: [],
-      changedStacks: new Set(),
-      shaderGl: () => ({ isContextLost: () => false }),
-      shaderProgram: () => ({}),
-      fileOperations: new Map(),
-      requests: new Map(),
-      websockets: new Map(),
-    });
-    const mount = () => {
-      player.op_c(["c", 2, "view"]);
-      player.op_i(["i", 1, 2, null]);
-      player.op_sh(["sh", 2, { role: 0, key: "test", words: [], slots: [], pictures: [], progress: 0, paused: false, animated: true }]);
-      return player.view(2);
-    };
-    for (const action of ["stop", "reset", "reset"]) {
-      const el = mount();
-      const canvas = el._shaderCanvas;
-      const observer = el._shaderObserver;
-      const owned = player.shaderFrameRequest;
-      assert.ok(owned && requested.has(owned));
-      let unrelatedRan = false;
-      const unrelated = requestAnimationFrame(() => {
-        unrelatedRan = true;
-      });
-      player[action]();
-      assert.equal(cancelled.has(owned), true);
-      assert.equal(cancelled.has(unrelated), false);
-      assert.equal(player.shaderViews.size, 0);
-      assert.equal(disconnected.has(observer), true);
-      assert.equal(canvas.parentNode, null);
-      const scheduled = requested.size;
-      player.shaderDirty(el);
-      assert.equal(requested.size, scheduled, "late notification must not schedule a stopped shader");
-      const fired = flushAnimationFrames();
-      assert.equal(unrelatedRan, true);
-      assert.equal(fired.has(owned), false);
-      if (action === "stop") {
-        assert.equal(el.isConnected, true);
-        player.reset();
-      } else {
-        assert.equal(el.isConnected, false);
-        assert.equal(player.views.size, 1);
-      }
-    }
-  });
-});
-
 test("a plain Shader uploads the whole built-ins block, progress and overflow at 0", () => {
   const { player } = fakePlayer();
   const uploads = [];
   const gl = new Proxy(
     {
       UNIFORM_BUFFER: "uniform",
-      canvas: { width: 0, height: 0, transferToImageBitmap: () => "bitmap" },
+      canvas: { width: 0, height: 0 },
       bufferData: (target, data) => uploads.push([target, Array.from(data)]),
     },
     { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
@@ -913,7 +768,7 @@ test("a plain Shader uploads the whole built-ins block, progress and overflow at
   const el = {
     _frame: [0, 0, 100, 50],
     _shader: { layer: { role: 0, overflow: 0 }, words: new Uint32Array(0), kept: 1500, since: null, progress: 0 },
-    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ transferFromImageBitmap() {} }) },
+    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ drawImage() {} }) },
   };
   const saved = globalThis.devicePixelRatio;
   globalThis.devicePixelRatio = 2;
@@ -1299,7 +1154,7 @@ test("a shader's frames upload the built-ins from one buffer", () => {
   const gl = new Proxy(
     {
       UNIFORM_BUFFER: "uniform",
-      canvas: { width: 0, height: 0, transferToImageBitmap: () => "bitmap" },
+      canvas: { width: 0, height: 0 },
       bufferData: (_target, data) => uploads.push(data),
     },
     { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
@@ -1312,12 +1167,114 @@ test("a shader's frames upload the built-ins from one buffer", () => {
   const el = {
     _frame: [0, 0, 100, 50],
     _shader: { layer: { role: 0, overflow: 0 }, words: new Uint32Array(0), kept: 0, since: null, progress: 0 },
-    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ transferFromImageBitmap() {} }) },
+    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ drawImage() {} }) },
   };
   player.renderShader(el, 0);
   player.renderShader(el, 16);
   assert.equal(uploads.length, 2);
   assert.equal(uploads[0], uploads[1]);
+});
+
+/** A context whose canvas records the sizes it is given (`resized`) and whose viewports go to `viewports`. */
+function sizedGl() {
+  const resized = [];
+  const viewports = [];
+  const size = { width: 0, height: 0 };
+  const canvas = {};
+  for (const side of ["width", "height"]) {
+    Object.defineProperty(canvas, side, {
+      get: () => size[side],
+      set: (v) => {
+        resized.push([side, v]);
+        size[side] = v;
+      },
+    });
+  }
+  const gl = new Proxy(
+    { isContextLost: () => false, canvas, viewport: (...rect) => viewports.push(rect) },
+    { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
+  );
+  return { gl, resized, viewports };
+}
+
+/** An animated shader view `w` × `h` points of `role`; what its frames copy from the shared canvas goes to `copies`. */
+function sizedView(w, h, role, copies = []) {
+  return {
+    isConnected: true,
+    _frame: [0, 0, w, h],
+    _shaderVisible: true,
+    _shader: { layer: { ...shaderLayer(role), animated: true }, words: new Uint32Array(0), kept: 0, since: 0, progress: 0, dirty: true, stale: 0, pictures: [], textures: [] },
+    _shaderCanvas: { width: 0, height: 0, style: {}, getContext: () => ({ clearRect() {}, drawImage: (_canvas, ...rects) => copies.push(rects) }) },
+  };
+}
+
+const drawingProgram = () => ({ program: {}, vao: {}, samplers: [] });
+
+test("shader views of different sizes draw into one canvas without resizing it on every frame", () => {
+  const { gl, resized, viewports } = sizedGl();
+  const { player } = shaderPlayer({ gl, program: drawingProgram });
+  const copies = [];
+  const small = sizedView(100, 50, 0, copies);
+  const large = sizedView(300, 200, 0);
+  const saved = globalThis.devicePixelRatio;
+  globalThis.devicePixelRatio = 1;
+  try {
+    for (const t of [0, 16, 32]) {
+      player.renderShader(small, t);
+      player.renderShader(large, t);
+      player.fitSharedCanvas(t);
+    }
+    assert.deepEqual(resized, [["width", 100], ["height", 50], ["width", 300], ["height", 200]], "grown to the largest, once");
+    // Each in its top-left corner (GL's y goes up), copied from there.
+    assert.deepEqual(viewports.slice(2, 4), [[0, 150, 100, 50], [0, 0, 300, 200]]);
+    assert.deepEqual(copies.at(-1), [0, 0, 100, 50, 0, 0, 100, 50]);
+    // Only the small one draws now: the canvas keeps its size a second.
+    resized.length = 0;
+    for (const t of [100, 600]) {
+      player.renderShader(small, t);
+      player.fitSharedCanvas(t);
+    }
+    assert.deepEqual(resized, []);
+    player.renderShader(small, 1200);
+    player.fitSharedCanvas(1200);
+    assert.deepEqual(resized, [["width", 100], ["height", 50]], "then fits it");
+  } finally {
+    globalThis.devicePixelRatio = saved;
+  }
+});
+
+test("a screen effect over an animated shader asks for one shader frame at a time", () => {
+  const { gl } = sizedGl();
+  const { player } = shaderPlayer({ gl, program: drawingProgram });
+  // The real one, which the screen effect's marks go through.
+  delete player.shaderDirty;
+  let pictures = 0;
+  player.paintInputs = (el) => {
+    el._shader.stale = 0;
+    pictures++;
+  };
+  player.size = [200, 100];
+  const fill = sizedView(100, 50, 0);
+  const screen = sizedView(0, 0, 3);
+  screen._shader.layer.animated = false;
+  player.shaderViews = new Set([fill, screen]);
+  const frames = [];
+  const saved = [globalThis.requestAnimationFrame, globalThis.devicePixelRatio];
+  globalThis.requestAnimationFrame = (f) => frames.push(f);
+  globalThis.devicePixelRatio = 1;
+  try {
+    player.shaderFrame(0);
+    for (let n = 1; n <= 5; n++) {
+      assert.equal(frames.length, 1, `one callback queued after frame ${n}`);
+      frames.shift()(n * 16);
+    }
+    // Each frame after the first, the screen effect pictures what the fill
+    // drew.
+    assert.equal(pictures, 5);
+    assert.equal(frames.length, 1);
+  } finally {
+    [globalThis.requestAnimationFrame, globalThis.devicePixelRatio] = saved;
+  }
 });
 
 test("a picture taken again reads the styles of what changed only", () => {
@@ -1490,4 +1447,186 @@ test("a page's shader whose first frame the browser refuses leaves the change to
   assert.equal(stack._navOverlay ?? null, null);
   assert.equal(player.shaderViews.size, 0);
   assert.equal(ended, false, "the caller's own motion calls it");
+});
+
+/**
+ * A player on an engine with one native animation of 300 ms, started by
+ * the first frame after `requestFrame` (as a batch that starts one asks
+ * for frames); `ticks` are the times of the frames it got. The page's
+ * animation frames run only when the test says (`frame()`); its clock is
+ * `clock.now`.
+ */
+function animating(t) {
+  const { player } = fakePlayer();
+  const clock = { now: 0 };
+  t.mock.method(performance, "now", () => clock.now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let frames = [];
+  const saved = [globalThis.requestAnimationFrame, globalThis.cancelAnimationFrame];
+  globalThis.requestAnimationFrame = (f) => frames.push(f);
+  globalThis.cancelAnimationFrame = () => {};
+  t.after(() => ([globalThis.requestAnimationFrame, globalThis.cancelAnimationFrame] = saved));
+  const ticks = [];
+  let start = null;
+  let ended = false;
+  // The graph's: the animation's end, or `now` until a frame starts it.
+  player.wasm.nsh_deadline = (now) => (ended ? -1 : (start ?? now) + (start == null ? 0 : 300));
+  player.wasm.nsh_frame = (now) => {
+    ticks.push(now);
+    start ??= now;
+    if (now - start >= 300) ended = true;
+    else player.requestFrame();
+    return -1;
+  };
+  const frame = () => {
+    const due = frames;
+    frames = [];
+    for (const f of due) f(clock.now);
+  };
+  // Time passes by `ms`: the timers due run, and what the calls into the
+  // engine left for after them (`deadlineSoon`).
+  const pass = async (ms) => {
+    await null;
+    clock.now += ms;
+    t.mock.timers.tick(ms);
+    await null;
+  };
+  return { player, ticks, frame, pass, ended: () => ended };
+}
+
+test("a native animation ends on time while no animation frames come", async (t) => {
+  const { player, ticks, pass, ended } = animating(t);
+  player.requestFrame();
+  // A frame starts it, and one at its end ends it.
+  await pass(50);
+  assert.deepEqual(ticks, [50]);
+  await pass(300);
+  assert.deepEqual(ticks, [50], "not before its end and a little more");
+  await pass(50);
+  assert.deepEqual(ticks, [50, 400]);
+  assert.ok(ended());
+  await pass(1000);
+  assert.deepEqual(ticks, [50, 400], "nothing more once it ended");
+});
+
+test("while animation frames come the page runs no frames of its own", async (t) => {
+  const { player, ticks, frame, pass, ended } = animating(t);
+  player.requestFrame();
+  let frames = 0;
+  for (let i = 0; i < 30 && !ended(); i++) {
+    await pass(16);
+    frame();
+    frames++;
+  }
+  assert.ok(ended());
+  assert.equal(ticks.length, frames, "every frame the browser's");
+  await pass(1000);
+  assert.equal(ticks.length, frames);
+});
+
+test("a dialog comes in and reports it shown without animation frames", () => {
+  presenting(({ player, dialog, timers, names }) => {
+    player.present(dialog);
+    timers();
+    assert.equal(dialog.style.transform, "", "in its place");
+    timers();
+    assert.deepEqual(names(), ["onShow"]);
+  });
+});
+
+test("a page's slide ends on time without animation frames, and once", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { player } = fakePlayer();
+  const animations = [];
+  const screen = (id) => ({
+    _id: id,
+    _screen: { animation: "default" },
+    style: {},
+    animate() {
+      const a = {};
+      animations.push(a);
+      return a;
+    },
+  });
+  const stack = {};
+  const [below, top] = [screen(2), screen(4)];
+  below.parentNode = top.parentNode = stack;
+  let done = 0;
+  player.moveScreens(top, below, false, () => done++);
+  t.mock.timers.tick(300);
+  assert.equal(done, 0, "not before its end");
+  t.mock.timers.tick(100);
+  assert.equal(done, 1);
+  animations[0].onfinish();
+  assert.equal(done, 1, "its animation's end, later, is the same end");
+});
+
+test("a page's shader ends on time without animation frames", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { player } = shaderPlayer();
+  Object.assign(player, { renderShader: () => true, shaderDraws: () => true, freeTextures() {} });
+  const stack = { getBoundingClientRect: () => ({ width: 390, height: 844 }), append() {} };
+  const saved = globalThis.document;
+  globalThis.document = { createElement: () => ({ style: {}, append() {}, remove() {} }) };
+  let ended = 0;
+  try {
+    assert.equal(player.shaderNav(stack, {}, { layer: shaderLayer(2), ms: 350 }, false, () => ended++), true);
+  } finally {
+    globalThis.document = saved;
+  }
+  t.mock.timers.tick(350);
+  assert.equal(ended, 0, "not before its end");
+  t.mock.timers.tick(100);
+  assert.equal(ended, 1);
+  assert.equal(stack._navOverlay, null);
+  t.mock.timers.tick(1000);
+  assert.equal(ended, 1);
+});
+
+test("a mouse makes a desktop at any width, a touch screen a tablet or a phone (#1004)", () => {
+  const saved = { matchMedia: globalThis.matchMedia, screen: globalThis.screen };
+  const measure = (mouse, width, height) => {
+    globalThis.matchMedia = () => ({ matches: mouse });
+    globalThis.screen = { width, height };
+    return Player.prototype.measureIdiom.call({});
+  };
+  try {
+    // A narrow browser window on a desktop still drags to select with the mouse.
+    assert.equal(measure(true, 390, 844), "desktop");
+    assert.equal(measure(true, 1280, 800), "desktop");
+    assert.equal(measure(false, 390, 844), "phone");
+    assert.equal(measure(false, 820, 1180), "pad");
+  } finally {
+    globalThis.matchMedia = saved.matchMedia;
+    globalThis.screen = saved.screen;
+  }
+});
+
+test("a view laid out at no size draws nothing of its own, its border overlay included", () => {
+  const { player } = fakePlayer();
+  const classes = new Set();
+  const el = {
+    _kind: "view",
+    _animation: {},
+    classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) },
+  };
+  Object.assign(player, { view: () => el, placeFrame() {}, readingChanged() {} });
+  // `display: none`: the core lays the view out at no size.
+  player.op_f(["f", 2, 0, 0, 0, 0]);
+  assert.ok(classes.has("nsh-empty"));
+  player.op_f(["f", 2, 8, 8, 40, 32]);
+  assert.ok(!classes.has("nsh-empty"));
+  // One side of no size is no size too.
+  player.op_f(["f", 2, 8, 8, 40, 0]);
+  assert.ok(classes.has("nsh-empty"));
+  // What the class takes away: the border overlay, the outline and the shadow.
+  assert.match(source, /\.nsh-empty > \.nsh-border \{ display: none; \}/);
+  assert.match(source, /\.nsh-v\.nsh-empty \{ outline: none; box-shadow: none; \}/);
+});
+
+test("a key event without `key` falls back to its physical key instead of throwing", () => {
+  assert.equal(keyCode({ code: "KeyA" }), 97);
+  assert.equal(keyCode({ key: null, code: "Digit3" }), 51);
+  assert.equal(keyCode({}), -1);
+  assert.equal(keyCode({ key: "a", code: "KeyA" }), 97);
 });

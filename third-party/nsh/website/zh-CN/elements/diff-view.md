@@ -1,6 +1,6 @@
 ---
 title: DiffView
-description: DiffView 组件：两段文本之间或一个补丁中的改动，并排或合并显示，高亮行内改动的单词，未改动的行折叠成可以展开的分隔行，带语法高亮、自动换行、针对每处改动的操作、行选择和评审批注。
+description: DiffView 组件：两段文本之间或一个补丁中的改动，并排或合并显示，高亮行内改动的单词，未改动的行折叠成可以展开的分隔行，带语法高亮、自动换行、针对每处改动的操作、可选择的代码、行选择和评审批注。
 group: base
 demo: el-diff-view
 ---
@@ -391,6 +391,12 @@ const follow = (pageY: number) => diff.setScrollOffset({ x: 0, y: (pageY - ruler
 
 标记的 `index` 就是该改动在 `hunks()` 中的序号，它的 `oldLines` 和 `newLines` 可以区分新增的改动（没有旧行）和删除的改动（没有新行），用来给标记上色。
 
+<a id="selecting-the-code"></a>
+
+## 选择代码
+
+代码是可选择的文本：在代码上拖动可以跨行选中，双击选中一个单词，三击选中一行，按住 Shift 扩展选区，用平台的复制操作（Cmd+C 或 Ctrl+C；终端里是 Ctrl+Shift+C）复制。并排视图的两侧各自选择，选区停留在开始的那一侧；统一视图的一列是一段文本。行号、`+` / `−` 标记和竖条、分隔行、文件标题以及应用的控件和批注都不进入选区，复制得到的只有代码。开启 `softWrap` 时，换行的一行复制时完整给出，换行处没有换行符，三击会选中它的所有行。在行号上选中行的方式如下文所述，与选择代码互不影响。
+
 <a id="review-comments"></a>
 
 ## 评审评论
@@ -488,7 +494,7 @@ const drafting = signal<DiffLineRange | null>(null);
 | `background` | `.background(..)` | `boolean` | `true` | 改动的行带底色。 |
 | `fontFamily` | `.font_family(..)` | `string` | 主题的 `font-mono` | 文本的字体。 |
 | `fontSize` | `.font_size(..)` | `number` | `13` | 字号，单位为点。 |
-| `lineHeight` | `.line_height(..)` | `number` | `20` | 一行的高度，单位为点。 |
+| `lineHeight` | `.line_height(..)` | `number` | `20` | 一行的高度，单位为点；在终端里一行就是一个 Cell。 |
 | `renderSeparator` | `.render_separator(..)` | `(separator: DiffSeparator) => JSX.Element` | | 绘制折叠行的分隔行。 |
 | `renderHunkActions` | `.render_hunk_actions(..)` | `(hunk: DiffHunk) => JSX.Element` | | 应用在每处改动上的操作。 |
 | `softWrap` | `.soft_wrap(..)` | `boolean` | `false` | 长行在这一侧的宽度处换行。 |

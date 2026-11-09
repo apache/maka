@@ -19,7 +19,7 @@ use std::{
 use nsh_core::{
     EventKind, NodeId, Op, Prop, ROOT_ID,
     keymap::{KeyBinding, Keystroke, When, apple_keys},
-    platform::{Os, Renderer},
+    platform::Idiom,
 };
 use rquickjs::qjs;
 
@@ -33,11 +33,18 @@ struct Binding {
     /// The keystroke as the app wrote it (what the handler gets).
     text: String,
     keystroke: Keystroke,
+    options: Options,
+    handler: V,
+}
+
+/// How a binding fires: `keymap.bind`'s options.
+#[derive(Clone, Copy, Default)]
+struct Options {
     when: When,
     repeat: bool,
+    pass_through: bool,
     fallback: bool,
     within: Option<NodeId>,
-    handler: V,
 }
 
 /// A context's bindings, oldest first.
@@ -70,7 +77,7 @@ pub(crate) fn set_focus_path(cx: Ctx, path: &[NodeId]) {
 
 fn scoped_node(cx: Ctx, value: Raw, operation: &str) -> R<NodeId> {
     let environment = crate::env::current(cx);
-    if !environment.native_focus_scopes && environment.renderer != Renderer::Terminal {
+    if !environment.native_focus_scopes && environment.idiom != Idiom::Terminal {
         return Err(type_error(
             cx,
             &format!("{operation}: requires native focus scopes"),
@@ -86,10 +93,9 @@ fn os(cx: Ctx) -> nsh_core::platform::Os {
 }
 
 /// Whether shortcuts follow Apple's conventions here (`mod` is Command):
-/// the app's OS, or for a browser the platform it runs on. Terminals use Control.
+/// the app's OS, or for a browser the platform it runs on.
 fn apple(cx: Ctx) -> bool {
-    let environment = crate::env::current(cx);
-    !environment.uses_terminal_keyboard() && apple_keys(os(cx), environment.apple_keyboard)
+    apple_keys(os(cx), crate::env::current(cx).apple_keyboard)
 }
 
 /// The `keymap` object.
@@ -107,20 +113,20 @@ fn make(cx: Ctx) -> Raw {
     made.map_or(qjs::JS_EXCEPTION, V::take)
 }
 
-/// The options: `when` (`undefined`, `"always"` or `"notEditing"`) and
-/// `repeat`, a supported fallback phase and a native focus scope.
-fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, bool, Option<NodeId>)> {
+/// The options: `when` (`undefined`, `"always"` or `"notEditing"`),
+/// `repeat`, `passThrough`, `fallback` and `within`.
+fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
     if js::is_nullish(options) {
-        return Ok((When::Auto, false, false, None));
+        return Ok(Options::default());
     }
     if !js::is_object(options) {
         return Err(type_error(cx, "keymap.bind: options must be an object"));
     }
     let repeat = js::to_bool(cx, js::get(cx, options, "repeat")?.raw());
+    let pass_through = js::to_bool(cx, js::get(cx, options, "passThrough")?.raw());
     let fallback = js::to_bool(cx, js::get(cx, options, "fallback")?.raw());
     let environment = crate::env::current(cx);
-    if fallback && !environment.fallback_key_bindings && environment.renderer != Renderer::Terminal
-    {
+    if fallback && !environment.fallback_key_bindings && environment.idiom != Idiom::Terminal {
         return Err(type_error(
             cx,
             "keymap.bind fallback: requires native fallback keyboard shortcuts",
@@ -132,7 +138,13 @@ fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, bool, Option<NodeId>)>
         .transpose()?;
     let value = js::get(cx, options, "when")?;
     if value.is_undefined() {
-        return Ok((When::Auto, repeat, fallback, within));
+        return Ok(Options {
+            when: When::Auto,
+            repeat,
+            pass_through,
+            fallback,
+            within,
+        });
     }
     let when = match js::to_string(cx, value.raw())?.as_str() {
         "always" => When::Always,
@@ -144,7 +156,13 @@ fn parse_options(cx: Ctx, options: Raw) -> R<(When, bool, bool, Option<NodeId>)>
             ));
         }
     };
-    Ok((when, repeat, fallback, within))
+    Ok(Options {
+        when,
+        repeat,
+        pass_through,
+        fallback,
+        within,
+    })
 }
 
 native! {
@@ -162,7 +180,8 @@ native! {
         let text = js::to_string(cx, args.get(0))?;
         let keystroke = Keystroke::parse_with(&text, apple(cx))
             .map_err(|e| type_error(cx, &format!("keymap.label: {e}")))?;
-        js::string(cx, &keystroke.label(os(cx), apple(cx)))
+        let ctrl = crate::env::current(cx).ctrl_for_command;
+        js::string(cx, &keystroke.pressed(ctrl).label(os(cx), apple(cx)))
     }
 }
 
@@ -185,20 +204,14 @@ native! {
             };
             (vec![(text, V::dup(cx, args.get(1)))], args.get(2))
         };
-        let (when, repeat, fallback, within) = parse_options(cx, options)?;
+        let options = parse_options(cx, options)?;
         let (os, apple) = (os(cx), apple(cx));
-        // A terminal uses the Control-based host shortcuts on every OS.
-        let reserved_os = if crate::env::current(cx).uses_terminal_keyboard() {
-            Os::Linux
-        } else {
-            os
-        };
         // Every binding is checked before any is made.
         let mut parsed = Vec::with_capacity(pairs.len());
         for (text, handler) in pairs {
             let keystroke = Keystroke::parse_with(&text, apple)
                 .map_err(|e| type_error(cx, &format!("keymap.bind: {e}")))?;
-            if let Some(why) = keystroke.reserved(reserved_os) {
+            if let Some(why) = keystroke.reserved(os) {
                 return Err(type_error(
                     cx,
                     &format!("keymap.bind: {text:?} cannot be bound: {why}"),
@@ -222,10 +235,7 @@ native! {
                 id: first_id + i as u32,
                 text,
                 keystroke,
-                when,
-                repeat,
-                fallback,
-                within,
+                options,
                 handler,
             },
         ));
@@ -285,9 +295,10 @@ fn send(cx: Ctx) -> R<()> {
         .borrow()
         .iter()
         .map(|b| {
-            let mut binding = KeyBinding::new(b.id, b.keystroke, b.when, b.repeat);
-            binding.fallback = b.fallback;
-            binding.within = b.within;
+            let mut binding = KeyBinding::new(b.id, b.keystroke, b.options.when, b.options.repeat)
+                .passing_through(b.options.pass_through);
+            binding.fallback = b.options.fallback;
+            binding.within = b.options.within;
             binding
         })
         .collect();
@@ -348,9 +359,13 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
   /** Fire again on the auto-repeats of a held key (default false: once until
    * the key is released). */
   repeat?: boolean;
+  /** Let the key go on after the handler runs, as if nothing were bound
+   * (default false: the platform consumes the key). A binding of `"tab"`
+   * that closes a popup lets the focus move on as Tab moves it. */
+  passThrough?: boolean;
   /** Run only after native controls, editing, selection and navigation leave
    * the key unhandled. Regular bindings keep their earlier priority.
-   * Supported by terminal and GPUI backends; throws without host support. */
+   * Supported by native desktop and terminal backends; throws without host support. */
   fallback?: boolean;
   /** Fires while native keyboard focus is on this node or a descendant.
    * A nonmatching scope leaves older bindings and native defaults eligible.
@@ -371,7 +386,7 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
  * `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1` to
  * `f24`; they match on any keyboard layout, and menu shortcuts
  * (`nsh/desktop`) take the same. The platform consumes a key that fires a
- * binding; when several bindings have its keystroke, the newest that may
+ * binding, unless the binding passes it through (`passThrough`); when several bindings have its keystroke, the newest that may
  * fire runs. */
 export interface Keymap {
   /** Runs `handler` when `keystroke` is pressed (it gets `{ keystroke }`,
@@ -385,7 +400,8 @@ export interface Keymap {
   bind(bindings: Record<string, (e: { keystroke: string }) => void>, options?: KeyBindingOptions): () => void;
   /** `keystroke` as menus and hints show it where the app runs: `"⇧⌘L"` on
    * Apple platforms (and in a browser on one), `"Ctrl+Shift+L"` elsewhere,
-   * for `"mod+shift+l"`. Throws on an invalid keystroke. */
+   * for `"mod+shift+l"`; `"⌃⇧L"` in a macOS terminal that cannot report
+   * Command, where Ctrl stands in for it. Throws on an invalid keystroke. */
   label(keystroke: string): string;
   /** Reads the latest host-reported native focus path.
    * Includes the node itself and its descendants; false with no focus.

@@ -4,16 +4,24 @@ const pointer = platform.desktop;
 import { Animated, createAnimatedValue, Easing } from "nsh";
 import { PanResponder } from "nsh";
 import { Icon, type IconName } from "../icons";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, density, finish, hint, IconTile, isDark, mono, Press, radius, Row, Stat, tints } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, density, finish, hint, IconTile, isDark, mono, Press, radius, Row, Stat, terminal, tints } from "../ui";
 
-/** A dot matrix behind a stage, drawn once. */
+/** The dots of a matrix `step` apart along `length`, centered: as far from either end, at least 8. */
+function along(length: number, step: number): number[] {
+  const gaps = Math.max(0, Math.floor((length - 16) / step));
+  const first = (length - gaps * step) / 2;
+  return Array.from({ length: gaps + 1 }, (_, i) => first + i * step);
+}
+
+/** A dot matrix behind a stage, drawn once. In a terminal its dots are two Cells across and two rows down apart:
+ * at 14 points, under two Cells and one row, they would dot nearly every Cell. */
 function Dots() {
   return (
     <Canvas
       style={{ pointerEvents: "none", position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
       draw={(cx, { width, height }) => {
         cx.fillStyle = colors.line;
-        for (let x = 8; x < width; x += 14) for (let y = 8; y < height; y += 14) cx.fillRect(x, y, 1.5, 1.5);
+        for (const x of along(width, terminal ? 16 : 14)) for (const y of along(height, terminal ? 32 : 14)) cx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5);
       }}
     />
   );
@@ -85,7 +93,7 @@ function Transformable() {
             transform: [{ translateX: x }, { translateY: y }, { scale }, { rotate: angle }],
           }}
         >
-          <Image src="https://picsum.photos/seed/nsh-card/400/300" style={{ flex: 1 }} />
+          <Image src="https://pbs.twimg.com/media/HS7_82eXsAAa-Hx?format=jpg&name=small" style={{ flex: 1 }} />
         </View>
       </View>
       <View style={{ flexDirection: "row" }}>

@@ -145,6 +145,7 @@ import {
 } from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   canFoldTurn,
+  foldsByDefault,
   TurnPanel,
   TurnSummary,
   turnOutcome,
@@ -329,7 +330,7 @@ const readingColumn = {
   maxWidth: 800,
   alignSelf: 'center',
   paddingLeft: 16,
-  paddingRight: platform.isTerminal ? 24 : 16,
+  paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
 
 export function Conversation(props: ConversationProps) {
@@ -441,7 +442,8 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'reserving'; frozen: FrozenSend }
     | { kind: 'failed'; frozen: FrozenSend; error: UiText };
   const freezeState = signal<FreezeState>({ kind: 'idle' });
-  const sending = () => freezeState().kind === 'reserving';
+  const checkingModel = signal(false);
+  const sending = () => freezeState().kind === 'reserving' || checkingModel();
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
@@ -485,12 +487,7 @@ export function Conversation(props: ConversationProps) {
   const turnState = (id: string) => {
     let state = turnStates.get(id);
     if (!state) {
-      state = {
-        expanded: signal<{
-          open: boolean;
-          answerKey: string | undefined;
-        } | null>(null),
-      };
+      state = { expanded: signal<boolean | null>(null), ran: false };
       turnStates.set(id, state);
     }
     return state;
@@ -611,11 +608,11 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => (canOpenWorker() ? openWorker : undefined),
   );
-  const turnExpanded = (turn: TurnPresentation) => {
-    if (!canFoldTurn(turn)) return true;
-    const stored = turnState(turn.turnId).expanded();
-    if (stored && stored.answerKey === turn.answerKey) return stored.open;
-    return false;
+  const turnExpanded = (turn: TurnPresentation) =>
+    !canFoldTurn(turn) || (turnState(turn.turnId).expanded() ?? !foldsByDefault(turn));
+  // Showing something in a folded turn opens it; an open turn keeps folding by default.
+  const unfoldTurn = (turn: TurnPresentation) => {
+    if (!turnExpanded(turn)) turnState(turn.turnId).expanded.set(true);
   };
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
@@ -700,14 +697,17 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
+      // On the desktop a turn's summary leads it from its first step, so finishing
+      // changes only its text and fold; the terminal adds it once the turn ends.
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' && turnOutcome(turn) === 'completed')) &&
+          (row?.role === 'failure' &&
+            (platform.idiom !== 'terminal' || turnOutcome(turn) === 'completed'))) &&
         !summaries.has(turn.turnId) &&
-        turnOutcome(turn) !== null
+        (platform.idiom !== 'terminal' || turnOutcome(turn) !== null)
       ) {
         summaries.add(turn.turnId);
         result.push({
@@ -1343,9 +1343,9 @@ export function Conversation(props: ConversationProps) {
         list?.scrollToEnd({ animated: false });
       }
       if (!alive) return;
-      transcriptStatus.set('live');
       immediateTranscriptRetry = true;
       if (!historyDestination.failed) error.set('');
+      transcriptStatus.set('live');
       // Subscribe before reading history so facts cannot fall between fences.
       // The snapshot is sufficient for readiness; no new event is required.
       for (;;) {
@@ -1524,11 +1524,7 @@ export function Conversation(props: ConversationProps) {
     reading.set('chat');
     if (row.turnId) {
       const turn = projection().turns.get(row.turnId);
-      if (turn)
-        turnState(turn.turnId).expanded.set({
-          open: true,
-          answerKey: turn.answerKey,
-        });
+      if (turn) unfoldTurn(turn);
     }
     const id = stableRowId(row);
     const entry = display().find((item) =>
@@ -1929,6 +1925,12 @@ export function Conversation(props: ConversationProps) {
 
   const nativeSteer = (delivery: 'steer' | 'queue') =>
     delivery === 'steer' && invocation() !== null && runBackend() === 'model';
+  const modelLoading = (delivery: 'steer' | 'queue' = 'steer') =>
+    !nativeSteer(delivery) && backend() !== null && modelDetails().kind === 'loading';
+  const autoSending = () => {
+    const pending = autoSend();
+    return pending !== null && (!!pending.first || draft() === pending.text);
+  };
   const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
     const expectedInvocationId = invocation() ?? undefined;
     if (expectedInvocationId !== undefined && runBackend() === null)
@@ -1950,7 +1952,7 @@ export function Conversation(props: ConversationProps) {
     };
   };
 
-  const sendBlockedReason = () => {
+  const sendBlockedReasonFor = (includeAutoSend: boolean) => {
     if (transcriptStatus() === 'closing')
       return tr('Closing disconnected updates… Your draft is kept.');
     if (transcriptStatus() === 'failed')
@@ -1973,12 +1975,14 @@ export function Conversation(props: ConversationProps) {
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
-    if (sending()) return tr('Saving message… New typing is kept.');
+    if (sending() || (includeAutoSend && autoSending()))
+      return tr('Saving message… New typing is kept.');
     if (freezeState().kind === 'failed')
       return tr('Retry or remove the unsaved message before sending another.');
     if (!receiptsKnown()) return tr('Checking send status…');
     return '';
   };
+  const sendBlockedReason = () => sendBlockedReasonFor(true);
 
   const refreshSends = async () => {
     const operations = await pendingSends(client);
@@ -2075,7 +2079,31 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     try {
-      const selected = sendSelection(delivery, expectedBackend);
+      let targetBackend = expectedBackend;
+      if (modelLoading(delivery)) {
+        const capturedBackend = expectedBackend ?? backend() ?? undefined;
+        const capturedAttachments = attachments.ids();
+        checkingModel.set(true);
+        try {
+          await refreshModel();
+        } finally {
+          if (alive) checkingModel.set(false);
+        }
+        if (!alive) return;
+        if (sendBlockedReason()) {
+          notice.set(
+            uiMessage(
+              'This message was not sent. Your draft is kept; check the status below before trying again.',
+            ),
+          );
+          return;
+        }
+        if (!first && (draft() !== text || !attachments.same(capturedAttachments))) {
+          throw new UiError('The draft changed before confirmation. Send again to confirm it.');
+        }
+        targetBackend = capturedBackend;
+      }
+      const selected = sendSelection(delivery, targetBackend);
       const edit = { text, ...attachments.snapshot() };
       const frozen: FrozenSend = {
         id: `draft-send-${++sendSequence}`,
@@ -2445,7 +2473,7 @@ export function Conversation(props: ConversationProps) {
     retrySend: retryOriginal,
     checkSend,
     dismissSend: dismissOriginal,
-    recovering: () => !receiptsKnown() || sending(),
+    recovering: () => !receiptsKnown() || sending() || autoSending(),
     stopping,
     resumable,
     resuming: confirmingContinuation,
@@ -2513,10 +2541,7 @@ export function Conversation(props: ConversationProps) {
       }
       const turn = projection().turns.get(group.turnId);
       if (!turn) return;
-      turnState(turn.turnId).expanded.set({
-        open: true,
-        answerKey: turn.answerKey,
-      });
+      unfoldTurn(turn);
       const state = groupState(group.key);
       if (!state.open()) {
         innerReader.set(group.closed ? group.key : null);
@@ -2753,11 +2778,13 @@ export function Conversation(props: ConversationProps) {
   // unless the draft was changed first.
   effect(() => {
     const pending = autoSend();
-    if (pending === null || sendBlockedReason()) return;
+    if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
     untracked(() => {
-      autoSend.set(null);
-      if (pending.first || draft() === pending.text)
-        void send(pending.text, undefined, pending.first);
+      batch(() => {
+        autoSend.set(null);
+        if (pending.first || draft() === pending.text)
+          void send(pending.text, undefined, pending.first);
+      });
     });
   });
   cleanup(() => {
@@ -2822,7 +2849,7 @@ export function Conversation(props: ConversationProps) {
 
   const railShown = () => ready() && navigationItems().length > 1;
   // The desktop rail's width, kept on both sides so the reading column stays centered.
-  const railInset = () => (!platform.isTerminal && railShown() ? railWidth() + 8 : 0);
+  const railInset = () => (platform.idiom !== 'terminal' && railShown() ? railWidth() + 8 : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
@@ -2879,7 +2906,7 @@ export function Conversation(props: ConversationProps) {
           ) : undefined
         }
         views={
-          platform.isTerminal || ownHandle.empty() ? undefined : (
+          platform.idiom === 'terminal' || ownHandle.empty() ? undefined : (
             <View role="tablist" style={{ flexDirection: 'row', gap: 2 }}>
               <ViewSegment
                 label={tr('Chat')}
@@ -2922,7 +2949,7 @@ export function Conversation(props: ConversationProps) {
       <View
         style={{
           // The desktop's header holds these views.
-          display: ownHandle.empty() || !platform.isTerminal ? 'none' : 'flex',
+          display: ownHandle.empty() || platform.idiom !== 'terminal' ? 'none' : 'flex',
           flexDirection: 'row',
           flexWrap: 'wrap',
           paddingHorizontal: 16,
@@ -3029,7 +3056,7 @@ export function Conversation(props: ConversationProps) {
               // column centered in the window.
               contentStyle={{
                 paddingLeft: railInset(),
-                paddingBottom: platform.isTerminal ? 0 : 16,
+                paddingBottom: platform.idiom === 'terminal' ? 0 : 16,
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
@@ -3094,6 +3121,7 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <TurnSummary
                             turn={turn}
+                            state={turnState(initial.turnId)}
                             groups={groups}
                             row={currentRow}
                             expanded={() => turnExpanded(turn())}
@@ -3105,10 +3133,7 @@ export function Conversation(props: ConversationProps) {
                               preview: props.previewImage,
                             }}
                             toggle={(open) => {
-                              turnState(initial.turnId).expanded.set({
-                                open,
-                                answerKey: turn().answerKey,
-                              });
+                              turnState(initial.turnId).expanded.set(open);
                               if (open) reveal();
                             }}
                           />
@@ -3130,11 +3155,22 @@ export function Conversation(props: ConversationProps) {
                             invocation(),
                             group().turnId,
                           );
+                        const liveTools = computed(() =>
+                          toolActivity().filter((item) =>
+                            group().members.some(
+                              (member) =>
+                                member.kind === 'activity' &&
+                                member.toolUseId === item.toolUseId &&
+                                group().toolIds.includes(item.toolUseId),
+                            ),
+                          ),
+                        );
                         return (
                           <TurnPanel
                             group={group}
                             turn={turn}
                             toolActivity={tool}
+                            liveTools={liveTools}
                             toolProgress={toolProgress}
                             state={groupState(initial.group.key)}
                             row={currentRow}
@@ -3251,20 +3287,22 @@ export function Conversation(props: ConversationProps) {
                               return;
                             innerReader.set(key);
                           }}
-                          finalActions={(row, ownerKey) => (
+                          finalActions={(row, ownerKey, menu) => (
                             <FinalActions
                               row={row}
                               ownerKey={ownerKey}
                               sessionId={sessionId}
                               through={() => latestKnown}
                               fork={props.fork}
+                              menu={menu}
                               extra={
-                                !platform.isTerminal && props.edit ? (
+                                platform.idiom !== 'terminal' && props.edit ? (
                                   <MessageEdit
                                     regenerate
                                     row={() => loadedOpening(row().turnId)}
                                     sessionId={sessionId}
                                     through={() => latestKnown}
+                                    menu={menu}
                                     opensTurn={() => true}
                                     edit={props.edit!}
                                   />
@@ -3273,7 +3311,7 @@ export function Conversation(props: ConversationProps) {
                             />
                           )}
                           failureActions={
-                            platform.isTerminal
+                            platform.idiom === 'terminal'
                               ? undefined
                               : (row) => (
                                   // Only where the conversation ends in this failure.
@@ -3297,13 +3335,14 @@ export function Conversation(props: ConversationProps) {
                                 )
                           }
                           editMessage={
-                            !platform.isTerminal && props.edit
-                              ? (row, ownerKey) => (
+                            platform.idiom !== 'terminal' && props.edit
+                              ? (row, ownerKey, menu) => (
                                   <MessageEdit
                                     row={row}
                                     ownerKey={ownerKey}
                                     sessionId={sessionId}
                                     through={() => latestKnown}
+                                    menu={menu}
                                     opensTurn={() => opensTurn(row())}
                                     edit={props.edit!}
                                   />
@@ -3317,7 +3356,7 @@ export function Conversation(props: ConversationProps) {
                 </View>
               )}
             </List>
-            <If when={platform.isTerminal && railShown()}>{rail()}</If>
+            <If when={platform.idiom === 'terminal' && railShown()}>{rail()}</If>
             <View
               style={[
                 {
@@ -3350,7 +3389,7 @@ export function Conversation(props: ConversationProps) {
             )}
           </Each>
         </View>
-        <If when={!platform.isTerminal && railShown()}>
+        <If when={platform.idiom !== 'terminal' && railShown()}>
           <View
             style={{
               position: 'absolute',

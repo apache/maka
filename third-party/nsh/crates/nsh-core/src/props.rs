@@ -183,6 +183,11 @@ pub struct AccessibilityState {
     /// The current item of a set (ARIA's `aria-current`): a pagination's
     /// page, a wizard's step.
     pub current: Option<AccessibilityCurrent>,
+    /// Opens a popup (ARIA's `aria-haspopup`): a menu's, a popover's or a
+    /// select's trigger, whose `expanded` says whether the popup is open;
+    /// an `expanded` element without it is a disclosure, which shows its
+    /// content in place (a collapsible's or an accordion's trigger).
+    pub has_popup: bool,
 }
 
 /// The value of a range or textual element (`accessibilityValue`).
@@ -317,6 +322,14 @@ pub struct Ripple {
 /// Non-style properties of a view that only the platform needs.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ViewProps {
+    /// Resolved overlay placement for native grid projection; ordinary views have none.
+    pub overlay_anchor: Option<crate::overlay::PlacedAnchor>,
+    /// Tab and screen readers go through the view's children as they are
+    /// on screen, along this axis and then across it, instead of in tree
+    /// order. The core sets it on a list in its parent's viewport: a list
+    /// recycles its cells, so in the tree they are not in their rows'
+    /// order. Scroll views read their content so without it.
+    pub screen_order: Option<crate::geometry::Axis>,
     /// Which touches the view and its subtree receive.
     pub pointer_events: PointerEvents,
     /// Extends the touch area beyond the view's bounds.
@@ -338,24 +351,29 @@ pub struct ViewProps {
     /// `windowDrag` (desktops): pressing the view drags the window; `None`
     /// leaves it to the views around it.
     pub window_drag: Option<bool>,
+    /// `windowControl` (desktops): the system window button the view acts
+    /// as.
+    pub window_control: Option<crate::desktop::WindowControl>,
+    /// `windowResize` (desktops): the edge or corner of a frameless window
+    /// pressing the view resizes it by.
+    pub window_resize: Option<crate::desktop::ResizeEdge>,
     /// `focusable`: whether the view is a stop of the keyboard focus (Tab):
     /// `Some(true)` makes any view one, whether or not it takes presses (a
     /// chart, a slider, a list that moves its selection with the arrow
     /// keys); `Some(false)` keeps a view that takes presses out; `None`, the
     /// default, leaves it to the presses ([`ViewProps::focus_stop`]).
     pub focusable: Option<bool>,
-    /// The logical parent of a popup's native focus-return scope: another
-    /// popup, or the surface/modal root. Overlays have native siblings even when
-    /// logically nested, so native ancestry cannot recover this relation.
-    /// `None` leaves focus unchanged. The terminal and GPUI backends capture
-    /// the real opener before a batch, focus popup controls after it, and
-    /// restore a still-valid opener when their popup closes.
-    pub focus_return_parent: Option<crate::NodeId>,
-    /// The view is a selectable view (`View` with `selectable`): the
-    /// texts in its subtree whose style is not `userSelect: "none"` share one
+    /// The view is a selectable view (`View`'s `selectable`): the
+    /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
     pub selectable_view: bool,
+    /// The text continues the text before it in document order, as a long
+    /// line's next wrapped part (`Element::continues_text`): in a
+    /// selectable view a copy joins the two with nothing between them,
+    /// and a double or triple click selects across them
+    /// ([`crate::selection::SelectionTexts::continues`]).
+    pub continues_text: bool,
 }
 
 impl ViewProps {

@@ -98,6 +98,19 @@ pub struct Selection {
     pub end: u32,
 }
 
+/// The selection of a selectable view changed
+/// ([`Interactive::on_text_selection_change`](super::Interactive::on_text_selection_change)).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TextSelectionEvent {
+    /// The selected text, as a copy gives it; empty when nothing is
+    /// selected.
+    pub text: String,
+    /// Where it starts in the copy of the whole view (what a select all
+    /// would copy), in UTF-16 code units, when the platform knows it.
+    pub start: Option<u32>,
+}
+
 /// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
 /// mention's suggestions) is placed with it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -187,6 +200,43 @@ pub struct OverlayPosition {
     pub bounds: Bounds<Points>,
     /// The room on that side, inside the safe area less the margin.
     pub available: Size<Points>,
+}
+
+/// Why a hint asks to show or hide (`Overlay::on_hint_show` /
+/// `on_hint_hide`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HintReason {
+    /// The pointer rested on its anchor, or left or pressed it.
+    #[default]
+    Pointer,
+    /// The keyboard focus came to its anchor, or left it.
+    Focus,
+    /// Escape was pressed while it was shown.
+    Escape,
+    /// It left the view.
+    View,
+}
+
+impl HintReason {
+    /// Its name in an event's payload.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pointer => "pointer",
+            Self::Focus => "focus",
+            Self::Escape => "escape",
+            Self::View => "view",
+        }
+    }
+}
+
+pub(crate) fn hint_reason(p: &EventPayload) -> Option<Cow<'_, HintReason>> {
+    Some(Cow::Owned(match string(p, "reason") {
+        Some("focus") => HintReason::Focus,
+        Some("escape") => HintReason::Escape,
+        Some("view") => HintReason::View,
+        _ => HintReason::Pointer,
+    }))
 }
 
 /// A field of a map payload.
@@ -314,6 +364,18 @@ pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
     Some(Cow::Owned(Selection {
         start: number(p, "start") as u32,
         end: number(p, "end") as u32,
+    }))
+}
+
+/// The selection of a selectable view (`text`, `start`).
+pub(crate) fn selected_text(p: &EventPayload) -> Option<Cow<'_, TextSelectionEvent>> {
+    let start = match field(p, "start") {
+        Some(PayloadValue::Number(n)) if *n >= 0.0 => Some(*n as u32),
+        _ => None,
+    };
+    Some(Cow::Owned(TextSelectionEvent {
+        text: string(p, "text").unwrap_or_default().to_owned(),
+        start,
     }))
 }
 

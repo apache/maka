@@ -555,6 +555,9 @@ pub fn DockArea(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> impl IntoElem
         .overflow_hidden()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        // A terminal keeps no percentage height for a box of content: the
+        // area grows into its parent's room instead.
+        .when(crate::terminal::is_terminal(), |v| v.flex_grow(1.0))
         .on_layout(move |frame: &Bounds<Points>| a.size.set(frame.size))
         .child(
             when(
@@ -639,6 +642,10 @@ pub(crate) struct AreaCx {
     /// The area's size.
     size: Signal<Size<Points>>,
     dock_drag: Signal<Option<DockDrag>>,
+    /// Bumped each time the drop indicator's overlay is first laid out (a
+    /// commit after it opened): the key of the drag preview's row, which
+    /// mounts the preview again, above the indicator.
+    pub(crate) indicator_shown: Signal<u32>,
     /// The last edit of a controlled area, until the app passes a layout.
     pending: Stored<Option<Area>>,
 }
@@ -680,6 +687,7 @@ impl AreaCx {
             presented: signal(None),
             size,
             dock_drag: signal(None),
+            indicator_shown: signal(0),
             pending: stored(None),
         }
     }
@@ -1167,6 +1175,7 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                     .map_or(Points::ZERO, |info| fit_dock(a, placement, info.size)),
             };
             let open = move || info.get().is_some_and(|info| info.open);
+            let terminal = crate::terminal::is_terminal();
             let (axis, edge) = match placement {
                 DockPlacement::Left => (Axis::Horizontal, HandleEdge::Trailing),
                 DockPlacement::Right => (Axis::Horizontal, HandleEdge::Leading),
@@ -1188,6 +1197,13 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                 .flex_col()
                 .overflow_hidden()
                 .style_with(move |s| match placement {
+                    // A terminal keeps no explicit height for a box of
+                    // content: the dock's rows are its basis in the column.
+                    // Its handle's line takes a Cell of its own on the
+                    // edge it hugs, not one of the dock's tabs or content.
+                    DockPlacement::Bottom if terminal => s.basis(size()).pt(px(24.0)),
+                    DockPlacement::Left if terminal => s.w(size()).pr(px(8.0)),
+                    DockPlacement::Right if terminal => s.w(size()).pl(px(8.0)),
                     DockPlacement::Bottom => s.h(size()),
                     _ => s.w(size()),
                 })
@@ -1343,6 +1359,13 @@ fn end_dock_drag(a: AreaCx, placement: DockPlacement, raw: Points) {
 /// `renderDragPreview`, in an overlay at the pointer that takes no touches.
 /// It moves by a transform, not its frame, so the drop indicator's layout
 /// animation (`tab_group.rs`) leaves it at the pointer.
+///
+/// Overlays stack in the order they open, and the drop indicator opens
+/// once the drag has a target, after the preview: the preview is mounted
+/// again each time the indicator opens, a row keyed by
+/// [`AreaCx::indicator_shown`] (a region run again would keep its node and
+/// its place), so it stays on top (the indicator's outline would cross the
+/// dragged tab's label in a terminal).
 fn drag_preview(a: AreaCx) -> AnyElement {
     let shown = computed(move || {
         a.drag.with(|drag| drag.is_some()) && a.props.render_drag_preview.with(Option::is_some)
@@ -1356,25 +1379,39 @@ fn drag_preview(a: AreaCx) -> AnyElement {
             y.set(at.y.0);
         }
     });
-    when(
-        move || shown.get(),
-        move || {
-            overlay()
-                .pointer_events(PointerEvents::None)
-                .focusable(false)
-                .left(Points::ZERO)
-                .top(Points::ZERO)
-                .bind_translate_x(&x)
-                .bind_translate_y(&y)
-                .child(dynamic(move || {
-                    let panel = dragged.get()?;
-                    let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
-                    a.props
-                        .render_drag_preview
-                        .get()
-                        .map(|r| r.render("preview", tab))
-                }))
+    // One row while the drag shows its preview, keyed by the indicator's
+    // openings: a new key is a new row, so the old preview's node goes and
+    // a new one opens, in the same commit.
+    each(
+        move || match shown.get() {
+            true => vec![a.indicator_shown.get()],
+            false => Vec::new(),
         },
+        |&opened: &u32| opened,
+        move |_, _| preview(a, dragged, x, y),
     )
-    .into_element()
+}
+
+/// The drag preview's overlay, at the pointer by `x` and `y`.
+fn preview(
+    a: AreaCx,
+    dragged: Memo<Option<PanelId>>,
+    x: AnimatedValue,
+    y: AnimatedValue,
+) -> impl IntoElement {
+    overlay()
+        .pointer_events(PointerEvents::None)
+        .focusable(false)
+        .left(Points::ZERO)
+        .top(Points::ZERO)
+        .bind_translate_x(&x)
+        .bind_translate_y(&y)
+        .child(dynamic(move || {
+            let panel = dragged.get()?;
+            let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
+            a.props
+                .render_drag_preview
+                .get()
+                .map(|r| r.render("preview", tab))
+        }))
 }

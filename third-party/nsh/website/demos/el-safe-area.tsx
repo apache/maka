@@ -1,6 +1,7 @@
 import { mount, signal, Text, View } from "nsh";
 import { safeArea, safeAreaInsets } from "nsh";
-import { button, buttonText, desktop, tint, ui } from "./palette";
+import { Toggle } from "nsh/base";
+import { desktop, tint, toggleLabel, toggleLook, ui } from "./palette";
 
 type Edge = "top" | "right" | "bottom" | "left";
 
@@ -26,7 +27,9 @@ function Insets() {
 }
 
 function App() {
-  const edges = signal<Edge[]>([...EDGES]);
+  // A phone held upright: the status bar and the home indicator. Two edges
+  // off show the toggles' off state beside the on one.
+  const edges = signal<Edge[]>(["top", "bottom"]);
   const toggle = (edge: Edge) => edges.update((list) => (list.includes(edge) ? list.filter((e) => e !== edge) : EDGES.filter((e) => e === edge || list.includes(e))));
   const label = () => ({ fontSize: 12, color: ui().muted });
   return (
@@ -61,13 +64,9 @@ function App() {
             {(edge) => {
               const on = () => edges().includes(edge());
               return (
-                <View
-                  role="button"
-                  onPress={() => toggle(edge())}
-                  {...button("secondary", { on })}
-                >
-                  <Text style={buttonText("secondary", { on })}>{edge()}</Text>
-                </View>
+                <Toggle pressed={on()} onChange={() => toggle(edge())} {...toggleLook({ variant: "outline", text: true })}>
+                  <Text style={toggleLabel(on, { text: true })}>{edge()}</Text>
+                </Toggle>
               );
             }}
           </Each>

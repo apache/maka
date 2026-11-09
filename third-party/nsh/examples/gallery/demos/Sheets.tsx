@@ -1,59 +1,23 @@
-import { type JSX, keyboardFrame, safeArea, signal, Text, token, View, type ViewStyle, windowSize } from "nsh";
+import { type JSX, signal, Text, token, View, windowSize } from "nsh";
 import { type OpenChangeReason, Sheet } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
 import { toast } from "../toast";
-import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, desktop, hovered, Segmented, Toggle } from "../ui";
+import { alpha, Appear, backdrop, Badge, Button, Caption, Card, colors, DemoPage, desktop, hovered, Segmented, sheetGrabber, sheetPanel, Toggle } from "../ui";
 import { Avatar, createEvents, Field, pointer, Rule, Trigger } from "./OverlayUi";
 
 type Side = "left" | "right" | "bottom";
-
-/** A sheet's panel at `side`: the full height of an edge on a wide
- * window, the bottom of the screen with a grabber on a narrow one. */
-function panel(side: Side): ViewStyle {
-  const r = 16;
-  if (side === "bottom") {
-    return {
-      backgroundColor: colors.surface,
-      borderTopLeftRadius: 20,
-      borderTopRightRadius: 20,
-      borderWidth: 1,
-      borderBottomWidth: 0,
-      borderColor: colors.border,
-      maxHeight: windowSize().height - safeArea().top - 24,
-      paddingHorizontal: 16,
-      paddingTop: 8,
-      // Above the keyboard while a field has it, above the home indicator otherwise.
-      paddingBottom: Math.max(safeArea().bottom, keyboardFrame().height) + 16,
-      gap: 14,
-    };
-  }
-  return {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    width: Math.min(360, windowSize().width - 48),
-    paddingHorizontal: 20,
-    paddingTop: safeArea().top + 16,
-    paddingBottom: safeArea().bottom + 16,
-    gap: 16,
-    ...(side === "right"
-      ? { borderLeftWidth: 1, borderTopLeftRadius: r, borderBottomLeftRadius: r }
-      : { borderRightWidth: 1, borderTopRightRadius: r, borderBottomRightRadius: r }),
-  };
-}
-
-const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
 
 /** The top of a sheet: a grabber at the bottom of the screen, the title and a close button. */
 function Head(props: { side: Side; title: string; right?: JSX.Element; onClose: () => void }) {
   return (
     <View style={{ gap: 8 }}>
       <If when={props.side === "bottom"}>
-        <View style={{ width: 36, height: 5, borderRadius: 3, alignSelf: "center", backgroundColor: colors.raised }} />
+        <View style={sheetGrabber()} />
       </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Text style={{ flex: 1, fontSize: pointer ? 16 : 18, fontWeight: "600", color: colors.text }}>{props.title}</Text>
         {props.right}
-        <Trigger icon="x" variant="ghost" accessibilityLabel="Close" onPress={props.onClose} />
+        <Trigger icon="x" variant="ghost" accessibilityLabel="Close" short="×" onPress={props.onClose} />
       </View>
     </View>
   );
@@ -143,7 +107,7 @@ export function Sheets() {
             <Each of={active(applied())}>{(label) => <Badge label={label()} tone="accent" />}</Each>
           </View>
         </If>
-        <Sheet open={open()} side={side} closeOnSwipe={side === "bottom"} onOpenChange={changed("filters", (v) => open.set(v))} popupStyle={panel(side)} backdropStyle={backdrop}>
+        <Sheet open={open()} side={side} closeOnSwipe={side === "bottom"} onOpenChange={changed("filters", (v) => open.set(v))} popupStyle={sheetPanel(side)} backdropStyle={backdrop()}>
           <Head side={side} title="Filters" right={<If when={active(draft()).length > 0}><Badge label={`${active(draft()).length}`} tone="accent" /></If>} onClose={() => open.set(false)} />
           <Group title="Sort by">
             <Segmented
@@ -213,7 +177,7 @@ export function Sheets() {
           </View>
           <Button label="Edit profile" variant="secondary" selected={open()} onPress={show} />
         </View>
-        <Sheet open={open()} side={side} closeOnSwipe={side === "bottom"} onOpenChange={changed("profile", (v) => open.set(v))} popupStyle={panel(side)} backdropStyle={backdrop}>
+        <Sheet open={open()} side={side} closeOnSwipe={side === "bottom"} onOpenChange={changed("profile", (v) => open.set(v))} popupStyle={sheetPanel(side)} backdropStyle={backdrop()}>
           <Head side={side} title="Edit profile" onClose={() => open.set(false)} />
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Avatar name={name() || "?"} size={52} />
@@ -251,7 +215,7 @@ export function Sheets() {
           <Trigger label={current().label} icon="panel-left" open={open()} onPress={() => open.set(true)} />
           <Caption label={current().count ? `${current().count} unread` : "All read"} />
         </View>
-        <Sheet open={open()} side="left" onOpenChange={changed("drawer", (v) => open.set(v))} popupStyle={{ ...panel("left"), width: Math.min(280, windowSize().width - 64), paddingHorizontal: 10, gap: 2 }} backdropStyle={backdrop}>
+        <Sheet open={open()} side="left" onOpenChange={changed("drawer", (v) => open.set(v))} popupStyle={{ ...sheetPanel("left"), width: Math.min(280, windowSize().width - 64), paddingHorizontal: 10, gap: 2 }} backdropStyle={backdrop()}>
           <Text style={{ fontSize: pointer ? 12 : 13, fontWeight: "600", color: colors.faint, paddingHorizontal: 10, paddingBottom: 6 }}>Mailboxes</Text>
           <Each of={mailboxes}>
             {(m, i) => (

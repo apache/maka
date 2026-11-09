@@ -46,7 +46,7 @@ use crate::{
     nav,
     ui::{
         IconName, PageHeader, Segment, SegmentedSize, colors, desktop, header, icon, lengths,
-        motion, pane_width, pt, segmented, with_header,
+        motion, pane_width, pt, segmented, terminal, with_header,
     },
 };
 
@@ -182,8 +182,10 @@ const WATCHLIST: f32 = 380.0;
 /// phones, beside the list on desktops.
 #[component]
 pub(crate) fn Stocks() -> impl IntoElement {
-    // The shell is made again when the layout changes: read once.
-    let wide = untracked(desktop);
+    // The shell is made again when the layout changes: read once. A
+    // terminal too narrow for the stock beside the list (100 Cells) opens
+    // it over the list, as phones do.
+    let wide = untracked(desktop) && !(terminal() && untracked(pane_width) - WATCHLIST < 480.0);
     let market = Market::new();
     let quotes: Rc<[Signal<Quote>]> = market.stocks.iter().map(|s| signal(s.quote)).collect();
     let live = Live {

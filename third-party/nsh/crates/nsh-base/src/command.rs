@@ -172,7 +172,7 @@ impl CommandEntry {
         let shortcut_label = item.shortcut.as_deref().and_then(|keys| {
             let apple = apple_keys();
             match Keystroke::parse_with(keys, apple) {
-                Ok(k) => Some(SharedString::from(k.label(os(), apple))),
+                Ok(k) => Some(SharedString::from(keystroke_label(k))),
                 Err(e) => {
                     log::warn!("Command: the shortcut of `{}`: {e}", item.id);
                     None
@@ -933,7 +933,15 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
             When::NotEditing
         };
         let bind = |keys: &str, when: When, repeat: bool, f: Rc<dyn Fn()>| {
-            on_key_with(keys, KeyOptions { when, repeat }, move |_| f());
+            on_key_with(
+                keys,
+                KeyOptions {
+                    when,
+                    repeat,
+                    ..Default::default()
+                },
+                move |_| f(),
+            );
         };
         let moves = [
             ("up", Move::Previous, when),
@@ -988,6 +996,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
             KeyOptions {
                 when: When::Always,
                 repeat: false,
+                ..Default::default()
             },
             move |_| {
                 let has_query = props.searchable.get_untracked()
@@ -1063,6 +1072,13 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
                 .child(props.search_suffix.place(|e| e))
         },
     );
+    // A terminal draws a rule under the field: the GUI's border under the
+    // search bar is no Cell there, and the query would run into the
+    // first row.
+    let rule = when(
+        move || crate::terminal::is_terminal() && props.searchable.get(),
+        crate::terminal::rule_line,
+    );
     // The field went: its focus too.
     effect(move || {
         if !props.searchable.get() {
@@ -1117,6 +1133,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         .on_blur(move || root_focused.set(false))
         .child(props.header.place(|e| e))
         .child(search)
+        .child(rule)
         .child(list)
         .child(empty)
         .child(props.footer.place(|e| e))
@@ -1215,8 +1232,13 @@ fn item_row(p: Palette, entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
         })
         .project_focused(highlighted)
         .project_checked(checked)
-        .app_class(parts.item_class)
-        .inline_style(move || parts.item_style.get())
+        // A terminal marks the highlighted row itself (a band over the
+        // whole row, `crate::terminal`): the app's row look would paint
+        // a band of its own beside it. Its content (`render_item`) stays.
+        .when(!crate::terminal::is_terminal(), |v| {
+            v.app_class(parts.item_class)
+                .inline_style(move || parts.item_style.get())
+        })
         .element_ref(&me)
         // The pointer highlights a row, as long as no button is down.
         .on_mouse_move(move |e: &MouseEvent| {

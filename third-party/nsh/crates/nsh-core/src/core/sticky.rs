@@ -139,6 +139,10 @@ impl<M: TextEngine> Core<M> {
                 }
                 return None;
             }
+            // `calc()` (taffy's `calc` feature, which another crate of the
+            // build may turn on): nsh's styles never make one.
+            #[allow(unreachable_patterns)]
+            _ => return None,
         };
         let at = self.offset_in(key, view)?;
         let node = &self.nodes[key as usize];

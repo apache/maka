@@ -21,7 +21,7 @@
 
 Maka is a desktop workspace for directing and supervising agents. The interface is calm, native and compact: generous around reading and decisions, dense where comparison matters. The task stays central; activity, permissions, failures and produced work stay inspectable without turning the window into a dashboard.
 
-The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the baseline. This file records what Maka decides on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) owns the values; when this file and the source disagree, fix the wrong one in the same change. The terminal shares the workbench but keeps its cell grid, so desktop geometry stays behind `platform.isTerminal`.
+The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the baseline. This file records what Maka decides on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) owns the values; when this file and the source disagree, fix the wrong one in the same change. The terminal shares the workbench but keeps its cell grid, so desktop geometry stays behind `platform.idiom === 'terminal'`.
 
 ## Hierarchy
 
@@ -29,7 +29,7 @@ The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the bas
 - With accent and decoration removed, the primary task, current selection and next step must still read.
 - Assistant messages stay quiet and free of avatars. Language and continuity carry the product's character.
 - Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion.
-- A completed turn has one summary row: what it took and what it did (`Worked for 37s · 2 thoughts · 3 tools`). Expanding it shows the steps; their groups have no header of their own. A turn that failed, stopped or took the user's input midway leads with its status (`Stopped after 12s`) and keeps its groups' own headers, since it does not fold.
+- A turn has one summary row from its first step to its end, and finishing changes only its text and fold. While it runs, the row reads `Working for 22s` and its steps and the messages between them follow in order below it, with no group headers. Once it completes it reads what it took and what it did (`Worked for 37s · 2 thoughts · 3 tools`) and folds to the final answer, unless the user has already opened or folded it. A turn that failed, stopped or took the user's input midway leads with its status (`Stopped after 12s`) and stays open, since it does not fold.
 - A turn is not indented. On desktop it has two lanes: the icon lane on the reading column's left edge holds the summary chevron, each step's icon and an expanded tool card's left edge; the text lane, 24 points to its right (`disclosureContentInset`), holds the summary text, step names, expanded thinking and the text inside the card. Thinking and tool steps share one row style and differ only by icon; a thinking step with nothing beyond its title does not expand.
 - A step's state sits in one fixed lane at the row's trailing edge and shows only error, rejection, stop or progress. A tool card names its tool and directory once, prefixes the command with `$`, and labels output only when it is stderr; an exit code shows only when non-zero.
 
@@ -77,7 +77,7 @@ The sidebar recedes behind the conversations: navigation rows read in `secondary
 ## States
 
 - Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
-- Actions stay reachable without hovering.
+- Hover only reveals. Actions that show on hover also show on keyboard focus, keep their space while hidden, and stay in a context menu with the same commands.
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 

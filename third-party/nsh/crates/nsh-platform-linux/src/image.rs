@@ -44,7 +44,7 @@ use std::{
     time::Duration,
 };
 
-use gtk4::{self as gtk, gdk, glib, graphene, gsk, prelude::*};
+use gtk4::{self as gtk, gdk, gio, glib, graphene, gsk, prelude::*};
 pub use nsh_core::image::loader::AssetBase;
 use nsh_core::{
     Command, EventKind, EventPayload, ImageData, ImageOptions, ImageSource, NodeId, ObjectPosition,
@@ -52,7 +52,7 @@ use nsh_core::{
     geometry::{DevicePixels, Points, Size, size},
     image::{
         DiskCache, Frames, Images, Lease, Natural, Request, Target, Want,
-        loader::{Context, Priority, Ticket, loader},
+        loader::{Context, Location, Priority, Ticket, loader},
     },
 };
 use rustc_hash::FxHashMap;
@@ -95,6 +95,7 @@ pub(crate) fn set_disk_cache(surface: &Surface, cache: Option<DiskCache>) {
 /// Where this surface's images resolve `asset:/` URIs.
 pub(crate) fn set_asset_base(surface: &Rc<Surface>, base: Option<AssetBase>) {
     *surface.asset_base.borrow_mut() = base;
+    surface.image_assets.borrow_mut().take();
 }
 
 /// What a load of `uri` for `surface` goes through: its asset base, its
@@ -105,12 +106,54 @@ fn context(surface: &Surface, uri: &str) -> Context {
     let remote = uri.starts_with("http://") || uri.starts_with("https://");
     Context {
         asset_base: surface.asset_base.borrow().clone(),
-        read_asset: None,
+        read_asset: surface.image_assets.borrow().clone(),
         access: surface.access.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
             .flatten(),
         transport: None,
+    }
+}
+
+/// The `GIcon` of a menu item's icon: a reference to the image, which loads
+/// nothing until something draws it. GTK's menus do not (`chrome.rs`).
+pub(crate) fn menu_icon(surface: &Surface, source: &ImageSource) -> Option<gio::Icon> {
+    let source = source.at_pixel_ratio(surface.root.scale_factor() as f32);
+    match context(surface, &source.uri).locate(&source)? {
+        Location::Memory(_, data) => Some(gio::BytesIcon::new(&glib::Bytes::from(&*data)).upcast()),
+        Location::File(path) => Some(gio::FileIcon::new(&gio::File::for_path(path)).upcast()),
+        Location::Url(url) => Some(gio::FileIcon::new(&gio::File::for_uri(&url)).upcast()),
+        Location::Data(_) | Location::Asset(..) => None,
+    }
+}
+
+/// Loads `source` fitted in a `side` × `side` pixel square, off the main
+/// thread; `done` runs on the main thread with it (an animation's first
+/// frame), and whether it is an SVG (a template, painted in the panel's
+/// text color). For pixels that leave GTK: the tray's icon.
+pub(crate) fn load_icon(
+    surface: &Surface,
+    source: &ImageSource,
+    side: u32,
+    done: impl FnOnce(Result<(gdk::Texture, bool), String>) + 'static,
+) {
+    let want = Want {
+        size: nsh_core::geometry::size(Points(side as f32), Points(side as f32)),
+        scale: 1.0,
+        mode: nsh_core::ResizeMode::Contain,
+    };
+    if let Some(load) = fetch(
+        surface,
+        source,
+        want,
+        Frames::First,
+        Priority::Normal,
+        None,
+        Box::new(move |result| {
+            done(result.map(|(p, _)| (p.texture, matches!(p.natural, Natural::Vector(_)))))
+        }),
+    ) {
+        load.detach();
     }
 }
 

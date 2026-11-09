@@ -715,6 +715,15 @@ impl State {
         Pt::new(x, self.line_height() * row as f32)
     }
 
+    /// What follows `offset` on its row, as shown.
+    pub(crate) fn row_after(&self, offset: usize) -> String {
+        let before = self.buffer.snapshot();
+        let (row, _) = self.display.layout(&before).locate(offset);
+        let end = self.display.row(row).range.end;
+        let tab = " ".repeat(self.display.tab_size().max(1) as usize);
+        self.buffer.slice(offset.min(end)..end).replace('\t', &tab)
+    }
+
     /// How many rows a page moves: the viewport's height in rows, less
     /// one kept for context.
     pub(crate) fn page_rows(&self, viewport: Points) -> usize {

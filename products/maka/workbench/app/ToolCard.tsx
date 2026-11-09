@@ -37,7 +37,7 @@ import {
   textTooltip,
 } from './ui';
 import { LoadingIndicator } from './Loading';
-import type { ToolActivity } from './toolActivity';
+import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
 import { PluginView } from './plugins/PluginView';
@@ -294,6 +294,36 @@ function Field(props: {
   );
 }
 
+/** A tool whose call is still streaming in has no record to open yet. */
+export function LiveToolRow(props: { activity(): ToolActivity }) {
+  const phase = () =>
+    props.activity().phase === 'preparing' ? tr('Preparing tool') : tr('Running tool');
+  const title = () => {
+    const value = props.activity();
+    return value.title ? displayText(value.title) : value.name;
+  };
+  return (
+    <Disclosure
+      label={toolActivitySummary(props.activity(), phase(), title())}
+      icon="activity"
+      open={false}
+      foldable={false}
+      terminalInset={controlStyle.paddingHorizontal}
+      onPress={() => {}}
+      trailing={<Status label={phase()} kind={props.activity().phase} />}
+    >
+      <Text
+        style={[
+          { ...disclosureTitleStyle, color: C.secondary },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
+      >
+        {title()}
+      </Text>
+    </Disclosure>
+  );
+}
+
 export function ToolCard(props: {
   row(): Row;
   progress?(): ToolActivity['phase'] | null;
@@ -399,7 +429,7 @@ export function ToolCard(props: {
         })}
         trailing={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <If when={!platform.isTerminal && images().length > 0}>
+            <If when={platform.idiom !== 'terminal' && images().length > 0}>
               <ToolImageStrip
                 sessionId={props.sessionId}
                 through={imageThrough}
@@ -468,7 +498,7 @@ export function ToolCard(props: {
         </Text>
       </Disclosure>
       <If when={props.expanded()}>
-        <View style={platform.isTerminal ? { paddingLeft: 16 } : cardStyle()}>
+        <View style={platform.idiom === 'terminal' ? { paddingLeft: 16 } : cardStyle()}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
             onScrollIntent={() => {
@@ -483,7 +513,7 @@ export function ToolCard(props: {
                 props.maxHeight() -
                   controlStyle.minHeight -
                   detailsGap -
-                  (platform.isTerminal ? 0 : cardPadding.top + cardPadding.bottom),
+                  (platform.idiom === 'terminal' ? 0 : cardPadding.top + cardPadding.bottom),
               ),
             }}
             contentStyle={{ gap: 16 }}

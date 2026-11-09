@@ -1,0 +1,86 @@
+{
+  "numbers": {
+    "decimal": ",",
+    "group": ".",
+    "minGrouping": 2,
+    "indian": false,
+    "minus": "-",
+    "percent": " %",
+    "currencyBefore": false,
+    "currencySpace": " ",
+    "compactShort": [[3, " mil"], [6, " M"], [9, " mil M"], [12, " B"]],
+    "compactLong": [[3, " mil"], [6, " millones"], [9, " mil millones"], [12, " billones"]]
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": false,
+    "am": "a. m.",
+    "pm": "p. m.",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "/"], ["month", "/"], ["year", ""]],
+    "shortYear2digit": false,
+    "text": [["day", " "], ["month", " "], ["year", ""]],
+    "textLong": [["day", " de "], ["month", " de "], ["year", ""]],
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": ", ",
+    "names": {
+      "months": [
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre"
+      ],
+      "monthsShort": ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"],
+      "weekdays": ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"],
+      "weekdaysShort": ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"]
+    },
+    "cjk": false
+  },
+  "regions": {
+    "MX": {
+      "numbers": {
+        "decimal": ".",
+        "group": ",",
+        "currencyBefore": true,
+        "currencySpace": "",
+        "percent": " %",
+        "minGrouping": 1
+      },
+      "dates": {"hour12": true}
+    },
+    "US": {
+      "numbers": {
+        "decimal": ".",
+        "group": ",",
+        "currencyBefore": true,
+        "currencySpace": "",
+        "percent": " %",
+        "minGrouping": 1
+      },
+      "dates": {"hour12": true}
+    },
+    "419": {
+      "numbers": {
+        "decimal": ".",
+        "group": ",",
+        "currencyBefore": true,
+        "currencySpace": "",
+        "percent": " %",
+        "minGrouping": 1
+      },
+      "dates": {"hour12": true}
+    },
+    "CO": {"dates": {"hour12": true}}
+  }
+}

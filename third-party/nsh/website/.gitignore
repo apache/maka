@@ -7,3 +7,5 @@ bun.lockb
 public/play/
 # Releases' builds and players (`bun run build:versions`).
 .versions/
+# Machine translations, taken at publish time (`src/lib/locales.ts`).
+translations/

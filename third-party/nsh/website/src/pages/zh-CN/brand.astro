@@ -1,0 +1,20 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Brand from '../../components/Brand.astro';
+import SiteFooter from '../../components/SiteFooter.astro';
+import { url } from '../../lib/site';
+---
+
+<BaseLayout
+  lang="zh-CN"
+  title="品牌"
+  description="Native Shell 的 Logo、App 图标、Banner 和社交预览图，可直接下载，并附配色与字体。"
+  alternates={{ en: '/brand', 'zh-CN': '/zh-CN/brand' }}
+>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('brand')} />
+  <main id="main">
+    <Brand lang="zh-CN" />
+  </main>
+  <SiteFooter lang="zh-CN" />
+</BaseLayout>
