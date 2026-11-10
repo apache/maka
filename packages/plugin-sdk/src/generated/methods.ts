@@ -122,16 +122,14 @@ export type AgentCompactOutput_AgentExecutionState =
   | {
       kind: 'waiting';
       waits: AgentCompactOutput_WaitReason[];
-    }
-  | {
-      kind: 'blocked';
-      blockers: AgentCompactOutput_AgentRunBlocker[];
+      authorityUnavailable: boolean;
     }
   | {
       kind: 'completed';
     }
   | {
       kind: 'failed';
+      reason?: AgentCompactOutput_BlockerKind | null;
     }
   | {
       kind: 'cancelled';
@@ -264,24 +262,6 @@ export type AgentCompactOutput_AuthorityStage =
 export type AgentCompactOutput_InstanceId = string[];
 export type AgentCompactOutput_Transport = 'local' | 'remote';
 export type AgentCompactOutput_RecoveryProtocol = 'journal_v1';
-export type AgentCompactOutput_RiskActionKind =
-  | 'record_external_observation'
-  | 'authorize_replan'
-  | 'cancel_blocked_run';
-export type AgentCompactOutput_RiskActionScope =
-  | {
-      kind: 'tool';
-      tool: AgentCompactOutput_ToolKey;
-    }
-  | {
-      kind: 'model_replan';
-      attempt: AgentCompactOutput_ModelAttemptId;
-      base_step: AgentCompactOutput_StepId;
-    }
-  | {
-      kind: 'run_cancellation';
-    };
-export type AgentCompactOutput_StepId = string;
 export type AgentCompactOutput_AgentCompactRejection =
   | 'busy'
   | 'closed'
@@ -1122,11 +1102,6 @@ export type TerminalReadDisplayOutput_Color =
 
 export interface ServiceMethods {
   agent: {
-    adjudicateRisk: {
-      mode: 'mutation';
-      input: Runtime.AgentAdjudicateRisk;
-      output: Runtime.AgentExecutionResult;
-    };
     attachmentImage: {
       mode: 'query';
       input: Runtime.AgentAttachmentImageRead;
@@ -2918,14 +2893,6 @@ export interface AgentCompactOutput_ToolKey {
   attempt: AgentCompactOutput_ModelAttemptId;
   call: string;
 }
-/**
- * A durable blocker is an observation, never permission to replay an operation.
- */
-export interface AgentCompactOutput_AgentRunBlocker {
-  id: AgentCompactOutput_BlockerId;
-  reason: AgentCompactOutput_BlockerKind;
-  offeredActions: AgentCompactOutput_OfferedRiskAction[];
-}
 export interface AgentCompactOutput_ExternalPublicationKey {
   publication: AgentCompactOutput_ExternalPublicationId;
   index: number;
@@ -2958,10 +2925,6 @@ export interface AgentCompactOutput_RecoveryContract {
 export interface AgentCompactOutput_ContentRef {
   digest: string;
   bytes: number;
-}
-export interface AgentCompactOutput_OfferedRiskAction {
-  kind: AgentCompactOutput_RiskActionKind;
-  scope: AgentCompactOutput_RiskActionScope;
 }
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;

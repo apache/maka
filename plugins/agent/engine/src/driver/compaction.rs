@@ -58,6 +58,53 @@ fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
 }
 
 impl Engine {
+    pub(super) async fn recover_legacy_compaction(
+        &self,
+        claim: &DriverClaim,
+        view: &RunView,
+        at: UnixMillis,
+    ) -> Result<bool, RunError> {
+        let Some((blocker, _)) = view.blockers.iter().find(|(_, blocker)| {
+            blocker.resolved_by.is_none()
+                && blocker.decision.is_none()
+                && blocker.reason.is_legacy_compaction_lookup()
+        }) else {
+            return Ok(false);
+        };
+        if view.stopped
+            || view.has_unsettled_recovery()
+            || view
+                .blockers
+                .values()
+                .filter(|b| b.resolved_by.is_none() && b.decision.is_none())
+                .count()
+                != 1
+        {
+            return Ok(false);
+        }
+        let Ok(level) = self.model_level(view).await else {
+            // An invalid or missing summary still fails with the recorded diagnostic.
+            return Ok(false);
+        };
+        let (CompactionLevel::Candidate { summary, .. } | CompactionLevel::Adopted { summary }) =
+            level.compaction
+        else {
+            return Ok(false);
+        };
+        let evidence = ContentBlob::json(&summary)?;
+        self.publish(
+            Some(claim),
+            view,
+            vec![Fact::BlockerResolved {
+                blocker: *blocker,
+                evidence: evidence.reference().clone(),
+            }],
+            vec![evidence],
+            at,
+        )
+        .await
+    }
+
     pub(super) async fn model_level(&self, view: &RunView) -> Result<ModelLevel, RunError> {
         let input = decode(self, view.run, &view.spec.input, "run-input-schema").await?;
         let baseline: Option<CompactedContext> = match &view.baseline {
@@ -123,10 +170,7 @@ impl Engine {
                 .await?;
                 let (prepare, adopt) = compaction_timing(&provenance);
                 if let Some(summary) = request.compaction_recovery {
-                    let original = view
-                        .attempts
-                        .get(&summary)
-                        .ok_or_else(|| unsupported("compaction-budget-attempt-missing"))?;
+                    let original = self.store.model_attempt(view.run, summary).await?;
                     let summary_request = self.store.request(view.run, original.step).await?;
                     if summary_request.accounting.purpose == ModelPurpose::Summary
                         && let Some(closed) = original.closed.as_ref().filter(|closed| {
@@ -290,10 +334,7 @@ impl Engine {
         attempt: ModelAttemptId,
         at: UnixMillis,
     ) -> Result<bool, RunError> {
-        let original = view
-            .attempts
-            .get(&attempt)
-            .ok_or_else(|| unsupported("summary-attempt-missing"))?;
+        let original = self.store.model_attempt(view.run, attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
                 decode(self, view.run, reference, "compacted-context-schema").await?;

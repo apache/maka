@@ -189,6 +189,19 @@ pub(crate) fn exists(c: &Connection, run: RunId) -> Result<bool, StoreError> {
     )
 }
 
+pub(crate) fn model_attempt(
+    c: &Connection,
+    run: RunId,
+    attempt: ModelAttemptId,
+) -> Result<Attempt, StoreError> {
+    let body: String = c
+        .prepare_cached("SELECT body FROM agent_attempts WHERE run=? AND key=?")?
+        .query_row(params![run.to_string(), attempt.to_string()], |row| {
+            row.get(0)
+        })?;
+    Ok(serde_json::from_str(&body)?)
+}
+
 fn projection_rows<T: DeserializeOwned>(
     c: &Connection,
     table: &str,
@@ -457,7 +470,8 @@ pub(crate) fn load(
     }
     let charged: Vec<String> = c.prepare_cached("SELECT attempt FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='retry_charged' AND run=? AND sequence>=(SELECT sequence FROM agent_facts WHERE run=? AND revision=1) AND sequence<=(SELECT sequence FROM agent_facts WHERE run=? AND revision=?) ORDER BY sequence")?.query_map(params![serde_json::to_string(&view.spec.owner)?,view.spec.session_id,run.to_string(),run.to_string(),run.to_string(),signed(view.revision)?],|r|r.get(0))?.collect::<Result<_,_>>()?;
     targets.attempts.extend(charged);
-    for replan in view.replans.values() {
+    for (id, replan) in &view.replans {
+        targets.blockers.insert(id.to_string());
         targets.risk_scope(&replan.scope);
     }
     for (key, value) in
@@ -1093,6 +1107,18 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
             "native budget admission basis requires its live admission guard",
         ));
     }
+    if matches!(view.spec.origin, RunOrigin::Local) {
+        // Late receipts and a successor admission share the same Root transaction.
+        let prior: Option<String> = c.prepare_cached(
+            "SELECT run FROM (SELECT run,terminal,cancelled_by_risk FROM agent_runs WHERE session=? ORDER BY admission_sequence DESC LIMIT 1)
+             WHERE terminal=json_quote('failed') OR cancelled_by_risk=1",
+        )?.query_row([&view.spec.session_id], |row| row.get(0)).optional()?;
+        if let Some(prior) = prior
+            && load(c, identity(prior)?, &[], false)?.blocks_followup()
+        {
+            return Err(invalid("previous Run has unsettled original operations"));
+        }
+    }
     if let Some(guard) = &admission.guard {
         guard.validate(c, admission.run, &view.spec)?;
     }
@@ -1227,7 +1253,6 @@ pub(crate) fn append(
                     Fact::StopRequested { .. }
                         | Fact::ApprovalRecorded { .. }
                         | Fact::ApprovalRefused { .. }
-                        | Fact::RiskAdjudicated { .. }
                         | Fact::Cell {
                             event: maka_agent_facts::cells::CellEvent::ChildApprovalRecorded { .. }
                         }
@@ -1327,6 +1352,15 @@ pub(crate) fn append(
             view.check_effect_admission()?;
         }
         model_evidence::validate_control(c, &view, &change.fact)?;
+        if let Fact::BlockerResolved { blocker, evidence } = &change.fact
+            && view
+                .blockers
+                .get(blocker)
+                .is_some_and(|blocker| blocker.reason.is_legacy_compaction_lookup())
+        {
+            pin(c, run, evidence)?;
+            crate::store::fallback::validate_legacy_lookup_resolution(c, &view, evidence)?;
+        }
         if let Fact::ContextCompacted { baseline } = &change.fact {
             compaction::validate(c, &view, baseline, change.at)?;
         }
@@ -1727,9 +1761,9 @@ pub(crate) fn ready(
     let mut statement = c.prepare_cached(&format!("WITH business AS (
         SELECT r.run,r.admission_sequence,r.session FROM agent_runs r
         WHERE r.owner=?1 AND r.terminal IS NULL AND r.local=1 AND r.admission_sequence>?2
-        AND (NOT EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND (?5=0 OR json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable'))
-            OR r.cancelled_by_risk=1
-            OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
+        AND (EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable')
+        OR r.replans != '{{}}'
+        OR ((?5=1 OR NOT {AUTHORITY_BLOCKED} OR r.cancelled_by_risk=1 OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
         AND (r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
             OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED})
             OR (r.stopped=1 AND json_extract(r.external,'$.admitted')=1
@@ -1741,7 +1775,7 @@ pub(crate) fn ready(
             {RECONCILABLE_WAIT}
             OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS (
                 SELECT 1 FROM agent_cells c WHERE c.run=w.run AND c.cell=json_extract(w.body,'$.reason.cell')
-                AND json_extract(c.body,'$.status.kind') IS 'running'))))))
+                AND json_extract(c.body,'$.status.kind') IS 'running'))))))))
         SELECT run,admission_sequence,session,NULL AS cleanup_task FROM business
         UNION ALL
         SELECT r.run,r.admission_sequence,r.session,json_extract(r.external,'$.task') AS cleanup_task

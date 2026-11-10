@@ -76,6 +76,17 @@ impl Engine {
             if view.terminal.is_some() {
                 return Ok(exit(&view));
             }
+            if view.recovery_failure().is_some() && !view.cancelled_by_risk {
+                self.publish(
+                    Some(&claim),
+                    &view,
+                    termination_facts(&view, Terminal::Failed, None),
+                    vec![],
+                    at,
+                )
+                .await?;
+                continue;
+            }
             let mut source_blocker = None;
             if view.stopped
                 || view.cancelled_by_risk

@@ -763,7 +763,6 @@ mod tests {
         durable::*,
         input::RunInput,
         model::{ModelFinishReason, ModelToolCall, ToolInput},
-        tool_output::AcceptedToolResult,
     };
     use maka_agent_state::{Admission, DriverDomain, fold::tool_key};
     use maka_event_log::{
@@ -777,7 +776,9 @@ mod tests {
     }
 
     // Real Root/Store and original witness; typed model facts only, no provider/VM execution.
-    async fn fixture() -> TestResult<(
+    async fn fixture(
+        admit_main: bool,
+    ) -> TestResult<(
         tempfile::TempDir,
         RootStore,
         Store,
@@ -805,7 +806,7 @@ mod tests {
         let mut policy = policy_view(None);
         let empty = ContentBlob::new(vec![]);
         let input = ContentBlob::json(&RunInput::Message {
-            content: "typed provider cancellation fixture".to_string().into(),
+            content: "original provider recovery fixture".to_string().into(),
             request_fingerprint: None,
             source_messages: vec![],
         })?;
@@ -818,7 +819,7 @@ mod tests {
             },
         );
         // Reuse only its typed request; the Store below never receives that helper's closure.
-        let (_, request, attempt) = model_closure(
+        let (_, mut request, attempt) = model_closure(
             policy.clone(),
             ModelPurpose::Main,
             ModelFinishReason::Stop,
@@ -829,16 +830,21 @@ mod tests {
         let run = admission.run();
         store.admit(admission).await?;
         let claim = store.claim(run).await?;
+        let provenance = ContentBlob::json(&serde_json::json!({
+            "estimatedInputTokens": 0,
+            "breakdown": maka_agent_facts::context::PreparedContextBreakdown::default(),
+            "modelContext": null,
+            "previousCheckpointId": null,
+        }))?;
+        request.provenance = provenance.reference().clone();
         let encoded = ContentBlob::json(&request)?;
-        append(
-            &store,
-            &claim,
-            vec![
-                Fact::StepPrepared {
-                    step: request.step,
-                    request: encoded.reference().clone(),
-                    adjudications: vec![],
-                },
+        let mut changes = vec![Fact::StepPrepared {
+            step: request.step,
+            request: encoded.reference().clone(),
+            adjudications: vec![],
+        }];
+        if admit_main {
+            changes.extend([
                 Fact::ModelAttemptPrepared {
                     attempt,
                     step: request.step,
@@ -847,10 +853,9 @@ mod tests {
                     attempt,
                     upstream: serde_json::json!({"typed":"original-model-source"}),
                 },
-            ],
-            vec![encoded],
-        )
-        .await?;
+            ]);
+        }
+        append(&store, &claim, changes, vec![encoded, provenance]).await?;
         let witness = ModelWitness::new(store.clone(), claim.clone(), attempt);
         Ok((temp, root, store, claim, attempt, witness))
     }
@@ -891,128 +896,75 @@ mod tests {
         };
         (key, part)
     }
-    fn cancel(blocker: BlockerId, decision: &RiskDecision) -> Vec<Fact> {
-        vec![
-            Fact::Blocked {
-                blocker,
-                reason: BlockerKind::UnsupportedProtocol {
-                    protocol: "typed-control-source".into(),
-                    version: 1,
-                },
-            },
-            Fact::RiskAdjudicated {
-                blocker,
-                decision: decision.clone(),
-                scope: RiskActionScope::RunCancellation,
-            },
-        ]
-    }
-    async fn drain(store: &Store, claim: &DriverClaim) -> TestResult<()> {
-        let exit = Engine::new(store.clone())
-            .current_authority_unavailable(
-                claim.clone(),
-                AuthorityStage::BackendScope,
-                "typed cancellation has no execution ports".into(),
-                at(),
-            )
-            .await?;
-        assert!(
-            matches!(
-                exit,
-                DriverExit::Terminal {
-                    terminal: Terminal::Cancelled,
-                    ..
-                }
-            ),
-            "canonical provider cancellation reblocked after its decision retired"
-        );
-        Ok(())
-    }
-    async fn check_acceptance(
-        store: &Store,
-        claim: &DriverClaim,
-        key: &ToolKey,
-        risk: BlockerId,
-        decision: &RiskDecision,
-    ) -> TestResult<ContentRef> {
-        let view = store.frontier(claim.run()).await?;
-        let tool = &view.tools[&tool_key(key)];
-        let accepted = tool
-            .accepted
-            .as_ref()
-            .ok_or("provider tool acceptance missing")?;
-        assert!(accepted.outcome == AcceptedResult::RiskAdjudicated { blocker: risk });
-        let encoded: AcceptedToolResult =
-            serde_json::from_slice(&store.content(claim.run(), accepted.result.clone()).await?)?;
-        assert!(
-            encoded
-                == AcceptedToolResult::RiskAdjudicated {
-                    blocker: risk,
-                    decision: decision.clone()
-                },
-            "accepted content changed the actual cancellation identity or decision"
-        );
-        assert!(
-            tool.provider_result.is_none()
-                && !tool.admitted
-                && tool.original.is_none()
-                && tool.local_returned.is_none()
-                && tool.receipt.is_none(),
-            "logical acceptance fabricated a provider result or physical receipt"
-        );
-        assert!(view.attempts[&key.attempt].cleanup != OperationCleanup::Confirmed);
-        Ok(accepted.result.clone())
-    }
-
     #[tokio::test]
-    async fn accepted_provider_call_does_not_reblock_when_its_cancel_row_retires() -> TestResult<()>
-    {
-        let (_temp, root, store, claim, attempt, witness) = fixture().await?;
+    async fn unobservable_provider_effect_fails_without_inventing_a_result() -> TestResult<()> {
+        let (_temp, root, store, claim, attempt, witness) = fixture(true).await?;
         let result = AssertUnwindSafe(async {
-            let (key, part) = call(attempt);
+            let (tool, part) = call(attempt);
             witness.part(0, part, None, at()).await?;
-            let provider_risk = BlockerId::new();
+            let blocker = BlockerId::new();
+            let reason = BlockerKind::ProviderEffectUnknown {
+                attempt,
+                call: tool.call.clone(),
+            };
             append(
                 &store,
                 &claim,
                 vec![Fact::Blocked {
-                    blocker: provider_risk,
-                    reason: BlockerKind::ProviderEffectUnknown {
-                        attempt,
-                        call: key.call.clone(),
-                    },
+                    blocker,
+                    reason: reason.clone(),
                 }],
                 vec![],
             )
             .await?;
-            let risk = BlockerId::new();
-            let decision = RiskDecision::CancelBlockedRun {
-                diagnostic: "explicit sibling cancellation".into(),
-            };
-            append(&store, &claim, cancel(risk, &decision), vec![]).await?;
+
+            let exit = Engine::new(store.clone())
+                .current_authority_unavailable(
+                    claim.clone(),
+                    AuthorityStage::BackendScope,
+                    "provider no longer accessible".into(),
+                    at(),
+                )
+                .await?;
+            assert!(matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ));
+
+            let view = store.frontier(claim.run()).await?;
+            assert_eq!(view.recovery_failure(), Some(&reason));
+            assert!(view.has_unsettled_recovery());
+            let mut successor = view.spec.clone();
+            successor.turn_id = uuid::Uuid::new_v4().to_string();
+            let error = store
+                .admit(Admission::new(successor, at(), vec![]))
+                .await
+                .unwrap_err();
             assert!(
-                store
-                    .frontier(claim.run())
-                    .await?
-                    .blockers
-                    .contains_key(&risk)
+                error
+                    .to_string()
+                    .contains("previous Run has unsettled original operations")
             );
-            drain(&store, &claim).await?;
-            let bounded = store.frontier(claim.run()).await?;
-            assert!(
-                !bounded.blockers.contains_key(&risk),
-                "no-pending-tool cancellation row must still retire"
+            let observed = &view.tools[&tool_key(&tool)];
+            assert!(observed.provider_result.is_none() && observed.accepted.is_none());
+            let history = store.history(claim.run(), 0, 32).await?;
+            assert_eq!(
+                history
+                    .iter()
+                    .filter(|f| matches!(f.fact, Fact::ModelAttemptAdmitted { .. }))
+                    .count(),
+                1
             );
-            assert!(
-                bounded.blockers[&provider_risk].decision.is_none()
-                    && bounded.blockers[&provider_risk].resolved_by.is_none(),
-                "whole-run cancellation rewrote the separate unknown-provider evidence"
-            );
-            let accepted = check_acceptance(&store, &claim, &key, risk, &decision).await?;
-            let revision = bounded.revision;
-            drain(&store, &claim).await?;
-            assert!(store.frontier(claim.run()).await?.revision == revision);
-            assert!(check_acceptance(&store, &claim, &key, risk, &decision).await? == accepted);
+            assert!(matches!(
+                history.last().map(|f| &f.fact),
+                Some(Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    ..
+                })
+            ));
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()
@@ -1025,95 +977,165 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn late_provider_witness_part_restores_the_original_retired_run_cancellation()
-    -> TestResult<()> {
-        let (_temp, root, store, claim, attempt, witness) = fixture().await?;
+    async fn deferred_compaction_finds_a_summary_outside_the_working_set() -> TestResult<()> {
+        use maka_agent_facts::context::{ModelClosureProtocol, SummaryResult, TextSummary};
+        let (_temp, root, store, claim, _, _) = fixture(false).await?;
         let result = AssertUnwindSafe(async {
-            let risk = BlockerId::new();
-            let decision = RiskDecision::CancelBlockedRun {
-                diagnostic: "explicit pre-part cancellation".into(),
+            let run = claim.run();
+            let view = store.frontier(run).await?;
+            let mut main = store
+                .request(run, view.current_step.ok_or("missing Main")?)
+                .await?;
+            let mut summary = main.clone();
+            summary.step = StepId::new();
+            summary.accounting.purpose = ModelPurpose::Summary;
+            let encoded = ContentBlob::json(&summary)?;
+            let attempt = ModelAttemptId::new();
+            let summary_result = SummaryResult::Text {
+                summary: TextSummary {
+                    text: "prior work".into(),
+                },
             };
-            append(&store, &claim, cancel(risk, &decision), vec![]).await?;
             append(
                 &store,
                 &claim,
-                vec![Fact::ModelInterrupted {
-                    attempt,
-                    diagnostic: "control cut before terminal publication".into(),
+                vec![
+                    Fact::StepPrepared {
+                        step: summary.step,
+                        request: encoded.reference().clone(),
+                        adjudications: vec![],
+                    },
+                    Fact::ModelAttemptPrepared {
+                        attempt,
+                        step: summary.step,
+                    },
+                    Fact::ModelAttemptAdmitted {
+                        attempt,
+                        upstream: serde_json::Value::Null,
+                    },
+                    Fact::ModelClosed {
+                        attempt,
+                        outcome: Outcome::Success,
+                        diagnostic: None,
+                        usage: Default::default(),
+                        protocol: serde_json::to_value(ModelClosureProtocol {
+                            finish_reason: ModelFinishReason::Stop,
+                            provider_options: None,
+                            response_id: None,
+                            model: None,
+                            timestamp: None,
+                            compaction: None,
+                            summary: Some(summary_result),
+                        })?,
+                    },
+                    Fact::ModelCleanupObserved {
+                        attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                ],
+                vec![encoded],
+            )
+            .await?;
+
+            main.step = StepId::new();
+            main.compaction_recovery = Some(attempt);
+            let encoded = ContentBlob::json(&main)?;
+            append(
+                &store,
+                &claim,
+                vec![Fact::StepPrepared {
+                    step: main.step,
+                    request: encoded.reference().clone(),
+                    adjudications: vec![],
                 }],
+                vec![encoded],
+            )
+            .await?;
+            let main_attempt = ModelAttemptId::new();
+            append(
+                &store,
+                &claim,
+                vec![
+                    Fact::ModelAttemptPrepared {
+                        attempt: main_attempt,
+                        step: main.step,
+                    },
+                    Fact::ModelAttemptAdmitted {
+                        attempt: main_attempt,
+                        upstream: serde_json::Value::Null,
+                    },
+                    Fact::ModelClosed {
+                        attempt: main_attempt,
+                        outcome: Outcome::Success,
+                        diagnostic: None,
+                        usage: Default::default(),
+                        protocol: serde_json::to_value(ModelClosureProtocol {
+                            finish_reason: ModelFinishReason::Stop,
+                            provider_options: None,
+                            response_id: None,
+                            model: None,
+                            timestamp: None,
+                            compaction: None,
+                            summary: None,
+                        })?,
+                    },
+                    Fact::ModelCleanupObserved {
+                        attempt: main_attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                ],
                 vec![],
             )
             .await?;
-            let cut = store.frontier(claim.run()).await?;
-            assert!(
-                cut.cancelled_by_risk && cut.tools.is_empty() && !cut.blockers.contains_key(&risk)
+
+            main.step = StepId::new();
+            let encoded = ContentBlob::json(&main)?;
+            append(
+                &store,
+                &claim,
+                vec![Fact::StepPrepared {
+                    step: main.step,
+                    request: encoded.reference().clone(),
+                    adjudications: vec![],
+                }],
+                vec![encoded],
+            )
+            .await?;
+            let view = store.frontier(run).await?;
+            assert!(!view.attempts.contains_key(&attempt));
+            let engine = Engine::new(store.clone());
+            let level = engine.model_level(&view).await?;
+            assert_eq!(
+                level.compaction,
+                crate::reconcile::CompactionLevel::Candidate {
+                    summary: attempt,
+                    adopt: false
+                }
             );
-            assert!(
-                cut.terminal.is_none()
-                    && cut.attempts[&attempt].closed.is_none()
-                    && cut.attempts[&attempt].interrupted.is_some()
-            );
-            assert!(
-                !store
-                    .frontier(claim.run())
-                    .await?
-                    .blockers
-                    .contains_key(&risk),
-                "ordinary frontier revived a retired decision"
-            );
-            let (key, part) = call(attempt);
-            let late = witness.part(0, part, None, at()).await?;
-            let bounded = store.frontier(claim.run()).await?;
-            let original = bounded
-                .blockers
-                .get(&risk)
-                .ok_or("late provider call lost the actual original decision")?;
-            assert!(
-                original
-                    .decision
-                    .as_ref()
-                    .is_some_and(|scoped| scoped.decision == decision
-                        && matches!(scoped.scope, RiskActionScope::RunCancellation))
-            );
-            assert!(bounded.tools[&tool_key(&key)].accepted.is_none());
-            let provider_risk = BlockerId::new();
+
+            let blocker = BlockerId::new();
             append(
                 &store,
                 &claim,
                 vec![Fact::Blocked {
-                    blocker: provider_risk,
-                    reason: BlockerKind::ProviderEffectUnknown {
-                        attempt,
-                        call: key.call.clone(),
+                    blocker,
+                    reason: BlockerKind::UnsupportedProtocol {
+                        protocol: "compaction-budget-attempt-missing".into(),
+                        version: 1,
                     },
                 }],
                 vec![],
             )
             .await?;
-            drain(&store, &claim).await?;
-            check_acceptance(&store, &claim, &key, risk, &decision).await?;
-            let final_view = store.frontier(claim.run()).await?;
-            assert!(!final_view.blockers.contains_key(&risk));
+            let parked = store.frontier(run).await?;
             assert!(
-                store
-                    .fact(claim.run(), late)
+                engine
+                    .recover_legacy_compaction(&claim, &parked, at())
                     .await?
-                    .is_some_and(|recorded| matches!(recorded.fact,
-                Fact::ModelObserved { attempt: original, .. } if original == attempt))
             );
-            let history = store.history(claim.run(), 0, 64).await?;
-            assert!(
-                history
-                    .iter()
-                    .filter(|fact| matches!(fact.fact, Fact::ModelAttemptAdmitted { .. }))
-                    .count()
-                    == 1
-            );
-            assert!(
-                !history
-                    .iter()
-                    .any(|fact| matches!(fact.fact, Fact::ModelCleanupObserved { .. }))
-            );
+            let recovered = store.frontier(run).await?;
+            assert_eq!(recovered.current_step, Some(main.step));
+            assert!(recovered.terminal.is_none() && recovered.recovery_failure().is_none());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()

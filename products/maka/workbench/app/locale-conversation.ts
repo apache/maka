@@ -1041,53 +1041,6 @@ export const conversationMessages = {
   'Pause response': ['Pause response', '暂停', '暫停'],
   'Continue response': ['Continue response', '继续', '繼續'],
   'Continue in a new run': ['Continue in a new run', '在新运行中继续', '在新的執行中繼續'],
-  'Record external observation': ['Record external observation', '记录外部观察', '記錄外部觀察'],
-  'Authorize replanning': ['Authorize replanning', '授权重新规划', '授權重新規劃'],
-  'Run {run} · blocker {blocker} · observation {revision}': [
-    'Run {run} · blocker {blocker} · observation {revision}',
-    '运行 {run} · 阻塞项 {blocker} · 观察版本 {revision}',
-    '執行 {run} · 阻塞項 {blocker} · 觀察版本 {revision}',
-  ],
-  'Your evidence is a human report, not a provider receipt or proof that the original operation settled.':
-    [
-      'Your evidence is a human report, not a provider receipt or proof that the original operation settled.',
-      '此证据是人工报告，不是提供方回执，也不能证明原操作及其资源清理已经完成。',
-      '此證據是人工報告，不是提供方回執，也不能證明原操作及其資源清理已經完成。',
-    ],
-  'Evidence format': ['Evidence format', '证据格式', '證據格式'],
-  Evidence: ['Evidence', '证据', '證據'],
-  'Reason for cancelling': ['Reason for cancelling', '取消原因', '取消原因'],
-  'Enter valid JSON evidence.': [
-    'Enter valid JSON evidence.',
-    '请输入有效的 JSON 证据。',
-    '請輸入有效的 JSON 證據。',
-  ],
-  'This run changed. Close this decision and review the current state.': [
-    'This run changed. Close this decision and review the current state.',
-    '此运行已变化。请关闭此决策窗口，查看当前状态后再决定。',
-    '此執行已變更。請關閉此決策視窗，查看目前狀態後再決定。',
-  ],
-  'Checking the original decision receipt. Do not submit another decision.': [
-    'Checking the original decision receipt. Do not submit another decision.',
-    '正在确认原决策的回执，请勿重复提交决策。',
-    '正在確認原決策的回執，請勿重複提交決策。',
-  ],
-  'Submitting decision…': ['Submitting decision…', '正在提交决策…', '正在提交決策…'],
-  'This run is no longer available. Refresh the conversation.': [
-    'This run is no longer available. Refresh the conversation.',
-    '此运行已不可用，请刷新会话。',
-    '此執行已無法使用，請重新整理對話。',
-  ],
-  'Host returned a different run for this decision.': [
-    'Host returned a different run for this decision.',
-    'Host 返回了其他运行的决策结果。',
-    'Host 傳回了其他執行的決策結果。',
-  ],
-  'The decision did not advance this run. Refresh before deciding again.': [
-    'The decision did not advance this run. Refresh before deciding again.',
-    '未确认此决策已记录。请刷新当前运行后再决定。',
-    '未確認此決策已記錄。請重新整理目前執行後再決定。',
-  ],
   'External operation outcome unknown': [
     'External operation outcome unknown',
     '外部操作结果未知',
@@ -1105,55 +1058,6 @@ export const conversationMessages = {
     '等待重試提供方',
   ],
   'Waiting for the model': ['Waiting for the model', '等待模型响应', '等待模型回應'],
-  'Original tool call {call} in model attempt {attempt}': [
-    'Original tool call {call} in model attempt {attempt}',
-    '原工具调用 {call} · 模型尝试 {attempt}',
-    '原工具呼叫 {call} · 模型嘗試 {attempt}',
-  ],
-  'Model attempt {attempt}, based on step {step}': [
-    'Model attempt {attempt}, based on step {step}',
-    '模型尝试 {attempt} · 基准步骤 {step}',
-    '模型嘗試 {attempt} · 基準步驟 {step}',
-  ],
-  'Entire run': ['Entire run', '整个运行', '整個執行'],
-  'Allow replanning within the shown scope and current permissions. This does not authorize replaying the original unknown operation or waive pending cleanup.':
-    [
-      'Allow replanning within the shown scope and current permissions. This does not authorize replaying the original unknown operation or waive pending cleanup.',
-      '允许在所示范围和现有权限内重新规划。此授权不允许重发结果未知的原操作，也不免除尚待完成的资源清理。',
-      '允許在所示範圍和現有權限內重新規劃。此授權不允許重送結果未知的原操作，也不免除尚待完成的資源清理。',
-    ],
-  'Request cancellation of this run. Previously admitted operations may still finish, and cleanup must still be confirmed.':
-    [
-      'Request cancellation of this run. Previously admitted operations may still finish, and cleanup must still be confirmed.',
-      '请求取消此运行。此前已采纳的操作仍可能完成，资源清理仍需确认。',
-      '要求取消此執行。先前已採納的操作仍可能完成，資源清理仍需確認。',
-    ],
-  'This action is not offered for the current blocker.': [
-    'This action is not offered for the current blocker.',
-    '当前阻塞项不支持此操作。',
-    '目前阻塞項不支援此操作。',
-  ],
-  'No risk action is currently offered.': [
-    'No risk action is currently offered.',
-    '当前没有可用的风险处置操作。',
-    '目前沒有可用的風險處置操作。',
-  ],
-  'Observation and replanning are not offered for this blocker.': [
-    'Observation and replanning are not offered for this blocker.',
-    '此阻塞项不支持记录外部观察或授权重新规划。',
-    '此阻塞項不支援記錄外部觀察或授權重新規劃。',
-  ],
-  'Reconnect before submitting a risk decision.': [
-    'Reconnect before submitting a risk decision.',
-    '请重新连接后再提交风险决策。',
-    '請重新連線後再提交風險決策。',
-  ],
-  'Restore this conversation before submitting a risk decision.': [
-    'Restore this conversation before submitting a risk decision.',
-    '请恢复此会话后再提交风险决策。',
-    '請還原此對話後再提交風險決策。',
-  ],
-  'Run blocked': ['Run blocked', '运行受阻', '執行受阻'],
   'Wait for this run to finish before continuing.': [
     'Wait for this run to finish before continuing.',
     '当前运行结束后才能继续。',
@@ -1167,7 +1071,16 @@ export const conversationMessages = {
     '等候原操作',
   ],
   'Waiting for a child run': ['Waiting for a child run', '等待子运行', '等候子執行'],
-  'Waiting for a blocker': ['Waiting for a blocker', '等待阻塞解除', '等候阻礙解除'],
+  'Waiting for access to be restored': [
+    'Waiting for access to be restored',
+    '正在等待恢复访问',
+    '正在等候恢復存取',
+  ],
+  'Maka could not confirm the previous operation. Your message is kept.': [
+    'Maka could not confirm the previous operation. Your message is kept.',
+    'Maka 无法确认上次操作的结果，消息已保留。',
+    'Maka 無法確認上次操作的結果，訊息已保留。',
+  ],
   'Operation outcome unknown': ['Operation outcome unknown', '操作结果未知', '操作結果未知'],
   'Provider tool outcome unknown': [
     'Provider tool outcome unknown',
@@ -1184,10 +1097,10 @@ export const conversationMessages = {
     '代码单元无法恢复',
     '程式碼單元無法復原',
   ],
-  'Protocol recovery unavailable': [
-    'Protocol recovery unavailable',
-    '无法按此协议恢复',
-    '無法依此協定復原',
+  'Maka could not resume this run.': [
+    'Maka could not resume this run.',
+    'Maka 无法继续这次运行。',
+    'Maka 無法繼續這次執行。',
   ],
   'A history landmark has no source turn identity.': [
     'A history landmark has no source turn identity.',
@@ -1230,8 +1143,6 @@ export const conversationMessages = {
     '无法观察外部任务状态',
     '無法觀察外部工作的狀態',
   ],
-  'Cancel blocked run': ['Cancel blocked run', '取消受阻运行', '取消受阻的執行'],
-  'Cancelled by user': ['Cancelled by user', '用户已取消', '使用者已取消'],
   'Confirming continuation…': ['Confirming continuation…', '正在确认继续…', '正在確認繼續…'],
   'Maka is shutting down. Continue after it restarts.': [
     'Maka is shutting down. Continue after it restarts.',

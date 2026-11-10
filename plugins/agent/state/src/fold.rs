@@ -307,6 +307,62 @@ impl RunView {
         }
     }
 
+    pub fn recovery_failures(&self) -> impl Iterator<Item = &BlockerKind> {
+        self.blockers.iter().filter_map(|(id, blocker)| {
+            (self.replans.contains_key(id)
+                || (blocker.decision.is_none()
+                    && blocker.resolved_by.is_none()
+                    && !matches!(
+                        blocker.reason,
+                        BlockerKind::CurrentAuthorityUnavailable { .. }
+                    )))
+            .then_some(&blocker.reason)
+        })
+    }
+
+    pub fn recovery_failure(&self) -> Option<&BlockerKind> {
+        self.recovery_failures().next()
+    }
+
+    pub fn blocks_followup(&self) -> bool {
+        (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
+            && self.has_unsettled_recovery()
+    }
+
+    pub fn has_unsettled_recovery(&self) -> bool {
+        self.recovery_failures().any(|reason| {
+            !matches!(
+                reason,
+                BlockerKind::UnsupportedProtocol { .. } | BlockerKind::ResourcesUnavailable { .. }
+            )
+        }) || self.tools.values().any(|tool| {
+            original_effect_unknown(tool)
+                || (tool.call.provider_executed && tool.provider_result.is_none())
+                || (tool.admitted
+                    && tool.accepted.is_none()
+                    && tool.original.is_none()
+                    && tool.local_returned.is_none()
+                    && tool.prohibited_before_host.is_none())
+                || (tool.original.is_some()
+                    && !matches!(
+                        &tool.receipt,
+                        Some(Receipt::Recorded {
+                            cleanup: OperationCleanup::Confirmed,
+                            ..
+                        })
+                    ))
+        }) || self.attempts.values().any(|attempt| {
+            attempt.admission.is_some() && attempt.cleanup != OperationCleanup::Confirmed
+        }) || self.cells.values().any(|cell| cell.pending())
+            || self.external.as_ref().is_some_and(|task| {
+                task.admitted
+                    && (task.closed.is_none()
+                        || task.cleanup != OperationCleanup::Confirmed
+                        || task.effects.values().any(|effect| effect.pending())
+                        || !crate::external_publication::quiescent(self))
+            })
+    }
+
     pub fn check_effect_admission(&self) -> Result<(), StoreError> {
         require(
             matches!(self.spec.origin, RunOrigin::Local),
@@ -1345,14 +1401,9 @@ impl RunView {
                     result: result.clone(),
                     outcome: outcome.clone(),
                 };
-                require(
-                    !matches!(outcome, AcceptedResult::Succeeded | AcceptedResult::Failed)
-                        || !current.local_returned.as_ref().is_some_and(|returned| {
-                            returned.settlement
-                                == maka_agent_facts::tool_call::ToolSettlement::Unknown
-                        }),
-                    "an unknown original local effect requires explicit risk acceptance",
-                )?;
+                let local = current.local_returned.as_ref().filter(|returned| {
+                    returned.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+                });
                 if let Some(existing) = &current.accepted {
                     if existing != &acceptance {
                         return Err(StoreError::EventConflict);
@@ -1360,10 +1411,7 @@ impl RunView {
                 } else {
                     let valid = match outcome {
                         AcceptedResult::Succeeded => {
-                            current
-                                .local_returned
-                                .as_ref()
-                                .is_some_and(|returned| !returned.is_error)
+                            local.is_some_and(|returned| !returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|!returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
                                 || current
                                     .provider_result
@@ -1380,10 +1428,7 @@ impl RunView {
                                 )
                         }
                         AcceptedResult::Failed => {
-                            current
-                                .local_returned
-                                .as_ref()
-                                .is_some_and(|returned| returned.is_error)
+                            local.is_some_and(|returned| returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
                                 || current
                                     .provider_result
@@ -1734,8 +1779,8 @@ impl RunView {
                     matches!(
                         current.reason,
                         BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ),
-                    "this blocker requires original evidence or explicit risk adjudication",
+                    ) || current.reason.is_legacy_compaction_lookup(),
+                    "this blocker requires an observation from its original source",
                 )?;
                 require(
                     current.resolved_by.is_none(),
@@ -1872,22 +1917,32 @@ impl RunView {
                     !self.cancelled_by_risk || matches!(terminal, Terminal::Cancelled),
                     "risk cancellation is a sticky logical fence",
                 )?;
+                // An unsuccessful Run may close logically while original receipts
+                // and cleanup remain outstanding and observable in its history.
+                let recovery_failed =
+                    *terminal == Terminal::Failed && self.recovery_failure().is_some();
+                let legacy_cancelled = *terminal == Terminal::Cancelled && self.cancelled_by_risk;
                 require(
-                    self.external_terminal_allowed(terminal),
+                    recovery_failed || self.external_terminal_allowed(terminal),
                     "external task is not closed or explicitly risk-cancelled",
                 )?;
                 require(
-                    crate::external_publication::terminal_allowed(self, terminal),
+                    recovery_failed
+                        || crate::external_publication::terminal_allowed(self, terminal),
                     "external publication has unfinished original obligations",
                 )?;
                 require(
-                    self.tools.values().all(|tool| tool.accepted.is_some()),
+                    recovery_failed
+                        || legacy_cancelled
+                        || self.tools.values().all(|tool| tool.accepted.is_some()),
                     "run still has unaccepted hard tool obligations",
                 )?;
                 require(
-                    self.attempts
-                        .values()
-                        .all(|attempt| attempt.closed.is_some() || attempt.interrupted.is_some()),
+                    recovery_failed
+                        || legacy_cancelled
+                        || self.attempts.values().all(|attempt| {
+                            attempt.closed.is_some() || attempt.interrupted.is_some()
+                        }),
                     "run still has open model attempts",
                 )?;
                 require(
@@ -2191,6 +2246,13 @@ fn resolves_blocker(
                 ..
             },
         ) => original == reference,
+        (
+            BlockerKind::ToolCleanupUnconfirmed { tool: original, .. },
+            Receipt::Recorded {
+                cleanup: OperationCleanup::Confirmed,
+                ..
+            },
+        ) => original == tool,
         _ => false,
     }
 }
@@ -2332,6 +2394,7 @@ fn cell_context_recovered(tool: &Tool) -> bool {
 }
 fn local_effect_unknown(tool: &Tool) -> bool {
     !cell_context_recovered(tool)
+        && !matches!(&tool.receipt, Some(Receipt::Recorded { outcome, .. }) if known(outcome))
         && tool.local_returned.as_ref().is_some_and(|result| {
             result.settlement == maka_agent_facts::tool_call::ToolSettlement::Unknown
         })

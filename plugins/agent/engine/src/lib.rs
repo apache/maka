@@ -30,7 +30,6 @@ mod driver;
 pub mod ports;
 pub mod pricing;
 mod reconcile;
-mod risk;
 pub use driver::{
     DriverExit, ExternalCleanupPublication, ExternalWitness, ModelCleanupPublication, ModelWitness,
     PendingPublication, PublicationResolution, PublicationWitness,
@@ -40,7 +39,6 @@ use maka_agent_facts::tools::ToolError;
 use maka_agent_state::Store;
 use maka_event_log::StoreError;
 use maka_model::ModelError;
-pub use risk::{RiskActionError, offered_risk_actions, risk_action_scope, validate_risk_action};
 
 #[derive(Clone)]
 pub struct Engine {

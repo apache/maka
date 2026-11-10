@@ -414,7 +414,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &["create", "models", "send", "work"]
         } else {
-            &["create", "history", "source", "search"]
+            &["create", "history", "source", "search", "list", "execution"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -1370,7 +1370,7 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn non_tool_run_cancellation_retains_original_decision_for_unrelated_pending_tool() {
+    async fn legacy_cancellation_keeps_unrelated_pending_tool_unsettled() {
         let mut rig = Rig::new().expect("owned bounded risk-tool fixture");
         let mut stage = "setup";
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -1401,14 +1401,9 @@ mod bounded_risk {
             assert!(matches!(exit, maka_agent_engine::DriverExit::Terminal { terminal: Terminal::Cancelled, .. }));
             let final_view = driver.state.frontier(run).await?;
             let tool = &final_view.tools[&tool_key(&unrelated)];
-            let acceptance = tool.accepted.as_ref().ok_or("unrelated tool was not accepted")?;
-            assert!(acceptance.outcome == AcceptedResult::RiskAdjudicated { blocker: risk });
-            let encoded: AcceptedToolResult = serde_json::from_slice(
-                &driver.state.content(run, acceptance.result.clone()).await?)?;
-            assert!(encoded == AcceptedToolResult::RiskAdjudicated { blocker: risk, decision: decision.clone() },
-                "accepted content lost the original blocker identity or decision");
-            assert!(tool.original.is_none() && tool.local_returned.is_none() && tool.prohibited_before_host.is_none(),
-                "risk acceptance fabricated an original execution or no-launch receipt");
+            assert!(tool.accepted.is_none() && tool.original.is_none()
+                && tool.local_returned.is_none() && tool.prohibited_before_host.is_none(),
+                "settling the legacy cancellation fabricated a receipt or a tool result");
             assert!(final_view.cells[&cell] == original_cell && !final_view.cells[&cell].physical_cleanup_confirmed());
             assert!(final_view.attempts[&attempt].cleanup != OperationCleanup::Confirmed);
             assert!(final_view.blockers[&risk] == *kept, "pending original obligation lost its whole-run decision");
@@ -1427,7 +1422,7 @@ mod bounded_risk {
 }
 
 mod source_recovery {
-    use super::*;
+    use super::{model_recovery::call, *};
     use crate::owner::PreparingRun;
     use maka_agent_state::ReadyCause;
 
@@ -1539,7 +1534,7 @@ mod source_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn assessed_stop_accepts_source_only_authority_recovery_and_explicit_risk_cancel() {
+    async fn assessed_stop_can_wake_for_authority_and_unrecoverable_runs_fail() {
         let mut rig = Rig::new().expect("owned Stop recovery fixture");
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
             let session = rig.start().await?;
@@ -1575,6 +1570,32 @@ mod source_recovery {
                 .as_ref()
                 .ok_or("original control driver missing")?;
             let run = driver.access.execution().run_id;
+            let client = rig.client.as_ref().ok_or("catalog client missing")?;
+            let list = call(
+                client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "needs_you", "position": {"kind": "start"}
+                }),
+            )
+            .await?;
+            assert_eq!(list["sessions"], json!([]));
+            assert_eq!(list["needsYouCount"], 0);
+            let execution = call(
+                client,
+                "agent",
+                "execution",
+                json!({
+                    "sessionId": session, "runId": run
+                }),
+            )
+            .await?;
+            assert_eq!(execution["execution"]["state"]["kind"], "waiting");
+            assert_eq!(
+                execution["execution"]["state"]["authorityUnavailable"],
+                true
+            );
             let owner = driver.state.frontier(run).await?.spec.owner;
             let ordinary = driver
                 .state
@@ -1629,46 +1650,18 @@ mod source_recovery {
                     .any(|entry| entry.run == run),
                 "StopAssessed permanently hid the authority-only Run"
             );
-            let risk = BlockerId::new();
+            let reason = BlockerKind::UnsupportedProtocol {
+                protocol: "logical-control-fixture".into(),
+                version: 1,
+            };
             rig.append(
                 vec![Fact::Blocked {
-                    blocker: risk,
-                    reason: BlockerKind::UnsupportedProtocol {
-                        protocol: "logical-control-fixture".into(),
-                        version: 1,
-                    },
+                    blocker: BlockerId::new(),
+                    reason: reason.clone(),
                 }],
                 vec![],
             )
             .await?;
-            assert!(
-                !driver
-                    .state
-                    .ready_runs_with_cause(
-                        owner.clone(),
-                        at(),
-                        None,
-                        64,
-                        ReadyCause::CapabilitySourceChanged
-                    )
-                    .await?
-                    .iter()
-                    .any(|entry| entry.run == run),
-                "source recovery bypassed a second non-authority risk"
-            );
-            rig.append(
-                vec![Fact::RiskAdjudicated {
-                    blocker: risk,
-                    decision: RiskDecision::CancelBlockedRun {
-                        diagnostic: "fixture explicit cancellation".into(),
-                    },
-                    scope: RiskActionScope::RunCancellation,
-                }],
-                vec![],
-            )
-            .await?;
-            rig.append(vec![Fact::StopAssessed { request }], vec![])
-                .await?;
             assert!(
                 driver
                     .state
@@ -1676,19 +1669,7 @@ mod source_recovery {
                     .await?
                     .iter()
                     .any(|entry| entry.run == run),
-                "StopAssessed or another authority blocker hid explicit cancellation"
-            );
-            let view = driver.state.frontier(run).await?;
-            assert!(
-                view.cancelled_by_risk
-                    && view.stop_assessed == Some(request)
-                    && view.blockers[&authority].resolved_by.is_none()
-                    && view.waits.contains_key(&blocked_wait),
-                "readiness fabricated authority or drained control facts"
-            );
-            assert!(
-                !view.blockers.contains_key(&risk),
-                "bounded frontier must retire the adjudicated cancellation blocker"
+                "authority wait hid a run that needs to settle as failed"
             );
             let exit = maka_agent_engine::Engine::new(driver.state.clone())
                 .current_authority_unavailable(
@@ -1702,11 +1683,11 @@ mod source_recovery {
                 matches!(
                     exit,
                     maka_agent_engine::DriverExit::Terminal {
-                        terminal: Terminal::Cancelled,
+                        terminal: Terminal::Failed,
                         ..
                     }
                 ),
-                "explicit risk cancellation did not drain through the actual Engine"
+                "unrecoverable run did not settle through the actual Engine"
             );
             assert!(
                 driver.state.frontier(run).await?.attempts.is_empty(),
@@ -1719,7 +1700,7 @@ mod source_recovery {
         let cleanup = rig.finish().await;
         assert!(
             matches!(&result, Ok(Ok(Ok(())))),
-            "assessed Stop source/cancel regression failed: {result:?}"
+            "assessed Stop recovery regression failed: {result:?}"
         );
         assert!(
             cleanup.is_empty(),
@@ -1910,7 +1891,7 @@ mod model_recovery {
         )
         .await
     }
-    async fn call(
+    pub(super) async fn call(
         client: &HostClient,
         endpoint: &str,
         method: &str,

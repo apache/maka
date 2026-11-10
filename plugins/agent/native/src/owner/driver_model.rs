@@ -90,11 +90,6 @@ pub(super) struct DriverModel {
         tokio::sync::watch::Sender<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
 }
 
-type ReplannedInput = (
-    RequestSource,
-    Option<SystemPrompt>,
-    Vec<FrozenCellKnowledge>,
-);
 type ProjectedHistory = (Option<String>, Vec<FrozenCellKnowledge>);
 
 struct ProjectedStepInput<'a> {
@@ -103,7 +98,6 @@ struct ProjectedStepInput<'a> {
     source_evidence: RequestSource,
     reader: HistorySource<'a>,
     previous_checkpoint_id: Option<String>,
-    adjudications: Vec<AdjudicationBasis>,
     recovered_cells: Vec<FrozenCellKnowledge>,
 }
 
@@ -335,9 +329,8 @@ impl DriverModel {
         if let Preparation::Prefix { attempt, proof } = &mode {
             self.validate_prefix(view, *attempt, proof).await?;
         }
-        let summary = !matches!(mode, Preparation::Replan { .. })
-            && (matches!(mode, Preparation::Summary)
-                || matches!(input, RunInput::ContextCompact { .. }));
+        let summary = matches!(mode, Preparation::Summary)
+            || matches!(input, RunInput::ContextCompact { .. });
         let model = tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => return Err(RunError::Cancelled),
@@ -356,10 +349,9 @@ impl DriverModel {
             source_evidence,
             reader,
             previous_checkpoint_id,
-            adjudications,
             recovered_cells,
         } = self
-            .project_step_input(view, &input, &mode, &model, summary)
+            .project_step_input(view, &input, &model, summary)
             .await?;
         let reader = &reader;
         let queue = self.state.queue();
@@ -508,9 +500,7 @@ impl DriverModel {
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
-            operation: if !adjudications.is_empty() {
-                ModelOperation::Inference
-            } else if native_compaction {
+            operation: if native_compaction {
                 ModelOperation::CodexCompaction
             } else {
                 context.map_or(ModelOperation::Inference, |value| value.operation)
@@ -611,7 +601,6 @@ impl DriverModel {
                 calibration,
             )?;
             if view.steps.is_empty()
-                && adjudications.is_empty()
                 && let RunInput::Continuation { claim, .. } = &input
             {
                 maka_agent_engine::preparation::validate_continuation(
@@ -741,22 +730,10 @@ impl DriverModel {
                 },
                 source_capture: capture.reference().clone(),
                 source_digest: source_evidence.cut.digest.clone(),
-                effective_source_digest: if adjudications.is_empty() {
-                    projection.reference().digest.clone()
-                } else {
-                    maka_agent_engine::digest(&(
-                        &source_evidence,
-                        &adjudications,
-                        &request.input_digest,
-                    ))?
-                },
+                effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
-                projection: if adjudications.is_empty() {
-                    Some(projection.reference().clone())
-                } else {
-                    None
-                },
-                adjudications: adjudications.clone(),
+                projection: Some(projection.reference().clone()),
+                adjudications: Vec::new(),
                 steering: steering_refs,
                 request: body.reference().clone(),
                 request_contents: frozen.content_refs(),
@@ -800,7 +777,6 @@ impl DriverModel {
         &'a self,
         view: &'a RunView,
         input: &'a RunInput,
-        mode: &'a Preparation,
         model: &'a maka_agent_engine::PreparedModel,
         summary: bool,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
@@ -834,42 +810,8 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let mut previous_checkpoint_id = None;
+            let previous_checkpoint_id;
             let mut recovered_cells = Vec::new();
-            let adjudications: Vec<AdjudicationBasis> = if let Preparation::Replan {
-                attempt,
-                adjudications: inputs,
-            } = mode
-            {
-                let attempt = attempt.ok_or_else(|| unsupported("replan-without-model-base"))?;
-                let (source, baseline, knowledge) = self
-                    .replan_input(
-                        reader,
-                        view,
-                        attempt,
-                        inputs,
-                        model.supports_vision,
-                        &mut messages,
-                    )
-                    .await?;
-                source_evidence = source;
-                system = baseline;
-                recovered_cells = knowledge;
-                let original = view
-                    .attempts
-                    .get(&attempt)
-                    .ok_or_else(|| RunError::InvalidInput("replan attempt is absent".into()))?;
-                previous_checkpoint_id = self
-                    .request_checkpoint(
-                        reader,
-                        view.run,
-                        &reader.request(view.run, original.step).await?,
-                    )
-                    .await?;
-                inputs.iter().map(|input| input.basis.clone()).collect()
-            } else {
-                Vec::new()
-            };
             let mut has_main_attempt = false;
             if summary {
                 for attempt in view.attempts.values() {
@@ -886,12 +828,70 @@ impl DriverModel {
                 }
             }
             let pre_turn_summary = summary && !has_main_attempt;
-            if adjudications.is_empty() {
-                if pre_turn_summary {
-                    let before = history.capture_before(view.run).await?;
-                    previous_checkpoint_id = match input {
-                        RunInput::Continuation { claim, .. } => {
-                            self.inherited_messages(
+            if pre_turn_summary {
+                let before = history.capture_before(view.run).await?;
+                previous_checkpoint_id = match input {
+                    RunInput::Continuation { claim, .. } => {
+                        self.inherited_messages(
+                            target,
+                            reader,
+                            claim.source.execution.run_id,
+                            view.spec.language,
+                            model.supports_vision,
+                            &mut system,
+                            &mut messages,
+                        )
+                        .await?
+                    }
+                    _ => {
+                        self.canonical_messages(
+                            target,
+                            &before,
+                            model.supports_vision,
+                            view.spec.language,
+                            &mut messages,
+                        )
+                        .await?
+                    }
+                };
+                source_evidence.current = before;
+                source_evidence.current_revision = 0;
+            } else if view.baseline.is_some() {
+                (previous_checkpoint_id, recovered_cells) = self
+                    .project_history(
+                        target,
+                        reader,
+                        model.supports_vision,
+                        view.spec.language,
+                        &mut messages,
+                    )
+                    .await?;
+            } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
+                let (source, baseline) = self
+                    .request_base(target, reader, view.run, &request, &mut messages)
+                    .await?;
+                source_evidence = source;
+                source_evidence.current = history.capture().await?;
+                source_evidence.current_revision = view.revision;
+                system = baseline;
+                previous_checkpoint_id =
+                    self.request_checkpoint(reader, view.run, &request).await?;
+                recovered_cells = self
+                    .semantic_tail(
+                        target,
+                        reader,
+                        view,
+                        model.supports_vision,
+                        &mut system,
+                        &mut messages,
+                        after,
+                    )
+                    .await?;
+            } else {
+                match input {
+                    RunInput::Continuation { claim, .. } => {
+                        previous_checkpoint_id = self
+                            .inherited_messages(
                                 target,
                                 reader,
                                 claim.source.execution.run_id,
@@ -901,99 +901,39 @@ impl DriverModel {
                                 &mut messages,
                             )
                             .await?
-                        }
-                        _ => {
-                            self.canonical_messages(
+                    }
+                    _ => {
+                        previous_checkpoint_id = self
+                            .canonical_messages(
                                 target,
-                                &before,
+                                &source_evidence.cut,
                                 model.supports_vision,
                                 view.spec.language,
                                 &mut messages,
                             )
-                            .await?
-                        }
-                    };
-                    source_evidence.current = before;
-                    source_evidence.current_revision = 0;
-                } else if view.baseline.is_some() {
-                    (previous_checkpoint_id, recovered_cells) = self
-                        .project_history(
-                            target,
-                            reader,
-                            model.supports_vision,
-                            view.spec.language,
-                            &mut messages,
-                        )
-                        .await?;
-                } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
-                    let (source, baseline) = self
-                        .request_base(target, reader, view.run, &request, &mut messages)
-                        .await?;
-                    source_evidence = source;
-                    source_evidence.current = history.capture().await?;
-                    source_evidence.current_revision = view.revision;
-                    system = baseline;
-                    previous_checkpoint_id =
-                        self.request_checkpoint(reader, view.run, &request).await?;
-                    recovered_cells = self
-                        .semantic_tail(
-                            target,
-                            reader,
-                            view,
-                            model.supports_vision,
-                            &mut system,
-                            &mut messages,
-                            after,
-                        )
-                        .await?;
-                } else {
-                    match input {
-                        RunInput::Continuation { claim, .. } => {
-                            previous_checkpoint_id = self
-                                .inherited_messages(
-                                    target,
-                                    reader,
-                                    claim.source.execution.run_id,
-                                    view.spec.language,
-                                    model.supports_vision,
-                                    &mut system,
-                                    &mut messages,
-                                )
-                                .await?
-                        }
-                        _ => {
-                            previous_checkpoint_id = self
-                                .canonical_messages(
-                                    target,
-                                    &source_evidence.cut,
-                                    model.supports_vision,
-                                    view.spec.language,
-                                    &mut messages,
-                                )
-                                .await?;
-                            self.project_message_input(
-                                reader,
-                                view,
-                                input,
-                                model.supports_vision,
-                                false,
-                                &mut messages,
-                            )
                             .await?;
-                        }
-                    }
-                    recovered_cells = self
-                        .semantic_tail(
-                            target,
+                        self.project_message_input(
                             reader,
                             view,
+                            input,
                             model.supports_vision,
-                            &mut system,
+                            false,
                             &mut messages,
-                            0,
                         )
                         .await?;
+                    }
                 }
+                recovered_cells = self
+                    .semantic_tail(
+                        target,
+                        reader,
+                        view,
+                        model.supports_vision,
+                        &mut system,
+                        &mut messages,
+                        0,
+                    )
+                    .await?;
             }
             Ok(ProjectedStepInput {
                 system,
@@ -1001,7 +941,6 @@ impl DriverModel {
                 source_evidence,
                 reader: captured,
                 previous_checkpoint_id,
-                adjudications,
                 recovered_cells,
             })
         })
@@ -1310,135 +1249,6 @@ impl DriverModel {
         let source: RequestSource = reader.decode(run, &request.source_capture).await?;
         let system = frozen.system;
         Ok((source, system))
-    }
-
-    fn replan_input<'a>(
-        &'a self,
-        reader: &'a HistorySource<'_>,
-        view: &'a RunView,
-        attempt: ModelAttemptId,
-        inputs: &'a [maka_agent_engine::ports::ReplanInput],
-        vision: bool,
-        messages: &'a mut preparation::PromptBuilder,
-    ) -> BoxFuture<'a, Result<ReplannedInput, RunError>> {
-        Box::pin(async move {
-            use maka_model::prompt::{ContentPart, ToolOutput};
-            let original = view.attempts.get(&attempt).ok_or_else(|| {
-                RunError::InvalidInput("adjudicated model attempt is missing".into())
-            })?;
-            let request = reader.request(view.run, original.step).await?;
-            let frozen = self.frozen_input(reader, view.run, &request).await?;
-            let model = self.source.capture().await?;
-            let binding = self.executor.binding(&model.provider)?;
-            if frozen.accepted != self.source.accepted
-                || !same_adapter_revision(binding.source(), &frozen.adapter)
-                || preparation::route_identity(&model.provider)? != frozen.route_identity
-            {
-                return Err(unsupported("replan-base-route-changed"));
-            }
-            self.append_frozen_base(
-                ReplayTarget::new(&model, ModelOperation::Inference),
-                reader,
-                view.run,
-                &request,
-                &frozen,
-                messages,
-            )
-            .await?;
-            let observed = self.canonical_parts(view, attempt).await?;
-            let original_cells = self.recorded_inputs(reader, view, 0).await?.cells;
-            let mut reports = Vec::with_capacity(inputs.len());
-            for input in inputs {
-                let evidence: Value = reader.decode(view.run, &input.basis.evidence).await?;
-                reports.push(json!({"adjudication":input.basis,"decision":input.decision,"humanEvidence":evidence}));
-            }
-            let report = json!({"type":"host_model_interruption","attempt":attempt,"originalRequest":request.request,"observedThrough":view.revision,"adjudications":reports,"completeItemObservations":observed,"upstreamClosedNotInferred":true,"unknownProviderEffectsNotDeclaredSuccessful":true});
-            let mut content = vec![
-                ContentPart::text(
-                    "The original model attempt was interrupted. The following are Host-recorded observations and an explicit human risk decision, not a replayable assistant response or proof of upstream completion. Start a new plan from the legal request base; do not resend an operation whose original outcome remains unknown.",
-                ),
-                ContentPart::text(serde_json::to_string(&report).map_err(RunError::Json)?),
-            ];
-            let mut source: RequestSource =
-                reader.decode(view.run, &request.source_capture).await?;
-            let mut after = source.current_revision;
-            let mut seen = std::collections::BTreeSet::new();
-            loop {
-                let page = reader.history(view.run, after, 256).await?;
-                if page.is_empty() {
-                    break;
-                }
-                for fact in page {
-                    after = fact.revision;
-                    if after > view.revision {
-                        break;
-                    }
-                    let Fact::ToolResultAccepted {
-                        tool: link, result, ..
-                    } = &fact.fact
-                    else {
-                        continue;
-                    };
-                    if link.attempt != attempt {
-                        continue;
-                    }
-                    if !seen.insert(link.clone()) {
-                        continue;
-                    }
-                    let tool = reader.tool_call(view.run, link).await?;
-                    let output = if let Some(output) = self
-                        .archived_tool_result(reader, view, fact.id, &fact.fact, &tool)
-                        .await?
-                    {
-                        output
-                    } else {
-                        let evidence = reader.decode(view.run, result).await?;
-                        self.project_accepted(
-                            reader,
-                            view,
-                            view.revision,
-                            &original_cells,
-                            evidence,
-                            vision,
-                            view.spec.language,
-                        )
-                        .await?
-                    };
-                    content.push(ContentPart::text(format!(
-                        "Original tool observation for {} ({}):",
-                        tool.name, tool.id
-                    )));
-                    match output {
-                        ToolOutput::Text(text) | ToolOutput::ErrorText(text) => {
-                            content.push(ContentPart::text(text))
-                        }
-                        ToolOutput::Json(value) | ToolOutput::ErrorJson(value) => {
-                            content.push(ContentPart::text(
-                                serde_json::to_string(&value).map_err(RunError::Json)?,
-                            ))
-                        }
-                        ToolOutput::Content(parts) => content.extend(parts),
-                    }
-                }
-                if after >= view.revision {
-                    break;
-                }
-            }
-            messages
-                .append(Message::User {
-                    content,
-                    provider_options: None,
-                })
-                .await?;
-            source.current = self
-                .state
-                .session_history(view.spec.owner.clone(), view.spec.session_id.clone())
-                .capture()
-                .await?;
-            source.current_revision = view.revision;
-            let system = frozen.system;
-            Ok((source, system, original_cells.into_values().collect()))
-        })
     }
 
     async fn decode<T: serde::de::DeserializeOwned>(
