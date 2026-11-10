@@ -18,11 +18,36 @@
  */
 
 import { host } from 'maka/host';
-import { cleanup, platform, signal, Text, View, type JSX, type Signal } from 'nsh';
+import {
+  cleanup,
+  computed,
+  keymap,
+  platform,
+  signal,
+  Text,
+  View,
+  type JSX,
+  type Signal,
+} from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { GlobalShortcut, Window, currentWindow } from 'nsh/desktop';
+import type {
+  UiContributionRef,
+  UiRuntime,
+} from '../../../../packages/plugin-sdk/src/workbench.js';
+import {
+  quickToolView,
+  type QuickToolHandle,
+} from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { loadDraft, saveDraft, type Output } from './host';
-import { MakaMark, QUICK_BAR_SLOT, quickBarStyle, quickInputStyle } from './QuickBar';
+import {
+  MakaMark,
+  QUICK_BAR_SLOT,
+  QuickRow,
+  quickBarStyle,
+  quickInputStyle,
+  quickRowStyle,
+} from './QuickBar';
 import { tr } from './locale';
 import { errorText, renderText } from './text';
 import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
@@ -85,12 +110,57 @@ function watchUnread(fail: (reason: unknown) => void) {
   return unread;
 }
 
-function Launcher(props: Navigation) {
+function Launcher(
+  props: Navigation & { runtime: UiRuntime<JSX.Element>; close(): Promise<boolean> },
+) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
   currentWindow().focus();
   const query = signal('');
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   const unread = watchUnread((reason) => failure.set(errorText(reason)));
+  const tools = computed(() =>
+    props.runtime
+      .contributions()
+      .filter(
+        (item) =>
+          item.declaration.kind === 'view' && item.declaration.contract === quickToolView.id,
+      ),
+  );
+  const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
+  const counts = computed(() =>
+    tools().map((tool) => ({ key: tool.key, rows: handles().get(tool.key)?.rows() ?? 0 })),
+  );
+  const toolRows = computed(() => counts().reduce((sum, tool) => sum + tool.rows, 0));
+  // Past every tool's rows is the row that asks the Bot.
+  const selection = signal(0);
+  const selected = computed(() => Math.min(selection(), toolRows()));
+  const locate = (index: number) => {
+    let offset = 0;
+    for (const tool of counts()) {
+      if (index < offset + tool.rows) return { key: tool.key, row: index - offset };
+      offset += tool.rows;
+    }
+    return null;
+  };
+  const toolView = (tool: UiContributionRef) => {
+    cleanup(() => {
+      const remaining = new Map(handles());
+      remaining.delete(tool.key);
+      handles.set(remaining);
+    });
+    return props.runtime.renderView({ path: tool.instance.path, id: tool.id }, quickToolView, {
+      query,
+      selected: () => {
+        const location = locate(selected());
+        return location?.key === tool.key ? location.row : null;
+      },
+      close: () => void props.close(),
+      report: (reason) => failure.set(errorText(reason)),
+      attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
+    });
+  };
+  let removeKeys = () => {};
+  cleanup(() => removeKeys());
   let running = false;
   const run = async () => {
     if (running) return;
@@ -125,6 +195,11 @@ function Launcher(props: Navigation) {
       running = false;
     }
   };
+  const activate = () => {
+    const location = locate(selected());
+    if (location === null) void run();
+    else handles().get(location.key)!.activate(location.row);
+  };
   return (
     <View style={frameStyle}>
       <View style={quickBarStyle}>
@@ -132,28 +207,53 @@ function Launcher(props: Navigation) {
           <MakaMark />
         </View>
         <Input
+          ref={(node) => {
+            removeKeys();
+            const unbind = [
+              keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
+                when: 'always',
+                repeat: true,
+                within: node,
+              }),
+              keymap.bind('down', () => selection.set(Math.min(toolRows(), selected() + 1)), {
+                when: 'always',
+                repeat: true,
+                within: node,
+              }),
+            ];
+            removeKeys = () => unbind.forEach((remove) => remove());
+          }}
           autoFocus
           accessibilityLabel={tr('Ask Maka')}
           placeholder={tr('Ask Maka')}
           value={query()}
-          onChange={({ value }) => query.set(value)}
-          onSubmit={() => void run()}
+          onChange={({ value }) => {
+            selection.set(0);
+            query.set(value);
+          }}
+          onSubmit={activate}
           style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
         />
+      </View>
+      <View style={{ borderTopWidth: toolRows() > 0 ? 1 : 0, borderTopColor: C.line }}>
+        <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
+          {(tool) => toolView(tool())}
+        </Each>
+        <If when={toolRows() > 0}>
+          <QuickRow
+            label={tr('Ask Maka')}
+            title={tr('Ask Maka')}
+            icon={<MakaMark />}
+            selected={selected() === toolRows()}
+            onPress={() => void run()}
+          />
+        </If>
       </View>
       <If when={unread() !== null && query() === ''}>
         <Button
           accessibilityLabel={`Maka Bot: ${unread()!.preview}`}
           onPress={() => void run()}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 10,
-            paddingVertical: 10,
-            paddingHorizontal: 16,
-            borderTopWidth: 1,
-            borderTopColor: C.line,
-          }}
+          style={{ ...quickRowStyle, borderTopWidth: 1, borderTopColor: C.line }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
@@ -210,6 +310,7 @@ export function QuickLauncher(
     /** Closes the popup once a conversation in it has saved its draft. */
     close(): Promise<boolean>;
     closed(): void;
+    runtime: UiRuntime<JSX.Element>;
     report(reason: unknown): void;
   },
 ) {
@@ -251,7 +352,15 @@ export function QuickLauncher(
     >
       <If
         when={props.conversing()}
-        else={<Launcher openBot={props.openBot} vacate={props.vacate} open={props.open} />}
+        else={
+          <Launcher
+            openBot={props.openBot}
+            vacate={props.vacate}
+            open={props.open}
+            close={props.close}
+            runtime={props.runtime}
+          />
+        }
       >
         <View style={[frameStyle, { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
       </If>

@@ -22,6 +22,7 @@ import {
   msg_cancel,
   msg_checklistRetry,
   msg_closeModels,
+  msg_copy,
   msg_helpNew,
   msg_models,
   msg_thinkingUnavailable,
@@ -80,6 +81,7 @@ export const commonMessages = {
   'Choose workspace': ['Choose workspace', '选择工作区', '選擇工作區'],
   Close: msg_closeModels,
   'Close · Esc': ['Close · Esc', '关闭 · Esc', '關閉 · Esc'],
+  Copy: msg_copy,
   'Connections & models': ['Connections & models', '连接与模型', '連線與模型'],
   'Add a model connection': ['Add a model connection', '添加模型连接', '新增模型連線'],
   'Conversations need a model. Add a connection with your API key or account first.': [
