@@ -2384,8 +2384,38 @@ mod model_recovery {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer() {
+    #[test]
+    fn tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer() {
+        const CHILD: &str = "MAKA_TEST_DEFAULT_STACK_REPLAY";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env_remove("RUST_MIN_STACK")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_stack_size(2 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tail_replay());
+    }
+
+    async fn tail_replay() {
         use maka_agent_engine::preparation;
         use maka_agent_facts::{
             context::RequestContextEvidence,
@@ -2429,6 +2459,7 @@ mod model_recovery {
                 "labels":[],"tools":["todo_read"],
                 "workspace":{"kind":"directory","path":base.join("workspace")}
             })).await?;
+            assert_eq!(created["kind"], "created", "{created}");
             let session = created["session"]["id"].as_str().ok_or("session missing")?.to_owned();
             let source = call(client, "agent", "send", json!({
                 "sessionId":session,"message":"Use the checklist twice.",
