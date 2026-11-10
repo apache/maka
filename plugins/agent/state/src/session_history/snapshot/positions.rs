@@ -133,6 +133,7 @@ pub(super) fn imported(
     snapshot: SnapshotId,
     message_ordinal: u64,
     message: &ImportedMessage,
+    model_start: bool,
     builder: &mut capture::Builder<'_>,
 ) -> Result<(), StoreError> {
     for (part_ordinal, reference) in message.parts.iter().enumerate() {
@@ -144,22 +145,24 @@ pub(super) fn imported(
             super::super::sql::read_blob(c, content, reference, |reader| {
                 Ok(serde_json::from_reader(std::io::BufReader::new(reader))?)
             })?;
-        let internal = match metadata.kind {
-            ImportedKind::Model => {
-                let part = metadata
-                    .part
-                    .ok_or_else(|| invalid("imported model part metadata is missing"))?;
-                match part.kind {
-                    ModelKind::Text => {
-                        part.text_kind
-                            .ok_or_else(|| invalid("imported text kind is missing"))?
-                            == TextKind::Thinking
+        let internal = (model_start
+            && message.role == maka_agent_facts::history_snapshot::HistoricalRole::Context)
+            || match metadata.kind {
+                ImportedKind::Model => {
+                    let part = metadata
+                        .part
+                        .ok_or_else(|| invalid("imported model part metadata is missing"))?;
+                    match part.kind {
+                        ModelKind::Text => {
+                            part.text_kind
+                                .ok_or_else(|| invalid("imported text kind is missing"))?
+                                == TextKind::Thinking
+                        }
+                        _ => false,
                     }
-                    _ => false,
                 }
-            }
-            _ => false,
-        };
+                _ => false,
+            };
         builder.add(Entry::Position {
             row: SnapshotPosition::Imported {
                 message_ordinal,

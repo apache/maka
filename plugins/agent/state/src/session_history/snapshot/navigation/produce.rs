@@ -60,6 +60,7 @@ pub(super) struct Producer {
     imported_page: std::vec::IntoIter<(u64, ImportedMessage)>,
     imported_eof: bool,
     imported_source: bool,
+    model_start: Option<u64>,
 }
 impl Producer {
     pub async fn new(snapshot: Snapshot, stop: CancellationToken) -> Result<Self, StoreError> {
@@ -78,11 +79,21 @@ impl Producer {
             imported_after: None,
             imported_page: Vec::new().into_iter(),
             imported_eof: false,
+            model_start: match &header.origin {
+                Origin::Imported { model_start, .. } => *model_start,
+                _ => None,
+            },
             imported_source: matches!(header.origin, Origin::Imported { .. }),
         })
     }
     fn flush_imported(&mut self) -> Result<(), StoreError> {
-        if let Some((_, message)) = self.imported.take() {
+        if let Some((ordinal, message)) = self.imported.take() {
+            if self.model_start == Some(ordinal)
+                && message.role == maka_agent_facts::history_snapshot::HistoricalRole::Context
+            {
+                self.imported_preview = None;
+                return Ok(());
+            }
             self.catalog
                 .observe_imported(&message, self.imported_preview.take())?;
         }

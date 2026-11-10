@@ -125,6 +125,7 @@ pub(super) fn copy(
     let Origin::Imported {
         source,
         fingerprint,
+        model_start,
     } = read::Header(parent.clone()).execute(c)?.origin
     else {
         return Err(invalid(
@@ -221,6 +222,7 @@ pub(super) fn copy(
     let manifest = builder.finish(Origin::Imported {
         source,
         fingerprint,
+        model_start: model_start.filter(|start| through.is_some_and(|through| *start <= through)),
     })?;
     let footer = ContentBlob::json(&manifest)?;
     footer.store(c)?;

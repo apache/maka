@@ -96,6 +96,7 @@ impl Owner {
                     id,
                     source: transcript.source,
                     fingerprint,
+                    model_start: None,
                 };
                 match history
                     .capture_imported(request, file, scope.cancellation.child_token())

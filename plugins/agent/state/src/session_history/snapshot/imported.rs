@@ -33,6 +33,8 @@ pub struct ImportedCaptureRequest {
     pub id: SnapshotId,
     pub source: maka_agent_facts::import::Source,
     pub fingerprint: ContentRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_start: Option<u64>,
 }
 impl SessionHistory {
     pub async fn capture_imported(
@@ -197,6 +199,7 @@ impl Statement for CaptureImported {
                                 self.1.id,
                                 *position,
                                 &decoded,
+                                self.1.model_start == Some(*position),
                                 &mut builder,
                             )?;
                             ordinal = ordinal
@@ -221,10 +224,12 @@ impl Statement for CaptureImported {
                 _ => return Err(invalid("unknown imported source preparation record")),
             }
         }
+        validate_model_start(c, self.1.id, self.1.model_start)?;
         proved(c, self.1.id, &self.1.fingerprint)?;
         let manifest = builder.finish(Origin::Imported {
             source: self.1.source.clone(),
             fingerprint: self.1.fingerprint.clone(),
+            model_start: self.1.model_start,
         })?;
         let footer = ContentBlob::json(&manifest)?;
         footer.store(c)?;
@@ -350,4 +355,35 @@ impl Query for ImportedSessionIds {
         let next = if more { ids.last().cloned() } else { None };
         Ok(ImportedSessions { ids, next })
     }
+}
+
+pub(super) fn validate_model_start(
+    c: &Connection,
+    snapshot: SnapshotId,
+    start: Option<u64>,
+) -> Result<(), StoreError> {
+    let Some(start) = start else { return Ok(()) };
+    let raw: Option<String> = c.query_row(
+        "SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='imported' AND position=?",
+        params![snapshot.to_string(), bind_u64(start)?], |row| row.get(0),
+    ).optional()?;
+    let Some(Entry::Imported { message, .. }) =
+        raw.map(|s| serde_json::from_str(&s)).transpose()?
+    else {
+        return Err(invalid(
+            "imported model context start is not a retained message",
+        ));
+    };
+    let content = content_id(c, &message)?;
+    let value: ImportedMessage = super::super::sql::read_blob(c, content, &message, |reader| {
+        Ok(serde_json::from_reader(std::io::BufReader::new(reader))?)
+    })?;
+    if value.role != maka_agent_facts::history_snapshot::HistoricalRole::Context
+        || value.parts.is_empty()
+    {
+        return Err(invalid(
+            "imported model context must start with a retained context message",
+        ));
+    }
+    Ok(())
 }
