@@ -46,10 +46,8 @@ pub use execution::{
     RetainedWorkSettlement, SessionWorkLease, SessionWorkScope, WorkEffectLease, WorkEffects,
     WorkSettlementObserver,
 };
-pub(crate) use lifecycle::StageRegistration;
 pub use resource_io::{RequestFileCloseFailure, close_request_file, create_request_file};
 mod applications;
-mod attachments;
 pub(crate) mod checkpoints;
 mod control;
 pub use checkpoints::{Checkout, HistoryCheckpoints};
@@ -67,7 +65,7 @@ pub use projects::ProjectWorkspacePlan;
 mod session_metadata;
 pub use session_metadata::SessionRevisionGuard;
 mod session_store;
-pub use creation::CreationRejection;
+pub use creation::{CreationRejection, SessionCreationRequest};
 
 mod routes;
 

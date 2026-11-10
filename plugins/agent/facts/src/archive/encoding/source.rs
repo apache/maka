@@ -409,16 +409,16 @@ async fn part_text(source: JsonSource, budget: Arc<dyn SourceBudget>) -> io::Res
             budget.clone(),
         )
         .await?;
-        if let Some(detail) = detail {
-            if detail.kind != JsonKind::Null {
-                let detail = detail.text()?;
-                let mut valid = false;
-                for name in ["auto", "low", "high", "original"] {
-                    valid |= json::text_eq(&detail, name, budget.clone()).await?;
-                }
-                if !valid {
-                    return Err(invalid("invalid image detail"));
-                }
+        if let Some(detail) = detail
+            && detail.kind != JsonKind::Null
+        {
+            let detail = detail.text()?;
+            let mut valid = false;
+            for name in ["auto", "low", "high", "original"] {
+                valid |= json::text_eq(&detail, name, budget.clone()).await?;
+            }
+            if !valid {
+                return Err(invalid("invalid image detail"));
             }
         }
         (required(mime)?.text()?, required(reference)?.source)
@@ -566,7 +566,7 @@ impl Directory {
                 }
             }
             let mut record = [0; RECORD];
-            for (slot, value) in record.chunks_exact_mut(8).zip([
+            for (slot, value) in record.as_chunks_mut::<8>().0.iter_mut().zip([
                 start as u64,
                 directory.keys.used as u64,
                 spans.key_range.start,

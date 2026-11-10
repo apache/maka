@@ -20,11 +20,17 @@
 //! AppKit integration tests run on the process main thread, never a libtest worker.
 #[cfg(target_os = "macos")]
 mod cases;
+#[cfg(target_os = "macos")]
+mod desktop;
 
 fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     #[cfg(target_os = "macos")]
     let cases: &[(&str, fn())] = &[
+        (
+            "pixel_terminal_keeps_main_and_secondary_windows_offscreen_while_editing",
+            desktop::isolation,
+        ),
         (
             "native_focus_survives_updates_and_revokes_removed_and_modal_editors",
             cases::focus_admission,

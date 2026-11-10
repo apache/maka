@@ -299,7 +299,6 @@ pub(crate) trait TaskBinding: Send + Sync {
     fn cleanup(&self, cleanup: OperationCleanup) -> BoxFuture<'_, Result<(), Error>>;
 }
 pub(crate) enum CredentialBase {
-    Home,
     CodexHome,
     ClaudeConfig,
 }
@@ -463,6 +462,10 @@ impl Backend {
         }
     }
     /// Only read the exact task. This path never constructs Execute or admits a mutation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Observation keeps the original task identity, cursor, custody, authority and settlement owners explicit"
+    )]
     pub(crate) async fn observe_task(
         &self,
         request: &Request,
@@ -550,10 +553,11 @@ impl Backend {
                 if request.settings != self.accepted.selection.settings {
                     return Settlement::new(
                         Err(Error::Blocked {
-                            reason:
+                            reason: Box::new(
                                 maka_agent_facts::durable::BlockerKind::ExternalTaskUnobservable {
                                     descriptor,
                                 },
+                            ),
                             diagnostic:
                                 "Original native task settings differ from the accepted backend"
                                     .into(),
@@ -578,7 +582,10 @@ impl Backend {
                     {
                         external::NativeTaskObservation::Known { outcome } => Ok(outcome),
                         external::NativeTaskObservation::Blocked { reason, diagnostic } => {
-                            Err(Error::Blocked { reason, diagnostic })
+                            Err(Error::Blocked {
+                                reason: Box::new(reason),
+                                diagnostic,
+                            })
                         }
                     }
                 }
@@ -781,7 +788,7 @@ impl executor::Execution for Call {
                 with_observation_retirement(observing, retired.clone(),
                     observe_original_service(observing, &self.service, &self.import, self.member,
                         &original, next, output, self.binding.clone(), Some(completion.reply.receipt), delivery_error)).await
-            }).catch_unwind()).await.unwrap_or_else(|_| Err(Error::Unknown));
+            }).catch_unwind()).await.unwrap_or(Err(Error::Unknown));
             // Transport/dispatch errors after handoff do not prove a failed original job.
             let result = result.map_err(|error| match error {
                 Error::Provider(_) => Error::Unknown,
@@ -1012,6 +1019,10 @@ async fn accept_service_closure(
     Ok(Some(outcome))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Original service observation binds the exact service, task cursor, output, lifecycle and prior receipt"
+)]
 async fn observe_original_service(
     request: &maka_host_runtime::application::NativeRequest,
     service: &ServiceBackend,
@@ -1064,6 +1075,10 @@ async fn observe_original_service(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Service observation binds the exact Root, service, task cursor, output, lifecycle and prior receipt"
+)]
 async fn observe_service(
     request: &maka_host_runtime::application::NativeRequest,
     store: &RootStore,

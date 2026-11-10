@@ -150,7 +150,7 @@ pub(crate) fn with_owned_content<T>(
     consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let mut statement = c.prepare_cached("SELECT c.payload FROM agent_content_pins p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?")?;
+    let mut statement = c.prepare_cached("SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?")?;
     let mut rows = statement.query(params![
         run.to_string(),
         reference.digest,
@@ -688,20 +688,17 @@ fn validate_request(
     for reference in request.content_refs() {
         pin(c, view.run, reference)?;
     }
-    if adjudications.is_empty() {
-        if let Some(pending) = view.retry_pending {
-            if let Some(AttemptRecovery::ProjectPrefixSafe { prefix, .. }) = view
-                .attempts
-                .get(&pending)
-                .and_then(|attempt| attempt.recovery.as_ref())
-            {
-                if request.projection.as_ref() != Some(prefix) {
-                    return Err(invalid(
-                        "projected request is not bound to the original safe prefix",
-                    ));
-                }
-            }
-        }
+    if adjudications.is_empty()
+        && let Some(pending) = view.retry_pending
+        && let Some(AttemptRecovery::ProjectPrefixSafe { prefix, .. }) = view
+            .attempts
+            .get(&pending)
+            .and_then(|attempt| attempt.recovery.as_ref())
+        && request.projection.as_ref() != Some(prefix)
+    {
+        return Err(invalid(
+            "projected request is not bound to the original safe prefix",
+        ));
     }
     Ok((request, fallback))
 }
@@ -1139,16 +1136,24 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
         true,
     ))
 }
+pub(crate) struct AppendMaterial<'a> {
+    pub contents: Vec<ContentBlob>,
+    pub artifacts: &'a crate::artifacts::ArtifactBatch,
+}
+
 pub(crate) fn append(
     c: &Connection,
     run: RunId,
     expected: Option<Head>,
     changes: &[Change],
-    contents: Vec<ContentBlob>,
+    material: AppendMaterial<'_>,
     mode: &Mode,
     steering: Option<&crate::queue::Consume>,
-    artifacts: &crate::artifacts::ArtifactBatch,
 ) -> Result<(Commit, bool), StoreError> {
+    let AppendMaterial {
+        contents,
+        artifacts,
+    } = material;
     if changes.is_empty() {
         return Err(invalid("empty canonical batch"));
     }
@@ -1243,11 +1248,10 @@ pub(crate) fn append(
         }
     }
     for change in changes {
-        if let Fact::ApprovalConsumed { approval: _, tool } = &change.fact {
-            if !changes.iter().any(|change| matches!(&change.fact,Fact::ToolAdmitted { tool:admitted } if admitted==tool)) {
+        if let Fact::ApprovalConsumed { approval: _, tool } = &change.fact
+            && !changes.iter().any(|change| matches!(&change.fact,Fact::ToolAdmitted { tool:admitted } if admitted==tool)) {
                 return Err(invalid("single-use approval consumption requires same-batch tool admission"));
             }
-        }
     }
     let targets: Vec<_> = changes.iter().map(|c| &c.fact).collect();
     let mut view = load(c, run, &targets, false)?;
@@ -1367,8 +1371,8 @@ pub(crate) fn append(
                 return Err(invalid("single-use approval expired at SQL admission"));
             }
         }
-        if let Fact::ToolAdmitted { tool } = &change.fact {
-            if let Some(ToolDecision::Approved {
+        if let Fact::ToolAdmitted { tool } = &change.fact
+            && let Some(ToolDecision::Approved {
                 input,
                 resources,
                 approval: Some(approval),
@@ -1377,21 +1381,19 @@ pub(crate) fn append(
                 .tools
                 .get(&fold::tool_key(tool))
                 .and_then(|tool| tool.decision.as_ref())
-            {
-                if !changes.iter().any(|change|matches!(&change.fact,Fact::ApprovalConsumed{approval:consumed,tool:target} if consumed==approval && target==tool)){
+        {
+            if !changes.iter().any(|change|matches!(&change.fact,Fact::ApprovalConsumed{approval:consumed,tool:target} if consumed==approval && target==tool)){
                     return Err(invalid("approved tool requires its exact same-batch consumption"));
                 }
-                crate::interactions::consume(c, run, tool, *approval, input, resources)?;
-            }
+            crate::interactions::consume(c, run, tool, *approval, input, resources)?;
         }
-        if let Fact::ModelAttemptPrepared { attempt, .. } = &change.fact {
-            if c.prepare_cached("SELECT 1 FROM agent_attempt_ids WHERE attempt=?")?
+        if let Fact::ModelAttemptPrepared { attempt, .. } = &change.fact
+            && c.prepare_cached("SELECT 1 FROM agent_attempt_ids WHERE attempt=?")?
                 .query_row([attempt.to_string()], |r| r.get::<_, i64>(0))
                 .optional()?
                 .is_some()
-            {
-                return Err(StoreError::EventConflict);
-            }
+        {
+            return Err(StoreError::EventConflict);
         }
         if matches!(change.fact, Fact::RunAdmitted { .. }) {
             return Err(invalid("Run admission is immutable"));
@@ -1609,10 +1611,10 @@ pub(crate) fn rebuild(c: &Connection, run: RunId) -> Result<Head, StoreError> {
             break;
         }
         for recorded in page {
-            if let Fact::RunAdmitted { spec: reference } = &recorded.fact {
-                if reference != &spec_ref {
-                    return Err(StoreError::EventConflict);
-                }
+            if let Fact::RunAdmitted { spec: reference } = &recorded.fact
+                && reference != &spec_ref
+            {
+                return Err(StoreError::EventConflict);
             }
             if let Fact::StepPrepared {
                 step,
@@ -1899,7 +1901,20 @@ pub(crate) fn cleanup_frontier(
     c: &Connection,
     run: RunId,
 ) -> Result<crate::store::CleanupFrontier, StoreError> {
-    let (owner, session, revision, control, local, external, backend_kind, backend, turn, schema, has_publication): (String,String,u64,u64,bool,Option<String>,String,String,String,u32,bool) =
+    type RunHeaderRow = (
+        String,
+        String,
+        u64,
+        u64,
+        bool,
+        Option<String>,
+        String,
+        String,
+        String,
+        u32,
+        bool,
+    );
+    let (owner, session, revision, control, local, external, backend_kind, backend, turn, schema, has_publication): RunHeaderRow =
         c.prepare_cached("SELECT r.owner,r.session,r.revision,r.control_version,r.local,r.external,
             json_extract(body.payload,'$.backend.kind'),json_extract(body.payload,'$.backend.descriptor'),
             json_extract(body.payload,'$.turnId'),r.schema_version,

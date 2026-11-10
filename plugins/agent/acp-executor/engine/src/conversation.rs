@@ -235,14 +235,14 @@ impl Provider {
         if result.is_err() {
             // A lost connection can leave the remote prompt uncertain. The journal
             // remains Running, so another activation cannot silently duplicate it.
-            if let Some(cleanup) = cleanup {
-                if let Err(error) = cleanup.close().await {
-                    // The process port retains the original custody on failed close.
-                    eprintln!(
-                        "acp engine: stage=engine_cleanup_return error_kind={} business_preserved=true",
-                        failure_kind(&error)
-                    );
-                }
+            if let Some(cleanup) = cleanup
+                && let Err(error) = cleanup.close().await
+            {
+                // The process port retains the original custody on failed close.
+                eprintln!(
+                    "acp engine: stage=engine_cleanup_return error_kind={} business_preserved=true",
+                    failure_kind(&error)
+                );
             }
         }
         result

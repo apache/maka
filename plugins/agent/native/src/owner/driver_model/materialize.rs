@@ -97,6 +97,7 @@ impl FrozenMaterializer {
             &self.cut,
             self.run,
             &self.frozen.prompt,
+            &self.frozen.prompt_chunks,
             &self.frozen.layout,
             cancellation,
         )

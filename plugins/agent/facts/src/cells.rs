@@ -19,11 +19,12 @@
 
 //! Durable Cell evidence; no value here represents interpreter or Host custody.
 use crate::durable::{AgentStepLink, ApprovalId, ContentRef, FactId, ResourceRecovery, StepId};
+use crate::operation::{
+    RecordedOperationReply, RecordedOperationResult, result_reference, same_outcome,
+};
 use crate::tool_call::{RejectionKind, ToolSettlement};
 use crate::tools::ToolSemantics;
-use maka_plugin_core::operation::{
-    OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryRef,
-};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,6 +161,11 @@ pub enum CellEvent {
         input: ContentRef,
         resources: Vec<ResourceRecovery>,
     },
+    ChildDisplayRecorded {
+        cell: CellId,
+        operation: Uuid,
+        display: crate::durable::ToolDisplay,
+    },
     ChildRejected {
         cell: CellId,
         operation: Uuid,
@@ -203,7 +209,7 @@ pub enum CellEvent {
     ChildObserved {
         cell: CellId,
         operation: Uuid,
-        reply: OperationReply,
+        reply: RecordedOperationReply,
     },
     /// Original worker output and private draft evidence, not session publication.
     Completed {
@@ -250,6 +256,7 @@ impl CellEvent {
             Self::Started { cell, .. }
             | Self::VmCleanupUnconfirmed { cell, .. }
             | Self::VmBound { cell, .. }
+            | Self::ChildDisplayRecorded { cell, .. }
             | Self::ChildRejected { cell, .. }
             | Self::ChildPrepared { cell, .. }
             | Self::ChildApprovalRecorded { cell, .. }
@@ -282,7 +289,8 @@ impl CellEvent {
     pub fn is_late(&self) -> bool {
         matches!(
             self,
-            Self::VmCleanupUnconfirmed { .. }
+            Self::ChildDisplayRecorded { .. }
+                | Self::VmCleanupUnconfirmed { .. }
                 | Self::ChildRejected { .. }
                 | Self::ChildApprovalRecorded { .. }
                 | Self::ChildBound { .. }
@@ -327,6 +335,7 @@ impl CellEvent {
             Self::LocalChildReturned { result, .. } | Self::ChildResultRecorded { result, .. } => {
                 vec![result]
             }
+            Self::ChildObserved { reply, .. } => result_reference(reply).into_iter().collect(),
             Self::Interrupted { report, .. } => vec![report],
             Self::SessionValuePublished { value, .. } => vec![value],
             Self::NotificationQueued { content, .. }
@@ -339,11 +348,12 @@ impl CellEvent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CellChild {
     pub name: String,
+    pub display: Option<crate::durable::ToolDisplay>,
     pub semantics: ToolSemantics,
     pub input: ContentRef,
     pub resources: Vec<ResourceRecovery>,
     pub reference: Option<RecoveryRef>,
-    pub reply: Option<OperationReply>,
+    pub reply: Option<RecordedOperationReply>,
     pub local_result: Option<LocalCellResult>,
     pub provider_result: Option<LocalCellResult>,
     pub approvals: BTreeMap<ApprovalId, bool>,
@@ -399,12 +409,12 @@ impl CellView {
         else {
             return Err("CellStarted required".into());
         };
-        if let CellOwner::Agent { link, call } = owner {
-            if *cell != CellId::for_agent(*link, call) {
-                return Err(CellTransitionError::Conflict(
-                    "Cell identity differs from its original parent",
-                ));
-            }
+        if let CellOwner::Agent { link, call } = owner
+            && *cell != CellId::for_agent(*link, call)
+        {
+            return Err(CellTransitionError::Conflict(
+                "Cell identity differs from its original parent",
+            ));
         }
         Ok(Self {
             id: *cell,
@@ -538,6 +548,7 @@ impl CellView {
                     *operation,
                     CellChild {
                         name: name.clone(),
+                        display: None,
                         semantics: *semantics,
                         input: input.clone(),
                         resources: resources.clone(),
@@ -550,6 +561,23 @@ impl CellView {
                         rejected: None,
                     },
                 );
+            }
+            CellEvent::ChildDisplayRecorded {
+                operation, display, ..
+            } => {
+                display.validate().map_err(CellTransitionError::from)?;
+                let child = self
+                    .children
+                    .get_mut(operation)
+                    .ok_or("Cell child not prepared")?;
+                if child
+                    .display
+                    .as_ref()
+                    .is_some_and(|original| original != display)
+                {
+                    return Err(CellTransitionError::Conflict("Cell child display changed"));
+                }
+                child.display = Some(display.clone());
             }
             CellEvent::ChildRejected {
                 operation,
@@ -658,21 +686,15 @@ impl CellView {
                             ..
                         }) => ToolSettlement::Rejected,
                         Some(Receipt::Recorded {
-                            outcome:
-                                OperationOutcome::Returned {
-                                    result:
-                                        maka_plugin_core::operation::OperationResult::Failure { .. },
-                                },
+                            outcome: OperationOutcome::Returned { result },
                             ..
-                        }) => ToolSettlement::Failed,
-                        Some(Receipt::Recorded {
-                            outcome:
-                                OperationOutcome::Returned {
-                                    result:
-                                        maka_plugin_core::operation::OperationResult::Success { .. },
-                                },
-                            ..
-                        }) => ToolSettlement::Returned,
+                        }) => {
+                            if result.is_error() {
+                                ToolSettlement::Failed
+                            } else {
+                                ToolSettlement::Returned
+                            }
+                        }
                         _ => return Err("Cell Host result has no known original outcome".into()),
                     },
                 };
@@ -709,16 +731,16 @@ impl CellView {
                     is_error: *is_error,
                     settlement: *settlement,
                 };
-                if let Some(prior) = &child.local_result {
-                    if prior.settlement != ToolSettlement::Unknown {
-                        if evidence.settlement == ToolSettlement::Unknown {
-                            return Ok(());
-                        }
-                        if prior != &evidence {
-                            return Err(CellTransitionError::Conflict(
-                                "known local Cell result changed",
-                            ));
-                        }
+                if let Some(prior) = &child.local_result
+                    && prior.settlement != ToolSettlement::Unknown
+                {
+                    if evidence.settlement == ToolSettlement::Unknown {
+                        return Ok(());
+                    }
+                    if prior != &evidence {
+                        return Err(CellTransitionError::Conflict(
+                            "known local Cell result changed",
+                        ));
                     }
                 }
                 child.local_result = Some(evidence);
@@ -929,9 +951,9 @@ impl CellChild {
     }
 }
 fn join_reply(
-    prior: &OperationReply,
-    next: &OperationReply,
-) -> Result<OperationReply, CellTransitionError> {
+    prior: &RecordedOperationReply,
+    next: &RecordedOperationReply,
+) -> Result<RecordedOperationReply, CellTransitionError> {
     if prior.reference != next.reference {
         return Err("Cell original operation reference changed".into());
     }
@@ -957,12 +979,24 @@ fn join_reply(
         new,
         OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
     );
-    if old_known && new_known && old != new {
+    if old_known
+        && new_known
+        && !same_outcome(old, new)
+            .map_err(|_| CellTransitionError::Invalid("Cell operation result cannot be compared"))?
+    {
         return Err(CellTransitionError::Conflict(
             "Cell known provider outcome changed",
         ));
     }
-    let outcome = if old_known || matches!(old, OperationOutcome::Unknown { .. }) && !new_known {
+    let next_uses_reference = matches!(
+        new,
+        OperationOutcome::Returned {
+            result: RecordedOperationResult::Referenced { .. },
+        }
+    );
+    let outcome = if old_known && !next_uses_reference
+        || matches!(old, OperationOutcome::Unknown { .. }) && !new_known
+    {
         old.clone()
     } else {
         new.clone()
@@ -975,7 +1009,7 @@ fn join_reply(
         ) => old_cleanup.clone(),
         _ => new_cleanup.clone(),
     };
-    Ok(OperationReply {
+    Ok(RecordedOperationReply {
         reference: prior.reference.clone(),
         receipt: Receipt::Recorded { outcome, cleanup },
     })
@@ -994,6 +1028,7 @@ pub struct LocalCellResult {
 pub struct CellReply {
     pub cell: CellId,
     pub state: CellReplyState,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub observation: serde_json::Value,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1046,4 +1081,22 @@ pub struct CellReturnedResult {
     pub output: crate::tool_output::ToolOutput,
     pub projection: Option<crate::tool_output::DurableToolProjection>,
     pub is_error: bool,
+}
+
+/// Local and historical Cell returns use the original body. Host returns can
+/// share the same stored operation envelope as ordinary Agent tools.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredCellReturn {
+    Operation(Box<crate::tool_output::StoredOperationReturn>),
+    Inline(CellReturnedResult),
+}
+
+impl StoredCellReturn {
+    pub fn is_error(&self) -> bool {
+        match self {
+            Self::Operation(body) => body.is_error,
+            Self::Inline(body) => body.is_error,
+        }
+    }
 }

@@ -131,11 +131,6 @@ impl Owner {
         }
     }
 
-    pub(super) async fn schedule_ready(self: &Arc<Self>) -> Result<(), String> {
-        self.reconcile_model_readers(false).await?;
-        self.schedule_ready_at(UnixMillis(now() as i64), ReadyCause::Ordinary)
-            .await
-    }
     pub(super) async fn schedule_ready_at(
         self: &Arc<Self>,
         at: UnixMillis,
@@ -576,7 +571,10 @@ impl Owner {
                         matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
                     })
             }
-            Err(RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable { .. })) => true,
+            Err(RunError::Blocked(reason)) => matches!(
+                reason.as_ref(),
+                BlockerKind::CurrentAuthorityUnavailable { .. }
+            ),
             _ => false,
         };
         let retry = self

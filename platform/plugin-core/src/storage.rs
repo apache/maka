@@ -41,10 +41,10 @@ impl Namespace {
     pub fn new(package: impl Into<String>, scope: Scope) -> Result<Self, Error> {
         let package = package.into();
         crate::identifier(&package).map_err(|e| Error::Invalid(e.to_string()))?;
-        if let Scope::Session(id) = &scope {
-            if id.is_empty() || id.chars().any(|c| c.is_control() || c.is_whitespace()) {
-                return Err(Error::Invalid(format!("invalid identifier: {id:?}")));
-            }
+        if let Scope::Session(id) = &scope
+            && (id.is_empty() || id.chars().any(|c| c.is_control() || c.is_whitespace()))
+        {
+            return Err(Error::Invalid(format!("invalid identifier: {id:?}")));
         }
         Ok(Self { package, scope })
     }

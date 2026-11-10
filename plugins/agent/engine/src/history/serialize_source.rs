@@ -68,22 +68,6 @@ pub(crate) async fn message_async<'a>(
     .message(message)
     .await
 }
-pub(crate) async fn exact_message(
-    message: &MessageRecipe,
-    budget: &Arc<dyn SourceBudget>,
-    cancellation: &CancellationToken,
-    emit: &mut (impl FnMut(&[u8]) -> io::Result<()> + Send),
-) -> io::Result<()> {
-    Encoder {
-        budget,
-        cancellation,
-        emit: &mut SyncEmit(emit),
-        media: &mut |_, _| Err(io::Error::other("exact serialization never labels media")),
-        preserve_media: true,
-    }
-    .message(message)
-    .await
-}
 
 pub(crate) async fn exact_message_async(
     message: &MessageRecipe,

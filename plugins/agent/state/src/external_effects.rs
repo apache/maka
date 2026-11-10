@@ -31,13 +31,14 @@ use uuid::Uuid;
 mod sql;
 pub(crate) use sql::{
     ReadDescriptor, ReadEffect, load_run, native_source_pending, persist, read_descriptor,
-    read_original, rebuild, replay, verify_native_source,
+    read_original, replay, verify_native_source,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExternalEffect {
     pub descriptor: ContentRef,
+    pub display: Option<maka_agent_facts::durable::ToolDisplay>,
     pub admitted: bool,
     pub admission_approval: Option<ApprovalId>,
     pub rejected: Option<ExternalRejection>,
@@ -83,6 +84,7 @@ impl ExternalEffect {
     fn prepared(descriptor: &ContentRef) -> Self {
         Self {
             descriptor: descriptor.clone(),
+            display: None,
             admitted: false,
             admission_approval: None,
             rejected: None,
@@ -99,6 +101,17 @@ impl ExternalEffect {
                 if self.descriptor != *descriptor {
                     return Err(StoreError::EventConflict);
                 }
+            }
+            ExternalEffectEvent::DisplayRecorded { display, .. } => {
+                display.validate().map_err(invalid)?;
+                if self
+                    .display
+                    .as_ref()
+                    .is_some_and(|original| original != display)
+                {
+                    return Err(StoreError::EventConflict);
+                }
+                self.display = Some(display.clone());
             }
             ExternalEffectEvent::Rejected {
                 rejection_kind,

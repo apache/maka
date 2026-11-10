@@ -152,15 +152,6 @@ impl Statement for AdoptSnapshot {
                 adoption.admitted.to_string()
             ],
         )?;
-        // Source closure is immutable data. Old grants and background approvals
-        // remain only in the opaque snapshot; no current issuer/KV is replayed.
-        c.execute("INSERT OR IGNORE INTO agent_content_pins(run,content_id) SELECT ?1,content_id FROM agent_history_snapshot_pins WHERE snapshot=?2",params![adoption.run.to_string(),self.source.id.to_string()])?;
-        let sequence: u64 = c.query_row(
-            "SELECT sequence FROM agent_facts WHERE id=? AND run=?",
-            params![adoption.admitted.to_string(), adoption.run.to_string()],
-            |r| read_u64(r, 0),
-        )?;
-        c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,content_id,?4 FROM agent_history_snapshot_pins WHERE snapshot=?5",params![serde_json::to_string(&self.target.owner)?,self.target.session,adoption.run.to_string(),bind_u64(sequence)?,self.source.id.to_string()])?;
         let done = Change {
             id: adoption.installed,
             at: self.at,
@@ -174,10 +165,12 @@ impl Statement for AdoptSnapshot {
             adoption.run,
             Some(commit.head),
             &[done],
-            vec![],
+            crate::sql::AppendMaterial {
+                contents: vec![],
+                artifacts: &crate::artifacts::ArtifactBatch::default(),
+            },
             &Mode::Historical,
             None,
-            &crate::artifacts::ArtifactBatch::default(),
         )?;
         let notification = crate::sql::notification(c, adoption.run, true)?;
         Ok(Prepared {

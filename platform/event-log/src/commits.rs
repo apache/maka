@@ -28,7 +28,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub(crate) struct CommitHub(Arc<Hub>);
 struct Hub {
-    all: watch::Sender<u64>,
+    all: watch::Sender<()>,
     activations: watch::Sender<()>,
     material_releases: watch::Sender<()>,
     sessions: Mutex<HashMap<String, Weak<Registration>>>,
@@ -36,14 +36,14 @@ struct Hub {
 struct Registration {
     session: String,
     hub: Weak<Hub>,
-    sender: Mutex<Option<watch::Sender<u64>>>,
+    sender: Mutex<Option<watch::Sender<()>>>,
 }
 
 /// Register before reading the initial SQL snapshot. The subscription pins only
 /// its notification channel, never the Session's historical execution state.
 #[derive(Clone)]
 pub struct SessionSubscription {
-    receiver: watch::Receiver<u64>,
+    receiver: watch::Receiver<()>,
     _registration: Arc<Registration>,
     control: Option<watch::Receiver<()>>,
 }
@@ -67,7 +67,7 @@ impl SessionSubscription {
     }
 }
 impl Deref for SessionSubscription {
-    type Target = watch::Receiver<u64>;
+    type Target = watch::Receiver<()>;
     fn deref(&self) -> &Self::Target {
         &self.receiver
     }
@@ -84,15 +84,15 @@ pub(crate) struct CommitNotice {
     sessions: Arc<[String]>,
 }
 impl CommitHub {
-    pub(crate) fn new(through: u64) -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Hub {
-            all: watch::channel(through).0,
+            all: watch::channel(()).0,
             activations: watch::channel(()).0,
             material_releases: watch::channel(()).0,
             sessions: Mutex::new(HashMap::new()),
         }))
     }
-    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
         self.0.all.subscribe()
     }
     pub(crate) fn subscribe_activations(&self) -> watch::Receiver<()> {
@@ -110,7 +110,7 @@ impl CommitHub {
                 let registration = Arc::new(Registration {
                     session: session.to_owned(),
                     hub: Arc::downgrade(&self.0),
-                    sender: Mutex::new(Some(watch::channel(*self.0.all.borrow()).0)),
+                    sender: Mutex::new(Some(watch::channel(()).0)),
                 });
                 sessions.insert(session.to_owned(), Arc::downgrade(&registration));
                 registration
@@ -157,10 +157,6 @@ impl CommitNotice {
             sessions: affected.into_iter().collect(),
         }
     }
-    /// Called only after a confirmed commit, on its independent SQL owner.
-    pub(crate) fn publish(&self, sequence: u64) {
-        self.notify(Some(sequence));
-    }
     pub(crate) fn activations(&self) {
         self.hub.0.activations.send_replace(());
     }
@@ -170,7 +166,7 @@ impl CommitNotice {
         self.hub.0.material_releases.send_replace(());
     }
     pub(crate) fn metadata(&self) {
-        self.notify(None);
+        self.notify();
     }
     /// Shared workspace metadata affects only this owner's live observers. Do
     /// not enumerate durable Session membership or retain idle registrations.
@@ -187,13 +183,8 @@ impl CommitNotice {
             .collect();
         self.for_sessions(ids.iter().map(String::as_str)).metadata();
     }
-    fn notify(&self, sequence: Option<u64>) {
-        self.hub.0.all.send_modify(|current| {
-            if let Some(sequence) = sequence {
-                *current = (*current).max(sequence);
-            }
-        });
-        let through = *self.hub.0.all.borrow();
+    fn notify(&self) {
+        self.hub.0.all.send_replace(());
         let recipients: Vec<_> = {
             let sessions = self.hub.0.sessions.lock().unwrap();
             self.sessions
@@ -203,12 +194,9 @@ impl CommitNotice {
         };
         for registration in recipients {
             if let Some(sender) = registration.sender.lock().unwrap().as_ref() {
-                sender.send_modify(|current| *current = (*current).max(through));
+                sender.send_replace(());
             }
         }
-    }
-    pub(crate) fn for_session(&self, session: &str) -> Self {
-        self.hub.session(session)
     }
     pub(crate) fn for_sessions<'a>(&self, sessions: impl IntoIterator<Item = &'a str>) -> Self {
         self.hub.sessions(sessions)

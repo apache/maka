@@ -154,7 +154,7 @@ pub enum Error {
     ObservationRetired,
     #[error("{diagnostic}")]
     Blocked {
-        reason: maka_agent_facts::durable::BlockerKind,
+        reason: Box<maka_agent_facts::durable::BlockerKind>,
         diagnostic: String,
     },
     #[error("external task isolation unavailable: {0}")]

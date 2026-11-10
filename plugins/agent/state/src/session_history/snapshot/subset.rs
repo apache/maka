@@ -244,6 +244,10 @@ fn original(
     Ok(Some((receipt, manifest)))
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Snapshot preparation holds one selection at a time; avoid a separate allocation for its live cut"
+)]
 enum Selected {
     Live(HistoryCut),
     Snapshot {
@@ -755,45 +759,47 @@ fn copy(
 ) -> Result<ContentRef, StoreError> {
     let mut builder = capture::Builder::new(c, id);
     let mut statement = c.prepare_cached(
-        "SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? ORDER BY ordinal",
+        "SELECT b.payload FROM agent_history_snapshot_inventory_pages p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? ORDER BY p.first_ordinal",
     )?;
     let mut rows = statement.query([parent.id.to_string()])?;
     while let Some(row) = rows.next()? {
-        let entry: Entry = serde_json::from_str(&row.get::<_, String>(0)?)?;
-        let included = match &entry {
-            Entry::Run {
-                admission_sequence, ..
-            } => *admission_sequence <= cut.through_sequence,
-            Entry::Fact { sequence, .. } | Entry::Source { sequence, .. } => {
-                *sequence <= cut.through_sequence
+        let page: InventoryPage = serde_json::from_slice(&row.get::<_, Vec<u8>>(0)?)?;
+        for entry in page.entries {
+            let included = match &entry {
+                Entry::Run {
+                    admission_sequence, ..
+                } => *admission_sequence <= cut.through_sequence,
+                Entry::Fact { sequence, .. } | Entry::Source { sequence, .. } => {
+                    *sequence <= cut.through_sequence
+                }
+                Entry::Payload {
+                    introduced_sequence: Some(sequence),
+                    ..
+                } => *sequence <= cut.through_sequence,
+                Entry::Artifact {
+                    through_sequence: Some(sequence),
+                    ..
+                } => *sequence <= cut.through_sequence,
+                Entry::Position {
+                    row: SnapshotPosition::Canonical { sequence, .. },
+                } => *sequence <= cut.through_sequence,
+                _ => false,
+            };
+            if !included {
+                continue;
             }
-            Entry::Payload {
-                introduced_sequence: Some(sequence),
-                ..
-            } => *sequence <= cut.through_sequence,
-            Entry::Artifact {
-                through_sequence: Some(sequence),
-                ..
-            } => *sequence <= cut.through_sequence,
-            Entry::Position {
-                row: SnapshotPosition::Canonical { sequence, .. },
-            } => *sequence <= cut.through_sequence,
-            _ => false,
-        };
-        if !included {
-            continue;
-        }
-        for reference in entry.content_refs() {
-            read::pinned(c, parent, reference, None)?;
-        }
-        if let Entry::Run { run, .. } = &entry {
-            let original = read::Run(parent.clone(), *run).execute(c)?;
-            if !matches!(original.spec.origin, RunOrigin::Local) {
-                let (nested, _) = read::Nested(parent.clone(), *run).execute(c)?;
-                c.execute("INSERT OR IGNORE INTO agent_history_snapshot_pins(snapshot,content_id) SELECT ?1,content_id FROM agent_history_snapshot_pins WHERE snapshot=?2",params![id.to_string(),nested.to_string()])?;
+            for reference in entry.content_refs() {
+                read::pinned(c, parent, reference, None)?;
             }
+            if let Entry::Run { run, .. } = &entry {
+                let original = read::Run(parent.clone(), *run).execute(c)?;
+                if !matches!(original.spec.origin, RunOrigin::Local) {
+                    let (nested, _) = read::Nested(parent.clone(), *run).execute(c)?;
+                    c.execute("INSERT OR IGNORE INTO agent_history_snapshot_pins(snapshot,content_id) SELECT ?1,content_id FROM agent_history_snapshot_pins WHERE snapshot=?2",params![id.to_string(),nested.to_string()])?;
+                }
+            }
+            builder.add(entry)?;
         }
-        builder.add(entry)?;
     }
     let manifest = builder.finish(Origin::Canonical { cut: cut.clone() })?;
     let footer = ContentBlob::json(&manifest)?;

@@ -542,12 +542,6 @@ impl ToolNames {
             .map(|(name, style)| (name.as_str(), *style))
             .chain(ceiling.iter().map(|name| (name.as_str(), None)))
     }
-
-    fn capture(&self) -> Vec<(String, Option<EditingTools>)> {
-        self.iter()
-            .map(|(name, style)| (name.to_owned(), style))
-            .collect()
-    }
 }
 
 #[derive(Clone)]

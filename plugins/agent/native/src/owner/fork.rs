@@ -68,10 +68,10 @@ impl Owner {
             }) => {
                 let value: ForkResult = serde_json::from_value(value)
                     .map_err(|_| "agent_fork_reference_unavailable")?;
-                if let ForkResult::Forked { session } = &value {
-                    if session.id != self.operation_id(reference) {
-                        return Err("agent_fork_reference_unavailable".into());
-                    }
+                if let ForkResult::Forked { session } = &value
+                    && session.id != self.operation_id(reference)
+                {
+                    return Err("agent_fork_reference_unavailable".into());
                 }
                 Ok(Some(value))
             }

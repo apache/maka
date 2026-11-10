@@ -28,7 +28,7 @@ use maka_agent_facts::{
     tools::{ToolError, ToolExecutor, ToolFuture},
 };
 use maka_code_runtime::{CellContext, CellOutput, CellResult, CellStore, ToolMetadata};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -240,7 +240,12 @@ impl CodeCells {
                             .start(input, catalog, port, effect_cancel, steering)
                             .await
                     })
-                }))
+                })
+                .titled(maka_agent_facts::display::Text::localized(
+                    "Run script",
+                    "运行脚本",
+                    "執行腳本",
+                )))
             }
             "wait" => {
                 let input = super::wait_input(input)?;
@@ -576,13 +581,33 @@ impl CodeCells {
                 completion
             }
             CellStatus::Interrupted { report } => {
+                use maka_agent_facts::operation::{restore_result, result_reference};
                 let bytes = port.content(id, report).await.map_err(cell_failure)?;
                 self.0.live.lock().unwrap().remove(&id);
-                let report = tokio::task::spawn_blocking(move || {
+                let mut report: CellInterruption = tokio::task::spawn_blocking(move || {
                     serde_json::from_slice(&bytes).map_err(persistence)
                 })
                 .await
                 .map_err(persistence)??;
+                for reply in report
+                    .children
+                    .values_mut()
+                    .filter_map(|child| child.reply.as_mut())
+                {
+                    if let Some(reference) = result_reference(reply).cloned() {
+                        let bytes = port.content(id, reference).await.map_err(cell_failure)?;
+                        let stored =
+                            tokio::task::spawn_blocking(move || serde_json::from_slice(&bytes))
+                                .await
+                                .map_err(persistence)?
+                                .map_err(persistence)?;
+                        restore_result(reply, stored).map_err(persistence)?;
+                    }
+                }
+                let report = tokio::task::spawn_blocking(move || serde_json::to_value(report))
+                    .await
+                    .map_err(persistence)?
+                    .map_err(persistence)?;
                 CellObservation::Interrupted {
                     cell_id: id,
                     report,
@@ -965,9 +990,7 @@ impl ToolExecutor for Nested {
                 context.fail(error.clone());
                 cell_cancel.cancel();
             }
-            let value = result?
-                .into_code_value()
-                .map_err(|e| ToolError::Failed(e.into()))?;
+            let value = result?.into_code_value().map_err(ToolError::Failed)?;
             context
                 .stage_loaded(std::collections::BTreeSet::from([name]))
                 .map_err(|_| {

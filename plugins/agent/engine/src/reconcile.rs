@@ -19,6 +19,7 @@
 
 //! The only next-action policy. State folds facts; Native executes capabilities.
 use crate::ports::{Preparation, ReplanInput};
+use maka_agent_facts::operation::RecordedReceipt;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::{
     cells::{CellId, CellOwner, CellStatus},
@@ -29,7 +30,7 @@ use maka_agent_facts::{
     },
 };
 use maka_agent_state::fold::RunView;
-use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+use maka_plugin_core::operation::{OperationOutcome, Receipt};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
@@ -94,16 +95,16 @@ pub(crate) enum CompactionLevel {
 
 fn closure_protocol(
     closed: &maka_agent_state::fold::ModelClosure,
-) -> Result<ModelClosureProtocol, BlockerKind> {
+) -> Result<ModelClosureProtocol, Box<BlockerKind>> {
     ModelClosureProtocol::deserialize(&closed.protocol).map_err(|error| {
-        BlockerKind::UnsupportedProtocol {
+        Box::new(BlockerKind::UnsupportedProtocol {
             protocol: format!("model-closure: {error}"),
             version: 1,
-        }
+        })
     })
 }
 
-pub(crate) fn tool_incomplete(view: &RunView, key: &ToolKey) -> Result<bool, BlockerKind> {
+pub(crate) fn tool_incomplete(view: &RunView, key: &ToolKey) -> Result<bool, Box<BlockerKind>> {
     let closed = view
         .attempts
         .get(&key.attempt)
@@ -139,11 +140,11 @@ fn summary_effects(view: &RunView) -> Option<Action> {
                 if view
                     .blockers
                     .values()
-                    .any(|blocker| blocker.reason == reason && active(blocker))
+                    .any(|blocker| blocker.reason == *reason && active(blocker))
                 {
                     Action::Idle
                 } else {
-                    Action::Block(reason)
+                    Action::Block(*reason)
                 },
             );
         }
@@ -248,7 +249,7 @@ fn unresolved(view: &RunView) -> bool {
 fn active(blocker: &maka_agent_state::fold::Blocker) -> bool {
     blocker.decision.is_none() && blocker.resolved_by.is_none()
 }
-fn known(receipt: &Option<Receipt>) -> bool {
+fn known(receipt: &Option<RecordedReceipt>) -> bool {
     matches!(
         receipt,
         Some(Receipt::Recorded {
@@ -285,9 +286,10 @@ fn outcome(tool: &maka_agent_state::fold::Tool) -> Option<AcceptedResult> {
         Some(Receipt::Recorded {
             outcome: OperationOutcome::Returned { result },
             ..
-        }) => Some(match result {
-            OperationResult::Success { .. } => AcceptedResult::Succeeded,
-            OperationResult::Failure { .. } => AcceptedResult::Failed,
+        }) => Some(if result.is_error() {
+            AcceptedResult::Failed
+        } else {
+            AcceptedResult::Succeeded
         }),
         Some(Receipt::Recorded {
             outcome: OperationOutcome::NotExecuted { .. },
@@ -516,10 +518,10 @@ fn publication_action(view: &RunView, live: &Live, stopped: bool) -> Option<Acti
             if busy {
                 return Some(Action::Idle);
             }
-            if let Some(reference) = &item.original {
-                if !live.publication_observed.contains(&item.key) {
-                    return Some(Action::ObservePublication(item.key, reference.clone()));
-                }
+            if let Some(reference) = &item.original
+                && !live.publication_observed.contains(&item.key)
+            {
+                return Some(Action::ObservePublication(item.key, reference.clone()));
             }
             return Some(blocked(BlockerKind::ExternalPublicationItem {
                 key: item.key,
@@ -769,11 +771,9 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
-        if tool.admitted && tool.original.is_none() && !tool.call.provider_executed {
-            if let Some(cell)=view.cells.values().find(|cell|matches!(&cell.owner,CellOwner::Agent{link,call}if link.run==view.run&&link.attempt==tool.key.attempt&&call==&tool.key.call)&&!matches!(cell.status,CellStatus::Running)&&cell.children.values().all(|child|child.known())&&!cell.blocks_effect_admission()){
-                if tool.local_returned.as_ref().is_none_or(|r|r.settlement==maka_agent_facts::tool_call::ToolSettlement::Unknown){return Action::Accept(tool.key.clone(),AcceptedResult::CellRecovered{cell:cell.id});}
-            }
-        }
+        if tool.admitted && tool.original.is_none() && !tool.call.provider_executed
+            && let Some(cell)=view.cells.values().find(|cell|matches!(&cell.owner,CellOwner::Agent{link,call}if link.run==view.run&&link.attempt==tool.key.attempt&&call==&tool.key.call)&&!matches!(cell.status,CellStatus::Running)&&cell.children.values().all(|child|child.known())&&!cell.blocks_effect_admission())
+                && tool.local_returned.as_ref().is_none_or(|r|r.settlement==maka_agent_facts::tool_call::ToolSettlement::Unknown){return Action::Accept(tool.key.clone(),AcceptedResult::CellRecovered{cell:cell.id});}
         if let Some(result) = outcome(tool) {
             return Action::Accept(tool.key.clone(), result);
         }
@@ -785,14 +785,16 @@ fn next_action(
         }
     }
     if fenced {
-        if finish && !interrupted_fence && !complete_at_budget {
-            if let Some((attempt, _)) = view.attempts.iter().find(|(id, attempt)| {
+        if finish
+            && !interrupted_fence
+            && !complete_at_budget
+            && let Some((attempt, _)) = view.attempts.iter().find(|(id, attempt)| {
                 attempt.admission.is_some()
                     && live.work.contains(&WorkKey::Model(**id))
                     && !live.models_cancelled.contains(*id)
-            }) {
-                return Action::CancelModel(*attempt);
-            }
+            })
+        {
+            return Action::CancelModel(*attempt);
         }
         for tool in view.tools.values() {
             if tool.accepted.is_none()
@@ -808,20 +810,22 @@ fn next_action(
             .iter()
             .filter(|(id, a)| a.closed.is_none() && !live.work.contains(&WorkKey::Model(**id)))
         {
-            if !view.cancelled_by_risk {
-                if let Some(AttemptRecovery::ObserveOriginal { descriptor }) = &attempt.recovery {
-                    if !live.models_observed.contains(id) {
-                        return Action::ObserveModel(*id, descriptor.clone());
-                    }
-                    return if unresolved(view) {
-                        Action::Idle
-                    } else {
-                        Action::Block(BlockerKind::UnsupportedProtocol {
-                            protocol: "original model observation ended without a terminal upstream receipt".into(),
-                            version: 1,
-                        })
-                    };
+            if !view.cancelled_by_risk
+                && let Some(AttemptRecovery::ObserveOriginal { descriptor }) = &attempt.recovery
+            {
+                if !live.models_observed.contains(id) {
+                    return Action::ObserveModel(*id, descriptor.clone());
                 }
+                return if unresolved(view) {
+                    Action::Idle
+                } else {
+                    Action::Block(BlockerKind::UnsupportedProtocol {
+                        protocol:
+                            "original model observation ended without a terminal upstream receipt"
+                                .into(),
+                        version: 1,
+                    })
+                };
             }
             if attempt.interrupted.is_none() {
                 return Action::Interrupt(
@@ -854,10 +858,11 @@ fn next_action(
         if let Some(action) = publication_action(view, live, true) {
             return action;
         }
-        if finish && !interrupted_fence {
-            if let Some(action) = cell_action(view, live, false) {
-                return action;
-            }
+        if finish
+            && !interrupted_fence
+            && let Some(action) = cell_action(view, live, false)
+        {
+            return action;
         }
         let only_cleanup = live.only_cleanup(view);
         if !live.work.is_empty() && (!only_cleanup || (finish && !complete_at_budget)) {
@@ -914,49 +919,50 @@ fn next_action(
         if let Some(action) = summary_effects(view) {
             return action;
         }
-        if let Some(task) = &view.external {
-            if task.admitted && task.closed.is_none() && !view.cancelled_by_risk {
-                if view.stopped
-                    && task.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
-                {
-                    if unresolved(view) {
-                        return Action::Idle;
-                    }
-                    if let Some((&operation, _)) =
-                        task.effects.iter().find(|(_, effect)| effect.pending())
-                    {
-                        return Action::Block(BlockerKind::ExternalEffectUnknown {
-                            task: task.task,
-                            operation,
-                        });
-                    }
-                    return Action::Terminate(Terminal::Cancelled);
-                }
-                let descriptor = task
-                    .binding
-                    .clone()
-                    .unwrap_or_else(|| task.descriptor.clone());
-                if !live.external_observed && !(view.stopped && task.binding.is_none()) {
-                    return Action::ObserveExternal(task.task, descriptor);
-                }
-                if unresolved(view)
-                    || (view.stopped
-                        && task.cleanup
-                            == maka_plugin_core::operation::OperationCleanup::Unconfirmed)
-                {
+        if let Some(task) = &view.external
+            && task.admitted
+            && task.closed.is_none()
+            && !view.cancelled_by_risk
+        {
+            if view.stopped
+                && task.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
+            {
+                if unresolved(view) {
                     return Action::Idle;
                 }
-                let reason = BlockerKind::ExternalTaskUnobservable { descriptor };
-                return if view
-                    .blockers
-                    .values()
-                    .any(|b| b.reason == reason && active(b))
+                if let Some((&operation, _)) =
+                    task.effects.iter().find(|(_, effect)| effect.pending())
                 {
-                    Action::Idle
-                } else {
-                    Action::Block(reason)
-                };
+                    return Action::Block(BlockerKind::ExternalEffectUnknown {
+                        task: task.task,
+                        operation,
+                    });
+                }
+                return Action::Terminate(Terminal::Cancelled);
             }
+            let descriptor = task
+                .binding
+                .clone()
+                .unwrap_or_else(|| task.descriptor.clone());
+            if !live.external_observed && !(view.stopped && task.binding.is_none()) {
+                return Action::ObserveExternal(task.task, descriptor);
+            }
+            if unresolved(view)
+                || (view.stopped
+                    && task.cleanup == maka_plugin_core::operation::OperationCleanup::Unconfirmed)
+            {
+                return Action::Idle;
+            }
+            let reason = BlockerKind::ExternalTaskUnobservable { descriptor };
+            return if view
+                .blockers
+                .values()
+                .any(|b| b.reason == reason && active(b))
+            {
+                Action::Idle
+            } else {
+                Action::Block(reason)
+            };
         }
         return Action::Terminate(if view.stopped || view.cancelled_by_risk {
             Terminal::Cancelled
@@ -1011,10 +1017,10 @@ fn next_action(
         if live.work.contains(&WorkKey::Tool(tool.key.clone())) {
             continue;
         }
-        if tool.accepted.is_none() {
-            if let Some(result) = outcome(tool) {
-                return Action::Accept(tool.key.clone(), result);
-            }
+        if tool.accepted.is_none()
+            && let Some(result) = outcome(tool)
+        {
+            return Action::Accept(tool.key.clone(), result);
         }
         if let Some(reference) = &tool.original {
             let adjudicated = view.blockers.values().any(|blocker| blocker.decision.is_some() && matches!(&blocker.reason, BlockerKind::OperationUnknown { tool:key,reference:original } if key == &tool.key && original == reference));
@@ -1155,7 +1161,7 @@ fn next_action(
                     );
                 }
                 Ok(false) => {}
-                Err(reason) => return Action::Block(reason),
+                Err(reason) => return Action::Block(*reason),
             }
         }
         match &tool.decision {
@@ -1292,12 +1298,11 @@ fn next_action(
         );
     };
     if current.is_none_or(|(_, a)| a.step != step) {
-        if let Some((attempt, original)) = current {
-            if original.admission.is_some()
-                && original.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
-            {
-                return wait(view, WaitReason::Model { attempt }, None, now);
-            }
+        if let Some((attempt, original)) = current
+            && original.admission.is_some()
+            && original.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+        {
+            return wait(view, WaitReason::Model { attempt }, None, now);
         }
         match model.map(|model| model.compaction) {
             Some(CompactionLevel::Fresh { prepare: true }) => {
@@ -1359,7 +1364,7 @@ fn next_action(
             let protocol =
                 match closure_protocol(attempt.closed.as_ref().expect("known source closure")) {
                     Ok(protocol) => protocol,
-                    Err(reason) => return Action::Block(reason),
+                    Err(reason) => return Action::Block(*reason),
                 };
             if matches!(&protocol.summary, Some(SummaryResult::RejectedToolContent))
                 && model
@@ -1380,31 +1385,26 @@ fn next_action(
                     Some(SummaryResult::Text { summary }) => summary.text.trim().is_empty(),
                     _ => false,
                 };
-            if rejected {
-                if let CompactionLevel::Summary {
+            if rejected
+                && let CompactionLevel::Summary {
                     main: Some(main), ..
                 } = model.compaction
-                {
-                    return Action::Prepare(Preparation::CompactionFallback { main, summary: id });
-                }
+            {
+                return Action::Prepare(Preparation::CompactionFallback { main, summary: id });
             }
             if model
                 .baseline
                 .as_ref()
                 .is_none_or(|b| b.checkpoint.summary_step_id != attempt.step)
             {
-                if !rejected {
-                    if let CompactionLevel::Summary {
+                if !rejected
+                    && let CompactionLevel::Summary {
                         main: Some(main),
                         adopt: false,
                         ..
                     } = model.compaction
-                    {
-                        return Action::Prepare(Preparation::CompactionDeferred {
-                            main,
-                            summary: id,
-                        });
-                    }
+                {
+                    return Action::Prepare(Preparation::CompactionDeferred { main, summary: id });
                 }
                 return Action::Compact(id);
             }
@@ -1420,7 +1420,7 @@ fn next_action(
         let protocol =
             match closure_protocol(attempt.closed.as_ref().expect("known source closure")) {
                 Ok(protocol) => protocol,
-                Err(reason) => return Action::Block(reason),
+                Err(reason) => return Action::Block(*reason),
             };
         if protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Length {
             return Action::Terminate(Terminal::Failed);
@@ -1436,10 +1436,9 @@ fn next_action(
             .cells
             .values()
             .find(|cell| matches!(cell.status, CellStatus::Running))
+            && !attempt.has_tools
         {
-            if !attempt.has_tools {
-                return wait(view, WaitReason::Cell { cell: cell.id }, None, now);
-            }
+            return wait(view, WaitReason::Cell { cell: cell.id }, None, now);
         }
         return if attempt.has_tools {
             Action::Prepare(Preparation::ToolContinuation { attempt: id })
@@ -1450,54 +1449,49 @@ fn next_action(
     if let Some(CompactionLevel::Summary {
         main: Some(main), ..
     }) = model.map(|model| model.compaction)
+        && !attempt.semantic
+        && !attempt.has_tools
+        && let Some(closed) = attempt
+            .closed
+            .as_ref()
+            .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
     {
-        if !attempt.semantic && !attempt.has_tools {
-            if let Some(closed) = attempt
-                .closed
-                .as_ref()
-                .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
-            {
-                let failure = match closed
-                    .protocol
-                    .get("failure")
-                    .filter(|value| !value.is_null())
-                {
-                    Some(value) => {
-                        match serde_json::from_value::<maka_model::ModelError>(value.clone()) {
-                            Ok(failure) => Some(failure),
-                            Err(error) => {
-                                return Action::Block(BlockerKind::UnsupportedProtocol {
-                                    protocol: format!("model-failure: {error}"),
-                                    version: 1,
-                                });
-                            }
-                        }
-                    }
-                    None => None,
-                };
-                let known_safe_failure = match failure.as_ref() {
-                    Some(maka_model::ModelError::ContextOverflow {
-                        observed_output: false,
-                    }) => true,
-                    Some(maka_model::ModelError::Provider(failure)) => {
-                        !failure.retryable() && failure.replay_safe()
-                    }
-                    _ => false,
-                };
-                if known_safe_failure {
-                    return Action::Prepare(Preparation::CompactionFallback { main, summary: id });
+        let failure = match closed
+            .protocol
+            .get("failure")
+            .filter(|value| !value.is_null())
+        {
+            Some(value) => match serde_json::from_value::<maka_model::ModelError>(value.clone()) {
+                Ok(failure) => Some(failure),
+                Err(error) => {
+                    return Action::Block(BlockerKind::UnsupportedProtocol {
+                        protocol: format!("model-failure: {error}"),
+                        version: 1,
+                    });
                 }
+            },
+            None => None,
+        };
+        let known_safe_failure = match failure.as_ref() {
+            Some(maka_model::ModelError::ContextOverflow {
+                observed_output: false,
+            }) => true,
+            Some(maka_model::ModelError::Provider(failure)) => {
+                !failure.retryable() && failure.replay_safe()
             }
+            _ => false,
+        };
+        if known_safe_failure {
+            return Action::Prepare(Preparation::CompactionFallback { main, summary: id });
         }
     }
     match &attempt.recovery {
         Some(AttemptRecovery::ContextOverflow { observed_output }) => {
-            if !observed_output {
-                if let Some(CompactionLevel::Candidate { summary, .. }) =
+            if !observed_output
+                && let Some(CompactionLevel::Candidate { summary, .. }) =
                     model.map(|model| model.compaction)
-                {
-                    return Action::Compact(summary);
-                }
+            {
+                return Action::Compact(summary);
             }
             if !observed_output
                 && model.is_some_and(|model| {

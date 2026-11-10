@@ -1058,14 +1058,13 @@ async fn pipe_owned<P: PipeProtocol>(
                         .map_err(|error| error.to_string())
                 }
             };
-            if physical.is_ok() {
-                if let Err(error) = observation
+            if physical.is_ok()
+                && let Err(error) = observation
                     .binding
                     .cleanup(OperationCleanup::Confirmed)
                     .await
-                {
-                    tracing::error!(%error, "Original task physical cleanup ACK remains pending");
-                }
+            {
+                tracing::error!(%error, "Original task physical cleanup ACK remains pending");
             }
             actual_done.cancel();
             (physical, child)
@@ -1215,8 +1214,7 @@ async fn pipe_owned<P: PipeProtocol>(
             ticket.unconfirmed(
                 physical
                     .as_ref()
-                    .err()
-                    .expect("original settlement failure")
+                    .expect_err("original settlement failure")
                     .clone(),
                 (child, io, wire, diagnostics, bridge),
             );

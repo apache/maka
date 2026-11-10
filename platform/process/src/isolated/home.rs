@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{CaptureCost, Error};
+use super::Error;
 use std::{fs::File, path::PathBuf};
 #[cfg(target_os = "macos")]
 use {
@@ -58,7 +58,8 @@ pub struct FrozenHome {
     container: File,
     #[cfg(target_os = "macos")]
     directory: File,
-    cost: CaptureCost,
+    #[cfg(not(target_os = "macos"))]
+    _private: (),
 }
 
 pub struct HomeEntry {
@@ -101,6 +102,7 @@ enum Kind {
 
 pub(super) enum SeedState {
     Fresh,
+    #[cfg(target_os = "macos")]
     Seeded,
     Failed,
 }
@@ -161,10 +163,6 @@ impl HomeCapture {
     }
 }
 impl FrozenHome {
-    pub fn capture_cost(&self) -> CaptureCost {
-        self.cost
-    }
-
     /// Streaming metadata and owned read-only file handles; call off-executor.
     pub fn entries(&self) -> Result<HomeEntries, Error> {
         #[cfg(target_os = "macos")]
@@ -337,14 +335,7 @@ fn freeze(input: Arc<HomeInput>) -> Result<FrozenHome, Error> {
     )?
     .into();
     let mut records = BufWriter::new(inventory);
-    let mut cost = CaptureCost::default();
-    freeze_directory(
-        &input.home,
-        &directory,
-        Path::new(""),
-        &mut records,
-        &mut cost,
-    )?;
+    freeze_directory(&input.home, &directory, Path::new(""), &mut records)?;
     records.flush()?;
     fchmod(records.get_ref(), Mode::RUSR)?;
     fchmod(&directory, Mode::RUSR | Mode::XUSR)?;
@@ -359,7 +350,6 @@ fn freeze(input: Arc<HomeInput>) -> Result<FrozenHome, Error> {
         input,
         container,
         directory,
-        cost,
     };
     for entry in frozen.entries()? {
         let entry = entry?;
@@ -375,7 +365,6 @@ fn freeze_directory(
     destination: &File,
     relative: &Path,
     records: &mut BufWriter<File>,
-    cost: &mut CaptureCost,
 ) -> Result<(), Error> {
     use std::os::unix::ffi::OsStrExt;
     let original = observe_file(source)?;
@@ -431,8 +420,6 @@ fn freeze_directory(
                 {
                     return Err(Error::CaptureUnstable(path));
                 }
-                cost.cow_clones += 1;
-                cost.logical_file_bytes += cloned.metadata()?.len();
                 fchmod(&cloned, Mode::RUSR)?;
                 ensure(&observed, &observe_file(&file)?, &path)?;
             }
@@ -441,7 +428,7 @@ fn freeze_directory(
                 ensure(&observed, &observe_file(&child)?, &path)?;
                 rustix::fs::mkdirat(destination, name, Mode::RWXU)?;
                 let target = directory_at(destination, name)?;
-                freeze_directory(&child, &target, &path, records, cost)?;
+                freeze_directory(&child, &target, &path, records)?;
                 fchmod(&target, Mode::RUSR | Mode::XUSR)?;
             }
             ObservedKind::Symlink(target) => {

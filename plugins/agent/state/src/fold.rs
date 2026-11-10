@@ -23,12 +23,11 @@ use std::collections::BTreeMap;
 use maka_agent_facts::{
     durable::*,
     model::{ModelPart, ModelToolCall, ModelUsage, retry_transport::RetryTransportPhase},
+    operation::{RecordedOutcome as OperationOutcome, RecordedReceipt as Receipt},
     tools::ToolSemantics,
 };
 use maka_event_log::StoreError;
-use maka_plugin_core::operation::{
-    OperationCleanup, OperationOutcome, OperationResult, Receipt, RecoveryRef,
-};
+use maka_plugin_core::operation::{OperationCleanup, RecoveryRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -656,10 +655,10 @@ impl RunView {
                     matches!(self.spec.backend, BackendSpec::Model { .. }),
                     "model Step requires a model backend",
                 )?;
-                if let Some(existing) = self.steps.get(step) {
-                    if existing != request || self.current_step != Some(*step) {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = self.steps.get(step)
+                    && (existing != request || self.current_step != Some(*step))
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 let selected: std::collections::BTreeSet<_> =
                     adjudications.iter().copied().collect();
@@ -965,10 +964,10 @@ impl RunView {
                             is_error: *is_error,
                             provider_options: provider_options.clone(),
                         };
-                        if let Some(existing) = &current.provider_result {
-                            if existing != &result {
-                                return Err(StoreError::EventConflict);
-                            }
+                        if let Some(existing) = &current.provider_result
+                            && existing != &result
+                        {
+                            return Err(StoreError::EventConflict);
                         }
                         self.tools
                             .get_mut(&tool_key(&key))
@@ -1155,10 +1154,10 @@ impl RunView {
                     current.admitted && current.prohibited_before_host.is_none(),
                     "original lookup requires an admitted tool without prevention proof",
                 )?;
-                if let Some(original) = &current.original {
-                    if original != reference {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(original) = &current.original
+                    && original != reference
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1299,6 +1298,7 @@ impl RunView {
                 settlement,
                 result,
                 is_error,
+                ..
             } => {
                 let current = self.tool(tool)?;
                 require(
@@ -1312,15 +1312,13 @@ impl RunView {
                     result: result.clone(),
                     is_error: *is_error,
                 };
-                if let Some(existing) = &current.local_returned {
-                    if existing != &returned
-                        && (existing.settlement
-                            != maka_agent_facts::tool_call::ToolSettlement::Unknown
-                            || returned.settlement
-                                == maka_agent_facts::tool_call::ToolSettlement::Unknown)
-                    {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = &current.local_returned
+                    && existing != &returned
+                    && (existing.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+                        || returned.settlement
+                            == maka_agent_facts::tool_call::ToolSettlement::Unknown)
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1375,10 +1373,10 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Success { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if !result.is_error()
                                 )
                         }
                         AcceptedResult::Failed => {
@@ -1395,10 +1393,10 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Failure { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if result.is_error()
                                 )
                         }
                         AcceptedResult::Rejected => {
@@ -1496,10 +1494,10 @@ impl RunView {
                     current.admitted && current.original.is_none() && current.receipt.is_none(),
                     "prevention proof requires the original logical admission without a Host reference or receipt",
                 )?;
-                if let Some(existing) = &current.prohibited_before_host {
-                    if existing != rejection {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = &current.prohibited_before_host
+                    && existing != rejection
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1757,16 +1755,16 @@ impl RunView {
                 if current.decision.is_some() || current.resolved_by.is_some() {
                     return Err(StoreError::EventConflict);
                 }
-                if let BlockerKind::ProviderEffectUnknown { attempt, call } = &current.reason {
-                    if !self.tools.contains_key(&tool_key(&ToolKey {
+                if let BlockerKind::ProviderEffectUnknown { attempt, call } = &current.reason
+                    && !self.tools.contains_key(&tool_key(&ToolKey {
                         attempt: *attempt,
                         call: call.clone(),
-                    })) {
-                        require(
-                            matches!(scope, RiskActionScope::RunCancellation),
-                            "private summary provider effects require whole-run cancellation",
-                        )?;
-                    }
+                    }))
+                {
+                    require(
+                        matches!(scope, RiskActionScope::RunCancellation),
+                        "private summary provider effects require whole-run cancellation",
+                    )?;
                 }
                 if matches!(
                     current.reason,
@@ -2197,7 +2195,8 @@ fn resolves_blocker(
     }
 }
 
-fn known(outcome: &OperationOutcome) -> bool {
+fn known<R>(outcome: &maka_plugin_core::operation::OperationOutcome<R>) -> bool {
+    use maka_plugin_core::operation::OperationOutcome;
     matches!(
         outcome,
         OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
@@ -2220,10 +2219,26 @@ fn join_receipt(previous: Option<&Receipt>, incoming: &Receipt) -> Result<Receip
                 cleanup: new_cleanup,
             },
         ) => {
-            if known(old) && known(new) && old != new {
-                return Err(StoreError::EventConflict);
+            if known(old) && known(new) {
+                let equal = match (old, new) {
+                    (
+                        OperationOutcome::Returned { result: a },
+                        OperationOutcome::Returned { result: b },
+                    ) => a.same_result(b)?,
+                    (a, b) => a == b,
+                };
+                if !equal {
+                    return Err(StoreError::EventConflict);
+                }
             }
-            let outcome = if known(old)
+            let keep_known = known(old)
+                && !matches!(
+                    new,
+                    OperationOutcome::Returned {
+                        result: maka_agent_facts::operation::RecordedOperationResult::Referenced { .. },
+                    }
+                );
+            let outcome = if keep_known
                 || matches!(new, OperationOutcome::Unresolved)
                 || matches!(
                     (old, new),
@@ -2298,7 +2313,8 @@ pub(crate) fn tool_pending(tool: &Tool) -> bool {
     tool.accepted.is_none() || original_effect_unknown(tool) || cleanup || unknown_admission
 }
 
-fn receipt_blocks_effects(receipt: &Receipt) -> bool {
+fn receipt_blocks_effects<R>(receipt: &maka_plugin_core::operation::Receipt<R>) -> bool {
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
     match receipt {
         Receipt::NotRecorded | Receipt::Unavailable { .. } => true,
         Receipt::Recorded { outcome, cleanup } => {

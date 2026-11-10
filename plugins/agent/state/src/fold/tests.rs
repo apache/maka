@@ -163,6 +163,7 @@ fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_k
         settlement,
         result,
         is_error: true,
+        cell_observation: None,
     };
     let unknown_ref = ContentBlob::new(b"original uncertainty".to_vec())
         .reference()

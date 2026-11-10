@@ -141,10 +141,10 @@ The scheduler waits for actual execution cleanup: admission is not completion.
 `no_report` settles silently; a report is admitted to the Bot once, using its existing
 notification path, where the Bot decides whether to call `SendUser`. The recorded run
 links to the worker and distinguishes report admission from user delivery. Pausing
-retracts the original queued request or stops its admitted Run and discards unsent
-reports; it cannot retract an already admitted Bot message. Restart reconciles the
-original fire, durable queue receipt and Run instead of creating replacement work.
-The investigation slot stays occupied until the original execution and its cleanup settle.
+cancels the original worker Run and retracts pending reports. Consumed Bot messages
+remain history. Restart rechecks the original source approval and pending fire before
+queue consumers start; it reconciles the original Run and receipt instead of creating
+replacement work. An interrupted terminal run is recorded as failed.
 
 Disabling Bot or scheduling withdraws outstanding investigation work and unsent reports.
 Resuming a plan schedules future work without reviving its cancelled fire. Settlement
@@ -186,7 +186,6 @@ exercise the real Host with local model fixtures.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
-[Performance baseline](checkpoint-baseline.md)
 
 ChatGPT subscription requests use the Host-owned [account inventory](src/model/codex_inventory.rs).
 Logical model-step preparation shares per-connection discovery, refreshes its five-minute

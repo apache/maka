@@ -29,7 +29,7 @@ mod auxiliary;
 mod index;
 mod query;
 pub use auxiliary::{AuxiliaryEvent, AuxiliaryJournal, AuxiliarySpec, AuxiliaryWrite};
-pub(crate) use index::{index_cell, index_fact, rebuild_run};
+pub(crate) use index::{UsagePosition, index_cell, index_fact, rebuild_run};
 pub const SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

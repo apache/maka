@@ -34,11 +34,11 @@ use maka_agent_facts::{
     artifact::{PublishedArtifact, ToolReturn},
     cells::{
         CellChild, CellEvent, CellId, CellInterruption, CellOwner, CellReturnedResult, CellStatus,
-        CellView, CellVmBinding,
+        CellView, CellVmBinding, StoredCellReturn,
     },
     durable::{
-        AgentStepLink, BlockerId, BlockerKind, ContentRef, Fact, FactId, SCHEMA_VERSION, ToolKey,
-        UnixMillis,
+        AgentStepLink, BlockerId, BlockerKind, ContentRef, ExecutionIdentity, Fact, FactId,
+        SCHEMA_VERSION, ToolKey, UnixMillis,
     },
     event::ProjectionArtifactWrite,
     tool_call::{RejectionKind, ToolCallIdentity, ToolOrigin, ToolSettlement},
@@ -185,9 +185,6 @@ impl RunCells {
     }
     pub(super) fn has_original_workers(&self) -> bool {
         !self.workers.is_empty()
-    }
-    pub(super) async fn original_workers_finished(&self) {
-        self.workers.wait().await;
     }
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         // Shutdown joins the original coordinator tasks; its historical error is not positive or negative cleanup truth.
@@ -627,6 +624,9 @@ impl RunCells {
             .children
             .get(&operation)
             .ok_or_else(|| persistence("Cell child not recorded"))?;
+        let (reply, material) = maka_agent_state::operation::prepare_reply(reply)
+            .await
+            .map_err(persistence)?;
         if child.reference.as_ref() == Some(&reply.reference)
             && child.reply.as_ref() == Some(&reply)
         {
@@ -656,7 +656,8 @@ impl RunCells {
             },
             at,
         ));
-        self.publish(changes, vec![], vec![]).await?;
+        self.publish(changes, material.into_iter().collect(), vec![])
+            .await?;
         Ok(())
     }
     /// Observation always uses the actual current scope. A historical operation
@@ -856,11 +857,7 @@ impl RunCells {
                 .retain(|original| !Arc::ptr_eq(original, &request));
         }
         if let Ok(Some(reply)) = &result {
-            if child.reference.as_ref() != Some(&reply.reference)
-                || child.reply.as_ref() != Some(reply)
-            {
-                self.record_reply(cell, operation, reply.clone()).await?;
-            }
+            self.record_reply(cell, operation, reply.clone()).await?;
         }
         if let Err(error) = cleanup {
             return Err(ToolError::CleanupUnconfirmed(format!(
@@ -900,24 +897,31 @@ impl RunCells {
                 )
                 .await
                 .map_err(persistence)?;
-            let returned: ToolReturn<CellReturnedResult> =
+            let returned: ToolReturn<StoredCellReturn> =
                 tokio::task::spawn_blocking(move || serde_json::from_slice(&bytes))
                     .await
                     .map_err(persistence)?
                     .map_err(persistence)?;
             returned.validate().map_err(persistence)?;
-            if child.provider_result.is_some() {
-                return operation_output(
-                    child
-                        .reply
-                        .clone()
-                        .ok_or_else(|| persistence("Cell Host result lost original receipt"))?,
-                );
+            if child.provider_result.is_none() {
+                let StoredCellReturn::Inline(body) = returned.body else {
+                    return Err(persistence(
+                        "local Cell return cannot contain a Host operation",
+                    ));
+                };
+                return output(body.output, body.is_error);
             }
-            return output(returned.body.output, returned.body.is_error);
+            if child.reply.is_none() {
+                return Err(persistence("Cell Host result lost original receipt"));
+            }
         }
         if let Some(reply) = &child.reply {
-            return operation_output(reply.clone());
+            let reply = self
+                .cells
+                .operation_reply(&self.access.execution().session_id, cell, reply.clone())
+                .await
+                .map_err(persistence)?;
+            return operation_output(reply);
         }
         Err(ToolError::OutcomeUnknown(
             "Original Cell child has no recorded outcome; it will not be resent".into(),
@@ -1826,14 +1830,23 @@ impl NativeCellPort {
             return Err(ToolError::Failed(diagnostic.into()));
         }
         let child = &current.children[&operation];
-        if let Some(approval) = prepared.approval_id() {
-            if !child.approvals.contains_key(&approval) {
-                return Err(persistence(
-                    "Prepared Cell approval differs from its original established interaction",
-                ));
-            }
+        if let Some(approval) = prepared.approval_id()
+            && !child.approvals.contains_key(&approval)
+        {
+            return Err(persistence(
+                "Prepared Cell approval differs from its original established interaction",
+            ));
         }
-        let mut admitted = Vec::new();
+        let display = prepared.display(match self.run.access.spec().language {
+            maka_agent_facts::language::Language::En => "en",
+            maka_agent_facts::language::Language::ZhCn => "zh-CN",
+            maka_agent_facts::language::Language::ZhTw => "zh-TW",
+        });
+        let mut admitted = vec![self.change(CellEvent::ChildDisplayRecorded {
+            cell,
+            operation,
+            display,
+        })];
         for (approval, consumed) in &child.approvals {
             if !consumed {
                 admitted.push(self.change(CellEvent::ChildApprovalConsumed {
@@ -1898,17 +1911,17 @@ impl NativeCellPort {
         cell: CellId,
         result: Result<ToolOutput, ToolError>,
     ) -> Result<ToolOutput, ToolError> {
-        if let Err(error) = &result {
-            if uncertain(error) {
-                self.admission_closed.cancel();
-                self.run.cleanup.observe_tool(error);
-                if let Err(failure) = self.run.quarantine(cell).await {
-                    let failure = ToolError::CleanupUnconfirmed(format!(
-                        "Original Cell remains quarantined locally; canonical quarantine could not be confirmed: {failure}; original: {error}"
-                    ));
-                    self.run.cleanup.observe_tool(&failure);
-                    return Err(failure);
-                }
+        if let Err(error) = &result
+            && uncertain(error)
+        {
+            self.admission_closed.cancel();
+            self.run.cleanup.observe_tool(error);
+            if let Err(failure) = self.run.quarantine(cell).await {
+                let failure = ToolError::CleanupUnconfirmed(format!(
+                    "Original Cell remains quarantined locally; canonical quarantine could not be confirmed: {failure}; original: {error}"
+                ));
+                self.run.cleanup.observe_tool(&failure);
+                return Err(failure);
             }
         }
         result
@@ -1952,45 +1965,20 @@ impl NativeCellPort {
             }
         };
         let execution = self.run.access.execution().clone();
-        let normalized = tokio::task::spawn_blocking(move || {
-            let normalized = success
-                .into_durable(
-                    &child_operation(cell, operation),
-                    SystemTime::now(),
-                    &execution,
-                )
-                .map_err(persistence)?;
-            let artifacts = normalized
-                .artifacts
-                .iter()
-                .map(|artifact| {
-                    let evidence = artifact.evidence();
-                    PublishedArtifact {
-                        artifact: artifact.artifact().clone(),
-                        payload: ContentRef {
-                            digest: evidence.digest,
-                            bytes: evidence.bytes,
-                        },
-                    }
-                })
-                .collect();
-            let returned = ToolReturn {
-                schema_version: SCHEMA_VERSION,
-                artifacts,
-                body: CellReturnedResult {
-                    output: normalized.output,
-                    projection: Some(normalized.projection),
-                    is_error: normalized.is_error,
-                },
-            };
-            let blob = ContentBlob::json(&returned).map_err(persistence)?;
-            Ok::<_, ToolError>((blob, returned.body, normalized.artifacts))
+        let PreparedChildReturn {
+            blob,
+            value,
+            is_error,
+            observed,
+            material,
+            artifacts,
+        } = tokio::task::spawn_blocking(move || {
+            prepare_child_return(success, &execution, cell, operation)
         })
         .await
         .map_err(persistence)??;
-        let (blob, body, artifacts) = normalized;
         let mut changes = Vec::new();
-        let event = if let ToolOutput::Operation(reply) = &body.output {
+        let event = if let Some(reply) = observed {
             let current = self.original_cell(cell).await?;
             let child = current
                 .children
@@ -2013,7 +2001,7 @@ impl NativeCellPort {
                     event: CellEvent::ChildObserved {
                         cell,
                         operation,
-                        reply: *reply.clone(),
+                        reply,
                     },
                 },
                 self.now(),
@@ -2022,39 +2010,120 @@ impl NativeCellPort {
                 cell,
                 operation,
                 result: blob.reference().clone(),
-                is_error: body.is_error,
+                is_error,
             }
         } else {
             CellEvent::LocalChildReturned {
                 cell,
                 operation,
                 result: blob.reference().clone(),
-                is_error: body.is_error,
+                is_error,
                 settlement,
             }
         };
         changes.push(Change::new(Fact::Cell { event }, self.now()));
+        let contents = std::iter::once(blob).chain(material).collect();
         if let Some(local) = local {
             let original =
                 self.run
-                    .retain_publication(changes, vec![blob], artifacts, false, Some(local))?;
+                    .retain_publication(changes, contents, artifacts, false, Some(local))?;
             if let PublicationOutcome::BusinessFailed { message, .. } =
                 self.run.settle_publication(&original).await?
             {
                 return Err(ToolError::Failed(message));
             }
         } else {
-            self.run.publish(changes, vec![blob], artifacts).await?;
+            self.run.publish(changes, contents, artifacts).await?;
         }
         if let Some(error) = local_error {
             return Err(error);
         }
-        match body.output {
+        match value {
             ToolOutput::Operation(reply) => operation_output(*reply),
-            value => output(value, body.is_error),
+            value => output(value, is_error),
         }
     }
 }
+pub(super) struct PreparedChildReturn {
+    pub(super) blob: ContentBlob,
+    value: ToolOutput,
+    pub(super) is_error: bool,
+    pub(super) observed: Option<maka_agent_facts::operation::RecordedOperationReply>,
+    pub(super) material: Option<ContentBlob>,
+    artifacts: Vec<maka_agent_facts::event::ProjectionArtifactWrite>,
+}
+
+pub(super) fn prepare_child_return(
+    success: ToolSuccess,
+    execution: &ExecutionIdentity,
+    cell: CellId,
+    operation: Uuid,
+) -> Result<PreparedChildReturn, ToolError> {
+    use maka_agent_facts::tool_output::{OperationProjection, StoredOperationReturn};
+    let normalized = success
+        .into_durable(
+            &child_operation(cell, operation),
+            SystemTime::now(),
+            execution,
+        )
+        .map_err(persistence)?;
+    let artifacts = normalized
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let evidence = artifact.evidence();
+            PublishedArtifact {
+                artifact: artifact.artifact().clone(),
+                payload: ContentRef {
+                    digest: evidence.digest,
+                    bytes: evidence.bytes,
+                },
+            }
+        })
+        .collect();
+    let is_error = normalized.is_error;
+    let (blob, value, observed, material) = match normalized.output {
+        ToolOutput::Operation(reply) => {
+            let (recorded, material) =
+                maka_agent_state::operation::record_reply((*reply).clone()).map_err(persistence)?;
+            let blob = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts,
+                body: StoredOperationReturn {
+                    operation: recorded.clone(),
+                    projection: OperationProjection::record(&reply, normalized.projection)
+                        .map_err(persistence)?,
+                    is_error,
+                    loaded_tools: Default::default(),
+                },
+            })
+            .map_err(persistence)?;
+            (blob, ToolOutput::Operation(reply), Some(recorded), material)
+        }
+        output => {
+            let returned = ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts,
+                body: CellReturnedResult {
+                    output,
+                    projection: Some(normalized.projection),
+                    is_error,
+                },
+            };
+            let blob = ContentBlob::json(&returned).map_err(persistence)?;
+            (blob, returned.body.output, None, None)
+        }
+    };
+    Ok(PreparedChildReturn {
+        blob,
+        value,
+        is_error,
+        observed,
+        material,
+        artifacts: normalized.artifacts,
+    })
+}
+
 impl CellPersistence for NativeCellPort {
     fn owner(&self) -> CellOwner {
         self.cell_owner()
@@ -2242,11 +2311,9 @@ impl CellPorts for RunCells {
             {
                 Ok(CellObservation::Recorded)
             } else {
-                Err(RunError::Blocked(
-                    BlockerKind::CodeCellRecoveryUnavailable {
-                        cell: cell.id.to_string(),
-                    },
-                ))
+                Err(RunError::from(BlockerKind::CodeCellRecoveryUnavailable {
+                    cell: cell.id.to_string(),
+                }))
             }
         })
     }

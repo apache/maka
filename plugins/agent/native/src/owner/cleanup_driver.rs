@@ -216,9 +216,7 @@ impl Owner {
                     .await;
                 let unavailable = matches!(
                     &result,
-                    Err(RunError::Blocked(
-                        maka_agent_facts::durable::BlockerKind::ModelCleanupUnconfirmed { .. }
-                    ))
+                    Err(RunError::Blocked(reason)) if matches!(reason.as_ref(), maka_agent_facts::durable::BlockerKind::ModelCleanupUnconfirmed { .. })
                 );
                 if result.is_err() && !unavailable {
                     return Err("model_cleanup_reconciliation_failed".into());

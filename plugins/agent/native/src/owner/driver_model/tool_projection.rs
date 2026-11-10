@@ -54,33 +54,30 @@ impl DriverModel {
             .tool_result_reader(view.run, &self.cancellation)
             .result(fact, reference, budget.clone())
             .await
-            .map_err(&failed)?;
-        let ToolResultSource::Returned { body, .. } = selected else {
+            .map_err(failed)?;
+        let ToolResultSource::Returned(returned) = selected else {
             return Ok(None);
         };
-        let mut fields = json::fields(&body, &["projection", "is_error"], budget.clone())
+        let fields = returned.fields(budget.clone()).await.map_err(failed)?;
+        let projection = fields
+            .projection(budget.clone())
             .await
-            .map_err(&failed)?
-            .into_iter();
-        let projection = fields.next().flatten().ok_or_else(|| {
-            RunError::InvalidInput("original ToolReturn has no projection".into())
-        })?;
-        let is_error = fields.next().flatten().ok_or_else(|| {
-            RunError::InvalidInput("original ToolReturn has no error category".into())
-        })?;
-        let is_error = json::bool_value(&is_error.source, budget.clone())
+            .map_err(failed)?
+            .ok_or_else(|| RunError::InvalidInput("original ToolReturn has no projection".into()))?
+            .into_json(budget.clone())
             .await
-            .map_err(&failed)?;
+            .map_err(failed)?;
+        let is_error = fields.is_error(budget.clone()).await.map_err(failed)?;
         let archived = ArchivedPlaceholder::prepare_source(
             id.to_string(),
             tool.call.clone(),
             call.name.clone(),
-            projection.source,
+            projection,
             budget,
             &self.cancellation,
         )
         .await
-        .map_err(&failed)?;
+        .map_err(failed)?;
         let Some(archived) = archived else {
             return Ok(None);
         };
@@ -136,21 +133,21 @@ impl DriverModel {
             let returned = fields.next().flatten().ok_or_else(|| {
                 RunError::InvalidInput("imported tool return has no result".into())
             })?;
-            let ToolResultSource::Returned { body, .. } =
+            let ToolResultSource::Returned(returned) =
                 ToolResultReader::returned(returned.source, budget.clone()).await?
             else {
                 unreachable!("canonical ToolReturn decoder returns its original body")
             };
-            let mut body = json::fields(&body, &["projection", "is_error"], budget.clone())
+            let fields = returned.fields(budget.clone()).await?;
+            let projection = fields
+                .projection(budget.clone())
                 .await?
-                .into_iter();
-            let projection = body.next().flatten().ok_or_else(|| {
-                RunError::InvalidInput("imported ToolReturn has no projection".into())
-            })?;
-            let is_error = body.next().flatten().ok_or_else(|| {
-                RunError::InvalidInput("imported ToolReturn has no error category".into())
-            })?;
-            let is_error = json::bool_value(&is_error.source, budget.clone()).await?;
+                .ok_or_else(|| {
+                    RunError::InvalidInput("imported ToolReturn has no projection".into())
+                })?
+                .into_json(budget.clone())
+                .await?;
+            let is_error = fields.is_error(budget.clone()).await?;
             let call_id = imported_identifier(call_id.source, budget.clone()).await?;
             let name = imported_identifier(name.source, budget.clone()).await?;
             let address = maka_agent_facts::history::HistoryRowAddress::Imported {
@@ -163,7 +160,7 @@ impl DriverModel {
                 &address,
                 call_id.clone(),
                 name.clone(),
-                projection.source,
+                projection,
                 budget,
                 &self.cancellation,
             )

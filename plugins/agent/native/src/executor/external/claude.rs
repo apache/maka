@@ -584,10 +584,10 @@ pub(super) async fn replay(
     }
     let mut outcome = None;
     while let Some(row) = stream.next().await? {
-        if let Some(done) = turn.row(row, output).await? {
-            if outcome.replace(done).is_some() {
-                return Err(Error::Unknown);
-            }
+        if let Some(done) = turn.row(row, output).await?
+            && outcome.replace(done).is_some()
+        {
+            return Err(Error::Unknown);
         }
     }
     if !turn.pending.is_empty() {

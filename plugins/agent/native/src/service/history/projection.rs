@@ -21,10 +21,18 @@ use super::*;
 use maka_agent_facts::{input::MessageInput, message::MessageOrigin, model::ToolInput};
 use wire::{Chunk, HistoryField, Role, SourceField};
 
+mod cells;
+
 pub(super) enum Field {
     Text(TextBody),
     Json(Value),
     Content(ContentRef),
+    Receipt(Box<maka_agent_facts::operation::RecordedOperationReply>),
+    CellChildReceipt {
+        cell: maka_agent_facts::cells::CellId,
+        operation: uuid::Uuid,
+        reply: Box<maka_agent_facts::operation::RecordedOperationReply>,
+    },
     Imported {
         reference: ContentRef,
         selectors: Vec<String>,
@@ -38,8 +46,34 @@ pub(super) enum Body {
 }
 pub(super) struct Row {
     pub chunk: Chunk,
+    pub visible: bool,
     pub body: Body,
     pub fields: Vec<(SourceField, Field)>,
+}
+pub(super) fn visible(fact: &Fact) -> bool {
+    use maka_agent_facts::cells::CellEvent;
+    match fact {
+        Fact::Cell {
+            event:
+                CellEvent::ChildPrepared { .. }
+                | CellEvent::ChildRejected { .. }
+                | CellEvent::ChildResultRecorded { .. }
+                | CellEvent::LocalChildReturned { .. },
+        } => true,
+        Fact::Cell {
+            event: CellEvent::ChildObserved { reply, .. },
+        } => super::super::delivery::recorded_settlement(reply).is_some(),
+        Fact::OperationObserved { reply, .. } => {
+            super::super::delivery::recorded_settlement(reply).is_some()
+        }
+        Fact::Cell { .. } => false,
+        Fact::ExternalEffect { event } => matches!(
+            event,
+            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+                | maka_agent_facts::external_effects::ExternalEffectEvent::Returned { .. }
+        ),
+        _ => true,
+    }
 }
 fn base(
     item: &HistoryItem,
@@ -50,6 +84,7 @@ fn base(
 ) -> Result<Row, String> {
     let position = address.with_item_index(index);
     Ok(Row {
+        visible: visible(&item.recorded.fact),
         chunk: Chunk {
             order: wire::HistoryOrder {
                 path: vec![item.sequence],
@@ -142,6 +177,13 @@ pub(super) fn input(
         _ => Body::Field(SourceField::Body),
     };
     row.fields.push((SourceField::Body, body));
+}
+fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
+    call.title = display
+        .title
+        .as_ref()
+        .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
+    call.presentation = display.presentation.as_deref().map(Into::into);
 }
 fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
     row.chunk.tool = Some(wire::Tool {
@@ -281,9 +323,10 @@ pub(super) async fn project(
             });
             row.chunk.message_id = Some(item.recorded.id.to_string());
             if let BackendSpec::Model { binding, .. } = &source.spec.backend {
-                if !views.contains_key(&item.recorded.run) {
-                    views.insert(
-                        item.recorded.run,
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    views.entry(item.recorded.run)
+                {
+                    e.insert(
                         reader
                             .view_at(item.recorded.run)
                             .await
@@ -399,12 +442,12 @@ pub(super) async fn project(
                         .push((SourceField::Result, Field::Json(output.clone())));
                 }
             }
-            if !views.contains_key(&item.recorded.run) {
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
                 let view = reader
                     .view_at(item.recorded.run)
                     .await
                     .map_err(|e| e.to_string())?;
-                views.insert(item.recorded.run, view);
+                e.insert(view);
             }
             let view = &views[&item.recorded.run];
             row.chunk.final_output = view.terminal == Some(Terminal::Completed)
@@ -422,17 +465,13 @@ pub(super) async fn project(
                     attempt: *attempt,
                     call: call.id.clone(),
                 };
-                if let Some(state) = view.tools.values().find(|tool| tool.key == key) {
-                    if let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
-                    {
-                        call.pending = view.terminal.is_none() && state.accepted.is_none();
-                        call.dispatched = state.admitted;
-                        if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
-                            call.title = display.title.as_ref().map(|title| {
-                                Box::new(maka_agent_facts::display::Text::plain(title.clone()))
-                            });
-                            call.presentation = display.presentation.as_deref().map(Into::into);
-                        }
+                if let Some(state) = view.tools.values().find(|tool| tool.key == key)
+                    && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                {
+                    call.pending = view.terminal.is_none() && state.accepted.is_none();
+                    call.dispatched = state.admitted;
+                    if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
+                        apply_display(call, display);
                     }
                 }
             }
@@ -482,35 +521,75 @@ pub(super) async fn project(
             result: reference,
             outcome,
         } => {
+            use maka_agent_facts::{cells::CellStatus, tool_call::ToolSettlement};
+            let settlement = match outcome {
+                AcceptedResult::Succeeded => ToolSettlement::Returned,
+                AcceptedResult::Failed => ToolSettlement::Failed,
+                AcceptedResult::Rejected => ToolSettlement::Rejected,
+                AcceptedResult::RiskAdjudicated { .. } => ToolSettlement::Unknown,
+                AcceptedResult::CellRecovered { cell } => {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    match views[&item.recorded.run]
+                        .cells
+                        .get(cell)
+                        .ok_or("agent_history_cell_missing")?
+                        .status
+                    {
+                        CellStatus::Completed { .. } => ToolSettlement::Returned,
+                        CellStatus::Interrupted { .. } => ToolSettlement::Failed,
+                        CellStatus::Running => {
+                            return Err("agent_history_cell_result_not_final".into());
+                        }
+                    }
+                }
+            };
             let mut row = base(item, turn, 0, Role::ToolResult, address)?;
             tool(
                 &mut row,
                 super::super::delivery::tool_id(item.recorded.run, key),
                 None,
-                Some(!matches!(outcome, AcceptedResult::Succeeded)),
+                Some(settlement != ToolSettlement::Returned),
             );
+            row.chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+                .expect("accepted tool result")
+                .settlement = Some(settlement);
             row.fields
                 .push((SourceField::Result, Field::Content(reference.clone())));
             result.push(row);
         }
         Fact::OperationObserved { tool: key, reply } => {
             let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+            let settlement = super::super::delivery::recorded_settlement(reply);
             tool(
                 &mut row,
                 super::super::delivery::tool_id(item.recorded.run, key),
                 None,
-                Some(!matches!(
-                    &reply.receipt,
-                    maka_plugin_core::operation::Receipt::Recorded {
-                        outcome: maka_plugin_core::operation::OperationOutcome::Returned { .. }
-                            | maka_plugin_core::operation::OperationOutcome::NotExecuted { .. },
-                        ..
-                    }
-                )),
+                settlement
+                    .map(|value| value != maka_agent_facts::tool_call::ToolSettlement::Returned),
             );
+            if let Some(result) = row
+                .chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+            {
+                result.settlement = settlement;
+            }
             row.fields.push((
                 SourceField::Receipt,
-                Field::Json(serde_json::to_value(reply).map_err(|e| e.to_string())?),
+                Field::Receipt(Box::new(reply.clone())),
             ));
             result.push(row);
         }
@@ -525,9 +604,8 @@ pub(super) async fn project(
             ) {
                 return Ok(result);
             }
-            if !views.contains_key(&item.recorded.run) {
-                views.insert(
-                    item.recorded.run,
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
+                e.insert(
                     reader
                         .view_at(item.recorded.run)
                         .await
@@ -558,6 +636,9 @@ pub(super) async fn project(
                         .and_then(|tool| tool.call.as_mut())
                         .expect("external Host call");
                     call.origin = wire::ToolCallOrigin::HostSdk;
+                    if let Some(display) = &state.display {
+                        apply_display(call, display);
+                    }
                     call.dispatched = state.admitted;
                     call.pending = view.terminal.is_none()
                         && state.returned.is_none()
@@ -607,9 +688,10 @@ pub(super) async fn project(
                 } => {
                     let thinking = matches!(output, Output::ThinkingDelta { .. });
                     if !thinking {
-                        if !views.contains_key(&item.recorded.run) {
-                            views.insert(
-                                item.recorded.run,
+                        if let std::collections::btree_map::Entry::Vacant(e) =
+                            views.entry(item.recorded.run)
+                        {
+                            e.insert(
                                 reader
                                     .view_at(item.recorded.run)
                                     .await
@@ -655,8 +737,25 @@ pub(super) async fn project(
                     row.fields
                         .push((SourceField::Arguments, Field::Json(input.clone())));
                 }
-                Output::ToolProgress { text: body, .. } | Output::ToolResult { text: body, .. } => {
+                Output::ToolProgress {
+                    tool_call_id,
+                    text: body,
+                }
+                | Output::ToolResult {
+                    tool_call_id,
+                    text: body,
+                    ..
+                } => {
                     row.chunk.role = Role::ToolResult;
+                    let id = maka_agent_facts::tool_call::tool_use_id(
+                        item.recorded.run,
+                        &format!("{task}:{tool_call_id}"),
+                    );
+                    let is_error = match output {
+                        Output::ToolResult { is_error, .. } => Some(*is_error),
+                        _ => None,
+                    };
+                    tool(&mut row, id, None, is_error);
                     text(&mut row, SourceField::Result, body.clone().into());
                 }
                 Output::MessageStart { .. } | Output::MessageEnd { .. } => return Ok(result),
@@ -664,33 +763,21 @@ pub(super) async fn project(
             result.push(row);
         }
         Fact::Cell { event } => {
-            // Cell observations remain typed Cell facts, never synthetic model calls.
-            let mut row = base(item, turn, 0, Role::ToolResult, address)?;
-            row.fields.push((
-                SourceField::Receipt,
-                Field::Json(serde_json::to_value(event).map_err(|e| e.to_string())?),
-            ));
-            use maka_agent_facts::cells::CellEvent;
-            let field = match event {
-                CellEvent::Started { source, .. } => Some((SourceField::Body, source)),
-                CellEvent::ChildPrepared { input, .. }
-                | CellEvent::ChildApprovalRecorded { input, .. } => {
-                    Some((SourceField::Arguments, input))
-                }
-                CellEvent::ChildResultRecorded { result, .. }
-                | CellEvent::LocalChildReturned { result, .. }
-                | CellEvent::Completed { result, .. } => Some((SourceField::Result, result)),
-                CellEvent::Interrupted { report, .. } => Some((SourceField::Result, report)),
-                CellEvent::SessionValuePublished { value, .. } => {
-                    Some((SourceField::Result, value))
-                }
-                CellEvent::NotificationQueued { content, .. } => Some((SourceField::Body, content)),
-                _ => None,
-            };
-            if let Some((field, reference)) = field {
-                row.fields.push((field, Field::Content(reference.clone())));
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
+                e.insert(
+                    reader
+                        .view_at(item.recorded.run)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                );
             }
-            result.push(row);
+            result.push(cells::project(
+                item,
+                turn,
+                address,
+                event,
+                &views[&item.recorded.run],
+            )?);
         }
         Fact::ContextCompacted { baseline } => {
             let compact: maka_agent_facts::context::CompactedContext =

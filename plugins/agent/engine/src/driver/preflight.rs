@@ -61,233 +61,6 @@ fn portless_reconciliation(view: &RunView, at: UnixMillis, complete_at_budget: b
     reconcile::next(view, &live, at, None, complete_at_budget)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::reconcile::tests::{apply_policy_fact, budget_closure, model_closure, policy_view};
-    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
-    use maka_plugin_core::operation::{
-        OperationOutcome, OperationReply, OperationResult, RecoveryContract, RecoveryProtocol,
-        RecoveryRef,
-    };
-
-    #[test]
-    fn portless_budget_completion_does_not_claim_to_have_observed_original_tool_cleanup() {
-        let mut view = policy_view(Some(110));
-        let source = view.spec.input.clone();
-        let spec = ContentBlob::json(&view.spec).unwrap();
-        apply_policy_fact(
-            &mut view,
-            Fact::RunAdmitted {
-                spec: spec.reference().clone(),
-            },
-        );
-        let (mut view, _, prior) = model_closure(
-            view,
-            ModelPurpose::Main,
-            ModelFinishReason::Stop,
-            Outcome::Success,
-            true,
-        );
-        let tool = ToolKey {
-            attempt: prior,
-            call: "continuation".into(),
-        };
-        apply_policy_fact(
-            &mut view,
-            Fact::ToolDecided {
-                tool: tool.clone(),
-                decision: ToolDecision::Approved {
-                    input: source.clone(),
-                    resources: Vec::new(),
-                    approval: None,
-                    display: Default::default(),
-                    semantics: maka_agent_facts::tools::ToolSemantics::Parallel,
-                },
-            },
-        );
-        apply_policy_fact(&mut view, Fact::ToolAdmitted { tool: tool.clone() });
-        let reference = RecoveryRef {
-            source: maka_plugin_core::deployment::DeploymentRef {
-                state_domain: "a".repeat(64),
-                deployment: view.spec.owner.deployment,
-                revision: 1,
-            },
-            namespace: view.spec.owner.namespace.clone(),
-            export: "history".into(),
-            method: "write".into(),
-            operation: uuid::Uuid::new_v4(),
-            fingerprint: format!("sha256-{}", source.digest.strip_prefix("sha256:").unwrap()),
-            contract: RecoveryContract {
-                name: "history".into(),
-                version: 1,
-                transport: maka_plugin_core::contract::Transport::Local,
-                digest: format!("sha256-{}", source.digest.strip_prefix("sha256:").unwrap()),
-            },
-            recovery: RecoveryProtocol::JournalV1,
-        };
-        apply_policy_fact(
-            &mut view,
-            Fact::ToolOriginalBound {
-                tool: tool.clone(),
-                reference: reference.clone(),
-            },
-        );
-        apply_policy_fact(
-            &mut view,
-            Fact::OperationObserved {
-                tool: tool.clone(),
-                reply: OperationReply {
-                    reference: reference.clone(),
-                    receipt: Receipt::Recorded {
-                        outcome: OperationOutcome::Unknown {
-                            diagnostic: "policy uncertainty".into(),
-                        },
-                        cleanup: OperationCleanup::Unconfirmed,
-                    },
-                },
-            },
-        );
-        let blocker = BlockerId::new();
-        apply_policy_fact(
-            &mut view,
-            Fact::Blocked {
-                blocker,
-                reason: BlockerKind::OperationUnknown {
-                    tool: tool.clone(),
-                    reference: reference.clone(),
-                },
-            },
-        );
-        apply_policy_fact(
-            &mut view,
-            Fact::RiskAdjudicated {
-                blocker,
-                decision: RiskDecision::RecordExternalObservation {
-                    evidence: source.clone(),
-                },
-                scope: RiskActionScope::Tool { tool: tool.clone() },
-            },
-        );
-        apply_policy_fact(
-            &mut view,
-            Fact::ToolResultAccepted {
-                tool: tool.clone(),
-                result: source.clone(),
-                outcome: AcceptedResult::RiskAdjudicated { blocker },
-            },
-        );
-        apply_policy_fact(
-            &mut view,
-            Fact::OperationObserved {
-                tool: tool.clone(),
-                reply: OperationReply {
-                    reference,
-                    receipt: Receipt::Recorded {
-                        outcome: OperationOutcome::Returned {
-                            result: OperationResult::Success {
-                                value: serde_json::Value::Null,
-                            },
-                        },
-                        cleanup: OperationCleanup::Unconfirmed,
-                    },
-                },
-            },
-        );
-        apply_policy_fact(
-            &mut view,
-            Fact::ModelCleanupObserved {
-                attempt: prior,
-                cleanup: OperationCleanup::Confirmed,
-            },
-        );
-        let (mut view, request, current) = model_closure(
-            view,
-            ModelPurpose::Main,
-            ModelFinishReason::Stop,
-            Outcome::Success,
-            false,
-        );
-        apply_policy_fact(&mut view, Fact::BudgetCharged { tokens: 110 });
-        apply_policy_fact(
-            &mut view,
-            Fact::ModelCleanupObserved {
-                attempt: current,
-                cleanup: OperationCleanup::Confirmed,
-            },
-        );
-        let now = UnixMillis(1);
-        let complete = reconcile::complete_at_budget(&view, &request, now);
-        assert!(complete);
-        // This is the exact Live construction consumed by current_authority_unavailable.
-        let action = portless_reconciliation(&view, now, complete);
-        assert!(matches!(action, Action::Observe(key) if key == tool));
-    }
-
-    #[test]
-    fn original_model_cleanup_policy_wait_requires_its_late_canonical_ack() {
-        let (mut view, request, attempt) = budget_closure(
-            ModelPurpose::Main,
-            ModelFinishReason::Stop,
-            Outcome::Success,
-            false,
-        );
-        let authority = BlockerId::new();
-        apply_policy_fact(
-            &mut view,
-            Fact::Blocked {
-                blocker: authority,
-                reason: BlockerKind::CurrentAuthorityUnavailable {
-                    stage: AuthorityStage::CurrentSession,
-                    diagnostic: "policy unavailable".into(),
-                },
-            },
-        );
-        let now = UnixMillis(1);
-        let complete = reconcile::complete_at_budget(&view, &request, now);
-        assert!(complete);
-        let action = portless_reconciliation(&view, now, complete);
-        let Action::Wait(reason @ WaitReason::Model { .. }, None) = action else {
-            panic!("policy still requires the original source's cleanup proof");
-        };
-        let wait = WaitId::new();
-        apply_policy_fact(
-            &mut view,
-            Fact::WaitRegistered {
-                wait,
-                reason,
-                due_at: None,
-            },
-        );
-        let complete = reconcile::complete_at_budget(&view, &request, now);
-        assert!(complete);
-        assert!(matches!(
-            portless_reconciliation(&view, now, complete),
-            Action::Idle
-        ));
-        apply_policy_fact(
-            &mut view,
-            Fact::ModelCleanupObserved {
-                attempt,
-                cleanup: OperationCleanup::Confirmed,
-            },
-        );
-        assert!(
-            matches!(portless_reconciliation(&view, now, reconcile::complete_at_budget(&view, &request, now)), Action::Satisfy(id) if id == wait)
-        );
-        let evidence = view.spec.input.clone();
-        apply_policy_fact(&mut view, Fact::WaitSatisfied { wait, evidence });
-        assert!(matches!(
-            portless_reconciliation(
-                &view,
-                now,
-                reconcile::complete_at_budget(&view, &request, now)
-            ),
-            Action::Terminate(Terminal::Completed)
-        ));
-    }
-}
-
 impl Engine {
     /// Record unavailable current authority without inventing a logical failure
     /// or a replacement capability from the persisted Run specification.
@@ -406,22 +179,22 @@ impl Engine {
                     },
                 });
             }
-            if let Some(reason) = source_blocker {
-                if !view.blockers.values().any(|blocker| {
+            if let Some(reason) = source_blocker
+                && !view.blockers.values().any(|blocker| {
                     blocker.decision.is_none()
                         && blocker.resolved_by.is_none()
                         && blocker.reason == reason
-                }) {
-                    facts.push(Fact::Blocked {
-                        blocker: BlockerId::new(),
-                        reason,
-                    });
-                }
+                })
+            {
+                facts.push(Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason,
+                });
             }
-            if let Some(request) = view.stop_request {
-                if view.stop_assessed != Some(request) {
-                    facts.push(Fact::StopAssessed { request });
-                }
+            if let Some(request) = view.stop_request
+                && view.stop_assessed != Some(request)
+            {
+                facts.push(Fact::StopAssessed { request });
             }
             if facts.is_empty() {
                 return Ok(exit(&view));
@@ -461,5 +234,231 @@ impl Engine {
             return Ok(false);
         }
         self.publish(Some(claim), view, facts, contents, at).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reconcile::tests::{apply_policy_fact, budget_closure, model_closure, policy_view};
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    use maka_plugin_core::operation::{
+        OperationOutcome, OperationReply, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    #[test]
+    fn portless_budget_completion_does_not_claim_to_have_observed_original_tool_cleanup() {
+        let mut view = policy_view(Some(110));
+        let source = view.spec.input.clone();
+        let spec = ContentBlob::json(&view.spec).unwrap();
+        apply_policy_fact(
+            &mut view,
+            Fact::RunAdmitted {
+                spec: spec.reference().clone(),
+            },
+        );
+        let (mut view, _, prior) = model_closure(
+            view,
+            ModelPurpose::Main,
+            ModelFinishReason::Stop,
+            Outcome::Success,
+            true,
+        );
+        let tool = ToolKey {
+            attempt: prior,
+            call: "continuation".into(),
+        };
+        apply_policy_fact(
+            &mut view,
+            Fact::ToolDecided {
+                tool: tool.clone(),
+                decision: ToolDecision::Approved {
+                    input: source.clone(),
+                    resources: Vec::new(),
+                    approval: None,
+                    display: Default::default(),
+                    semantics: maka_agent_facts::tools::ToolSemantics::Parallel,
+                },
+            },
+        );
+        apply_policy_fact(&mut view, Fact::ToolAdmitted { tool: tool.clone() });
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: view.spec.owner.deployment,
+                revision: 1,
+            },
+            namespace: view.spec.owner.namespace.clone(),
+            export: "history".into(),
+            method: "write".into(),
+            operation: uuid::Uuid::new_v4(),
+            fingerprint: format!("sha256-{}", source.digest.strip_prefix("sha256:").unwrap()),
+            contract: RecoveryContract {
+                name: "history".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Local,
+                digest: format!("sha256-{}", source.digest.strip_prefix("sha256:").unwrap()),
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        apply_policy_fact(
+            &mut view,
+            Fact::ToolOriginalBound {
+                tool: tool.clone(),
+                reference: reference.clone(),
+            },
+        );
+        apply_policy_fact(
+            &mut view,
+            Fact::OperationObserved {
+                tool: tool.clone(),
+                reply: OperationReply {
+                    reference: reference.clone(),
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: "policy uncertainty".into(),
+                        },
+                        cleanup: OperationCleanup::Unconfirmed,
+                    },
+                },
+            },
+        );
+        let blocker = BlockerId::new();
+        apply_policy_fact(
+            &mut view,
+            Fact::Blocked {
+                blocker,
+                reason: BlockerKind::OperationUnknown {
+                    tool: tool.clone(),
+                    reference: reference.clone(),
+                },
+            },
+        );
+        apply_policy_fact(
+            &mut view,
+            Fact::RiskAdjudicated {
+                blocker,
+                decision: RiskDecision::RecordExternalObservation {
+                    evidence: source.clone(),
+                },
+                scope: RiskActionScope::Tool { tool: tool.clone() },
+            },
+        );
+        apply_policy_fact(
+            &mut view,
+            Fact::ToolResultAccepted {
+                tool: tool.clone(),
+                result: source.clone(),
+                outcome: AcceptedResult::RiskAdjudicated { blocker },
+            },
+        );
+        apply_policy_fact(
+            &mut view,
+            Fact::OperationObserved {
+                tool: tool.clone(),
+                reply: OperationReply {
+                    reference,
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Returned {
+                            result: maka_agent_facts::operation::RecordedOperationResult::Success {
+                                value: serde_json::Value::Null,
+                            },
+                        },
+                        cleanup: OperationCleanup::Unconfirmed,
+                    },
+                },
+            },
+        );
+        apply_policy_fact(
+            &mut view,
+            Fact::ModelCleanupObserved {
+                attempt: prior,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        );
+        let (mut view, request, current) = model_closure(
+            view,
+            ModelPurpose::Main,
+            ModelFinishReason::Stop,
+            Outcome::Success,
+            false,
+        );
+        apply_policy_fact(&mut view, Fact::BudgetCharged { tokens: 110 });
+        apply_policy_fact(
+            &mut view,
+            Fact::ModelCleanupObserved {
+                attempt: current,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        );
+        let now = UnixMillis(1);
+        let complete = reconcile::complete_at_budget(&view, &request, now);
+        assert!(complete);
+        // This is the exact Live construction consumed by current_authority_unavailable.
+        let action = portless_reconciliation(&view, now, complete);
+        assert!(matches!(action, Action::Observe(key) if key == tool));
+    }
+
+    #[test]
+    fn original_model_cleanup_policy_wait_requires_its_late_canonical_ack() {
+        let (mut view, request, attempt) = budget_closure(
+            ModelPurpose::Main,
+            ModelFinishReason::Stop,
+            Outcome::Success,
+            false,
+        );
+        let authority = BlockerId::new();
+        apply_policy_fact(
+            &mut view,
+            Fact::Blocked {
+                blocker: authority,
+                reason: BlockerKind::CurrentAuthorityUnavailable {
+                    stage: AuthorityStage::CurrentSession,
+                    diagnostic: "policy unavailable".into(),
+                },
+            },
+        );
+        let now = UnixMillis(1);
+        let complete = reconcile::complete_at_budget(&view, &request, now);
+        assert!(complete);
+        let action = portless_reconciliation(&view, now, complete);
+        let Action::Wait(reason @ WaitReason::Model { .. }, None) = action else {
+            panic!("policy still requires the original source's cleanup proof");
+        };
+        let wait = WaitId::new();
+        apply_policy_fact(
+            &mut view,
+            Fact::WaitRegistered {
+                wait,
+                reason,
+                due_at: None,
+            },
+        );
+        let complete = reconcile::complete_at_budget(&view, &request, now);
+        assert!(complete);
+        assert!(matches!(
+            portless_reconciliation(&view, now, complete),
+            Action::Idle
+        ));
+        apply_policy_fact(
+            &mut view,
+            Fact::ModelCleanupObserved {
+                attempt,
+                cleanup: OperationCleanup::Confirmed,
+            },
+        );
+        assert!(
+            matches!(portless_reconciliation(&view, now, reconcile::complete_at_budget(&view, &request, now)), Action::Satisfy(id) if id == wait)
+        );
+        let evidence = view.spec.input.clone();
+        apply_policy_fact(&mut view, Fact::WaitSatisfied { wait, evidence });
+        assert!(matches!(
+            portless_reconciliation(
+                &view,
+                now,
+                reconcile::complete_at_budget(&view, &request, now)
+            ),
+            Action::Terminate(Terminal::Completed)
+        ));
     }
 }

@@ -125,8 +125,7 @@ pub(super) fn context(c: &Connection, input: ReadContext) -> Result<Context, Sto
         &store,
         &cut,
         &anchor,
-        before,
-        after,
+        ContextWindow { before, after },
         exclude.as_ref(),
         &stop,
     )?;
@@ -144,8 +143,7 @@ fn neighbors(
     store: &RecallStore,
     cut: &HistoryCut,
     anchor: &Message,
-    before: usize,
-    after: usize,
+    window: ContextWindow,
     exclude: Option<&ExcludedTail>,
     stop: &CancellationToken,
 ) -> Result<(Vec<Message>, bool, bool), StoreError> {
@@ -154,7 +152,7 @@ fn neighbors(
     let ordinal = number(anchor.position.item_index)?;
     let mut sides = [vec![], vec![]];
     let mut more = [false, false];
-    for (side, size) in [before, after].into_iter().enumerate() {
+    for (side, size) in [window.before, window.after].into_iter().enumerate() {
         let (comparison, order) = if side == 0 {
             ("<", "DESC")
         } else {
@@ -442,8 +440,7 @@ pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError>
             &store,
             &cut,
             &candidate.message,
-            before,
-            after,
+            ContextWindow { before, after },
             query.exclude.as_ref(),
             &stop,
         )?;

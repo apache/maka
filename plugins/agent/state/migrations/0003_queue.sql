@@ -44,19 +44,12 @@ CREATE INDEX agent_queue_pending ON agent_queue_items(session,state,lane,positio
 CREATE INDEX agent_queue_steering ON agent_queue_items(session,target_run,state,position,request);
 DROP VIEW content_references;
 CREATE VIEW content_references AS
-    SELECT body_id AS content_id FROM event_log WHERE body_id IS NOT NULL
-    UNION ALL SELECT c.id FROM artifacts a JOIN contents c USING(content_sha256)
-    UNION ALL SELECT content_id FROM tool_result_payloads
-    UNION ALL SELECT content_id FROM tool_result_parts
-    UNION ALL SELECT content_id FROM application_package_files
-    UNION ALL SELECT system_content_id FROM request_compositions WHERE system_content_id IS NOT NULL
-    UNION ALL SELECT content_id FROM composition_tools
+    SELECT content_id FROM application_package_files
     UNION ALL SELECT outcome_content_id FROM application_operations WHERE outcome_content_id IS NOT NULL
-    UNION ALL SELECT c.id FROM history_snapshot_artifacts a JOIN contents c USING(content_sha256) UNION ALL SELECT metadata_content_id FROM history_snapshot_captures
- UNION ALL SELECT spec_content_id FROM agent_run_specs
- UNION ALL SELECT content_id FROM agent_request_specs
- UNION ALL SELECT content_id FROM agent_answer_parts
- UNION ALL SELECT body_content_id FROM agent_facts
- UNION ALL SELECT content_id FROM agent_content_pins
- UNION ALL SELECT body_content_id FROM agent_queue_events
- UNION ALL SELECT content_id FROM agent_queue_content_pins;
+    UNION ALL SELECT spec_content_id FROM agent_run_specs
+    UNION ALL SELECT content_id FROM agent_request_specs
+    UNION ALL SELECT content_id FROM agent_answer_parts
+    UNION ALL SELECT body_content_id FROM agent_facts
+    UNION ALL SELECT content_id FROM agent_content_pins
+    UNION ALL SELECT body_content_id FROM agent_queue_events
+    UNION ALL SELECT content_id FROM agent_queue_content_pins;

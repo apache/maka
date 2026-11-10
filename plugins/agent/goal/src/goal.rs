@@ -112,6 +112,10 @@ pub struct Report {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Admission consumes one pending request at a time; keep the owned dispatch payload inline"
+)]
 pub enum Pending {
     Existing {
         run: maka_agent_facts::durable::RunId,

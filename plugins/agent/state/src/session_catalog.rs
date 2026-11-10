@@ -116,6 +116,10 @@ pub struct Page {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Catalog commands are serialized individually; keep lineage payloads inline"
+)]
 pub enum ControlEdit {
     MarkRead {
         message_id: String,
@@ -135,6 +139,10 @@ pub struct ControlCommand {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Catalog facts are serialized individually; keep lineage payloads inline"
+)]
 enum Event {
     ReadThrough {
         message_id: String,

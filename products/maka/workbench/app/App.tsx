@@ -30,13 +30,14 @@ import {
   conversationSessionView,
   conversationPreviewView,
   settingsViewContract,
+  type ConversationCompact,
   type ConversationShell,
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
-import { keepDesktopResident } from './desktopResidency';
 import { QuickLauncher } from './QuickLauncher';
+import { ownTitleBar } from './chrome';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
@@ -79,16 +80,23 @@ function App(
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
-  const sides = signal<SidePane[]>(restoredSides.map(createSide));
+  const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
   const besides = () => sides().map((pane) => pane.id());
   const sideFor = (id: string) => sides().find((pane) => pane.id() === id);
-  function createSide(id: string): SidePane {
+  function createSide(
+    id: string,
+    paneShell = sideShell,
+    firstMessage?: string,
+    compact?: ConversationCompact,
+  ): SidePane {
     const pane: SidePane = {
       id: signal(id),
       handle: signal<ConversationSessionHandle | null>(null),
       render: () =>
         runtime.renderView(configuration.session, conversationSessionView, {
-          shell: sideShell(pane),
+          shell: paneShell(pane),
+          firstMessage,
+          compact,
           attach(handle) {
             if (pane.handle() !== handle) pane.handle.set(handle);
           },
@@ -96,6 +104,8 @@ function App(
     };
     return pane;
   }
+  const launcherOpened = signal(false);
+  const assistant = signal<SidePane | null>(null);
   const preview = signal<ConversationPreviewHandle | null>(null);
   const notice = signal<unknown | null>(null);
   let alive = true;
@@ -105,7 +115,6 @@ function App(
     navigationGeneration++;
   });
   effect(() => currentLocale.set(runtime.locale()));
-  keepDesktopResident();
   const mainWindow = currentWindow();
   const report = (reason: unknown) => {
     if (alive) notice.set(reason);
@@ -131,8 +140,32 @@ function App(
       sidebarExpanded() && canDockBrowser(previewShown()),
       previewShown() && canDockPreview(),
     );
+  const launcherClosed = () =>
+    batch(() => {
+      assistant.set(null);
+      launcherOpened.set(false);
+    });
+  const closeLauncher = async (): Promise<boolean> => {
+    const pane = assistant();
+    if (pane) {
+      if (blocked()) return false;
+      try {
+        const owner = pane.handle();
+        if (owner && !(await owner.leave())) return false;
+      } catch (reason) {
+        report(reason);
+        return false;
+      }
+    }
+    launcherClosed();
+    return true;
+  };
+  // A conversation is open in one pane at a time, and the popup is one of them.
+  const releaseAssistant = (id: string | null) =>
+    id !== null && assistant()?.id() === id ? closeLauncher() : Promise.resolve(true);
+  const openElsewhere = (id: string) => sideFor(id) !== undefined || assistant()?.id() === id;
   const openSide = async (pane: SidePane, id: string | null): Promise<boolean> => {
-    if (!alive || blocked()) return false;
+    if (!alive || blocked() || !(await releaseAssistant(id))) return false;
     const original = pane.id();
     const owner = pane.handle();
     try {
@@ -145,7 +178,7 @@ function App(
         pane.id() !== original ||
         (id !== null &&
           id !== original &&
-          (index >= sideRoom() || id === selected() || sideFor(id) !== undefined))
+          (index >= sideRoom() || id === selected() || openElsewhere(id)))
       )
         return false;
       batch(() => {
@@ -159,7 +192,7 @@ function App(
     }
   };
   const openSession = async (id: string | null): Promise<boolean> => {
-    if (!alive || blocked()) return false;
+    if (!alive || blocked() || !(await releaseAssistant(id))) return false;
     // A conversation is open in one pane at a time; selecting a side one moves it here.
     const from = id === null ? undefined : sideFor(id);
     if (from && !(await openSide(from, null))) return false;
@@ -173,7 +206,7 @@ function App(
         blocked() ||
         generation !== navigationGeneration ||
         selected() !== original ||
-        (id !== null && sideFor(id) !== undefined)
+        (id !== null && openElsewhere(id))
       )
         return false;
       batch(() => {
@@ -194,7 +227,7 @@ function App(
   };
   const showSession = async (id: string) => {
     if (!(await openSession(id))) return false;
-    mainWindow?.focus();
+    mainWindow.focus();
     return true;
   };
   const connectionDetails = signal(false);
@@ -239,6 +272,12 @@ function App(
   };
   function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
+    if (assistant()?.id() === id) {
+      void closeLauncher().then((closed) => {
+        if (closed) openBeside(id);
+      });
+      return;
+    }
     const room = sideRoom();
     if (room === 0) return;
     const open = sides();
@@ -264,6 +303,54 @@ function App(
       },
     };
   }
+  function assistantShell(pane: SidePane): ConversationShell {
+    return {
+      ...sideShell(pane),
+      visible: () => true,
+      async openSession(id) {
+        if (id === pane.id()) return true;
+        if (!(await closeLauncher())) return false;
+        return id === null || showSession(id);
+      },
+      openSettings(model, page) {
+        void closeLauncher().then((closed) => {
+          if (!closed) return;
+          shell.openSettings(model, page);
+          mainWindow.focus();
+        });
+      },
+      dismissRoute: () => false,
+      closePane() {
+        void closeLauncher();
+      },
+    };
+  }
+  const openBot = async () => {
+    const owner = session();
+    if (!owner) throw new Error(tr('Maka Bot could not be opened'));
+    return owner.openBot();
+  };
+  const openAssistant = async (id: string, message?: string) => {
+    if (!alive || blocked()) return;
+    if (id !== selected() && !sideFor(id)) {
+      assistant.set(
+        createSide(id, assistantShell, message, {
+          expand: () => void expandAssistant(),
+          close: () => void closeLauncher(),
+        }),
+      );
+      return;
+    }
+    if (message !== undefined) return;
+    // Already on screen: bring it forward rather than remounting it in the popup.
+    if (sideFor(id)) mainWindow.focus();
+    else if (!(await showSession(id))) return;
+    launcherClosed();
+  };
+  const expandAssistant = async () => {
+    const id = assistant()?.id();
+    if (id !== undefined && (await closeLauncher())) await showSession(id);
+  };
   cleanup(
     props.saveWith(async () => ({
       sessionId: selected(),
@@ -281,8 +368,19 @@ function App(
         backgroundColor: platform.idiom === 'terminal' ? C.background : C.chrome,
       }}
     >
-      <If when={mainWindow !== null}>
-        <QuickLauncher vacate={vacate} open={showSession} report={report} />
+      <If when={ownTitleBar}>
+        <QuickLauncher
+          runtime={runtime}
+          openBot={openBot}
+          vacate={vacate}
+          open={openAssistant}
+          opened={launcherOpened}
+          conversing={() => assistant() !== null}
+          conversation={() => assistant()!.render()}
+          close={closeLauncher}
+          closed={launcherClosed}
+          report={report}
+        />
       </If>
       <Workbench
         expanded={sidebarExpanded}

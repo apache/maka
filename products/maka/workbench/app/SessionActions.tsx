@@ -30,16 +30,18 @@ import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessi
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
 import {
   C,
-  compact,
   bodyTextStyle,
   captionTextStyle,
-  secondaryTextStyle,
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  floatingStyle,
   inputTextStyle,
   inputBorderRadius,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
 } from './ui';
 import { Icon } from './Icon';
 import { dialogTop } from './chrome';
@@ -164,45 +166,26 @@ export function SessionActions(props: {
           offset={4}
           margin={8}
           popupStyle={{
-            width: 280,
-            maxWidth: Math.max(0, windowSize().width - 16),
+            ...floatingStyle(),
+            width: 220,
             maxHeight: Math.max(0, windowSize().height - 16),
-            minHeight: 0,
-            padding: 6,
-            backgroundColor: C.surface,
-            borderWidth: 1,
-            borderColor: C.line,
-            borderRadius: 12,
           }}
         >
           <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-            <View role="menu" accessibilityLabel={tr('Conversation actions')} style={{ gap: 2 }}>
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: C.muted,
-                  paddingHorizontal: 8,
-                  paddingVertical: 6,
-                }}
-              >
-                {tr('Conversation actions')}
-              </Text>
+            <View role="menu" accessibilityLabel={tr('Conversation actions')}>
               <If when={props.openSession}>
                 <Button
                   disabled={pending()}
                   accessibilityLabel={tr('Child conversations')}
                   role="menuitem"
                   style={menuRowStyle()}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  hoverStyle={menuRowHoverStyle()}
+                  focusStyle={menuRowHoverStyle()}
                   disabledStyle={controlDisabledStyle}
                   onPress={inputAction(edit, { to: 'children', original: session() })}
                 >
-                  <Icon name="fork" color={C.secondary} />
-                  <Text
-                    accessibilityElementsHidden
-                    style={{ ...secondaryTextStyle, color: C.text }}
-                  >
+                  <Icon name="children" color={C.secondary} />
+                  <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
                     {tr('Child conversations')}
                   </Text>
                 </Button>
@@ -213,19 +196,19 @@ export function SessionActions(props: {
                   accessibilityLabel={tr('Open to the side')}
                   role="menuitem"
                   style={menuRowStyle()}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  hoverStyle={menuRowHoverStyle()}
+                  focusStyle={menuRowHoverStyle()}
                   disabledStyle={controlDisabledStyle}
                   onPress={inputAction(openBeside, null)}
                 >
                   <Icon name="split" color={C.secondary} />
-                  <Text
-                    accessibilityElementsHidden
-                    style={{ ...secondaryTextStyle, color: C.text }}
-                  >
+                  <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
                     {tr('Open to the side')}
                   </Text>
                 </Button>
+              </If>
+              <If when={props.openSession || props.openBeside}>
+                <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
               </If>
               <Button
                 disabled={pending() || session().archived}
@@ -234,8 +217,8 @@ export function SessionActions(props: {
                 }
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(submit, {
                   kind: session().pinned ? 'unpin' : 'pin',
@@ -243,8 +226,8 @@ export function SessionActions(props: {
                 })}
               >
                 <Icon name="pin" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
-                  {session().pinned ? tr('Unpin conversation') : tr('Pin conversation')}
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
+                  {session().pinned ? tr('Unpin') : tr('Pin')}
                 </Text>
               </Button>
               <Button
@@ -252,44 +235,14 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Rename conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'rename', original: session() })}
               >
                 <Icon name="edit" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
-                  {tr('Rename')}
-                </Text>
-              </Button>
-              <Button
-                disabled={pending() || session().archived}
-                accessibilityLabel={tr('Edit conversation compaction prompt')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'compaction_prompt', original: session() })}
-              >
-                <Icon name="edit" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
-                  {tr('Compaction prompt')}
-                </Text>
-              </Button>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Fork conversation')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'fork', original: session() })}
-              >
-                <Icon name="fork" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
-                  {tr('Fork conversation')}
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
+                  {tr('Rename…')}
                 </Text>
               </Button>
               <Button
@@ -299,8 +252,8 @@ export function SessionActions(props: {
                 }
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(submit, {
                   kind: session().archived ? 'restore' : 'archive',
@@ -308,31 +261,54 @@ export function SessionActions(props: {
                 })}
               >
                 <Icon name={session().archived ? 'latest' : 'archive'} color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
                   {session().archived ? tr('Restore') : tr('Archive')}
                 </Text>
               </Button>
-              <View
-                style={[
-                  { height: 1, backgroundColor: C.line, margin: 4 },
-                  { pointerEvents: 'none' },
-                ]}
-              />
+              <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+              <Button
+                disabled={pending()}
+                accessibilityLabel={tr('Fork conversation')}
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(edit, { to: 'fork', original: session() })}
+              >
+                <Icon name="fork" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
+                  {tr('Fork…')}
+                </Text>
+              </Button>
+              <Button
+                disabled={pending() || session().archived}
+                accessibilityLabel={tr('Edit conversation compaction prompt')}
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(edit, { to: 'compaction_prompt', original: session() })}
+              >
+                <Icon name="compaction" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
+                  {tr('Compaction prompt…')}
+                </Text>
+              </Button>
+              <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
               <Button
                 disabled={pending()}
                 accessibilityLabel={tr('Delete conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+                hoverStyle={menuRowHoverStyle()}
+                focusStyle={menuRowHoverStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'remove', original: session() })}
               >
                 <Icon name="trash" color={C.danger} />
-                <Text
-                  accessibilityElementsHidden
-                  style={{ ...secondaryTextStyle, color: C.danger }}
-                >
+                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.danger }}>
                   {tr('Delete…')}
                 </Text>
               </Button>
@@ -580,14 +556,3 @@ export function SessionActions(props: {
     </View>
   );
 }
-
-const menuRowStyle = () => ({
-  ...controlStyle,
-  height: compact() ? 32 : 40,
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  justifyContent: 'flex-start' as const,
-  paddingHorizontal: 8,
-  paddingVertical: 6,
-  gap: 8,
-});

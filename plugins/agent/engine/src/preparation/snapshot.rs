@@ -49,16 +49,19 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+const CHUNK_BYTES: usize = 128 * 1024;
+
 pub type FrozenPromptCleanup = Pin<Box<dyn Future<Output = Result<(), RunError>> + Send + 'static>>;
 
 pub struct FrozenPrompt {
-    pub content: ContentBlob,
+    reference: ContentRef,
+    chunks: Vec<ContentBlob>,
     pub layout: Layout,
     cleanup: FrozenPromptCleanup,
 }
 impl FrozenPrompt {
-    pub fn into_parts(self) -> (ContentBlob, Layout, FrozenPromptCleanup) {
-        (self.content, self.layout, self.cleanup)
+    pub fn into_parts(self) -> (ContentRef, Vec<ContentBlob>, Layout, FrozenPromptCleanup) {
+        (self.reference, self.chunks, self.layout, self.cleanup)
     }
 }
 
@@ -128,10 +131,31 @@ pub async fn snapshot_prompt(
         let mut buffer = budget.allocate(32 * 1024).await?;
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
+        let mut chunks = Vec::new();
+        let mut chunk_bytes = 0;
+        let mut chunk_hash = Sha256::new();
         loop {
             check(cancellation)?;
             let read = reader.read_chunk(buffer).await?;
-            hash.update(&read.buffer.as_ref()[..read.bytes_read]);
+            let mut input = &read.buffer.as_ref()[..read.bytes_read];
+            hash.update(input);
+            while !input.is_empty() {
+                let size = input.len().min(CHUNK_BYTES - chunk_bytes);
+                let (head, tail) = input.split_at(size);
+                chunk_hash.update(head);
+                chunk_bytes += size;
+                if chunk_bytes == CHUNK_BYTES {
+                    chunks.push(ContentRef {
+                        digest: format!(
+                            "sha256:{}",
+                            hex::encode(std::mem::take(&mut chunk_hash).finalize())
+                        ),
+                        bytes: chunk_bytes as u64,
+                    });
+                    chunk_bytes = 0;
+                }
+                input = tail;
+            }
             bytes = bytes
                 .checked_add(read.bytes_read as u64)
                 .ok_or_else(overflow)?;
@@ -154,6 +178,12 @@ pub async fn snapshot_prompt(
             digest: format!("sha256:{}", hex::encode(hash.finalize())),
             bytes,
         };
+        if chunk_bytes != 0 || chunks.is_empty() {
+            chunks.push(ContentRef {
+                digest: format!("sha256:{}", hex::encode(chunk_hash.finalize())),
+                bytes: chunk_bytes as u64,
+            });
+        }
         let (released, done) = tokio::sync::oneshot::channel();
         let cleanup_arena = arena.clone();
         let cleanup_preparation = staging.preparation.clone();
@@ -166,18 +196,32 @@ pub async fn snapshot_prompt(
                 RunError::Internal("frozen prompt body release signal was lost".into())
             })
         });
-        let body = ArenaBody {
+        let body = Arc::new(ArenaBody {
             arena: arena.clone(),
-            bytes,
             access: Mutex::new(()),
             _io: io,
             _preparation: staging.preparation,
             _directory: staging.directory,
             _source: captured.bytes,
             released: Some(released),
-        };
+        });
+        let mut start = 0;
+        let chunks = chunks
+            .into_iter()
+            .map(|chunk| {
+                let end = start + chunk.bytes;
+                let data = ArenaChunk {
+                    body: body.clone(),
+                    start,
+                    end,
+                };
+                start = end;
+                ContentBlob::prepared(chunk, Arc::new(data))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(FrozenPrompt {
-            content: ContentBlob::prepared(reference, Arc::new(body))?,
+            reference,
+            chunks,
             layout: captured.layout,
             cleanup,
         })
@@ -194,6 +238,10 @@ pub enum ContentSource<'a> {
     Snapshot(&'a maka_agent_state::session_history::snapshot::Snapshot),
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Restoration requires the original history cut, content identity, layout, I/O owner and cancellation as independent inputs"
+)]
 pub async fn restore_prompt(
     io: PreparationIo,
     resources: ModelPreparationResources,
@@ -201,6 +249,7 @@ pub async fn restore_prompt(
     cut: &HistoryCut,
     run: RunId,
     reference: &ContentRef,
+    chunks: &[ContentRef],
     layout: &Layout,
     cancellation: &CancellationToken,
 ) -> Result<PreparedPrompt, RunError> {
@@ -210,18 +259,24 @@ pub async fn restore_prompt(
         ContentSource::Live { history, cut },
         run,
         reference,
+        chunks,
         layout,
         cancellation,
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Restore preserves the original logical and stored content identities"
+)]
 pub async fn restore_prompt_from(
     io: PreparationIo,
     resources: ModelPreparationResources,
     source: ContentSource<'_>,
     run: RunId,
     reference: &ContentRef,
+    chunks: &[ContentRef],
     layout: &Layout,
     cancellation: &CancellationToken,
 ) -> Result<PreparedPrompt, RunError> {
@@ -242,24 +297,56 @@ pub async fn restore_prompt_from(
             work=resources.acquire_work()=>work?,
         };
         let budget = work.budget();
-        let buffer = budget.allocate(32 * 1024).await?;
-        let copy_arena = arena.clone();
-        let expected = reference.clone();
-        let copy_cancellation = cancellation.clone();
-        let consume = move |reader: &mut dyn Read| {
-            Ok(copy_arena.with_writer_sync(|writer| {
-                copy_content(reader, writer, buffer, &expected, &copy_cancellation)
-            }))
+        let mut buffer = budget.allocate(32 * 1024).await?;
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let parts = if chunks.is_empty() {
+            std::slice::from_ref(reference)
+        } else {
+            chunks
         };
-        let copied = match source {
-            ContentSource::Live { history, cut } => {
-                history.with_content(cut, run, reference, consume).await?
+        for part in parts {
+            check(cancellation)?;
+            let copy_arena = arena.clone();
+            let expected = part.bytes;
+            let copy_cancellation = cancellation.clone();
+            bytes = bytes.checked_add(expected).ok_or_else(overflow)?;
+            if bytes > reference.bytes {
+                return Err(invalid("frozen prompt chunks exceed the original length").into());
             }
-            ContentSource::Snapshot(snapshot) => {
-                snapshot.with_content(run, reference, consume).await?
-            }
-        };
-        copied.map_err(RunError::preparation)?;
+            let consume = move |reader: &mut dyn Read| {
+                Ok(copy_arena
+                    .with_writer_sync(|writer| {
+                        copy_content(
+                            reader,
+                            writer,
+                            &mut buffer,
+                            expected,
+                            &mut hash,
+                            &copy_cancellation,
+                        )
+                    })
+                    .map(|()| (buffer, hash)))
+            };
+            let copied = match &source {
+                ContentSource::Live { history, cut } => {
+                    history.with_content(cut, run, part, consume).await?
+                }
+                ContentSource::Snapshot(snapshot) => {
+                    snapshot.with_content(run, part, consume).await?
+                }
+            };
+            (buffer, hash) = copied.map_err(RunError::preparation)?;
+        }
+        if bytes != reference.bytes
+            || format!("sha256:{}", hex::encode(hash.finalize())) != reference.digest
+        {
+            return Err(invalid(
+                "frozen prompt content digest or length differs from its reference",
+            )
+            .into());
+        }
+        drop(buffer);
         drop((budget, work));
         check(cancellation)?;
         let source_directory = staging
@@ -297,14 +384,11 @@ pub async fn restore_prompt_from(
 fn copy_content(
     reader: &mut dyn Read,
     writer: &mut crate::history::request_backing::RequestBackingBuilder,
-    mut buffer: ChargedBuffer,
-    expected: &ContentRef,
+    buffer: &mut ChargedBuffer,
+    expected: u64,
+    hash: &mut Sha256,
     cancellation: &CancellationToken,
 ) -> io::Result<()> {
-    if writer.position() != 0 {
-        return Err(invalid("restored prompt arena is not empty"));
-    }
-    let mut hash = Sha256::new();
     let mut bytes = 0u64;
     loop {
         if cancellation.is_cancelled() {
@@ -317,18 +401,16 @@ fn copy_content(
             break;
         }
         bytes = bytes.checked_add(count as u64).ok_or_else(overflow)?;
-        if bytes > expected.bytes {
+        if bytes > expected {
             return Err(invalid("frozen prompt exceeds its content reference"));
         }
         let chunk = &buffer.as_ref()[..count];
         hash.update(chunk);
         writer.write_all(chunk)?;
     }
-    if bytes != expected.bytes
-        || format!("sha256:{}", hex::encode(hash.finalize())) != expected.digest
-    {
+    if bytes != expected {
         return Err(invalid(
-            "frozen prompt content digest or length differs from its reference",
+            "frozen prompt chunk differs from its stored length",
         ));
     }
     Ok(())
@@ -336,7 +418,6 @@ fn copy_content(
 
 struct ArenaBody {
     arena: CaptureArena,
-    bytes: u64,
     access: Mutex<()>,
     _io: PreparationIo,
     _preparation: Arc<RequestPreparation>,
@@ -355,21 +436,28 @@ impl Drop for ArenaBody {
             .send(());
     }
 }
-impl ImmutableContentBody for ArenaBody {
+struct ArenaChunk {
+    body: Arc<ArenaBody>,
+    start: u64,
+    end: u64,
+}
+impl ImmutableContentBody for ArenaChunk {
     fn reader(&self) -> io::Result<Box<dyn Read + Send + '_>> {
         Ok(Box::new(ArenaReader {
-            body: self,
-            position: 0,
+            body: &self.body,
+            position: self.start,
+            end: self.end,
         }))
     }
 }
 struct ArenaReader<'a> {
     body: &'a ArenaBody,
     position: u64,
+    end: u64,
 }
 impl Read for ArenaReader<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let count = (self.body.bytes - self.position).min(buffer.len() as u64) as usize;
+        let count = (self.end - self.position).min(buffer.len() as u64) as usize;
         if count == 0 {
             return Ok(0);
         }

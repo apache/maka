@@ -78,6 +78,7 @@ pub(super) fn register(
         }
         let total = page_entries(c, ingest, &manifest)?;
         let mut remaining = total;
+        let mut index_entries = 0u64;
         let mut page_ref = manifest.inventory.clone();
         while let Some(reference) = page_ref {
             let page: InventoryPage = decode(c, ingest, &reference)?;
@@ -86,8 +87,14 @@ pub(super) fn register(
                 .checked_sub(size)
                 .ok_or_else(|| invalid("snapshot page chain changed"))?;
             pin(c, manifest.id, &reference, None)?;
+            capture::index_page(c, manifest.id, remaining, &reference)?;
             for (offset, entry) in page.entries.iter().enumerate() {
                 entry_refs(c, ingest, &manifest, entry, root.objects)?;
+                if let Entry::Payload { run, content, .. } = entry {
+                    pin(c, manifest.id, content, *run)?;
+                    continue;
+                }
+                index_entries += 1;
                 let ordinal = remaining
                     .checked_add(offset as u64)
                     .ok_or_else(|| invalid("snapshot inventory ordinal exhausted"))?;
@@ -113,7 +120,7 @@ pub(super) fn register(
             [&snapshot],
             |row| read_u64(row, 0),
         )?;
-        if indexed != total {
+        if indexed != index_entries {
             return Err(invalid(
                 "snapshot immutable index differs from its original pages",
             ));
@@ -329,15 +336,14 @@ fn entry_refs(
                     "snapshot artifact metadata differs from its original payload/scope",
                 ));
             }
-            if let Origin::Canonical { cut } = &manifest.origin {
-                if owner != &cut.owner
+            if let Origin::Canonical { cut } = &manifest.origin
+                && (owner != &cut.owner
                     || session != &cut.session
-                    || through_sequence.is_some_and(|sequence| sequence > cut.through_sequence)
-                {
-                    return Err(invalid(
-                        "snapshot artifact is outside its original source scope/cut",
-                    ));
-                }
+                    || through_sequence.is_some_and(|sequence| sequence > cut.through_sequence))
+            {
+                return Err(invalid(
+                    "snapshot artifact is outside its original source scope/cut",
+                ));
             }
         }
         Entry::Imported { message, .. } => {
@@ -362,7 +368,7 @@ fn validate_index(c: &Connection, manifest: &Manifest) -> Result<(), StoreError>
         super::super::imported::validate_model_start(c, manifest.id, *model_start)?;
     }
     let snapshot = manifest.id.to_string();
-    let orphan: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=?1 AND e.run IS NOT NULL AND e.kind!='run' AND NOT EXISTS(SELECT 1 FROM agent_history_snapshot_entries r WHERE r.snapshot=e.snapshot AND r.kind='run' AND r.run=e.run))", [&snapshot], |row| row.get(0))?;
+    let orphan: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=?1 AND e.run IS NOT NULL AND e.kind!='run' AND NOT EXISTS(SELECT 1 FROM agent_history_snapshot_entries r WHERE r.snapshot=e.snapshot AND r.kind='run' AND r.run=e.run) UNION ALL SELECT 1 FROM agent_history_snapshot_run_refs p WHERE p.snapshot=?1 AND NOT EXISTS(SELECT 1 FROM agent_history_snapshot_entries r WHERE r.snapshot=p.snapshot AND r.kind='run' AND r.run=p.run))", [&snapshot], |row| row.get(0))?;
     let duplicates: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='run' GROUP BY run HAVING count(*)!=1)", [&snapshot], |row| row.get(0))?;
     if orphan || duplicates {
         return Err(invalid(

@@ -29,6 +29,33 @@ pub(super) fn tool_id(run: RunId, tool: &ToolKey) -> String {
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))
 }
 
+pub(super) fn recorded_settlement(
+    reply: &maka_agent_facts::operation::RecordedOperationReply,
+) -> Option<ToolSettlement> {
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
+    Some(match &reply.receipt {
+        Receipt::Recorded {
+            outcome: OperationOutcome::Unresolved,
+            ..
+        } => return None,
+        Receipt::Recorded {
+            outcome: OperationOutcome::Returned { result },
+            ..
+        } => {
+            if result.is_error() {
+                ToolSettlement::Failed
+            } else {
+                ToolSettlement::Returned
+            }
+        }
+        Receipt::Recorded {
+            outcome: OperationOutcome::NotExecuted { .. },
+            ..
+        } => ToolSettlement::Rejected,
+        _ => ToolSettlement::Unknown,
+    })
+}
+
 pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, String> {
     let run = item.recorded.run;
     let fact = match &item.recorded.fact {
@@ -93,31 +120,13 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
         | Fact::ToolPreventedBeforeHostAdmission { tool, .. } => DeliveryFact::ToolRejected {
             tool_use_id: tool_id(run, tool),
         },
-        Fact::OperationObserved { tool, reply } => {
-            use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
-            let settlement = match &reply.receipt {
-                Receipt::Recorded {
-                    outcome:
-                        OperationOutcome::Returned {
-                            result: OperationResult::Success { .. },
-                        },
-                    ..
-                } => ToolSettlement::Returned,
-                Receipt::Recorded {
-                    outcome:
-                        OperationOutcome::Returned {
-                            result: OperationResult::Failure { .. },
-                        }
-                        | OperationOutcome::NotExecuted { .. },
-                    ..
-                } => ToolSettlement::Failed,
-                _ => ToolSettlement::Unknown,
-            };
-            DeliveryFact::ToolSettled {
+        Fact::OperationObserved { tool, reply } => match recorded_settlement(reply) {
+            Some(settlement) => DeliveryFact::ToolSettled {
                 tool_use_id: tool_id(run, tool),
                 settlement,
-            }
-        }
+            },
+            None => DeliveryFact::TranscriptChanged,
+        },
         Fact::LocalToolReturned {
             tool, settlement, ..
         } => DeliveryFact::ToolSettled {

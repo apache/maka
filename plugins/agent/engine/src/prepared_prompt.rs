@@ -160,10 +160,10 @@ impl PreparedPrompt {
     pub fn resources(&self) -> Option<&maka_model::ModelPreparationResources> {
         self.resources.as_ref()
     }
-    pub fn arena(&self) -> Option<&crate::history::capture_arena::CaptureArena> {
+    pub(crate) fn arena(&self) -> Option<&crate::history::capture_arena::CaptureArena> {
         self.arena.as_ref()
     }
-    pub fn with_arena(mut self, arena: crate::history::capture_arena::CaptureArena) -> Self {
+    pub(crate) fn with_arena(mut self, arena: crate::history::capture_arena::CaptureArena) -> Self {
         self.arena = Some(arena);
         self
     }
@@ -230,32 +230,6 @@ impl PreparedPrompt {
         self.suffix = Arc::new(instruction.into_iter().collect());
         self.rebuild_recipes();
         Ok(())
-    }
-
-    pub async fn freeze_summary_instruction(
-        &self,
-        text: Arc<String>,
-    ) -> Result<OwnedOverlay, crate::RunError> {
-        let owner = self.overlay_owner.clone().ok_or_else(|| {
-            crate::RunError::Internal("summary instruction lacks its reserved overlay owner".into())
-        })?;
-        self.arena
-            .as_ref()
-            .ok_or_else(|| {
-                crate::RunError::Internal("summary instruction lacks its original worker".into())
-            })?
-            .with_writer(move |_| Ok(OwnedOverlay::user(text).bound(owner)))
-            .await
-            .map_err(crate::RunError::Preparation)
-    }
-
-    pub fn push(&mut self, message: OwnedOverlay) {
-        self.wire = None;
-        self.recipe_source = None;
-        let suffix = Arc::make_mut(&mut self.suffix);
-        suffix.reserve_exact(1);
-        suffix.push(message);
-        self.rebuild_recipes();
     }
 
     fn rebuild_recipes(&mut self) {

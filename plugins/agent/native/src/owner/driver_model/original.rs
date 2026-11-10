@@ -196,17 +196,17 @@ impl OriginalModelCleanup {
                 }
                 return;
             }
-            if let Some(prompt) = prompt {
-                if let Err(error) = prompt.close().await {
-                    original
-                        .physical
-                        .observe(&RunError::PreparationCleanup(error));
-                    original.retain(prompt);
-                    if let Some(partial) = partial {
-                        original.retain_partial(partial);
-                    }
-                    return;
+            if let Some(prompt) = prompt
+                && let Err(error) = prompt.close().await
+            {
+                original
+                    .physical
+                    .observe(&RunError::PreparationCleanup(error));
+                original.retain(prompt);
+                if let Some(partial) = partial {
+                    original.retain_partial(partial);
                 }
+                return;
             }
             let at = match super::witnessed_at() {
                 Ok(at) => at,
@@ -271,10 +271,9 @@ impl OriginalModelCleanup {
             .unwrap()
             .iter_mut()
             .find(|owned| owned.attempt == attempt)
+            && owned.first_failure.is_none()
         {
-            if owned.first_failure.is_none() {
-                owned.first_failure = Some(error);
-            }
+            owned.first_failure = Some(error);
         }
     }
     pub(super) async fn publish_confirmed(

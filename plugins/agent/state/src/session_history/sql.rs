@@ -278,7 +278,19 @@ pub(super) fn page(
     if after > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
-    let rows: Vec<(u64,u64,Option<String>,Option<String>,u32,Vec<u8>,String,String,String,String)> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], |r| Ok((read_u64(r,0)?,read_u64(r,1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?.collect::<Result<_,_>>()?;
+    type HistoryRow = (
+        u64,
+        u64,
+        Option<String>,
+        Option<String>,
+        u32,
+        Vec<u8>,
+        String,
+        String,
+        String,
+        String,
+    );
+    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], |r| Ok((read_u64(r,0)?,read_u64(r,1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?.collect::<Result<_,_>>()?;
     let more = rows.len() > size as usize;
     let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![owner,history.session,bind_u64(after)?], |r|r.get(0)).optional()?;
     let mut prefix = match prior {
@@ -501,7 +513,16 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
 /// the same transaction. Only index data is written; no new semantic fact.
 pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
     let (sequence,owner,session,digest,kind):(u64,String,String,String,String)=c.query_row("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?",params![record.id.to_string(),record.run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-    let existing: Option<(String,String,String,String,u64,Option<String>,Option<String>)> = c.query_row(
+    type IndexedHistoryRow = (
+        String,
+        String,
+        String,
+        String,
+        u64,
+        Option<String>,
+        Option<String>,
+    );
+    let existing: Option<IndexedHistoryRow> = c.query_row(
         "SELECT owner,session,run,fact_id,admission_sequence,step,attempt FROM agent_session_history WHERE sequence=?",
         [bind_u64(sequence)?],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,read_u64(r,4)?,r.get(5)?,r.get(6)?)),
@@ -587,6 +608,8 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
                 } => Some(call.name.as_str()),
                 Fact::Cell {
                     event: maka_agent_facts::cells::CellEvent::ChildPrepared { name, .. },
+                } | Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::ToolStart { name, .. }, ..
                 } => Some(name.as_str()),
                 _ => None,
             },
@@ -652,12 +675,6 @@ fn index_refs(
                         "historical adoption differs from its original Run admission",
                     ));
                 }
-                let missing:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_pins s WHERE s.snapshot=?1 AND NOT EXISTS(SELECT 1 FROM agent_content_pins p WHERE p.run=?2 AND p.content_id=s.content_id))",params![snapshot,record.run.to_string()],|row|row.get(0))?;
-                if missing {
-                    return Err(invalid(
-                        "historical adoption lost original Run content custody",
-                    ));
-                }
                 let manifest: maka_agent_facts::history_snapshot::Manifest =
                     owned_metadata(c, record.run, original)?;
                 manifest.validate().map_err(invalid)?;
@@ -675,7 +692,6 @@ fn index_refs(
                         "historical adoption original snapshot closure is incomplete",
                     ));
                 }
-                c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,content_id,?4 FROM agent_history_snapshot_pins WHERE snapshot=?5",params![encode(owner)?,session,record.run.to_string(),bind_u64(sequence)?,snapshot])?;
             }
         }
         Fact::StepPrepared { step, request, .. } => {
@@ -709,7 +725,7 @@ fn index_refs(
     }
     let owner = encode(owner)?;
     for reference in references {
-        let content_id: i64 = c.query_row("SELECT b.id FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?", params![record.run.to_string(),reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?.ok_or_else(||invalid("canonical history content is not retained by its original Run"))?;
+        let content_id: i64 = c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?", params![record.run.to_string(),reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?.ok_or_else(||invalid("canonical history content is not retained by its original Run"))?;
         c.execute(
             "INSERT OR IGNORE INTO agent_history_content_refs VALUES(?,?,?,?,?)",
             params![
@@ -721,7 +737,7 @@ fn index_refs(
             ],
         )?;
     }
-    c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_content_pins p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2",params![owner,session,record.run.to_string(),bind_u64(sequence)?,record.id.to_string(),bind_u64(record.revision)?])?;
+    c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_run_content p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2",params![owner,session,record.run.to_string(),bind_u64(sequence)?,record.id.to_string(),bind_u64(record.revision)?])?;
     Ok(())
 }
 pub(crate) fn index_queue(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> {
@@ -756,12 +772,14 @@ pub(crate) fn index_queue(c: &Connection, session: &str, revision: u64) -> Resul
     }
     Ok(())
 }
+type ConsumedEvent = (RunId, FactId, u64, crate::queue::Consume, DeliveryTarget);
+
 fn consumed(
     c: &Connection,
     history: &HistoryNamespace,
     cut: &HistoryCut,
     sequence: u64,
-) -> Result<Option<(RunId, FactId, u64, crate::queue::Consume, DeliveryTarget)>, StoreError> {
+) -> Result<Option<ConsumedEvent>, StoreError> {
     check_cut(c, history, cut)?;
     if sequence == 0 || sequence > cut.through_sequence {
         return Err(invalid("source sequence exceeds captured history"));
@@ -1014,7 +1032,7 @@ pub(super) fn with_content<T>(
 ) -> Result<T, StoreError> {
     let owner = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
-    let row: Option<i64> = c.query_row("SELECT b.id FROM agent_history_content_refs h JOIN agent_content_pins p ON p.run=h.run AND p.content_id=h.content_id JOIN contents b ON b.id=h.content_id WHERE h.owner=? AND h.session=? AND h.run=? AND h.first_sequence<=? AND b.content_sha256=? AND length(b.payload)=?", params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
+    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
         invalid("content is not owned by this Run within the captured source cut")
     })?;
@@ -1029,16 +1047,15 @@ pub(super) struct CheckedBlob<'a, 'c> {
 }
 impl CheckedBlob<'_, '_> {
     fn finish_hash(&mut self) -> std::io::Result<()> {
-        if let Some(hash) = self.hash.take() {
-            if self.position != self.reference.bytes
-                || format!("sha256:{}", hex::encode(hash.finalize())) != self.reference.digest
-            {
-                self.corrupt = true;
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "canonical source Blob hash differs",
-                ));
-            }
+        if let Some(hash) = self.hash.take()
+            && (self.position != self.reference.bytes
+                || format!("sha256:{}", hex::encode(hash.finalize())) != self.reference.digest)
+        {
+            self.corrupt = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "canonical source Blob hash differs",
+            ));
         }
         Ok(())
     }
@@ -1352,7 +1369,10 @@ fn tool_locator(
             CellEvent::ChildPrepared {
                 cell, operation, ..
             } => (format!("cell:{cell}:{operation}"), true),
-            CellEvent::ChildRejected {
+            CellEvent::ChildDisplayRecorded {
+                cell, operation, ..
+            }
+            | CellEvent::ChildRejected {
                 cell, operation, ..
             }
             | CellEvent::ChildApprovalRecorded {
@@ -1378,6 +1398,17 @@ fn tool_locator(
             } => (format!("cell:{cell}:{operation}"), false),
             _ => return Ok(None),
         },
+        Fact::ExternalTaskObserved { task, output, .. } => {
+            use maka_agent_facts::executor::Output;
+            match output {
+                Output::ToolStart { tool_call_id, .. } => (format!("{task}:{tool_call_id}"), true),
+                Output::ToolProgress { tool_call_id, .. }
+                | Output::ToolResult { tool_call_id, .. } => {
+                    (format!("{task}:{tool_call_id}"), false)
+                }
+                _ => return Ok(None),
+            }
+        }
         Fact::ExternalEffect { event } => {
             let key = event.key();
             let original = match event {
@@ -1515,7 +1546,7 @@ fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result
     if !matches!(spec.trigger, Trigger::Message { .. }) {
         return Ok(());
     }
-    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
+    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
     if is_message {
         let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE owner=? AND session=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![serde_json::to_string(&spec.owner)?,session,run.to_string(),fact,run.to_string()])?;
         if changed != 1 {
@@ -1543,7 +1574,7 @@ fn owned_metadata<T: DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let row:i64=c.query_row("SELECT b.id FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
     decode_original(c, row, reference)
 }
 pub(super) fn decode_original<T: DeserializeOwned>(

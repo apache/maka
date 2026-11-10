@@ -69,8 +69,8 @@ impl DriverModel {
                     if self.cancellation.is_cancelled() {
                         return Err(RunError::Cancelled);
                     }
-                    if message.role == HistoricalRole::Tool {
-                        if let Some((call_id, name, output)) = self
+                    if message.role == HistoricalRole::Tool
+                        && let Some((call_id, name, output)) = self
                             .archived_imported_tool_result(
                                 snapshot,
                                 path,
@@ -79,13 +79,12 @@ impl DriverModel {
                                 reference,
                             )
                             .await?
-                        {
-                            flush_assistant(messages, &mut assistant).await?;
-                            messages
-                                .append(Message::tool(call_id, name, output))
-                                .await?;
-                            continue;
-                        }
+                    {
+                        flush_assistant(messages, &mut assistant).await?;
+                        messages
+                            .append(Message::tool(call_id, name, output))
+                            .await?;
+                        continue;
                     }
                     let part: ImportedPart = snapshot
                         .with_imported_content(ordinal, reference, |reader| {

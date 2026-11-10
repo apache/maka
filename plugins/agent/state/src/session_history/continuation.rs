@@ -228,10 +228,10 @@ fn boundary(
         {
             return Err(invalid("canonical continuation source identity changed"));
         }
-        if first.is_none() {
-            if let Fact::StepPrepared { step, .. } = &fact.fact {
-                first = Some(*step)
-            }
+        if first.is_none()
+            && let Fact::StepPrepared { step, .. } = &fact.fact
+        {
+            first = Some(*step)
         }
         if previous != 0 {
             hash.write_all(b",")?;

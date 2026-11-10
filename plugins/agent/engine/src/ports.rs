@@ -100,11 +100,19 @@ pub enum ModelObservation {
     /// Source publisher already committed its original typed evidence.
     Recorded { fact: FactId },
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Validation returns its owned rejection or blocker directly to the original driver"
+)]
 pub enum ToolValidation {
     Allowed,
     Denied { rejection: ToolRejection },
     Blocked(BlockerKind),
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Dispatch transfers the original operation reply inline without a separate allocation per observation"
+)]
 pub enum DispatchOutcome {
     /// Original worker already committed its evidence, even if this observer was dropped.
     Recorded {

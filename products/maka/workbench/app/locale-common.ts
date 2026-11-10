@@ -22,6 +22,7 @@ import {
   msg_cancel,
   msg_checklistRetry,
   msg_closeModels,
+  msg_copy,
   msg_helpNew,
   msg_models,
   msg_thinkingUnavailable,
@@ -34,12 +35,10 @@ export const commonMessages = {
     '放弃尚未确认的 {method}',
     '放棄尚未確認的 {method}',
   ],
-  'Another app is using Alt+Space': [
-    'Another app is using Alt+Space',
-    '其他应用正在使用 Alt+Space',
-    '其他應用程式正在使用 Alt+Space',
-  ],
   'Ask Maka': ['Ask Maka', '询问 Maka', '詢問 Maka'],
+  'Ask a follow-up': ['Ask a follow-up', '继续询问', '繼續詢問'],
+  'No model is available': ['No model is available', '还没有可用的模型', '還沒有可用的模型'],
+  'Choose Model': ['Choose Model', '选择模型', '選擇模型'],
   'Connection interrupted. Reconnect to continue; your draft is kept.': [
     'Connection interrupted. Reconnect to continue; your draft is kept.',
     '连接已中断，重新连接后可继续。草稿已保留。',
@@ -55,15 +54,24 @@ export const commonMessages = {
     '暂时无法读取会话列表，请尝试重新连接。',
     '暫時無法讀取對話清單，請嘗試重新連線。',
   ],
-  'Draft in Maka Bot': ['Draft in Maka Bot', '写入 Maka Bot 草稿', '寫入 Maka Bot 草稿'],
   'Maka Bot could not be opened': [
     'Maka Bot could not be opened',
     '无法打开 Maka Bot',
     '無法開啟 Maka Bot',
   ],
   'Open Maka': ['Open Maka', '打开 Maka', '打開 Maka'],
-  'Open Maka Bot': ['Open Maka Bot', '打开 Maka Bot', '打開 Maka Bot'],
+  'Open in Main Window': ['Open in Main Window', '在主窗口打开', '在主視窗開啟'],
   'Quit Maka': ['Quit Maka', '退出 Maka', '結束 Maka'],
+  'The Alt+Space shortcut is unavailable': [
+    'The Alt+Space shortcut is unavailable',
+    'Alt+Space 快捷键不可用',
+    'Alt+Space 快捷鍵無法使用',
+  ],
+  'The Option+Space shortcut is unavailable': [
+    'The Option+Space shortcut is unavailable',
+    'Option+Space 快捷键不可用',
+    'Option+Space 快捷鍵無法使用',
+  ],
   'The action outcome is unknown. Check the current state before trying again.': [
     'The action outcome is unknown. Check the current state before trying again.',
     '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',
@@ -73,6 +81,7 @@ export const commonMessages = {
   'Choose workspace': ['Choose workspace', '选择工作区', '選擇工作區'],
   Close: msg_closeModels,
   'Close · Esc': ['Close · Esc', '关闭 · Esc', '關閉 · Esc'],
+  Copy: msg_copy,
   'Connections & models': ['Connections & models', '连接与模型', '連線與模型'],
   'Add a model connection': ['Add a model connection', '添加模型连接', '新增模型連線'],
   'Conversations need a model. Add a connection with your API key or account first.': [

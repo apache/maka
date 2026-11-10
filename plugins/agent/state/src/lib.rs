@@ -28,6 +28,7 @@ pub mod external_publication;
 pub mod external_steering;
 pub mod fold;
 pub mod interactions;
+pub mod operation;
 pub mod queue;
 pub mod recall;
 pub mod session_catalog;
@@ -38,8 +39,8 @@ pub mod usage;
 pub use store::{
     Admission, AdmissionGuard, AnswerPage, CallerFence, CallerStatus, Change, CleanupFrontier,
     Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
-    ModelCleanupItem, PublicationRead, ReadyCause, ReadyRun, RunObservation, SessionObligation,
-    SessionQuiescence, SessionQuiescenceGuard, Store,
+    LocalResult, ModelCleanupItem, PublicationRead, ReadyCause, ReadyRun, RunObservation,
+    SessionObligation, SessionQuiescence, SessionQuiescenceGuard, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
@@ -182,5 +183,25 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 31,
         description: "indexed imported history positions",
         sql: include_str!("../migrations/0031_imported_history_position.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 32,
+        description: "compact history search",
+        sql: include_str!("../migrations/0032_compact_history_search.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 33,
+        description: "derive adopted Run content",
+        sql: include_str!("../migrations/0033_derived_snapshot_adoption.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 34,
+        description: "locate immutable inventory pages",
+        sql: include_str!("../migrations/0034_snapshot_inventory_pages.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 35,
+        description: "own executor profile contents",
+        sql: include_str!("../migrations/0035_profile_content_owners.sql"),
     },
 ];

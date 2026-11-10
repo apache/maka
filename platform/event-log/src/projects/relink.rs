@@ -199,7 +199,6 @@ impl Statement for WriteRelink {
             conflict.as_ref(),
             &owner_scope,
             selected_workspace,
-            now as u64,
         )?;
         connection.execute(
             "DELETE FROM project_locations WHERE project_id = ?",
@@ -268,7 +267,6 @@ fn reassign_bindings(
     absorbed: Option<&ProjectRecord>,
     owner_scope: &str,
     mut selected_workspace: Value,
-    now: u64,
 ) -> Result<(usize, bool)> {
     if !selected_workspace.is_object() {
         return Err(invalid("invalid relocated workspace"));

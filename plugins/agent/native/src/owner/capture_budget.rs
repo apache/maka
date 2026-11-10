@@ -32,7 +32,7 @@ use uuid::Uuid;
 pub(super) struct CaptureBudget {
     pub budget: Budget,
     pub basis: Option<ContentBlob>,
-    pub guard: Option<Arc<dyn AdmissionGuard>>,
+    pub _guard: Option<Arc<dyn AdmissionGuard>>,
 }
 
 /// Observed domain policy for the admission transaction, never execution authority.
@@ -145,7 +145,7 @@ impl Owner {
             return Ok(CaptureBudget {
                 budget,
                 basis: None,
-                guard: None,
+                _guard: None,
             });
         }
         let blob = ContentBlob::json(&observed).map_err(|error| error.to_string())?;
@@ -153,7 +153,7 @@ impl Owner {
         Ok(CaptureBudget {
             budget,
             basis: Some(blob),
-            guard: Some(guard),
+            _guard: Some(guard),
         })
     }
 

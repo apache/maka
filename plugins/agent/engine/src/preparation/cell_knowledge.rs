@@ -22,7 +22,7 @@ use super::{MediaSource, NotificationSource};
 use crate::RunError;
 use maka_agent_facts::{
     artifact::ToolReturn,
-    cells::{CellChild, CellId, CellReturnedResult},
+    cells::{CellChild, CellId, StoredCellReturn},
     durable::{BlockerKind, ContentRef},
     language::Language,
     tool_call::ToolSettlement,
@@ -42,6 +42,10 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The exact Cell cut, child evidence, artifact authority and model preparation resources remain explicit"
+)]
 pub async fn project_cell_knowledge(
     source: NotificationSource<'_>,
     scope: &ArtifactScope,
@@ -62,10 +66,31 @@ pub async fn project_cell_knowledge(
         through: u64,
         children: &'a BTreeMap<Uuid, CellChild>,
     }
+    use maka_agent_facts::operation::result_reference;
+    let mut visible_children = std::borrow::Cow::Borrowed(children);
+    let mut dependencies = Vec::new();
+    let mut seen = BTreeSet::new();
+    if children
+        .values()
+        .any(|child| child.reply.as_ref().and_then(result_reference).is_some())
+    {
+        for reference in super::cell_notification::restore_child_replies(
+            &source,
+            scope,
+            cell,
+            visible_children.to_mut(),
+            remaining,
+            cancellation,
+        )
+        .await?
+        {
+            dependency(&mut dependencies, &mut seen, &reference);
+        }
+    }
     let graph = Graph {
         cell,
         through,
-        children,
+        children: &visible_children,
     };
     charge(&mut remaining, super::encoded_len(&graph)?)?;
     let graph = serde_json::to_string(&graph).map_err(RunError::Json)?;
@@ -77,8 +102,6 @@ pub async fn project_cell_knowledge(
         Language::ZhTw => "[Host Cell 子操作觀察；歷史資料，非使用者請求或新的執行]",
     };
     let mut content = vec![ContentPart::text(format!("{label}\n{graph}"))];
-    let mut dependencies = Vec::new();
-    let mut seen = BTreeSet::new();
     let artifacts;
     let media = match &source {
         NotificationSource::Live(store) => {
@@ -132,7 +155,7 @@ pub async fn project_cell_knowledge(
             if !settled || result.settlement == ToolSettlement::Unknown {
                 continue;
             }
-            let returned: ToolReturn<CellReturnedResult> = read(
+            let returned: ToolReturn<StoredCellReturn> = read(
                 &source,
                 scope,
                 cell,
@@ -144,35 +167,98 @@ pub async fn project_cell_knowledge(
             returned.validate().map_err(|reason| {
                 RunError::InvalidInput(format!("invalid Cell child return: {reason}"))
             })?;
-            if returned.body.is_error != result.is_error {
+            if returned.body.is_error() != result.is_error {
                 return Err(RunError::InvalidInput(
                     "Cell child result error flag differs from its original body".into(),
                 ));
             }
+            use maka_agent_facts::tool_output::DurableToolProjection;
+            enum ChildOutput {
+                Projection(DurableToolProjection),
+                Lossless(ActualToolOutput),
+            }
+            let returned = match returned.body {
+                StoredCellReturn::Inline(body) => match body.projection {
+                    Some(projection) => ChildOutput::Projection(projection),
+                    None => ChildOutput::Lossless(body.output),
+                },
+                StoredCellReturn::Operation(body) => {
+                    use maka_agent_facts::operation::resolve_reply;
+                    use maka_agent_facts::tool_output::OperationProjection;
+                    match body.projection {
+                        OperationProjection::Inline { projection } => {
+                            ChildOutput::Projection(projection)
+                        }
+                        projection => {
+                            let stored = if let Some(reference) = result_reference(&body.operation)
+                            {
+                                if child.reply.as_ref().and_then(result_reference)
+                                    != Some(reference)
+                                {
+                                    return Err(RunError::InvalidInput(
+                                        "Cell Host projection differs from its original receipt"
+                                            .into(),
+                                    ));
+                                }
+                                let visible = visible_children[operation]
+                                    .reply
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        RunError::InvalidInput(
+                                            "Cell Host projection has no original receipt".into(),
+                                        )
+                                    })?;
+                                let reply = resolve_reply(visible.clone(), None)
+                                    .map_err(|error| RunError::InvalidInput(error.into()))?;
+                                let Receipt::Recorded {
+                                    outcome: OperationOutcome::Returned { result },
+                                    ..
+                                } = reply.receipt
+                                else {
+                                    return Err(RunError::InvalidInput(
+                                        "Cell Host projection has no original result".into(),
+                                    ));
+                                };
+                                Some(result)
+                            } else {
+                                None
+                            };
+                            let reply = resolve_reply(body.operation, stored)
+                                .map_err(|error| RunError::InvalidInput(error.into()))?;
+                            ChildOutput::Projection(
+                                projection
+                                    .resolve(&reply)
+                                    .map_err(|error| RunError::InvalidInput(error.into()))?,
+                            )
+                        }
+                    }
+                }
+            };
             content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"reference":result.result,"isError":result.is_error})).map_err(RunError::Json)?));
-            let output = if let Some(projection) = &returned.body.projection {
-                let media = match &media {
-                    MediaSource::Live { artifacts, scope } => MediaSource::Live {
-                        artifacts,
-                        scope: scope.clone(),
-                    },
-                    MediaSource::Snapshot { snapshot, scope } => MediaSource::Snapshot {
-                        snapshot,
-                        scope: scope.clone(),
-                    },
-                };
-                super::project_durable_projection(
-                    media,
-                    projection,
-                    returned.body.is_error,
-                    language,
-                    vision,
-                    resources,
-                    cancellation,
-                )
-                .await?
-            } else {
-                lossless_output(returned.body.output, returned.body.is_error)?
+            let output = match returned {
+                ChildOutput::Projection(projection) => {
+                    let media = match &media {
+                        MediaSource::Live { artifacts, scope } => MediaSource::Live {
+                            artifacts,
+                            scope: scope.clone(),
+                        },
+                        MediaSource::Snapshot { snapshot, scope } => MediaSource::Snapshot {
+                            snapshot,
+                            scope: scope.clone(),
+                        },
+                    };
+                    super::project_durable_projection(
+                        media,
+                        &projection,
+                        result.is_error,
+                        language,
+                        vision,
+                        resources,
+                        cancellation,
+                    )
+                    .await?
+                }
+                ChildOutput::Lossless(output) => lossless_output(output, result.is_error)?,
             };
             charge(&mut remaining, super::encoded_len(&output)?)?;
             append_output(&mut content, output)?;
@@ -209,7 +295,7 @@ fn lossless_output(output: ActualToolOutput, is_error: bool) -> Result<ToolOutpu
         | ActualToolOutput::Operation(_)
         | ActualToolOutput::Mcp(_)
         | ActualToolOutput::Image(_) => {
-            return Err(RunError::Blocked(BlockerKind::UnsupportedProtocol {
+            return Err(RunError::from(BlockerKind::UnsupportedProtocol {
                 protocol: "maka.cell-child-knowledge/output-without-normalized-projection".into(),
                 version: 1,
             }));

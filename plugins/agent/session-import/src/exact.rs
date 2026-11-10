@@ -85,6 +85,10 @@ pub enum ExactPart {
     },
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Imported content streams carry owned media descriptors inline without an allocation per attachment"
+)]
 pub enum ExactContent {
     Text(String),
     Media(ExactMedia),
@@ -97,6 +101,10 @@ pub struct ExactMedia {
     pub body: MediaBody,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "A file body owns its pinned descriptor directly; avoid a separate allocation per imported file"
+)]
 pub enum MediaBody {
     Inline(Vec<u8>),
     /// An actually opened, authorized descriptor, not a source pathname.

@@ -109,10 +109,10 @@ impl RunView {
                 descriptor
                     .validate()
                     .map_err(|error| StoreError::InvalidTransition(error.into()))?;
-                if let Some(existing) = &current.binding {
-                    if existing != descriptor {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = &current.binding
+                    && existing != descriptor
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.external
                     .as_mut()

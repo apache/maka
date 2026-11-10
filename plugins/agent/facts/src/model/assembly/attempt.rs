@@ -286,7 +286,11 @@ impl std::fmt::Debug for AttemptWriter {
     }
 }
 impl AttemptWriter {
-    pub fn new(binding: AttemptBinding, item_acceptance: bool) -> Result<Self, super::ModelError> {
+    pub fn new(
+        binding: AttemptBinding,
+        item_acceptance: bool,
+        depends_on: u64,
+    ) -> Result<Self, super::ModelError> {
         if binding.purpose == ModelPurpose::Summary && item_acceptance {
             return Err(invalid("item acceptance is only valid for main requests"));
         }
@@ -299,7 +303,7 @@ impl AttemptWriter {
             input_starts: Vec::new(),
             recorded: HashMap::new(),
             revision: 0,
-            depends_on: 0,
+            depends_on,
         })
     }
     pub fn push(

@@ -48,12 +48,12 @@ fn due_at(plan: &Plan) -> Option<i64> {
 impl ReadyIndex {
     fn update(&mut self, id: &str, old: Option<&Plan>, new: Option<&Plan>) {
         self.pending.remove(id);
-        if let Some(at) = old.and_then(due_at) {
-            if let Some(ids) = self.due.get_mut(&at) {
-                ids.remove(id);
-                if ids.is_empty() {
-                    self.due.remove(&at);
-                }
+        if let Some(at) = old.and_then(due_at)
+            && let Some(ids) = self.due.get_mut(&at)
+        {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.due.remove(&at);
             }
         }
         if let Some(plan) = new {
@@ -79,7 +79,7 @@ pub(in crate::owner) struct Catalog {
     pub plans: BTreeMap<String, Saved>,
     ids: Vec<String>,
     ready_revision: Option<u64>,
-    pub ready: ReadyIndex,
+    pub(super) ready: ReadyIndex,
 }
 fn task_key(id: &str) -> String {
     format!("task:{id}")
@@ -272,7 +272,7 @@ impl Scheduler {
         }
         Ok(catalog)
     }
-    pub(super) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
+    pub(in crate::owner) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
         let record = self.storage.read(task_key(id)).await.map_err(reason)?;
         record
             .map(|record| decode_saved(record, id))

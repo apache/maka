@@ -28,10 +28,7 @@ use maka_agent_facts::{
 };
 use maka_agent_state::{ContentBlob, DriverClaim, ImmutableContentBody, Store};
 use maka_fs_tools::publication::{PublicationChange, PublicationEntry, SourceIdentity};
-use maka_process::isolated::{
-    BaselineEntry, BaselineReader, CandidateCapture, CaptureCost, FrozenCandidate,
-};
-use serde::{Deserialize, Serialize};
+use maka_process::isolated::{BaselineEntry, BaselineReader, CandidateCapture, FrozenCandidate};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -39,7 +36,6 @@ use std::{
     io::{self, Read, Seek},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 
 const IO_BUFFER: usize = 64 * 1024;
@@ -60,37 +56,20 @@ pub(super) enum PublicationPreparationError {
     Capture(#[from] maka_process::isolated::Error),
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ComparisonCost {
-    pub entries: u64,
-    /// Bytes actually read by exact comparison, including both trees.
-    pub compared_bytes: u64,
-    /// Bytes read again to hash only changed file inputs, including both trees.
-    pub hashed_bytes: u64,
-    pub elapsed_millis: u64,
-}
-
 /// Parent admission must pin all these contents under its actual publication
 /// source in one original Root transaction before preparing the Host FS effect.
 /// Keeping this value also keeps the actual immutable input owners alive.
 pub(super) struct PreparedPublication {
     pub plan: PublicationManifest<SourceIdentity, PublicationChange>,
-    pub comparison: ComparisonCost,
-    pub capture: CaptureCost,
-    pub freeze_elapsed_millis: u64,
     pub descriptor: ContentBlob,
     pub contents: Vec<ContentBlob>,
     candidate: Arc<FrozenCandidate>,
-    baseline: Arc<BaselineReader>,
+    _baseline: Arc<BaselineReader>,
 }
 
 impl PreparedPublication {
     pub(super) fn candidate(&self) -> &FrozenCandidate {
         &self.candidate
-    }
-    pub(super) fn baseline(&self) -> &BaselineReader {
-        &self.baseline
     }
 }
 
@@ -153,10 +132,7 @@ impl ExecutorPublication {
         }
         let permission_basis = configuration.permission_basis();
         let task = self.task;
-        let freeze_started = Instant::now();
         let candidate = Arc::new(self.capture.freeze().await?);
-        let freeze_elapsed_millis = u64::try_from(freeze_started.elapsed().as_millis())
-            .map_err(|_| RunError::Internal("publication capture elapsed time overflow".into()))?;
         if candidate.snapshot().source() != Path::new(&configuration.workspace.path) {
             return Err(RunError::InvalidInput(
                 "publication source differs from the actual Root workspace".into(),
@@ -170,7 +146,7 @@ impl ExecutorPublication {
                         .baseline_reader()
                         .map_err(maka_process::isolated::Error::from)?,
                 );
-                let (changes, contents, comparison) = compare(&baseline, &candidate)?;
+                let (changes, contents) = compare(&baseline, &candidate)?;
                 let snapshot = candidate.snapshot();
                 let identity = snapshot.source_identity();
                 let plan = PublicationManifest {
@@ -189,19 +165,15 @@ impl ExecutorPublication {
                         .map(|content| content.reference().clone())
                         .collect(),
                 };
-                let capture = candidate.capture_cost();
                 let descriptor = ContentBlob::json(&plan).map_err(RunError::from)?;
                 let mut contents = contents;
                 contents.push(descriptor.clone());
                 Ok(PreparedPublication {
                     plan,
-                    comparison,
-                    capture,
-                    freeze_elapsed_millis,
                     descriptor,
                     contents,
                     candidate,
-                    baseline,
+                    _baseline: baseline,
                 })
             },
         )
@@ -215,8 +187,7 @@ impl ExecutorPublication {
 fn compare(
     baseline: &Arc<BaselineReader>,
     candidate: &Arc<FrozenCandidate>,
-) -> Result<(Vec<PublicationChange>, Vec<ContentBlob>, ComparisonCost), RunError> {
-    let started = Instant::now();
+) -> Result<(Vec<PublicationChange>, Vec<ContentBlob>), RunError> {
     let paths: BTreeSet<&Path> = baseline
         .snapshot()
         .files()
@@ -224,21 +195,16 @@ fn compare(
         .chain(candidate.entries())
         .map(|entry| entry.relative_path.as_path())
         .collect();
-    let mut cost = ComparisonCost {
-        entries: paths.len() as u64,
-        ..ComparisonCost::default()
-    };
     let mut changes = Vec::new();
     let mut contents = Vec::new();
     for path in paths {
         let mut original = baseline.open_entry(path)?;
         let mut selected = candidate.open_entry(path)?;
-        if equal(&mut original, &mut selected, &mut cost)? {
+        if equal(&mut original, &mut selected)? {
             continue;
         }
         let expected = describe(
             original,
-            &mut cost,
             |reference| {
                 ContentBlob::prepared(
                     reference,
@@ -252,7 +218,6 @@ fn compare(
         )?;
         let selected = describe(
             selected,
-            &mut cost,
             |reference| {
                 ContentBlob::prepared(
                     reference,
@@ -270,19 +235,10 @@ fn compare(
             candidate: selected,
         });
     }
-    cost.elapsed_millis = started
-        .elapsed()
-        .as_millis()
-        .try_into()
-        .map_err(|_| io::Error::other("publication elapsed time overflow"))?;
-    Ok((changes, contents, cost))
+    Ok((changes, contents))
 }
 
-fn equal(
-    original: &mut BaselineEntry,
-    candidate: &mut BaselineEntry,
-    cost: &mut ComparisonCost,
-) -> io::Result<bool> {
+fn equal(original: &mut BaselineEntry, candidate: &mut BaselineEntry) -> io::Result<bool> {
     match (original, candidate) {
         (BaselineEntry::Missing, BaselineEntry::Missing) => Ok(true),
         (BaselineEntry::Directory { mode: left }, BaselineEntry::Directory { mode: right }) => {
@@ -308,20 +264,19 @@ fn equal(
                 mode: right_mode,
             },
         ) => {
-            let bytes_equal = equal_files(left, right, cost)?;
+            let bytes_equal = equal_files(left, right)?;
             Ok(bytes_equal && left_mode == right_mode)
         }
         _ => Ok(false),
     }
 }
 
-fn equal_files(left: &mut File, right: &mut File, cost: &mut ComparisonCost) -> io::Result<bool> {
+fn equal_files(left: &mut File, right: &mut File) -> io::Result<bool> {
     let mut a = [0; IO_BUFFER];
     let mut b = [0; IO_BUFFER];
     loop {
         let na = read_chunk(left, &mut a)?;
         let nb = read_chunk(right, &mut b)?;
-        add_bytes(&mut cost.compared_bytes, na + nb)?;
         if na != nb || a[..na] != b[..nb] {
             return Ok(false);
         }
@@ -333,7 +288,6 @@ fn equal_files(left: &mut File, right: &mut File, cost: &mut ComparisonCost) -> 
 
 fn describe(
     entry: BaselineEntry,
-    cost: &mut ComparisonCost,
     content: impl FnOnce(ContentRef) -> Result<ContentBlob, maka_event_log::StoreError>,
     contents: &mut Vec<ContentBlob>,
 ) -> Result<PublicationEntry, RunError> {
@@ -345,7 +299,7 @@ fn describe(
         },
         BaselineEntry::File { mut file, mode } => {
             file.rewind()?;
-            let reference = hash_file(&mut file, cost)?;
+            let reference = hash_file(&mut file)?;
             contents.push(content(reference.clone())?);
             PublicationEntry::File {
                 content: reference,
@@ -355,7 +309,7 @@ fn describe(
     })
 }
 
-fn hash_file(file: &mut File, cost: &mut ComparisonCost) -> io::Result<ContentRef> {
+fn hash_file(file: &mut File) -> io::Result<ContentRef> {
     let mut hash = Sha256::new();
     let mut bytes = 0;
     let mut buffer = [0; IO_BUFFER];
@@ -366,7 +320,6 @@ fn hash_file(file: &mut File, cost: &mut ComparisonCost) -> io::Result<ContentRe
         }
         hash.update(&buffer[..n]);
         add_bytes(&mut bytes, n)?;
-        add_bytes(&mut cost.hashed_bytes, n)?;
     }
     Ok(ContentRef {
         digest: format!("sha256:{}", hex::encode(hash.finalize())),

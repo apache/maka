@@ -56,6 +56,10 @@ impl PreparedCreation {
 }
 
 impl Owner {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Creation atomically binds the original operation, workspace, caller fence, purpose and configuration"
+    )]
     pub(super) async fn prepare_created_session<F>(
         &self,
         id: &str,
@@ -86,12 +90,14 @@ impl Owner {
         let creation = self
             .store
             .prepare_session_creation(
-                id,
-                &operation.fingerprint,
-                &self.prefix,
-                workspace,
-                project,
-                now(),
+                maka_event_log::root_store::SessionCreationRequest {
+                    id,
+                    fingerprint: &operation.fingerprint,
+                    owner_scope: &self.prefix,
+                    workspace,
+                    project,
+                    now: now(),
+                },
                 &writer,
                 move |binding| Ok(serde_json::to_value(configuration(binding))?),
             )

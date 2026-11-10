@@ -23,7 +23,7 @@ use maka_agent_facts::{
     executor::Output,
     input::RunInput,
     model::{ModelPart, TextKind, ToolInput},
-    tool_output::{AcceptedToolResult, CellFinalEvidence, ReturnedToolResult},
+    tool_output::{AcceptedToolResult, CellFinalEvidence, ReturnedToolResult, StoredToolResult},
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
@@ -31,6 +31,28 @@ use serde_json::Value;
 fn exact(c: &Connection, run: RunId, reference: &ContentRef) -> Result<Vec<u8>, StoreError> {
     crate::sql::owned_content(c, run, reference)
 }
+fn tool_return(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+) -> Result<ToolReturn<ReturnedToolResult>, StoreError> {
+    let returned: ToolReturn<StoredToolResult> =
+        serde_json::from_slice(&exact(c, run, reference)?)?;
+    returned.validate().map_err(invalid)?;
+    let body = match returned.body {
+        StoredToolResult::Inline(body) => body,
+        StoredToolResult::Operation(body) => {
+            let reply = crate::operation::read_reply(c, run, &body.operation)?;
+            body.resolve(reply).map_err(invalid)?
+        }
+    };
+    Ok(ToolReturn {
+        schema_version: returned.schema_version,
+        artifacts: returned.artifacts,
+        body,
+    })
+}
+
 fn cell_final(
     c: &Connection,
     run: RunId,
@@ -273,9 +295,7 @@ fn project(
             message.references.push(output.clone());
         }
         Rule::Returned { result, receipt } => {
-            let returned: ToolReturn<ReturnedToolResult> =
-                serde_json::from_slice(&exact(c, fact.run, result)?)?;
-            returned.validate().map_err(invalid)?;
+            let returned = tool_return(c, fact.run, result)?;
             message.role = Role::ToolResult;
             let text = projection(returned.body.projection);
             field(&mut message, Field::Result, &text, false);
@@ -306,9 +326,7 @@ fn project(
                     cell_final(c, fact.run, cell, evidence, &mut message)?;
                 }
                 AcceptedToolResult::Local { result } => {
-                    let returned: ToolReturn<ReturnedToolResult> =
-                        serde_json::from_slice(&exact(c, fact.run, &result)?)?;
-                    returned.validate().map_err(invalid)?;
+                    let returned = tool_return(c, fact.run, &result)?;
                     returned
                         .body
                         .projection
@@ -324,6 +342,46 @@ fn project(
                     message.body = serde_json::to_string(&output)?
                 }
                 AcceptedToolResult::Rejected { diagnostic } => message.body = diagnostic,
+                AcceptedToolResult::Host { result } => {
+                    let returned = tool_return(c, fact.run, &result)?;
+                    let maka_agent_facts::tool_output::ToolOutput::Operation(reply) =
+                        returned.body.output
+                    else {
+                        return Err(invalid(
+                            "host tool result has no original operation receipt",
+                        ));
+                    };
+                    returned
+                        .body
+                        .projection
+                        .validate(&spec.session_id)
+                        .map_err(invalid)?;
+                    field(
+                        &mut message,
+                        Field::Result,
+                        &serde_json::to_string(&reply)?,
+                        false,
+                    );
+                    field(
+                        &mut message,
+                        Field::Result,
+                        &projection(returned.body.projection),
+                        false,
+                    );
+                    message.references.push(result);
+                    message
+                        .references
+                        .extend(returned.artifacts.into_iter().map(|a| a.payload));
+                }
+                AcceptedToolResult::ObservedOperation { reply } => {
+                    let reply = crate::operation::read_reply(c, fact.run, &reply)?;
+                    field(
+                        &mut message,
+                        Field::Result,
+                        &serde_json::to_string(&reply)?,
+                        false,
+                    );
+                }
                 AcceptedToolResult::Operation { reply, result } => {
                     field(
                         &mut message,
@@ -332,9 +390,7 @@ fn project(
                         false,
                     );
                     if let Some(result) = result {
-                        let returned: ToolReturn<ReturnedToolResult> =
-                            serde_json::from_slice(&exact(c, fact.run, &result)?)?;
-                        returned.validate().map_err(invalid)?;
+                        let returned = tool_return(c, fact.run, &result)?;
                         returned
                             .body
                             .projection
@@ -388,26 +444,50 @@ fn project(
         },
         Rule::Cell(event) => {
             message.role = Role::ToolResult;
-            field(
-                &mut message,
-                Field::Receipt,
-                &serde_json::to_string(event)?,
-                false,
-            );
+            use maka_agent_facts::cells::{CellEvent, CellReturnedResult, StoredCellReturn};
+            let receipt = if let CellEvent::ChildObserved {
+                cell,
+                operation,
+                reply,
+            } = event
+                && maka_agent_facts::operation::result_reference(reply).is_some()
+            {
+                let reply = crate::operation::read_reply(c, fact.run, reply)?;
+                serde_json::to_string(&CellEvent::ChildObserved {
+                    cell: *cell,
+                    operation: *operation,
+                    reply: maka_agent_facts::operation::inline_reply(reply),
+                })?
+            } else {
+                serde_json::to_string(event)?
+            };
+            field(&mut message, Field::Receipt, &receipt, false);
             message
                 .references
                 .extend(event.content_refs().into_iter().cloned());
             match event {
                 maka_agent_facts::cells::CellEvent::LocalChildReturned { result, .. }
                 | maka_agent_facts::cells::CellEvent::ChildResultRecorded { result, .. } => {
-                    let returned: ToolReturn<maka_agent_facts::cells::CellReturnedResult> =
+                    let returned: ToolReturn<StoredCellReturn> =
                         serde_json::from_slice(&exact(c, fact.run, result)?)?;
                     returned.validate().map_err(invalid)?;
-                    if let Some(value) = returned.body.projection {
+                    let body = match returned.body {
+                        StoredCellReturn::Inline(body) => body,
+                        StoredCellReturn::Operation(body) => {
+                            let reply = crate::operation::read_reply(c, fact.run, &body.operation)?;
+                            let body = body.resolve(reply).map_err(invalid)?;
+                            CellReturnedResult {
+                                output: body.output,
+                                projection: Some(body.projection),
+                                is_error: body.is_error,
+                            }
+                        }
+                    };
+                    if let Some(value) = body.projection {
                         value.validate(&spec.session_id).map_err(invalid)?;
                         field(&mut message, Field::Result, &projection(value), false);
                     } else {
-                        match returned.body.output {
+                        match body.output {
                             maka_agent_facts::tool_output::ToolOutput::Text(text) => {
                                 field(&mut message, Field::Result, &text, false)
                             }
@@ -469,10 +549,11 @@ fn project(
         }
         Rule::Receipt(reply) => {
             message.role = Role::ToolResult;
+            let reply = crate::operation::read_reply(c, fact.run, reply)?;
             field(
                 &mut message,
                 Field::Receipt,
-                &serde_json::to_string(reply)?,
+                &serde_json::to_string(&reply)?,
                 false,
             );
         }

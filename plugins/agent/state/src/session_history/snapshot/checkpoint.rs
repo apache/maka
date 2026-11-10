@@ -164,19 +164,20 @@ pub(crate) fn checkpoint_member(
         };
         let baseline = snapshot_baseline(c, &snapshot, &cut)?;
         let floor = baseline.map_or(0, |(_, sequence)| sequence);
-        if let Some(item) = snapshot.fact(id)? {
-            if item.sequence <= cut.through_sequence && item.admission_sequence > floor {
-                let original = snapshot.run(item.recorded.run)?;
-                if original.admission_sequence != item.admission_sequence
-                    || original.spec.owner != cut.owner
-                    || original.spec.session_id != cut.session
-                {
-                    return Err(invalid(
-                        "checkpoint fact belongs to another copied source scope",
-                    ));
-                }
-                return Ok(matches!(item.recorded.fact, Fact::ContextCompacted { .. }));
+        if let Some(item) = snapshot.fact(id)?
+            && item.sequence <= cut.through_sequence
+            && item.admission_sequence > floor
+        {
+            let original = snapshot.run(item.recorded.run)?;
+            if original.admission_sequence != item.admission_sequence
+                || original.spec.owner != cut.owner
+                || original.spec.session_id != cut.session
+            {
+                return Err(invalid(
+                    "checkpoint fact belongs to another copied source scope",
+                ));
             }
+            return Ok(matches!(item.recorded.fact, Fact::ContextCompacted { .. }));
         }
         let Some((run, _)) = baseline else {
             return Ok(false);

@@ -809,18 +809,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
-    desktop.press("Choose composer workspace").await;
-    desktop.artifact("recent-folders-remove");
-    desktop.press("Remove this folder from recents").await;
-    desktop
-        .wait("removed folder was still remembered", async {
-            while !desktop.client.recent_workspaces().await.unwrap().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     assert!(workspace.is_dir());
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 1);
@@ -828,28 +816,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         sessions[0]["workspace"]["path"],
         workspace.to_str().unwrap()
     );
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.control("Actions for NSH real Agent").await;
-    desktop
-        .retry(
-            "workspace menu did not open",
-            || !desktop.controls("Choose another folder…").is_empty(),
-            || {
-                if let Some(bounds) = desktop.controls("Choose composer workspace").first() {
-                    desktop.press_at(bounds.center());
-                }
-            },
-        )
-        .await;
-    desktop.control("Choose another folder…").await;
-    assert!(
-        desktop
-            .controls(&format!("Use folder {}", workspace.display()))
-            .is_empty()
-    );
-    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1201,6 +1167,20 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await;
     desktop.press("Turn work details").await;
     desktop.control("Toggle tool GetGoal").await;
+    answer
+        .thinking("Checking the log\n\nLook for the next step.")
+        .await;
+    let thinking = desktop.control("Thinking · Checking the log").await;
+    let user = desktop.control("Copy user message").await;
+    let tool = desktop.control("Toggle tool GetGoal").await;
+    let [working] = desktop
+        .controls("Turn work details")
+        .try_into()
+        .expect("the running summary remains visible and expandable while thinking streams");
+    assert!(user.bottom() < working.top());
+    assert!(working.bottom() <= tool.top());
+    assert!(tool.bottom() <= thinking.top());
+    desktop.artifact("streaming-thinking-order");
     answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;

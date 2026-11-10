@@ -185,7 +185,7 @@ impl Engine {
                         return Ok(());
                     }
                     let reason = match error {
-                        RunError::Blocked(reason) => reason,
+                        RunError::Blocked(reason) => *reason,
                         error => {
                             tracing::error!(task = %task, cause = %error, "original external task is unobservable");
                             let original = view.external.as_ref().expect("admitted original task");
@@ -235,7 +235,7 @@ impl Engine {
                             return Ok(());
                         }
                         let reason = match error {
-                            RunError::Blocked(reason) => reason,
+                            RunError::Blocked(reason) => *reason,
                             error => {
                                 tracing::error!(cause=%error,"original external observation failed");
                                 let original = view.external.as_ref().expect("original task");

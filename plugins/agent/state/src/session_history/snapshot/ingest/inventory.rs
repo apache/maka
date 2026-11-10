@@ -117,15 +117,8 @@ impl Query for Entries {
         read::authorize(c, &self.snapshot)?;
         let limit = super::super::super::sql::limit(self.limit)?;
         let after = self.after.map(bind_u64).transpose()?.unwrap_or(-1);
-        let (sql, values) = match &self.scope {
-            None => (
-                "SELECT ordinal,entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3",
-                vec![
-                    rusqlite::types::Value::Text(self.snapshot.id.to_string()),
-                    after.into(),
-                    i64::from(limit + 1).into(),
-                ],
-            ),
+        let (sql, values): (&str, Vec<rusqlite::types::Value>) = match &self.scope {
+            None => return inventory_page(c, &self.snapshot, after, limit),
             Some((Some(owner), session)) => (
                 "SELECT ordinal,entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='artifact' AND json_extract(entry_json,'$.owner')=?2 AND json_extract(entry_json,'$.session')=?3 AND ordinal>?4 ORDER BY ordinal LIMIT ?5",
                 vec![
@@ -166,4 +159,37 @@ impl Query for Entries {
         };
         Ok((entries, next))
     }
+}
+
+fn inventory_page(
+    c: &Connection,
+    snapshot: &Snapshot,
+    after: i64,
+    limit: u32,
+) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+    let mut statement = c.prepare_cached(
+        "SELECT p.first_ordinal,b.payload FROM agent_history_snapshot_inventory_pages p
+         JOIN contents b ON b.id=p.content_id
+         WHERE p.snapshot=?1 AND p.first_ordinal>=coalesce((
+             SELECT max(first_ordinal) FROM agent_history_snapshot_inventory_pages WHERE snapshot=?1 AND first_ordinal<=?2
+         ),0) ORDER BY p.first_ordinal",
+    )?;
+    let mut rows = statement.query(params![snapshot.id.to_string(), after])?;
+    let mut entries = Vec::with_capacity(limit as usize);
+    while let Some(row) = rows.next()? {
+        let first: i64 = row.get(0)?;
+        let page: InventoryPage = serde_json::from_slice(&row.get::<_, Vec<u8>>(1)?)?;
+        for (offset, entry) in page.entries.into_iter().enumerate() {
+            let ordinal = first + offset as i64;
+            if ordinal <= after {
+                continue;
+            }
+            if entries.len() == limit as usize {
+                let next = entries.last().map(|(ordinal, _)| *ordinal);
+                return Ok((entries, next));
+            }
+            entries.push((ordinal as u64, entry));
+        }
+    }
+    Ok((entries, None))
 }

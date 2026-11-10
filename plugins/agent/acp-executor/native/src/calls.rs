@@ -294,12 +294,11 @@ impl Calls {
         if scope.identity != issued.origin.scope().identity {
             return Err("ACP cleanup differs from its original call".into());
         }
-        if let Role::Runtime { authority, key, .. } = &issued.role {
-            if scope.identity.agent() != Some(authority.0.execution())
-                || journal::Journal::key(&issued.origin, authority.0.task_id())? != *key
-            {
-                return Err("ACP cleanup differs from its original task".into());
-            }
+        if let Role::Runtime { authority, key, .. } = &issued.role
+            && (scope.identity.agent() != Some(authority.0.execution())
+                || journal::Journal::key(&issued.origin, authority.0.task_id())? != *key)
+        {
+            return Err("ACP cleanup differs from its original task".into());
         }
         Ok(issued)
     }
@@ -553,6 +552,10 @@ impl Calls {
         cleanup?;
         outcome
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The callback retains the original call scope, request, target, input and settlement policy explicitly"
+    )]
     async fn invoke_request(
         &self,
         scope: Scope,

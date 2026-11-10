@@ -138,8 +138,17 @@ fn refuse_reloads(mut requests: tokio::sync::mpsc::UnboundedReceiver<Request>, r
 mod tests {
     use super::*;
 
+    const WM_CLOSE: u32 = 0x0010;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        #[link_name = "PostMessageW"]
+        fn post_message(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize)
+        -> i32;
+    }
+
     #[test]
-    fn terminal_exit_closes_the_native_window() {
+    fn terminal_exit_closes_the_hidden_native_window_with_close_on_press_disabled() {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -149,25 +158,49 @@ mod tests {
         let (_active, foreground) = watch::channel(false);
         let (shell, requests) = Shell::new(foreground);
         carry_out(requests, &runtime);
-        let mut policy = nsh_engine::Policy::default();
+        let mut policy = nsh_engine::Policy {
+            declared: Some(nsh_engine::Capabilities::all()),
+            ..nsh_engine::Policy::development()
+        };
         policy
             .declared
             .get_or_insert_default()
             .host
-            .push("terminal.exit".into());
+            .extend(["terminal.exit", "test.ready", "test.hidden"].map(String::from));
         let bundle = nsh_engine::Bundle::source(
-            "import { host, mount } from 'nsh';
-             import { element } from 'nsh:rt';
-             import { currentWindow } from 'nsh/desktop';
-             mount(() => {
-               currentWindow().set({ closeOnPress: false });
-               host.post('terminal.exit');
-               return element('view');
-             });"
+            r#"import { effect, host, signal } from 'nsh';
+                import { Window } from 'nsh/desktop';
+                const main = Window.get('main');
+                const closing = signal(false);
+                main.set({ closeOnPress: false });
+                main.on('closePress', () => { closing.set(true); main.hide(); });
+                effect(() => {
+                    if (closing() && main.state()?.visible === false) {
+                        host.post('test.hidden');
+                        host.post('terminal.exit');
+                    }
+                });
+                requestAnimationFrame(() => host.post('test.ready'));
+            "#
             .into(),
         )
         .with_policy(policy);
+        let hidden = Arc::new(AtomicBool::new(false));
+        let observed = hidden.clone();
         let config = shell.attach(nsh_engine::EngineConfig::new(bundle));
+        let posted = Arc::new(AtomicBool::new(false));
+        let close_posted = posted.clone();
+        config.host.handle("test.ready", move |_| {
+            let close_posted = close_posted.clone();
+            with_running_view(move |view| {
+                // SAFETY: the running view owns this live HWND; posting does not retain a Rust reference.
+                let ok = unsafe { post_message(view.hwnd().0, WM_CLOSE, 0, 0) };
+                close_posted.store(ok != 0, Ordering::SeqCst);
+            });
+        });
+        config.host.handle("test.hidden", move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
         let (done, finished) = mpsc::channel();
         let timed_out = Arc::new(AtomicBool::new(false));
         let timeout = timed_out.clone();
@@ -196,6 +229,14 @@ mod tests {
         assert!(
             !timed_out.load(Ordering::SeqCst),
             "terminal.exit did not close the native window"
+        );
+        assert!(
+            posted.load(Ordering::SeqCst),
+            "could not post the native close"
+        );
+        assert!(
+            hidden.load(Ordering::SeqCst),
+            "ordinary close did not hide the window"
         );
         assert_eq!(code, std::process::ExitCode::SUCCESS);
     }

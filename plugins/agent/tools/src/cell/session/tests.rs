@@ -208,7 +208,7 @@ impl Fixture {
                 CellEvent::ChildObserved {
                     cell,
                     operation: reply.reference.operation,
-                    reply: reply.clone(),
+                    reply: maka_agent_facts::operation::inline_reply(reply.clone()),
                 },
             ],
             vec![source, descriptor, input],
@@ -391,7 +391,7 @@ async fn child_failure_observes_original_interruption_without_promoting_child_re
         assert_eq!(fixture.port.read(cell).await.unwrap(), Some(before.clone()));
         assert_eq!(
             before.children[&reply.reference.operation].reply.as_ref(),
-            Some(&reply)
+            Some(&maka_agent_facts::operation::inline_reply(reply.clone()))
         );
         assert!(!before.physical_cleanup_confirmed());
         assert!(
@@ -533,7 +533,7 @@ async fn unsettled_worker_errors_remain_cell_local_without_claiming_running_succ
         assert_eq!(fixture.port.read(cell).await.unwrap(), Some(before.clone()));
         assert_eq!(
             before.children[&reply.reference.operation].reply.as_ref(),
-            Some(&reply)
+            Some(&maka_agent_facts::operation::inline_reply(reply.clone()))
         );
         assert!(before.vm_uncertainty.is_some() && before.blocks_effect_admission());
         assert!(!before.physical_cleanup_confirmed());

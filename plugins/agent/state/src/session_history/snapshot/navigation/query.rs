@@ -132,7 +132,7 @@ impl Query for FindQuery {
             "SELECT d.id,{POSITION_JSON},COALESCE((SELECT SUM(f.bytes) FROM agent_history_snapshot_nav_fields f WHERE f.document=d.id{fields_visible}),0) FROM agent_history_snapshot_nav_documents d JOIN agent_history_snapshot_positions p ON p.snapshot=d.snapshot AND p.kind=d.kind AND p.major=d.major AND p.minor=d.minor WHERE d.snapshot=?1 AND (d.major,d.minor)>(?2,?3) AND (p.kind='imported' OR p.admission_sequence>?4){visible} AND d.role<>'\"compaction\"'",
         );
         if grams.is_some() {
-            sql.push_str(&format!(" AND EXISTS(SELECT 1 FROM agent_history_snapshot_nav_chunks k JOIN agent_history_snapshot_nav_fields f ON f.document=k.document AND f.ordinal=k.field_ordinal JOIN agent_history_snapshot_nav_terms t ON t.rowid=k.id WHERE k.document=d.id{fields_visible} AND t.grams MATCH ?5)"));
+            sql.push_str(&format!(" AND EXISTS(SELECT 1 FROM agent_history_snapshot_nav_chunks k JOIN agent_history_snapshot_nav_fields f ON f.document=k.document AND f.ordinal=k.field_ordinal JOIN agent_history_snapshot_nav_terms t ON t.rowid=k.id WHERE k.document=d.id{fields_visible} AND agent_history_snapshot_nav_terms MATCH ?5)"));
         }
         sql.push_str(" ORDER BY d.kind,d.major,d.minor LIMIT 65");
         let mut statement = c.prepare_cached(&sql)?;
@@ -247,27 +247,26 @@ fn search_field(
         } else {
             0
         };
-        if let Some(found) = matcher.find_at(&window, start) {
-            if eof
+        if let Some(found) = matcher.find_at(&window, start)
+            && (eof
                 || (found.end().saturating_add(4) <= window.len()
-                    && found.start().saturating_add(378) <= window.len())
-            {
-                let begin = window.floor_char_boundary(found.start().saturating_sub(64));
-                let end = window.floor_char_boundary((begin + 378).min(window.len()));
-                let mut preview = String::new();
-                if offset > 0 || begin > 0 {
-                    preview.push('…');
-                }
-                preview.extend(
-                    window[begin..end]
-                        .chars()
-                        .map(|c| if c.is_control() { ' ' } else { c }),
-                );
-                if !eof || end < window.len() {
-                    preview.push('…');
-                }
-                return Ok(Some(preview));
+                    && found.start().saturating_add(378) <= window.len()))
+        {
+            let begin = window.floor_char_boundary(found.start().saturating_sub(64));
+            let end = window.floor_char_boundary((begin + 378).min(window.len()));
+            let mut preview = String::new();
+            if offset > 0 || begin > 0 {
+                preview.push('…');
             }
+            preview.extend(
+                window[begin..end]
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c }),
+            );
+            if !eof || end < window.len() {
+                preview.push('…');
+            }
+            return Ok(Some(preview));
         }
         if eof {
             return Ok(None);

@@ -42,5 +42,4 @@ nsh-platform-linux.workspace = true
 nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
-raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }

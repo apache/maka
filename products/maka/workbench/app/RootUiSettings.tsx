@@ -29,11 +29,12 @@ import {
   captionTextStyle,
   controlDisabledStyle,
   controlFocusStyle,
-  controlHoverStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
   C,
+  floatingStyle,
+  menuRowHoverStyle,
 } from './ui';
 
 export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
@@ -62,16 +63,10 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
           offset={8}
           margin={8}
           popupStyle={{
+            ...floatingStyle(),
             width: 420,
-            maxWidth: Math.max(0, windowSize().width - 16),
             maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
-            minHeight: 0,
-            padding: 8,
             gap: 8,
-            backgroundColor: C.surface,
-            borderWidth: 1,
-            borderColor: C.line,
-            borderRadius: 12,
           }}
           trigger={
             <Button
@@ -144,9 +139,9 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                     gap: 8,
                     alignItems: 'center',
                   }}
-                  selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  selectedStyle={menuRowHoverStyle()}
+                  hoverStyle={menuRowHoverStyle()}
+                  focusStyle={menuRowHoverStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator

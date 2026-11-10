@@ -58,6 +58,10 @@ impl Engine {
         );
         Ok(())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Completion must validate the original claim, frontier, Cell result and retirement state together"
+    )]
     pub(super) async fn complete_cell(
         &self,
         claim: &DriverClaim,
@@ -88,7 +92,7 @@ impl Engine {
                     return Ok(());
                 }
                 let reason = match error {
-                    RunError::Blocked(reason) => reason,
+                    RunError::Blocked(reason) => *reason,
                     error => {
                         tracing::error!(cause=%error,"original Cell could not be observed");
                         BlockerKind::CodeCellRecoveryUnavailable {
@@ -109,15 +113,13 @@ impl Engine {
         if view.stopped {
             return Ok(vec![]);
         }
-        let result = tool
-            .local_returned
-            .as_ref()
-            .map(|returned| &returned.result)
-            .or_else(|| tool.host_returned.as_ref().map(|returned| &returned.result));
-        let Some(result) = result else {
+        let Some(returned) = &tool.local_returned else {
             return Ok(vec![]);
         };
-        let bytes = self.store.content(view.run, result.clone()).await?;
+        let bytes = self
+            .store
+            .content(view.run, returned.result.clone())
+            .await?;
         let original: maka_agent_facts::artifact::ToolReturn<ReturnedToolResult> =
             serde_json::from_slice(&bytes).map_err(StoreError::from)?;
         let ToolOutput::Cell(reply) = &original.body.output else {
@@ -141,10 +143,9 @@ impl Engine {
             if let CellStatus::Completed {
                 result: expected, ..
             } = &stored.status
+                && expected == result
             {
-                if expected == result {
-                    return Ok(vec![]);
-                }
+                return Ok(vec![]);
             }
             return Err(RunError::InvalidInput(
                 "Cell reply is not its original final result".into(),

@@ -414,6 +414,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &[
                 "create",
+                "history",
                 "models",
                 "send",
                 "work",
@@ -425,9 +426,10 @@ impl Rig {
                 "project",
                 "projects",
                 "selectBackend",
+                "stop",
             ]
         } else {
-            &["create"]
+            &["create", "history", "source", "search"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -1075,15 +1077,15 @@ impl Rig {
                 Err(error) => errors.push(format!("original Cell proof: {error}")),
             }
         }
-        if let Some(call) = &mut self.call {
-            if let Err(error) = call.close().await {
-                errors.push(format!("original create call: {error}"));
-            }
+        if let Some(call) = &mut self.call
+            && let Err(error) = call.close().await
+        {
+            errors.push(format!("original create call: {error}"));
         }
-        if let Some(client) = &mut self.client {
-            if let Err(error) = client.close().await {
-                errors.push(format!("Host client: {error}"));
-            }
+        if let Some(client) = &mut self.client
+            && let Err(error) = client.close().await
+        {
+            errors.push(format!("Host client: {error}"));
         }
         let originals_closed = self
             .driver
@@ -1106,10 +1108,10 @@ impl Rig {
                 Err(error) => errors.push(format!("original work scope: {error}")),
             }
         }
-        if let Some(host) = &self.host {
-            if let Err(error) = host.shutdown().await {
-                errors.push(format!("Host: {error}"));
-            }
+        if let Some(host) = &self.host
+            && let Err(error) = host.shutdown().await
+        {
+            errors.push(format!("Host: {error}"));
         }
         self.stop_serving.cancel();
         if let Some(serving) = self.serving.take() {
@@ -1123,10 +1125,10 @@ impl Rig {
                 "Root work pins retained without original settlement ACK; no forced Root shutdown"
                     .into(),
             );
-        } else if let Some(store) = &self.store {
-            if let Err(error) = store.shutdown().await {
-                errors.push(format!("Root store: {error}"));
-            }
+        } else if let Some(store) = &self.store
+            && let Err(error) = store.shutdown().await
+        {
+            errors.push(format!("Root store: {error}"));
         }
         match self.model_listener.accept() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -1259,6 +1261,7 @@ mod bounded_risk {
                     settlement: ToolSettlement::Returned,
                     result: returned.reference().clone(),
                     is_error: false,
+                    cell_observation: None,
                 },
                 Fact::ToolResultAccepted {
                     tool: parent,
@@ -1503,9 +1506,7 @@ mod source_recovery {
             assert!(
                 matches!(
                     &failure,
-                    Err(RunError::Blocked(
-                        BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ))
+                    Err(RunError::Blocked(reason)) if matches!(reason.as_ref(), BlockerKind::CurrentAuthorityUnavailable { .. })
                 ) || matches!(&failure, Ok(maka_agent_engine::DriverExit::Blocked { .. })),
                 "actual scope exclusion did not block the capability probe"
             );
@@ -2400,8 +2401,38 @@ mod model_recovery {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer() {
+    #[test]
+    fn tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer() {
+        const CHILD: &str = "MAKA_TEST_DEFAULT_STACK_REPLAY";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env_remove("RUST_MIN_STACK")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_stack_size(2 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tail_replay());
+    }
+
+    async fn tail_replay() {
         use maka_agent_engine::preparation;
         use maka_agent_facts::{
             context::RequestContextEvidence,
@@ -2445,6 +2476,7 @@ mod model_recovery {
                 "labels":[],"tools":["todo_read"],
                 "workspace":{"kind":"directory","path":base.join("workspace")}
             })).await?;
+            assert_eq!(created["kind"], "created", "{created}");
             let session = created["session"]["id"].as_str().ok_or("session missing")?.to_owned();
             let source = call(client, "agent", "send", json!({
                 "sessionId":session,"message":"Use the checklist twice.",
@@ -2526,6 +2558,7 @@ mod model_recovery {
                 preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
                 resources.clone(), &history, &cut, target_run,
                 &serde_json::from_value(frozen["prompt"].clone())?,
+                &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
                 &serde_json::from_value(frozen["layout"].clone())?,
                 &CancellationToken::new(),
             ).await?;
@@ -3247,3 +3280,5 @@ mod replay_origin_regressions {
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
     }
 }
+
+mod tool_history;
