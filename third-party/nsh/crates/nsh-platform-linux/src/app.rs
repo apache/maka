@@ -450,6 +450,13 @@ impl AppView {
         Ok(())
     }
 
+    /// Answers the native main window's close request with the app's NSH
+    /// close policy. An embedding host connects its window's `close-request`
+    /// signal to this method while this view is mounted in it.
+    pub fn main_close_request(&self) -> glib::Propagation {
+        crate::window::main_close_request(&self.surface)
+    }
+
     /// Stops the app.
     pub fn stop(&self) {
         self.surface.stop();
@@ -624,9 +631,9 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             kept.map(|p| p.mode),
         );
         // The user closes it as the app's `closeOnPress` says.
-        let weak = Rc::downgrade(&view.surface);
+        let weak = Rc::downgrade(&view);
         window.connect_close_request(move |_| match weak.upgrade() {
-            Some(surface) => crate::window::main_close_request(&surface),
+            Some(view) => view.main_close_request(),
             None => glib::Propagation::Proceed,
         });
         match app_of {

@@ -273,12 +273,43 @@ test('non-archived native regressions fail empty selections and GTK runs under X
       },
     },
   );
-  for (const id of ['pixels', 'linux-nsh', 'macos-nsh', 'macos-surface', 'windows-nsh'])
+  for (const id of [
+    'pixels',
+    'linux-nsh',
+    'linux-desktop',
+    'macos-nsh',
+    'macos-surface',
+    'windows-nsh',
+  ])
     await exec.verify(id);
   for (const call of calls) assert(call.args.includes('--no-tests=fail'));
   assert(calls.some(({ args }) => args.includes('native-pixels')));
   assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
   assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
+  const gtk = calls.find(({ args }) => args.includes('maka-desktop-shell'));
+  assert.deepEqual(gtk, {
+    exe: 'xvfb-run',
+    args: [
+      '-a',
+      'dbus-run-session',
+      '--',
+      'cargo',
+      'nextest',
+      'run',
+      '--locked',
+      '-p',
+      'maka-desktop-shell',
+      '--no-tests=fail',
+      '--run-ignored=all',
+      '-j',
+      '1',
+    ],
+  });
+  await exec.prepare('linux-desktop');
+  assert.deepEqual(calls.at(-1), {
+    exe: 'cargo',
+    args: ['nextest', 'run', '--locked', '-p', 'maka-desktop-shell', '--no-run'],
+  });
 });
 
 test('CI setup installs release tools and stages V8 archives via GitHub API with digest checks and 504 retries', async () => {
@@ -524,4 +555,48 @@ test('Linux keeps native Computer Use without the retired desktop engine', () =>
   assert.deepEqual(worker.suites, ['native']);
   assert.equal(worker.dependencies, 'computer-use');
   assert.equal(worker.javascript, false);
+});
+
+test('Linux platform and embedded icon inputs reach the display-backed desktop consumer', () => {
+  const packages = [
+    ['maka-desktop-shell', 'products/maka/desktop-shell'],
+    ['nsh-platform-linux', 'third-party/nsh/crates/nsh-platform-linux'],
+  ].map(([name, path]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, path, 'Cargo.toml'),
+  }));
+  const metadata = {
+    root: {
+      packages,
+      workspace_members: packages.map(({ id }) => id),
+      resolve: {
+        nodes: [
+          { id: 'maka-desktop-shell', deps: [{ pkg: 'nsh-platform-linux' }] },
+          { id: 'nsh-platform-linux', deps: [] },
+        ],
+      },
+    },
+  };
+  for (const path of [
+    'products/maka/desktop-shell/src/linux.rs',
+    'third-party/nsh/crates/nsh-platform-linux/src/app.rs',
+    'third-party/nsh/crates/nsh-platform-linux/src/tray.rs',
+    'products/maka/workbench/app/assets/maka.png',
+  ]) {
+    const plan = createPlan({
+      root,
+      changes: [path],
+      metadata,
+      revision: 'test',
+      baseline: 'base',
+    });
+    assert.equal(plan.full, false, path);
+    assert.ok(plan.suites['linux-desktop'], path);
+    const worker = plan.workers.find(({ id }) => id === 'native-ubuntu');
+    assert.ok(worker.suites.includes('linux-desktop'), path);
+    assert.equal(worker.dependencies, 'headless');
+    assert.equal(worker.javascript, true);
+  }
 });
