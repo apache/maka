@@ -372,7 +372,6 @@ impl ApplicationHost {
     pub async fn set_recent_workspace(
         this: Instance<Self>,
         path: String,
-        remember: bool,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
@@ -381,7 +380,7 @@ impl ApplicationHost {
             let recent = source
                 .local(&original)
                 .await?
-                .set_recent_workspace(path, remember)
+                .set_recent_workspace(path)
                 .await?;
             serde_json::to_value(recent).map_err(|error| error.to_string())
         })

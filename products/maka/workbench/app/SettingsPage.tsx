@@ -32,6 +32,10 @@ import {
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -347,17 +351,11 @@ export function SettingsSelect(props: {
         margin={8}
         align="end"
         popupStyle={{
+          ...floatingStyle(),
           minWidth: 200,
-          maxWidth: Math.max(0, windowSize().width - 16),
           maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
-          minHeight: 0,
-          padding: 4,
-          backgroundColor: C.surface,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 12,
         }}
-        groupStyle={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 }}
+        groupStyle={{ paddingHorizontal: 8, paddingTop: 8, paddingBottom: 4 }}
         style={{ flexShrink: 1, minWidth: 0, maxWidth: '60%' }}
         trigger={
           <View
@@ -404,31 +402,24 @@ export function SettingsSelect(props: {
             <Icon name="down" color={C.muted} size={14} />
           </View>
         }
-        itemClass={`rounded-lg focus:bg-[${C.raised}]`}
+        itemClass={`rounded-lg focus:bg-[${C.floatingRaised}]`}
         renderItem={(item) => (
-          <View
-            style={{
-              ...controlStyle,
-              minHeight: 32,
-              paddingVertical: 6,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={menuRowStyle()}>
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <Text style={{ ...captionTextStyle, color: item.disabled ? C.muted : C.text }}>
                 {item.title}
               </Text>
               <If when={(item as SettingsChoice).detail}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                <Text style={{ ...menuDetailTextStyle, color: C.muted }}>
                   {(item as SettingsChoice).detail}
                 </Text>
               </If>
             </View>
-            <If when={item.value === props.value}>
-              <Icon name="check" color={C.accent} size={14} />
-            </If>
+            <View style={{ width: 16 }}>
+              <If when={item.value === props.value}>
+                <Icon name="check" color={C.accent} />
+              </If>
+            </View>
           </View>
         )}
       />

@@ -22,6 +22,9 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 
+/// The menu lists this many; older folders drop out instead of being removed by hand.
+const RECENT_WORKSPACES: usize = 10;
+
 #[derive(Serialize, Deserialize)]
 pub struct RecentWorkspace {
     pub path: String,
@@ -46,14 +49,9 @@ impl Journal {
         &self,
         owner: String,
         path: String,
-        remember: bool,
     ) -> Result<Vec<RecentWorkspace>> {
         let write::Output::RecentWorkspaces(recent) = self
-            .write(write::Command::SetRecentWorkspace {
-                owner,
-                path,
-                remember,
-            })
+            .write(write::Command::SetRecentWorkspace { owner, path })
             .await?
         else {
             unreachable!("recent workspace write returned a different result")
@@ -66,7 +64,6 @@ pub(super) async fn set(
     connection: &mut SqliteConnection,
     owner: String,
     path: String,
-    remember: bool,
 ) -> Result<Vec<RecentWorkspace>> {
     let value: Option<String> =
         sqlx::query_scalar("SELECT value FROM recent_workspaces WHERE owner=?")
@@ -80,9 +77,8 @@ pub(super) async fn set(
         .map_err(error)?
         .unwrap_or_default();
     recent.retain(|item| item.path != path);
-    if remember {
-        recent.insert(0, RecentWorkspace { path });
-    }
+    recent.insert(0, RecentWorkspace { path });
+    recent.truncate(RECENT_WORKSPACES);
     sqlx::query("INSERT INTO recent_workspaces(owner,value) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET value=excluded.value")
         .bind(owner).bind(serde_json::to_string(&recent).map_err(error)?)
         .execute(connection).await.map_err(error)?;

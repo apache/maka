@@ -20,14 +20,14 @@
 use super::*;
 
 #[tokio::test]
-async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
+async fn recent_workspaces_survive_reopen_and_keep_the_latest_ten() {
     let fixture = Fixture::new().await;
     let first = fixture.client().await;
     let second = fixture.client().await;
     for number in 0..10 {
         let client = if number % 2 == 0 { &first } else { &second };
         client
-            .set_recent_workspace(format!("/project/{number}"), true)
+            .set_recent_workspace(format!("/project/{number}"))
             .await
             .unwrap();
     }
@@ -46,7 +46,7 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
             .collect::<Vec<_>>()
     );
     let recent = client
-        .set_recent_workspace("/project/3".into(), true)
+        .set_recent_workspace("/project/3".into())
         .await
         .unwrap();
     assert_eq!(recent.len(), 10);
@@ -58,18 +58,16 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
             .count(),
         1
     );
-    client.close().await.unwrap();
-    let client = fixture.client().await;
     client
-        .set_recent_workspace("/project/3".into(), false)
+        .set_recent_workspace("/project/10".into())
         .await
         .unwrap();
     client.close().await.unwrap();
     let client = fixture.client().await;
     let recent = client.recent_workspaces().await.unwrap();
-    assert_eq!(recent.len(), 9);
-    assert_eq!(recent[0].path, "/project/9");
-    assert!(!recent.iter().any(|item| item.path == "/project/3"));
+    assert_eq!(recent.len(), 10);
+    assert_eq!(recent[0].path, "/project/10");
+    assert!(!recent.iter().any(|item| item.path == "/project/0"));
     client.close().await.unwrap();
     fixture.finish().await;
 }
@@ -80,7 +78,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let second = Fixture::new().await;
     let client = first.client().await;
     client
-        .set_recent_workspace("/first".into(), true)
+        .set_recent_workspace("/first".into())
         .await
         .unwrap();
     let host = HostClient::connect(&second.address, Some(second.host.epoch()))
@@ -92,7 +90,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let other = Client::new(host, journal, "receipts".into()).unwrap();
     assert!(other.recent_workspaces().await.unwrap().is_empty());
     other
-        .set_recent_workspace("/second".into(), true)
+        .set_recent_workspace("/second".into())
         .await
         .unwrap();
     assert_eq!(client.recent_workspaces().await.unwrap()[0].path, "/first");

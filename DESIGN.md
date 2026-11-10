@@ -81,6 +81,17 @@ The sidebar recedes behind the conversations: navigation rows read in `secondary
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 
+## Menus and popovers
+
+Menus, selects, context menus and popovers share one surface and one row from `ui.tsx` (`floatingStyle`, `menuRowStyle`).
+
+- The surface sits one step above the panel (`floating`), with one `line` border and one shadow: the only edge where a line and a shadow meet. Radius 12, inset 4, so its rows (radius 8) are concentric. Rows inside it hover and take focus with `floatingRaised`.
+- A row is 32 points high with three lanes: a 16-point icon 12 points from the surface's edge, the text at 36, and a 16-point trailing lane for the check, a switch, a shortcut or a submenu chevron. A second line is 12-point `muted` detail.
+- Each command has its own icon in `secondary`; no two commands in one menu share an icon. A destructive row is `danger`, icon and text, and comes last. A command that asks for more input ends with `…`.
+- The current choice is a check in the trailing lane in `accent`; menus draw no radio buttons. A two-state setting is a switch row.
+- No title and no close button: the trigger names the menu, and a press outside or Escape closes it. Section names and notes start on the icon's edge; separators are inset 8 and part groups by purpose.
+- A list of recent items keeps the latest ten, so it has no command to remove one.
+
 ## Settings
 
 Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx); a page adds no layout of its own.
