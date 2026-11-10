@@ -109,7 +109,7 @@ Dialogs share `ModalDialog`: the scrim, a width that follows the decision (alert
 - Choose the smallest surface that holds the decision (NSH, Feedback and overlays); exploring belongs in a page.
 - The title names the decision and its object (`Delete “Roadmap”?`), weight 600; the detail adds only scope, consequence or recovery. Header and footer parts sit 8 apart.
 - Actions sit at the bottom right: Cancel, then the result (`Delete`, `Create fork`, `Save`), never `OK` or `Confirm`. A destructive result reads in `danger` and focus starts on Cancel. A view with nothing to decide has only Close. A secondary choice sits at the bottom left.
-- One way out: Escape or the scrim does what Cancel or Close does. No close button in the title row.
+- One way out: Escape does what Cancel or Close does; a press on the scrim does too only for a launcher, so a stray click loses no input or running work. No close button in the title row.
 - A confirmation takes `AlertDialog`'s shape but is drawn by Maka: in the terminal surface the system's alert would open on a hidden window. Progress and failure stay in the dialog until it closes.
 - A launcher (the command palette, conversation search) opens an eighth of the window down, so typing does not move it, and has no title; the palette's list follows the menu rules.
 - A page-sized dialog (model settings) is shaped as a window, its pane 8 in and concentric with its corner.

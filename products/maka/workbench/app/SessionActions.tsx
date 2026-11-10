@@ -78,9 +78,6 @@ export function SessionActions(props: {
       error.set('');
     }
   };
-  const dismiss = (from: Page) => {
-    if (active() && !pending() && page() === from) props.close();
-  };
   const menuChanged = ({ open: next }: { open: boolean }) => {
     if (!next) back('actions');
   };

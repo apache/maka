@@ -27,9 +27,10 @@ const WIDTHS = { alert: 400, form: 520, editor: 720, page: 880 } as const;
 /**
  * A modal over the window: the scrim and the card every dialog shares. The
  * card keeps `surface`, the fill its controls' `raised` and `background` are
- * set against, and takes the floating family's line, radius and shadow. `onCancel` gets Escape and a press on the scrim; the caller closes.
+ * set against, and takes the floating family's line, radius and shadow. `onCancel` gets Escape; the caller closes.
  * `height` makes it fill the window up to that height, for editors and pages;
- * a launcher opens an eighth of the window down so typing does not move it.
+ * a launcher opens an eighth of the window down so typing does not move it,
+ * and a press on its scrim cancels it too: nothing typed there is lost.
  */
 export function ModalDialog(props: {
   size: keyof typeof WIDTHS;
@@ -48,6 +49,7 @@ export function ModalDialog(props: {
       closeOnBackdropPress={false}
       closeOnSwipe={false}
       onCancel={props.onCancel}
+      backdropStyle={props.launcher ? { backgroundColor: C.scrim } : undefined}
       style={{
         flex: 1,
         justifyContent: props.launcher ? 'flex-start' : 'center',
@@ -55,7 +57,7 @@ export function ModalDialog(props: {
         padding: 16,
         paddingTop:
           props.launcher && windowSize().height >= 480 ? windowSize().height / 8 : dialogTop(16),
-        backgroundColor: C.scrim,
+        ...(props.launcher ? { pointerEvents: 'box-none' } : { backgroundColor: C.scrim }),
       }}
     >
       <View
