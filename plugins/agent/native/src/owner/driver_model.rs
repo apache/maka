@@ -2354,6 +2354,7 @@ impl DriverModel {
         let mut writer = maka_agent_facts::model::assembly::AttemptWriter::new(
             attempt_binding.clone(),
             frozen.item_acceptance,
+            cut.through_sequence,
         )?;
         // Bind in admission order, not when an arbitrarily delayed stream first emits.
         preview.send_replace(

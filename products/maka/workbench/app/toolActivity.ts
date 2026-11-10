@@ -31,7 +31,7 @@ export type ToolActivity = {
   toolUseId: string;
   stepId?: StepId;
   attemptId?: ModelAttemptId;
-  startSequence?: number;
+  startSequence: number;
   previewOrder?: number;
   name: string;
   title?: DisplayText;
@@ -146,7 +146,7 @@ export function latestToolActivity(
           tool.previewOrder > latest.previewOrder) ||
         (tool.previewOrder === undefined &&
           latest.previewOrder === undefined &&
-          tool.startSequence! > latest.startSequence!))
+          tool.startSequence > latest.startSequence))
     )
       latest = tool;
   }
