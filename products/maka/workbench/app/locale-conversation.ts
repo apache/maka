@@ -110,7 +110,6 @@ export const conversationMessages = {
   ],
   'Send options': ['Send options', '发送选项', '傳送選項'],
   'Add to queue': ['Add to queue', '加入队列', '加入佇列'],
-  'Send after this turn': ['Send after this turn', '本轮结束后发送', '本輪結束後傳送'],
   'Use suggestion': ['Use suggestion', '使用建议', '使用建議'],
   'Right arrow to use · Esc to dismiss': [
     'Right arrow to use · Esc to dismiss',
@@ -349,7 +348,7 @@ export const conversationMessages = {
     '仅允许本次原始调用，不授权后续调用。',
     '僅允許本次原始呼叫，不授權後續呼叫。',
   ],
-  'Attach files': ['Attach files', '添加附件', '新增附件'],
+  'Attach files…': ['Attach files…', '添加附件…', '新增附件…'],
   'Attachment state needs attention. Your draft is kept.': [
     'Attachment state needs attention. Your draft is kept.',
     '附件状态需要处理，草稿已保留。',

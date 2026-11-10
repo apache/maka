@@ -43,6 +43,7 @@ ICONS = [
     'fold-vertical',
     'folder',
     'git-fork',
+    'goal',
     'hand',
     'image',
     'inbox',

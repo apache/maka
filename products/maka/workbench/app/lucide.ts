@@ -152,6 +152,11 @@ export const lucide = {
     { tag: 'path', d: 'M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9' },
     { tag: 'path', d: 'M12 12v3' },
   ],
+  goal: [
+    { tag: 'path', d: 'M12 13V2l8 4-8 4' },
+    { tag: 'path', d: 'M20.561 10.222a9 9 0 1 1-12.55-5.29' },
+    { tag: 'path', d: 'M8.002 9.997a5 5 0 1 0 8.9 2.02' },
+  ],
   hand: [
     { tag: 'path', d: 'M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2' },
     { tag: 'path', d: 'M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2' },

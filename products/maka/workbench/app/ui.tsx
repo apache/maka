@@ -35,10 +35,29 @@ import {
 import { appearance } from './appearance';
 import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
+/** NSH's tooltip bubble in Maka's colors: one line, or `richTooltipStyle` for more. */
+export const tooltipStyle = () => ({
+  borderRadius: 6,
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+});
+export const richTooltipStyle = () => ({
+  borderRadius: 8,
+  padding: 10,
+  gap: 8,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+});
+export const tooltipTextStyle = () => ({ fontSize: 12, lineHeight: 16, color: C.text });
+
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
-    <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
-      <Text class="text-xs text-popover-foreground">{text()}</Text>
+    <Tooltip disabled={!text()} style={tooltipStyle()}>
+      <Text style={tooltipTextStyle()}>{text()}</Text>
     </Tooltip>
   );
 }

@@ -46,6 +46,7 @@ const icons = {
   image: { lucide: 'image', glyph: '▧' },
   expand: { lucide: 'maximize', glyph: '⛶' },
   fork: { lucide: 'git-fork', glyph: '⑂' },
+  goal: { lucide: 'goal', glyph: '◎' },
   children: { lucide: 'list-tree', glyph: '⊢' },
   compaction: { lucide: 'fold-vertical', glyph: '⇕' },
   readOnly: { lucide: 'eye', glyph: '◉' },
