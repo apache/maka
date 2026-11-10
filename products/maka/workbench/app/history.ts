@@ -132,7 +132,9 @@ export type Row = {
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
+  return origin?.kind === 'bot_worker' || origin?.kind === 'session_completion'
+    ? origin.sessionId
+    : null;
 }
 
 /** Closed native text can commit behind the loaded tail, at its message-start seat. */
