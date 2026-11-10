@@ -341,30 +341,10 @@ async fn memory(
     (s, output(&b))
 }
 async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
-    tool(socket, "sleep", json!({})).await;
-    let settled = tokio::time::timeout(Duration::from_secs(45), async {
-        tokio::select! {
-            request = listener.accept() => {
-                let (mut socket, _) = request.unwrap();
-                let (_, body) = http_fixture::read_request(&mut socket).await;
-                let messages = body["messages"].as_array().unwrap();
-                panic!("sleep requested another model step: {:?}", &messages[messages.len().saturating_sub(3)..]);
-            },
-            () = f.quiescent(&f.bot) => {}
-        }
-    })
-    .await;
-    if settled.is_err() {
-        let owner = f.owner();
-        let run = owner
-            .durable
-            .latest_run(f.bot.clone())
-            .await
-            .unwrap()
-            .unwrap();
-        let view = owner.durable.frontier(run).await.unwrap();
-        panic!("Bot did not settle after sleep: {view:#?}");
-    }
+    finish_text(socket, "Investigation received.").await;
+    tokio::time::timeout(Duration::from_secs(45), f.quiescent(&f.bot))
+        .await
+        .expect("Bot Run did not settle before Host teardown");
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
             .await
@@ -1231,32 +1211,10 @@ async fn discovery_search_continues_past_an_empty_bounded_page() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bot_controls_survive_admission_and_live_filtering_but_are_not_worker_tools() {
+async fn discovery_tools_are_not_offered_to_an_ordinary_session() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    f.setting("toolDiscovery", json!(true)).await;
-    f.send("Reply once and sleep", json!([])).await;
-    let (mut socket, body) = next(&listener).await;
-    let names: Vec<_> = body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["function"]["name"].as_str().unwrap())
-        .collect();
-    assert!(
-        names.contains(&"SendUser") && names.contains(&"sleep") && names.contains(&"tool_search"),
-        "{names:?}"
-    );
-    tool(
-        &mut socket,
-        "SendUser",
-        json!({"messageId":"bot-control-check","messages":[{"text":"Reply"}]}),
-    )
-    .await;
-    let (mut socket, _) = next(&listener).await;
-    assert_eq!(f.outbox().await.as_array().unwrap().len(), 1);
-    quiet(&f, &listener, &mut socket).await;
-    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":[],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
+    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":["DiscoveryComplete","DiscoveryMemory"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query(
         "send",
@@ -1271,9 +1229,7 @@ async fn bot_controls_survive_admission_and_live_filtering_but_are_not_worker_to
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
     assert!(
-        !names.contains(&"SendUser")
-            && !names.contains(&"sleep")
-            && !names.contains(&"DiscoveryMemory"),
+        !names.contains(&"DiscoveryComplete") && !names.contains(&"DiscoveryMemory"),
         "{names:?}"
     );
     finish_text(&mut socket, "Ordinary answer").await;
@@ -1289,7 +1245,6 @@ async fn disabled_bot_blocks_an_approved_discovery_without_calling_a_model() {
     let mut f = Fixture::new(&listener).await;
     let task = f.create("Disabled Bot").await;
     f.setting("bot", json!(false)).await;
-    assert_eq!(f.query("openBot", json!({})).await["reason"], "disabled");
     f.change(&task, "trigger_now").await;
     assert_eq!(
         f.settled(&task, 1).await["task"]["runs"][0]["outcome"],

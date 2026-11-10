@@ -218,27 +218,10 @@ impl Owner {
             basis.tool_discovery,
             accepted.editing_tools,
         )?;
-        let availability = maka_tools::availability::Availability::new(
-            catalog,
-            maka_tools::availability::LoadedTools::new(
-                self.durable
-                    .cells()
-                    .reader(session_id.clone(), tokio::runtime::Handle::current()),
-            ),
-        );
-        // Replay evidence must use the same discovered subset as the first model step.
-        let visible = availability
-            .snapshot()
-            .await
-            .map_err(|error| error.to_string())?;
         let definitions = if accepted.tool_mode == ToolMode::CodeMode {
-            maka_tools::CodeCells::definitions_for(&visible, accepted.code_language)
+            maka_tools::CodeCells::definitions_for(&catalog, accepted.code_language)
         } else {
-            let mut definitions: Vec<_> = visible.definitions().cloned().collect();
-            if let Some(search) = availability.definition() {
-                definitions.push(search);
-            }
-            definitions
+            catalog.definitions().cloned().collect()
         };
         let cancellation = parent.cancellation.child_token();
         let lease = self
