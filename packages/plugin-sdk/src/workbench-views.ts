@@ -70,6 +70,8 @@ export interface QuickItem {
   readonly title: string;
   readonly detail?: string | undefined;
   readonly icon: QuickIcon;
+  /** Replaces `icon` once it returns a picture. Read only for rows on screen, so it may load. */
+  readonly image?: (() => string | undefined) | undefined;
   /** The kind of result, shown beside it. */
   readonly source: string;
   /** What Return does, named in the launcher's footer. */

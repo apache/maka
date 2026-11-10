@@ -35,12 +35,24 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   const { input, host } = props;
   const installed = signal<readonly string[]>([]);
   host.installedApplications().then(installed.set, input.report);
+  const icons = signal<ReadonlyMap<string, string>>(new Map());
+  const requested = new Set<string>();
+  const iconOf = (path: string) => {
+    if (!requested.has(path)) {
+      requested.add(path);
+      host
+        .applicationIcon(path)
+        .then((icon) => icons.set(new Map(icons()).set(path, icon)), input.report);
+    }
+    return icons().get(path);
+  };
   const items = computed(() =>
     search(installed(), input.query(), KEYWORDS, (path) => [applicationName(path)], true).map(
       ({ item: path, match }): QuickItem => ({
         id: path,
         title: applicationName(path),
         icon: 'app',
+        image: () => iconOf(path),
         source: tr('Application'),
         action: tr('Open'),
         match,

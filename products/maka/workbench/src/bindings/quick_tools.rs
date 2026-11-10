@@ -20,6 +20,7 @@
 //! System reads behind the quick launcher's built-in tools. They name macOS
 //! system paths, so the launcher only offers these tools on macOS.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nsh_core::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -32,6 +33,9 @@ const MAX_SEARCH_OUTPUT: u64 = 256 * 1024;
 const MAX_SEARCH_RESULTS: usize = 6;
 #[cfg(target_os = "macos")]
 const MAX_CLIPBOARD_TEXT: usize = 100_000;
+/// Sharp at the 20-point size the launcher draws on a 2x display.
+#[cfg(target_os = "macos")]
+const APPLICATION_ICON_PIXELS: isize = 40;
 
 /// Types password managers and system UI use to ask clipboard tools to look away.
 #[cfg(any(target_os = "macos", test))]
@@ -89,6 +93,62 @@ pub async fn installed_applications() -> Result<Vec<String>, String> {
             .collect()
     })
     .await
+}
+
+#[cfg(target_os = "macos")]
+fn application_icon_png(path: &str) -> Result<Vec<u8>, String> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey,
+        NSDeviceRGBColorSpace, NSGraphicsContext, NSWorkspace,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    objc2::rc::autoreleasepool(|_| {
+        let icon = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(path));
+        // SAFETY: null planes ask AppKit to allocate storage for these dimensions.
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(),
+                std::ptr::null_mut(),
+                APPLICATION_ICON_PIXELS,
+                APPLICATION_ICON_PIXELS,
+                8,
+                4,
+                true,
+                false,
+                NSDeviceRGBColorSpace,
+                0,
+                0,
+            )
+        }
+        .ok_or("Could not create the application icon bitmap.")?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)
+            .ok_or("Could not draw the application icon.")?;
+        let side = APPLICATION_ICON_PIXELS as f64;
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        icon.drawInRect(NSRect::new(NSPoint::ZERO, NSSize::new(side, side)));
+        NSGraphicsContext::restoreGraphicsState_class();
+        let properties =
+            NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();
+        // SAFETY: an empty property dictionary is valid for PNG.
+        unsafe {
+            bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+        }
+        .map(|data| data.to_vec())
+        .ok_or_else(|| "Could not encode the application icon.".to_owned())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn application_icon_png(_path: &str) -> Result<Vec<u8>, String> {
+    unreachable!("the application tool only runs on macOS")
+}
+
+pub async fn application_icon(path: String) -> Result<String, String> {
+    let png = blocking(move || application_icon_png(&path)).await??;
+    Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
 }
 
 /// A person's documents, not caches and app data that happen to share a name.

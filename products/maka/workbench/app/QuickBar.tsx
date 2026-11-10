@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Canvas, Path2D, Text, View } from 'nsh';
+import { Canvas, Image, Path2D, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
@@ -70,6 +70,7 @@ export function QuickRow(props: {
   detail?: string | undefined;
   trailing?: string | undefined;
   icon: QuickIcon | 'maka';
+  image?: string | undefined;
   unread: boolean;
   selected: boolean;
   onPress(): void;
@@ -85,10 +86,23 @@ export function QuickRow(props: {
       focusStyle={controlFocusStyle()}
     >
       <If
-        when={props.icon === 'maka'}
-        else={<Icon name={props.icon as QuickIcon} color={C.secondary} size={16} />}
+        when={props.image !== undefined}
+        else={
+          <If
+            when={props.icon === 'maka'}
+            else={<Icon name={props.icon as QuickIcon} color={C.secondary} size={16} />}
+          >
+            <MakaMark />
+          </If>
+        }
       >
-        <MakaMark />
+        <Image
+          src={props.image!}
+          style={[
+            { width: 20, height: 20, marginHorizontal: -2, flexShrink: 0 },
+            { objectFit: 'contain' },
+          ]}
+        />
       </If>
       <Text
         style={{

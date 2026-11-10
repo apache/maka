@@ -151,6 +151,7 @@ function createUsageStore(report: (reason: unknown) => void): UsageStore {
 type Row = {
   key: string;
   icon: QuickIcon | 'maka';
+  image?: (() => string | undefined) | undefined;
   title: string;
   detail?: string | undefined;
   trailing?: string | undefined;
@@ -169,6 +170,7 @@ function LauncherRow(props: { row: Row; selected: boolean }) {
       detail={props.row.detail}
       trailing={props.row.trailing}
       icon={props.row.icon}
+      image={props.row.image?.()}
       unread={props.row.unread === true}
       selected={props.selected}
       onPress={props.row.run}
@@ -209,6 +211,7 @@ function Launcher(
         return {
           key,
           icon: item.icon,
+          image: item.image,
           title: item.title,
           detail: item.detail,
           trailing: item.source,
