@@ -718,7 +718,6 @@ export const conversationMessages = {
   'Last alternate screen': ['Last alternate screen', '最后备用屏幕', '最後備用畫面'],
   Link: ['Link', '链接', '連結'],
   'Live updates ended.': ['Live updates ended.', '实时更新已结束。', '即時更新已結束。'],
-  'Load older messages': ['Load older messages', '加载更早的消息', '載入更早的訊息'],
   'Loading files…': ['Loading files…', '正在加载文件…', '正在載入檔案…'],
   'Loading session history…': [
     'Loading session history…',

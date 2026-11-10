@@ -24,7 +24,7 @@ import {
   type RiskReview,
 } from './RiskDecisionDialog';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
-import { LoadingIndicator, LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   createText,
@@ -500,8 +500,7 @@ export function Conversation(props: ConversationProps) {
     return formerBot() && ready() && !archived() ? 'ordinary' : identity;
   };
   const readingSize = signal({ width: 640, height: 192 });
-  const historyOffset = signal(0);
-  const atLoadedStart = computed(() => historyOffset() <= 1);
+  let historyOffset = 0;
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
@@ -1565,12 +1564,14 @@ export function Conversation(props: ConversationProps) {
       ? owner.identity
       : null;
   };
+  const nearHistoryStart = () =>
+    historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
   const olderHistory = createHistoryPrefetch({
     owner: olderHistoryOwner,
-    nearStart: () => historyOffset() <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS,
+    nearStart: nearHistoryStart,
     loadOlder,
   });
-  const prefetchOlder = () => void olderHistory.start().catch(report);
+  const prefetchOlder = () => void olderHistory().catch(report);
   // A tail page can hold only the end of a long turn, whose process rows fold
   // into a few lines that leave the reader too short to scroll for older pages.
   // Read back to the message that opened the latest turn, within a few pages.
@@ -3770,7 +3771,7 @@ export function Conversation(props: ConversationProps) {
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
-                  if (event.intent === 'scroll' && atLoadedStart()) prefetchOlder();
+                  if (event.intent === 'scroll' && historyOffset <= 1) prefetchOlder();
                 }
               }}
               onBlur={() => {
@@ -3798,7 +3799,9 @@ export function Conversation(props: ConversationProps) {
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
-                historyOffset.set(event.offset.y);
+                const towardHistory = event.offset.y < historyOffset;
+                historyOffset = event.offset.y;
+                if (towardHistory && nearHistoryStart()) prefetchOlder();
                 changedReadExposure();
                 awayFromLatest.set(
                   !atHistoryTail() ||
@@ -3845,37 +3848,6 @@ export function Conversation(props: ConversationProps) {
                 { pointerEvents: 'box-none' },
               ]}
             >
-              <If when={atLoadedStart() && olderHistoryOwner() !== null}>
-                <View
-                  style={{
-                    alignSelf: 'center',
-                    marginTop: 4,
-                    borderRadius: 6,
-                    backgroundColor: C.panel,
-                    pointerEvents: 'box-none',
-                  }}
-                >
-                  <If
-                    when={olderHistory.loading()}
-                    else={
-                      <Button
-                        style={controlStyle}
-                        hoverStyle={{ backgroundColor: C.card }}
-                        focusStyle={{ backgroundColor: C.raised }}
-                        onPress={prefetchOlder}
-                      >
-                        <Text style={{ ...captionTextStyle, color: C.muted }}>
-                          {tr('Load older messages')}
-                        </Text>
-                      </Button>
-                    }
-                  >
-                    <View style={{ padding: 4, pointerEvents: 'none' }}>
-                      <LoadingIndicator label={tr('Loading session history…')} />
-                    </View>
-                  </If>
-                </View>
-              </If>
               <ReturnToLatest
                 visible={
                   awayFromLatest() ||

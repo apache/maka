@@ -17,34 +17,27 @@
  * under the License.
  */
 
-import { signal } from 'nsh';
-
 export const HISTORY_LOOKAHEAD_VIEWPORTS = 2;
-const MAX_PREFETCH_PAGES = 3;
 
 export function createHistoryPrefetch(options: {
   owner(): object | null;
   nearStart(): boolean;
   loadOlder(): Promise<boolean>;
 }) {
-  const reading = signal<object | null>(null);
-  return {
-    loading: () => reading() !== null && reading() === options.owner(),
-    async start() {
-      const owner = options.owner();
-      if (owner === null || reading() === owner) return;
-      reading.set(owner);
-      try {
-        for (let page = 0; page < MAX_PREFETCH_PAGES; page++) {
-          if (!(await options.loadOlder()) || options.owner() !== owner) break;
-          // A folded page can advance the cursor without a new list edge event.
-          // NSH delivers the offset correction in the turn after frame callbacks.
-          await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
-          if (options.owner() !== owner || !options.nearStart()) break;
-        }
-      } finally {
-        if (reading() === owner) reading.set(null);
-      }
-    },
+  let reading: object | null = null;
+  return async () => {
+    const owner = options.owner();
+    if (owner === null || reading === owner) return;
+    reading = owner;
+    try {
+      do {
+        if (!(await options.loadOlder()) || options.owner() !== owner) break;
+        // Folded pages can advance the cursor without moving the list edge.
+        // NSH reports prepend corrections after the frame callbacks.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      } while (options.owner() === owner && options.nearStart());
+    } finally {
+      if (reading === owner) reading = null;
+    }
   };
 }

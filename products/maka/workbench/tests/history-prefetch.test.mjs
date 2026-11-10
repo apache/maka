@@ -18,26 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 
-const signal = `export function signal(value) {
-  const read = () => value;
-  read.set = next => { value = next; };
-  return read;
-}`;
-const hooks = registerHooks({
-  resolve(specifier, context, next) {
-    return specifier === 'nsh'
-      ? { url: `data:text/javascript,${encodeURIComponent(signal)}`, shortCircuit: true }
-      : next(specifier, context);
-  },
-});
 const { createHistoryPrefetch } = await import(
   '../../../../plugins/agent/conversations/ui/historyPrefetch.ts'
 );
-hooks.deregister();
 
 function reader(t) {
   const frames = [];
@@ -86,13 +72,12 @@ function reader(t) {
 
 test('a delayed page coalesces edge signals and continues across folded rows', async (t) => {
   const { pager, reads, page, setOffset } = reader(t);
-  const pending = pager.start();
-  await pager.start();
+  const pending = pager();
+  await pager();
   assert.deepEqual(
     reads.map((read) => read.before),
     ['tool-tail'],
   );
-  assert.equal(pager.loading(), true);
 
   // Folded work advances the history cursor while the viewport stays in place.
   await page(0, 'older-tool');
@@ -109,43 +94,40 @@ test('a delayed page coalesces edge signals and continues across folded rows', a
     reads.map((read) => read.before),
     ['tool-tail', 'older-tool'],
   );
-  assert.equal(pager.loading(), false);
 });
 
-test('a long stretch of folded pages yields after three and can continue on demand', async (t) => {
+test('continuous scrolling reads past several folded pages without another edge event', async (t) => {
   const { pager, reads, page } = reader(t);
-  const pending = pager.start();
+  const pending = pager();
   await page(0, 'tool-2');
   await page(1, 'tool-3');
   await page(2, 'tool-4');
-  await pending;
+  await page(3, 'tool-5');
   assert.deepEqual(
     reads.map((read) => read.before),
-    ['tool-tail', 'tool-2', 'tool-3'],
+    ['tool-tail', 'tool-2', 'tool-3', 'tool-4', 'tool-5'],
   );
 
-  const next = pager.start();
-  assert.equal(reads[3].before, 'tool-4');
-  reads[3].resolve(null);
-  await next;
-  await pager.start();
-  assert.equal(reads.length, 4);
+  reads[4].resolve(null);
+  await pending;
+  await pager();
+  assert.equal(reads.length, 5);
 });
 
 test('a superseded or failed read leaves the active window free to page', async (t) => {
   const { pager, reads, replaceWindow } = reader(t);
-  const stale = pager.start();
+  const stale = pager();
   replaceWindow('search-result');
-  const current = pager.start();
+  const current = pager();
   reads[0].resolve('old-window');
   await stale;
-  assert.equal(pager.loading(), true);
+  await pager();
+  assert.equal(reads.length, 2);
 
   reads[1].resolve(undefined);
   await current;
-  assert.equal(pager.loading(), false);
 
-  const retry = pager.start();
+  const retry = pager();
   assert.deepEqual(
     reads.map((read) => read.before),
     ['tool-tail', 'search-result', 'search-result'],
