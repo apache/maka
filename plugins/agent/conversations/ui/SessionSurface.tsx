@@ -1136,7 +1136,7 @@ export function createConversationUi(
                   expectedRevision: session.revision,
                   title: session.title,
                   labels: session.labels,
-                  permissions: { settings, revokeGrants: true },
+                  permissions: { settings, revokeGrants: false },
                 });
                 if (changed.kind !== 'committed')
                   throw new UiError('Sandbox settings rejected: {reason}', {
@@ -1471,7 +1471,7 @@ export function createConversationUi(
                 access: access ?? session.permissions.access,
                 requestPermissions: requests ?? session.permissions.requestPermissions,
               },
-              revokeGrants: true,
+              revokeGrants: false,
             },
           });
           if (changed.kind !== 'committed')
