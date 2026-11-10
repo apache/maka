@@ -953,6 +953,7 @@ async fn discovery_search_continues_past_an_empty_bounded_page() {
 async fn bot_controls_survive_admission_and_live_filtering_but_are_not_worker_tools() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
+    f.setting("toolDiscovery", json!(true)).await;
     f.send("Reply once and sleep", json!([])).await;
     let (mut socket, body) = next(&listener).await;
     let names: Vec<_> = body["tools"]
@@ -962,7 +963,7 @@ async fn bot_controls_survive_admission_and_live_filtering_but_are_not_worker_to
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
     assert!(
-        names.contains(&"SendUser") && names.contains(&"sleep"),
+        names.contains(&"SendUser") && names.contains(&"sleep") && names.contains(&"tool_search"),
         "{names:?}"
     );
     tool(

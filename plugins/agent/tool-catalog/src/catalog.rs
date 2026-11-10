@@ -352,7 +352,8 @@ impl ToolCatalog {
         })
     }
 
-    pub(crate) fn always_visible(&self, name: &str) -> bool {
+    /// Whether discovery keeps this registered tool visible after authorization.
+    pub fn always_visible(&self, name: &str) -> bool {
         self.entries
             .get(name)
             .is_some_and(|entry| entry.always_visible)
