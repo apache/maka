@@ -545,7 +545,12 @@ pub(super) fn pending(
             return Err(invalid("invalid pending cursor"));
         }
     }
-    let mut query=c.prepare_cached("SELECT request FROM agent_interaction_pending WHERE session=?1 AND (created_at,request)>(?2,?3) ORDER BY created_at,request LIMIT ?4")?;
+    let mut query = c.prepare_cached(
+        "SELECT p.request FROM agent_interaction_pending p
+        JOIN agent_interaction_requests q ON q.request=p.request JOIN agent_runs r ON r.run=q.run
+        WHERE p.session=?1 AND r.terminal IS NULL AND (p.created_at,p.request)>(?2,?3)
+        ORDER BY p.created_at,p.request LIMIT ?4",
+    )?;
     let ids: Vec<String> = query
         .query_map(
             params![

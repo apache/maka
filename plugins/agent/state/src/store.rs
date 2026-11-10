@@ -900,6 +900,13 @@ impl Store {
             })
             .await
     }
+    pub async fn model_attempt(
+        &self,
+        run: RunId,
+        attempt: ModelAttemptId,
+    ) -> Result<crate::fold::Attempt, StoreError> {
+        self.data.query(ReadModelAttempt(run, attempt)).await
+    }
     pub async fn request(&self, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
         self.data.query(ReadRequest { run, step }).await
     }
@@ -1085,6 +1092,13 @@ impl Query for ReadHistory {
     type Output = Vec<RecordedFact>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::history(c, self.run, self.after_revision, self.limit)
+    }
+}
+struct ReadModelAttempt(RunId, ModelAttemptId);
+impl Query for ReadModelAttempt {
+    type Output = crate::fold::Attempt;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::model_attempt(c, self.0, self.1)
     }
 }
 struct ReadRequest {

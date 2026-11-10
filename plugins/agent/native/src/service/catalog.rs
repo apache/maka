@@ -149,7 +149,7 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         configuration: serde_json::from_value::<StoredSessionConfiguration>(configuration)
             .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?,
     })?;
-    let activity = if record.status.pending_interaction_since.is_some() || record.status.blocked {
+    let activity = if record.status.pending_interaction_since.is_some() {
         SessionActivity::Waiting
     } else if record.status.working {
         SessionActivity::Working

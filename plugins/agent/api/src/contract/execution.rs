@@ -18,7 +18,7 @@
  */
 
 use super::ModelSelection;
-use maka_agent_facts::durable::{BlockerId, BlockerKind, RunId, WaitReason};
+use maka_agent_facts::durable::{BlockerKind, RunId, WaitReason};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -164,27 +164,26 @@ pub struct Execution {
     pub state: ExecutionState,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 #[schemars(rename = "AgentExecutionState")]
 pub enum ExecutionState {
     Admitted,
     Running,
-    Waiting { waits: Vec<WaitReason> },
-    Blocked { blockers: Vec<RunBlocker> },
+    Waiting {
+        waits: Vec<WaitReason>,
+        authority_unavailable: bool,
+    },
     Completed,
-    Failed,
+    Failed {
+        reason: Option<BlockerKind>,
+    },
     Cancelled,
 }
-/// A durable blocker is an observation, never permission to replay an operation.
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentRunBlocker")]
-pub struct RunBlocker {
-    pub id: BlockerId,
-    pub reason: BlockerKind,
-    pub offered_actions: Vec<maka_agent_facts::durable::OfferedRiskAction>,
-}
-
 /// Manual continuation of a terminal Run always admits a new Run. Recovery of an
 /// unfinished Run is internal reconciliation, not this user command.
 #[derive(Deserialize, JsonSchema)]
@@ -227,41 +226,4 @@ pub enum ContinuationRejection {
     AlreadyContinued,
     WorkspaceChanged,
     SafetyCheckFailed,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentAdjudicateRisk")]
-pub struct AdjudicateRisk {
-    pub session_id: String,
-    pub run_id: RunId,
-    /// Compare against the Run-local observation used for this decision.
-    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
-    pub expected_high_water: u64,
-    pub blocker_id: BlockerId,
-    pub decision: RiskDecisionInput,
-}
-
-/// User-supplied evidence bytes. Native stores and pins the immutable content in
-/// the same control transaction; callers cannot select a canonical ContentRef.
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentRiskEvidenceInput")]
-pub enum RiskEvidenceInput {
-    Text {
-        #[schemars(length(min = 1))]
-        text: String,
-    },
-    Json {
-        value: serde_json::Value,
-    },
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentRiskDecisionInput")]
-pub enum RiskDecisionInput {
-    RecordExternalObservation { evidence: RiskEvidenceInput },
-    AuthorizeReplan { evidence: RiskEvidenceInput },
-    CancelBlockedRun { diagnostic: String },
 }

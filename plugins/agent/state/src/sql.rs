@@ -189,6 +189,19 @@ pub(crate) fn exists(c: &Connection, run: RunId) -> Result<bool, StoreError> {
     )
 }
 
+pub(crate) fn model_attempt(
+    c: &Connection,
+    run: RunId,
+    attempt: ModelAttemptId,
+) -> Result<Attempt, StoreError> {
+    let body: String = c
+        .prepare_cached("SELECT body FROM agent_attempts WHERE run=? AND key=?")?
+        .query_row(params![run.to_string(), attempt.to_string()], |row| {
+            row.get(0)
+        })?;
+    Ok(serde_json::from_str(&body)?)
+}
+
 fn projection_rows<T: DeserializeOwned>(
     c: &Connection,
     table: &str,
@@ -420,7 +433,6 @@ pub(crate) fn load(
         }
         return Ok(view);
     }
-    view.cells = crate::cells::load_run(c, run, facts, all)?;
     if let Some(task) = &mut view.external {
         task.effects = crate::external_effects::load_run(c, run, facts, all)?;
         task.publication = crate::external_publication::load_run(c, run, facts, all)?;
@@ -457,7 +469,8 @@ pub(crate) fn load(
     }
     let charged: Vec<String> = c.prepare_cached("SELECT attempt FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='retry_charged' AND run=? AND sequence>=(SELECT sequence FROM agent_facts WHERE run=? AND revision=1) AND sequence<=(SELECT sequence FROM agent_facts WHERE run=? AND revision=?) ORDER BY sequence")?.query_map(params![serde_json::to_string(&view.spec.owner)?,view.spec.session_id,run.to_string(),run.to_string(),run.to_string(),signed(view.revision)?],|r|r.get(0))?.collect::<Result<_,_>>()?;
     targets.attempts.extend(charged);
-    for replan in view.replans.values() {
+    for (id, replan) in &view.replans {
+        targets.blockers.insert(id.to_string());
         targets.risk_scope(&replan.scope);
     }
     for (key, value) in
@@ -486,6 +499,16 @@ pub(crate) fn load(
         targets.steps.insert(value.step.to_string());
         view.attempts.insert(identity(key)?, value);
     }
+    let blocked_cells = view.recovery_failures().filter_map(|reason| match reason {
+        BlockerKind::CodeCellRecoveryUnavailable { cell } => Some(cell.clone()),
+        BlockerKind::OriginalAdmissionUnknown { tool } => view
+            .tools
+            .get(&fold::tool_key(tool))
+            .and_then(|tool| view.original_cell_id(tool))
+            .map(|cell| cell.to_string()),
+        _ => None,
+    });
+    view.cells = crate::cells::load_run(c, run, facts, blocked_cells, all)?;
     if view
         .attempts
         .values()
@@ -562,15 +585,15 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
     for (key, value) in &view.steps {
         upsert(c, "agent_steps", view.run, key, false, value)?;
     }
+    let failed = view.terminal == Some(Terminal::Failed);
     for (key, value) in &view.attempts {
         upsert(
             c,
             "agent_attempts",
             view.run,
             key,
-            (value.closed.is_none() && value.interrupted.is_none())
-                || (value.admission.is_some()
-                    && value.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed),
+            fold::attempt_unsettled(value)
+                || (!failed && value.closed.is_none() && value.interrupted.is_none()),
             value,
         )?;
     }
@@ -580,7 +603,11 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             "agent_tools",
             view.run,
             key,
-            fold::tool_pending(value),
+            if failed {
+                view.tool_unsettled(value)
+            } else {
+                fold::tool_pending(value)
+            },
             value,
         )?;
     }
@@ -1093,6 +1120,18 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
             "native budget admission basis requires its live admission guard",
         ));
     }
+    if matches!(view.spec.origin, RunOrigin::Local) {
+        // Late receipts and a successor admission share the same Root transaction.
+        let prior: Option<String> = c.prepare_cached(
+            "SELECT run FROM (SELECT run,terminal,cancelled_by_risk FROM agent_runs WHERE session=? ORDER BY admission_sequence DESC LIMIT 1)
+             WHERE terminal=json_quote('failed') OR cancelled_by_risk=1",
+        )?.query_row([&view.spec.session_id], |row| row.get(0)).optional()?;
+        if let Some(prior) = prior
+            && load(c, identity(prior)?, &[], false)?.blocks_followup()
+        {
+            return Err(invalid("previous Run has unsettled original operations"));
+        }
+    }
     if let Some(guard) = &admission.guard {
         guard.validate(c, admission.run, &view.spec)?;
     }
@@ -1227,7 +1266,6 @@ pub(crate) fn append(
                     Fact::StopRequested { .. }
                         | Fact::ApprovalRecorded { .. }
                         | Fact::ApprovalRefused { .. }
-                        | Fact::RiskAdjudicated { .. }
                         | Fact::Cell {
                             event: maka_agent_facts::cells::CellEvent::ChildApprovalRecorded { .. }
                         }
@@ -1327,6 +1365,15 @@ pub(crate) fn append(
             view.check_effect_admission()?;
         }
         model_evidence::validate_control(c, &view, &change.fact)?;
+        if let Fact::BlockerResolved { blocker, evidence } = &change.fact
+            && view
+                .blockers
+                .get(blocker)
+                .is_some_and(|blocker| blocker.reason.is_legacy_compaction_lookup())
+        {
+            pin(c, run, evidence)?;
+            crate::store::fallback::validate_legacy_lookup_resolution(c, &view, evidence)?;
+        }
         if let Fact::ContextCompacted { baseline } = &change.fact {
             compaction::validate(c, &view, baseline, change.at)?;
         }
@@ -1727,10 +1774,10 @@ pub(crate) fn ready(
     let mut statement = c.prepare_cached(&format!("WITH business AS (
         SELECT r.run,r.admission_sequence,r.session FROM agent_runs r
         WHERE r.owner=?1 AND r.terminal IS NULL AND r.local=1 AND r.admission_sequence>?2
-        AND (NOT EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND (?5=0 OR json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable'))
-            OR r.cancelled_by_risk=1
-            OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
-        AND (r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
+        AND (?5=1 OR NOT {AUTHORITY_BLOCKED} OR r.cancelled_by_risk=1 OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
+        AND (EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable')
+        OR r.replans != '{{}}'
+        OR ((r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
             OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED})
             OR (r.stopped=1 AND json_extract(r.external,'$.admitted')=1
                 AND json_extract(r.external,'$.closed') IS NULL
@@ -1741,7 +1788,7 @@ pub(crate) fn ready(
             {RECONCILABLE_WAIT}
             OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS (
                 SELECT 1 FROM agent_cells c WHERE c.run=w.run AND c.cell=json_extract(w.body,'$.reason.cell')
-                AND json_extract(c.body,'$.status.kind') IS 'running'))))))
+                AND json_extract(c.body,'$.status.kind') IS 'running'))))))))
         SELECT run,admission_sequence,session,NULL AS cleanup_task FROM business
         UNION ALL
         SELECT r.run,r.admission_sequence,r.session,json_extract(r.external,'$.task') AS cleanup_task
