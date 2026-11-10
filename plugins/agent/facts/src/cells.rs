@@ -160,6 +160,11 @@ pub enum CellEvent {
         input: ContentRef,
         resources: Vec<ResourceRecovery>,
     },
+    ChildDisplayRecorded {
+        cell: CellId,
+        operation: Uuid,
+        display: crate::durable::ToolDisplay,
+    },
     ChildRejected {
         cell: CellId,
         operation: Uuid,
@@ -250,6 +255,7 @@ impl CellEvent {
             Self::Started { cell, .. }
             | Self::VmCleanupUnconfirmed { cell, .. }
             | Self::VmBound { cell, .. }
+            | Self::ChildDisplayRecorded { cell, .. }
             | Self::ChildRejected { cell, .. }
             | Self::ChildPrepared { cell, .. }
             | Self::ChildApprovalRecorded { cell, .. }
@@ -282,7 +288,8 @@ impl CellEvent {
     pub fn is_late(&self) -> bool {
         matches!(
             self,
-            Self::VmCleanupUnconfirmed { .. }
+            Self::ChildDisplayRecorded { .. }
+                | Self::VmCleanupUnconfirmed { .. }
                 | Self::ChildRejected { .. }
                 | Self::ChildApprovalRecorded { .. }
                 | Self::ChildBound { .. }
@@ -339,6 +346,7 @@ impl CellEvent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CellChild {
     pub name: String,
+    pub display: Option<crate::durable::ToolDisplay>,
     pub semantics: ToolSemantics,
     pub input: ContentRef,
     pub resources: Vec<ResourceRecovery>,
@@ -538,6 +546,7 @@ impl CellView {
                     *operation,
                     CellChild {
                         name: name.clone(),
+                        display: None,
                         semantics: *semantics,
                         input: input.clone(),
                         resources: resources.clone(),
@@ -550,6 +559,23 @@ impl CellView {
                         rejected: None,
                     },
                 );
+            }
+            CellEvent::ChildDisplayRecorded {
+                operation, display, ..
+            } => {
+                display.validate().map_err(CellTransitionError::from)?;
+                let child = self
+                    .children
+                    .get_mut(operation)
+                    .ok_or("Cell child not prepared")?;
+                if child
+                    .display
+                    .as_ref()
+                    .is_some_and(|original| original != display)
+                {
+                    return Err(CellTransitionError::Conflict("Cell child display changed"));
+                }
+                child.display = Some(display.clone());
             }
             CellEvent::ChildRejected {
                 operation,

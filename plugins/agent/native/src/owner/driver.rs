@@ -162,7 +162,7 @@ impl PreparedTool {
     pub(super) fn approval_id(&self) -> Option<ApprovalId> {
         self.effect.approval_id()
     }
-    fn display(&self, locale: &str) -> ToolDisplay {
+    pub(super) fn display(&self, locale: &str) -> ToolDisplay {
         self.effect.display(locale)
     }
     pub(super) async fn prepare(

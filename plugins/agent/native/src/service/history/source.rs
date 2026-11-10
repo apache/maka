@@ -490,7 +490,7 @@ async fn source_value(
         path.as_deref(),
         position,
         8192,
-        false,
+        field == SourceField::Result,
         field == SourceField::Original,
         stop,
     )

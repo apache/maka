@@ -240,7 +240,12 @@ impl CodeCells {
                             .start(input, catalog, port, effect_cancel, steering)
                             .await
                     })
-                }))
+                })
+                .titled(maka_agent_facts::display::Text::localized(
+                    "Run script",
+                    "运行脚本",
+                    "執行腳本",
+                )))
             }
             "wait" => {
                 let input = super::wait_input(input)?;

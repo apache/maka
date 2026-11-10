@@ -1354,7 +1354,10 @@ fn tool_locator(
             CellEvent::ChildPrepared {
                 cell, operation, ..
             } => (format!("cell:{cell}:{operation}"), true),
-            CellEvent::ChildRejected {
+            CellEvent::ChildDisplayRecorded {
+                cell, operation, ..
+            }
+            | CellEvent::ChildRejected {
                 cell, operation, ..
             }
             | CellEvent::ChildApprovalRecorded {

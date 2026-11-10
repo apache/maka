@@ -1165,7 +1165,27 @@ async fn case(
         *known_event
     );
     let returned_child = source(&clients[1], session, &before, child_result, "result").await?;
-    assert_eq!(returned_child, known_event["reply"]);
+    shell_output(&returned_child, &nonce);
+    let card = phase("reopened Shell card", clients[1].query("agent", "source", json!({
+        "sessionId":session,"through":before["through"],
+        "source":{"kind":"row","position":{"kind":"live","sequence":child_result["item"]["sequence"],"fact":child_result["item"]["recorded"]["id"],"itemIndex":0}},
+        "field":"result","path":["value","output","stdout"],"position":{"kind":"start"}
+    }))).await?;
+    assert_eq!(card["kind"], "ready");
+    assert_eq!(card["source"]["text"].as_str().unwrap().trim(), nonce);
+    let call = &card["source"]["tool"]["call"];
+    assert_eq!(call["title"]["fallback"], "Write the durability marker");
+    assert_eq!(call["presentation"], "maka.workspace.Processes@1/execute");
+    let history = phase("reopened tool presentation", clients[1].query("agent", "history", json!({
+        "sessionId":session,"through":before["through"],"position":{"kind":"tail"},"includeThinking":true,"view":"conversation"
+    }))).await?;
+    assert!(
+        history["chunks"].as_array().unwrap().iter().any(|row| {
+            row["tool"]["call"]["name"] == "exec"
+                && row["tool"]["call"]["title"]["fallback"] == "Run script"
+        }),
+        "CodeMode keeps its producer-owned script label after reopening"
+    );
     let report = {
         let state = model.lock().unwrap();
         assert_eq!(state.step, Step::Done);
@@ -1280,7 +1300,7 @@ fn cell_scripts(language: CodeLanguage, command: &str, nonce: &str) -> (String, 
         CodeLanguage::JavaScript => (
             format!("store('a',1); text({{stage:'baselineReady',nonce:{nonce}}});"),
             format!(
-                "if(load('a')!==1 || load('b')!==undefined) throw new Error('baseline not canonical');\nconst child=await tools.Shell({{command:{command},login:false,timeout_ms:10000}});\nstore('a',2); store('b',3); text({{stage:'draftReady',nonce:{nonce},a:load('a'),b:load('b'),child}});\nawait yield_control(); await new Promise(resolve=>setTimeout(resolve,600000));"
+                "if(load('a')!==1 || load('b')!==undefined) throw new Error('baseline not canonical');\nconst child=await tools.Shell({{command:{command},title:\"Write the durability marker\",login:false,timeout_ms:10000}});\nstore('a',2); store('b',3); text({{stage:'draftReady',nonce:{nonce},a:load('a'),b:load('b'),child}});\nawait yield_control(); await new Promise(resolve=>setTimeout(resolve,600000));"
             ),
             format!(
                 "const a=load('a'); const b_missing=load('b')===undefined; if(a!==1 || !b_missing) throw new Error('interrupted draft leaked'); text({{stage:'canonicalRead',nonce:{nonce},a,b_missing}});"
@@ -1300,6 +1320,7 @@ if load("a") != 1 or load("b") is not None:
 
 child = await tools.Shell({{
     "command": {command},
+    "title": "Write the durability marker",
     "login": False,
     "timeout_ms": 10000,
 }})
