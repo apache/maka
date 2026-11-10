@@ -456,7 +456,7 @@ export function executor(
       await nextest(id, true);
       await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
     } else if (id === 'native') {
-      if (['darwin', 'win32'].includes(process.platform)) await nextest(id, true, filter, extra);
+      if (process.platform === 'darwin') await nextest(id, true, filter, extra);
       else await cargo(['check', ...suites.native.cargoArgs]);
     } else if (!['tooling', 'windows-ci'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
@@ -513,7 +513,7 @@ export function executor(
       ]);
     } else if (id === 'termina') {
       await nextest(id);
-    } else if (id === 'native' && ['darwin', 'win32'].includes(process.platform)) {
+    } else if (id === 'native' && process.platform === 'darwin') {
       await nextest(id, false, filter, extra);
     } else if (id === 'contracts') {
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);

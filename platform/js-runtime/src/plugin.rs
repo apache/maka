@@ -44,6 +44,13 @@ pub enum Error {
     #[error("plugin VM: {diagnostic}")]
     Unavailable { diagnostic: String },
 }
+impl Error {
+    fn diagnostic(&self) -> &str {
+        match self {
+            Self::Rejected { diagnostic } | Self::Unavailable { diagnostic } => diagnostic,
+        }
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 
 const INPUT_WINDOW: usize = 32 * 1024 * 1024;
@@ -176,7 +183,7 @@ impl Health {
             } else {
                 "script poll"
             };
-            failed(format!("{error} (phase: {phase})"))
+            failed(format!("{} (phase: {phase})", error.diagnostic()))
         });
         self.stopped.cancel();
         if let Some(isolate) = self.isolate.get() {
