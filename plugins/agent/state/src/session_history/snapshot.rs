@@ -423,6 +423,23 @@ impl Snapshot {
             ))
             .await
     }
+    /// Model projection follows the explicit immutable source boundary; history
+    /// and exported snapshots still retain every earlier imported message.
+    pub async fn model_messages(
+        &self,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<ImportedPage, StoreError> {
+        let Origin::Imported { model_start, .. } = self.manifest().await?.origin else {
+            return Err(invalid("model messages require an imported source"));
+        };
+        self.imported(
+            after.max(model_start.and_then(|start| start.checked_sub(1))),
+            limit,
+        )
+        .await
+    }
+
     pub async fn imported(
         &self,
         after: Option<u64>,

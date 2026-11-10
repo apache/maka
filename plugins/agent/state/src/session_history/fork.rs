@@ -156,7 +156,8 @@ fn validate_ranges(
         if view.terminal.is_none()
             || unknown
             || view.attempts.values().any(|attempt| {
-                attempt.closed.is_none() || attempt.cleanup != OperationCleanup::Confirmed
+                (attempt.closed.is_none() && attempt.interrupted.is_none())
+                    || attempt.cleanup != OperationCleanup::Confirmed
             })
             || view.tools.values().any(crate::fold::tool_pending)
             || view.cells.values().any(|cell| cell.pending())

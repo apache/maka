@@ -164,7 +164,9 @@ impl Cursor {
             }
             let next = match &mut self.plan {
                 Plan::Init(source, mode) => {
-                    let plan = initialize(source.clone(), *mode, self.budget.clone()).await?;
+                    // Keep initialization out of every recursive cursor's read future.
+                    let plan =
+                        Box::pin(initialize(source.clone(), *mode, self.budget.clone())).await?;
                     self.plan = plan;
                     continue;
                 }
@@ -259,16 +261,7 @@ impl ByteSource for Joined {
     }
 }
 
-fn initialize(
-    source: JsonSource,
-    mode: Mode,
-    budget: Arc<dyn SourceBudget>,
-) -> impl std::future::Future<Output = io::Result<Plan>> + Send {
-    // Child cursors recurse; construct the initializer outside each cursor's poll frame.
-    Box::pin(initialize_inner(source, mode, budget))
-}
-
-async fn initialize_inner(
+async fn initialize(
     source: JsonSource,
     mode: Mode,
     budget: Arc<dyn SourceBudget>,

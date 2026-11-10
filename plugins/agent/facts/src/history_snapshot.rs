@@ -104,6 +104,9 @@ pub enum Origin {
     Imported {
         source: crate::import::Source,
         fingerprint: ContentRef,
+        /// First message used for model context; earlier messages remain browsable.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_start: Option<u64>,
     },
 }
 
@@ -309,6 +312,7 @@ impl Manifest {
             Origin::Imported {
                 source,
                 fingerprint,
+                ..
             } => {
                 source.validate()?;
                 fingerprint.validate()?;

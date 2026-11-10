@@ -358,6 +358,9 @@ fn entry_refs(
 }
 
 fn validate_index(c: &Connection, manifest: &Manifest) -> Result<(), StoreError> {
+    if let Origin::Imported { model_start, .. } = &manifest.origin {
+        super::super::imported::validate_model_start(c, manifest.id, *model_start)?;
+    }
     let snapshot = manifest.id.to_string();
     let orphan: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=?1 AND e.run IS NOT NULL AND e.kind!='run' AND NOT EXISTS(SELECT 1 FROM agent_history_snapshot_entries r WHERE r.snapshot=e.snapshot AND r.kind='run' AND r.run=e.run))", [&snapshot], |row| row.get(0))?;
     let duplicates: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='run' GROUP BY run HAVING count(*)!=1)", [&snapshot], |row| row.get(0))?;

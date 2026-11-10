@@ -38,7 +38,7 @@ impl DriverModel {
     ) -> Result<(), RunError> {
         let mut after = None;
         loop {
-            let page = snapshot.imported(after, 256).await?;
+            let page = snapshot.model_messages(after, 256).await?;
             for (ordinal, message) in page.items {
                 if self.cancellation.is_cancelled() {
                     return Err(RunError::Cancelled);

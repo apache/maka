@@ -147,14 +147,25 @@ impl Fixture {
             .clone()
     }
     async fn change(&self, task: &str, kind: &str) {
-        let d = self.detail(task).await;
-        let r = self
-            .query(
-                "schedule",
-                json!({"kind":kind,"taskId":task,"revision":d["revision"]}),
-            )
-            .await;
-        assert_eq!(r["kind"], "committed", "{r}");
+        tokio::time::timeout(Duration::from_secs(45), async {
+            loop {
+                let d = self.detail(task).await;
+                let r = self
+                    .query(
+                        "schedule",
+                        json!({"kind":kind,"taskId":task,"revision":d["revision"]}),
+                    )
+                    .await;
+                match r["kind"].as_str() {
+                    Some("committed") => return,
+                    // Settlement can advance the plan revision between get and change.
+                    Some("conflict") => tokio::task::yield_now().await,
+                    _ => panic!("{kind} {task}: {r}"),
+                }
+            }
+        })
+        .await
+        .expect("schedule change did not settle");
     }
     async fn settled(&self, task: &str, count: usize) -> Value {
         tokio::time::timeout(Duration::from_secs(45), async {
@@ -174,6 +185,22 @@ impl Fixture {
     }
     async fn outbox(&self) -> Value {
         self.query("botOutbox", json!({})).await["messages"].clone()
+    }
+    async fn quiescent(&self, session: &str) {
+        let owner = self.owner();
+        loop {
+            if owner
+                .durable
+                .session_quiescence(owner.run_owner(), session.to_owned())
+                .await
+                .unwrap()
+                .is_quiescent()
+                && !owner.runs.state().await.busy(session)
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
     }
     async fn close(&mut self) {
         let errors = self.rig.finish().await;
@@ -291,22 +318,7 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
                 let messages = body["messages"].as_array().unwrap();
                 panic!("sleep requested another model step: {:?}", &messages[messages.len().saturating_sub(3)..]);
             },
-            () = async {
-        loop {
-            let owner = f.owner();
-            if owner
-                .durable
-                .session_quiescence(owner.run_owner(), f.bot.clone())
-                .await
-                .unwrap()
-                .is_quiescent()
-                && !owner.runs.state().await.busy(&f.bot)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-            } => {}
+            () = f.quiescent(&f.bot) => {}
         }
     })
     .await;
@@ -983,6 +995,9 @@ async fn bot_controls_survive_admission_and_live_filtering_but_are_not_worker_to
         "{names:?}"
     );
     finish_text(&mut socket, "Ordinary answer").await;
+    tokio::time::timeout(Duration::from_secs(45), f.quiescent(session))
+        .await
+        .expect("ordinary Run did not settle before Host teardown");
     f.close().await;
 }
 
