@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { projectProcessGroups, stableRowId, turnWorkFold } from '../app/processGroups.ts';
+import {
+  projectProcessGroups,
+  sameProcessRows,
+  stableRowId,
+  turnWorkFold,
+} from '../app/processGroups.ts';
 import { historyTurnKey } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
@@ -95,6 +100,20 @@ test('a turn has work to fold only beside its final answer', () => {
   );
 });
 
+test('thinking appears in turn work when there is a readable summary', () => {
+  const opaque = row('opaque', '', 1, { role: 'thinking', field: 'thinking' });
+  const preview = row('preview', '\n ', 2, { role: 'thinking', field: 'thinking' });
+  const project = (rows) => projectProcessGroups({ rows, toolActivity: [], activeTurnId: 'run' });
+
+  const hidden = project([opaque, preview]);
+  assert.deepEqual(hidden.entries, []);
+  assert.equal(hidden.turns.get('run').worked, false);
+
+  const withText = { ...preview, text: '\n Checking the log' };
+  assert.equal(sameProcessRows([preview], [withText]), false);
+  assert.deepEqual(project([opaque, withText]).entries[0].rowIds, [stableRowId(withText)]);
+});
+
 test('work folds on the first streamed answer and reopens if the turn does more work', () => {
   const request = row('request', 'Summarize', 1, { role: 'user' });
   const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
@@ -123,6 +142,8 @@ test('work folds on the first streamed answer and reopens if the turn does more 
     toolActivity: [{ toolUseId: 'read', turnId: 'run', startSequence: 4 }],
   });
   assert.equal(chat(resumed), 'open');
+  const nextThought = row('next-thought', '', 4, { role: 'thinking', field: 'thinking' });
+  assert.equal(chat(project([thought, answer, nextThought])), 'open');
   assert.equal(chat(project([thought, answer], { answerTurnId: null })), 'open');
   const timing = { startedAt: 1, finished: { outcome: 'completed', at: 5 } };
   const catchingUp = project([{ ...thought, timing }, answer], { activeTurnId: null });
