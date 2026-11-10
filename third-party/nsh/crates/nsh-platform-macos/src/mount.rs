@@ -575,6 +575,11 @@ impl Mounter {
     }
 
     fn command(&self, surface: &Rc<Surface>, id: NodeId, command: &Command) {
+        // Pixel terminals use desktop layout, not OS windows or shell integration.
+        // Gate before routing secondary-window commands around system::command.
+        if surface.terminal.get() && matches!(command, Command::Desktop(_)) {
+            return;
+        }
         let view = self.views.get(&id);
         match command {
             // An input edits; a pressable takes the keyboard focus as Tab

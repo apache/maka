@@ -447,6 +447,11 @@ impl Mounter {
     }
 
     fn command(&self, surface: &Rc<Surface>, id: NodeId, command: &Command) {
+        // Pixel terminals use desktop layout, not OS windows or shell integration.
+        // Gate before routing secondary-window commands around system::command.
+        if surface.terminal_active.get().is_some() && matches!(command, Command::Desktop(_)) {
+            return;
+        }
         let view = self.views.get(id);
         let view = view.as_ref();
         match command {

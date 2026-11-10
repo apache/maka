@@ -733,6 +733,137 @@ mod tests {
     };
     use crate::{geom::rect, navigation, surface::Surface, view::NshView};
 
+    #[cfg(feature = "js")]
+    #[test]
+    fn pixel_terminal_ignores_desktop_windows_and_tray_but_keeps_editing() {
+        use super::TerminalSurface;
+        use nsh_core::{
+            Command, MountItem, ROOT_ID,
+            desktop::{DesktopCommand, OpenWindow, Tray, WindowRequest},
+        };
+        use nsh_engine::{App, Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, NativeSurface, size};
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::{Shell::NIN_SELECT, WindowsAndMessaging::IsWindowVisible},
+        };
+
+        let code = nsh_bundler::compile_module("TerminalIsolation.tsx", r#"
+            import { View, mount } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => <View style={{flex: 1}}><Input autoFocus defaultValue="terminal" style={{height: 40}} /></View>);
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+        config.ui_sets = vec![nsh_base::registry()];
+        let terminal = TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|frame| {
+                frame.submit().unwrap().complete().unwrap();
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let until = |done: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if done() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "terminal did not settle");
+                std::thread::yield_now();
+            }
+        };
+        until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+        let surface = terminal.view.surface();
+        let desktop = |id, command| {
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id,
+                    command: Command::Desktop(Box::new(command)),
+                },
+            )
+        };
+        let mut tray = Tray::default();
+        tray.click = 1;
+        let click = || {
+            crate::tray::message(
+                surface,
+                surface.hwnd(),
+                WPARAM(0),
+                LPARAM(NIN_SELECT as isize),
+            )
+        };
+        // A live desktop tray must deliver its native click even without Explorer.
+        surface.terminal_active.set(None);
+        desktop(ROOT_ID, DesktopCommand::SetTray(Some(tray.clone())));
+        let before = surface.events_sent();
+        click();
+        assert_eq!(surface.events_sent(), before + 1);
+        desktop(ROOT_ID, DesktopCommand::SetTray(None));
+
+        // Inactive is still a terminal, not a desktop surface.
+        for (window, active) in [(2000, false), (2002, true)] {
+            surface.terminal_active.set(Some(active));
+            desktop(ROOT_ID, DesktopCommand::SetTray(Some(tray.clone())));
+            let before = surface.events_sent();
+            click();
+            assert_eq!(
+                surface.events_sent(),
+                before,
+                "terminal acquired a native tray"
+            );
+            desktop(ROOT_ID, DesktopCommand::Request(WindowRequest::Focus));
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Create {
+                    id: window,
+                    kind: ViewKind::Modal,
+                },
+            );
+            desktop(
+                window,
+                DesktopCommand::OpenWindow(Box::new(OpenWindow::default())),
+            );
+            desktop(window, DesktopCommand::Request(WindowRequest::Focus));
+            assert!(
+                surface.windows.borrow().is_empty(),
+                "terminal opened a secondary HWND"
+            );
+            // SAFETY: the terminal owns this live HWND on the current UI thread.
+            assert!(
+                !unsafe { IsWindowVisible(surface.hwnd()) }.as_bool(),
+                "terminal exposed its buffer window"
+            );
+        }
+        {
+            let _scope = terminal.scope();
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::SetClipboard("terminal transport".into()),
+                },
+            );
+        }
+        assert_eq!(
+            terminal.take_clipboard_write().as_deref(),
+            Some("terminal transport")
+        );
+        terminal.set_selected_text_range(8..8).unwrap();
+        assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
+        until(&mut || terminal.editor_text().as_deref() == Some("terminal!"));
+        terminal.shutdown();
+    }
+
     #[test]
     fn clipboard_transport_receipt_keeps_native_paste_text() {
         let clipboard = Clipboard::default();
