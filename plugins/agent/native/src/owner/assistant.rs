@@ -100,18 +100,17 @@ impl Owner {
             let home = self.instruction_home.clone();
             tokio::task::spawn_blocking(move || {
                 let mut global_instruction = String::new();
-                if let Some(home) = &home {
-                    if let Ok(source) = global_instructions::selected(home)
-                        && let Ok(Some(text)) = global_instructions::read_selected(home, source)
-                    {
-                        global_instruction = parse_instruction_files([(
-                            InstructionFile::Agents,
-                            String::from_utf8_lossy(&text).into_owned(),
-                        )])
-                        .pop()
-                        .map(|instruction| instruction.text)
-                        .unwrap_or_default();
-                    }
+                if let Some(home) = &home
+                    && let Ok(source) = global_instructions::selected(home)
+                    && let Ok(Some(text)) = global_instructions::read_selected(home, source)
+                {
+                    global_instruction = parse_instruction_files([(
+                        InstructionFile::Agents,
+                        String::from_utf8_lossy(&text).into_owned(),
+                    )])
+                    .pop()
+                    .map(|instruction| instruction.text)
+                    .unwrap_or_default();
                 }
                 let Some(workspace) = workspace else {
                     return Ok((global_instruction, String::new()));

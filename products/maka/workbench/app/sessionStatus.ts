@@ -23,7 +23,13 @@ import type {
   AgentSessionActivity,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
-export type ConversationStatus = AgentRunState | 'loading' | 'idle' | 'failed';
+export type ConversationStatus =
+  | AgentRunState
+  | 'loading'
+  | 'idle'
+  | 'failed'
+  | 'waiting'
+  | 'blocked';
 
 export const sessionStatusCaption: Record<
   AgentSessionActivity | 'loading' | 'stopping' | 'failed',

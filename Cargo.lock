@@ -531,6 +531,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "asyncband"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2050892d4691cf110586070786712b504985a4d37ed64a9cd8a402718e1706"
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6046,21 +6052,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ksni"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf"
-dependencies = [
- "arc-swap",
- "crossbeam-queue",
- "futures-util",
- "pastey",
- "serde",
- "tokio",
- "zbus",
-]
-
-[[package]]
 name = "kstring"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6293,6 +6284,7 @@ dependencies = [
  "maka-host-runtime",
  "maka-interactions-api",
  "maka-plugin-core",
+ "maka-process",
  "maka-workspace-api",
  "serde",
  "serde_json",
@@ -6329,16 +6321,23 @@ dependencies = [
 name = "maka-agent-authority"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "hex",
  "maka-agent-api",
  "maka-agent-facts",
+ "maka-agent-ports",
+ "maka-computer-use",
  "maka-event-log",
+ "maka-fs-tools",
  "maka-host-runtime",
+ "maka-plugin-core",
+ "maka-process",
  "maka-sandbox",
  "serde_json",
  "sha2 0.11.1",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -6355,20 +6354,34 @@ dependencies = [
  "image",
  "image-webp",
  "imagesize 0.15.0",
+ "maka-agent-api",
  "maka-agent-facts",
+ "maka-agent-native",
  "maka-agent-ports",
+ "maka-agent-state",
  "maka-capabilities",
  "maka-code-runtime",
+ "maka-config",
  "maka-event-log",
+ "maka-files-native",
+ "maka-host-js",
+ "maka-host-runtime",
  "maka-model",
+ "maka-packages",
  "maka-plugin-core",
  "maka-presentation",
  "maka-provider-protocol",
+ "maka-providers",
+ "maka-sandbox",
  "maka-session-state",
+ "maka-skills-api",
+ "maka-skills-native",
  "maka-tools",
+ "maka-workspace-api",
  "miniz_oxide 0.9.1",
  "png 0.18.1",
  "rusqlite",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -6409,6 +6422,7 @@ dependencies = [
 name = "maka-agent-native"
 version = "0.2.0"
 dependencies = [
+ "asyncband",
  "axum",
  "base64 0.23.1",
  "cap-fs-ext",
@@ -6426,6 +6440,7 @@ dependencies = [
  "maka-agent-engine",
  "maka-agent-facts",
  "maka-agent-ports",
+ "maka-agent-state",
  "maka-assistant",
  "maka-capabilities",
  "maka-code-runtime",
@@ -6476,6 +6491,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
@@ -6495,6 +6511,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-capabilities",
  "maka-plugin-core",
+ "maka-sandbox",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -6502,6 +6519,32 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "maka-agent-state"
+version = "0.2.0"
+dependencies = [
+ "cap-std",
+ "hex",
+ "maka-agent-facts",
+ "maka-event-log",
+ "maka-plugin-core",
+ "maka-provider-protocol",
+ "maka-sandbox",
+ "maka-session-state",
+ "regex",
+ "rusqlite",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -6533,6 +6576,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -6547,6 +6591,7 @@ dependencies = [
  "futures-util",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -6601,12 +6646,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "jiff",
  "libc",
  "log",
  "maka-acp",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-agent-ports",
+ "maka-agent-state",
  "maka-app-client",
  "maka-capabilities",
  "maka-code-runtime",
@@ -6626,6 +6673,7 @@ dependencies = [
  "maka-settings-native",
  "maka-skills-api",
  "maka-terminal-shell",
+ "maka-tools",
  "maka-transport",
  "maka-ui-build",
  "maka-workbench",
@@ -6662,12 +6710,14 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
+ "maka-process",
  "maka-session-state",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -6679,18 +6729,28 @@ dependencies = [
  "jsonschema 0.60.1",
  "maka-agent-api",
  "maka-agent-authority",
+ "maka-agent-engine",
  "maka-agent-facts",
+ "maka-agent-native",
+ "maka-agent-state",
  "maka-capabilities",
  "maka-code-runtime",
  "maka-computer-use",
+ "maka-config",
  "maka-event-log",
  "maka-fs-tools",
+ "maka-host-js",
  "maka-host-runtime",
  "maka-js-runtime",
+ "maka-packages",
  "maka-plugin-core",
+ "maka-providers",
  "maka-sandbox",
+ "maka-skills-api",
+ "maka-skills-native",
  "maka-workspace-api",
  "maka-workspace-support",
+ "rusqlite",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -6761,6 +6821,7 @@ dependencies = [
  "maka-capabilities",
  "maka-event-log",
  "maka-plugin-core",
+ "maka-sandbox",
  "rusqlite",
  "serde",
  "serde_json",
@@ -6782,6 +6843,7 @@ dependencies = [
  "jsonschema 0.60.1",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -6821,8 +6883,6 @@ name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
  "embed-resource",
- "image",
- "ksni",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",
@@ -6831,12 +6891,10 @@ dependencies = [
  "nsh-platform-macos",
  "nsh-platform-windows",
  "objc2-app-kit 0.3.2",
- "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
- "zbus",
 ]
 
 [[package]]
@@ -6844,22 +6902,15 @@ name = "maka-event-log"
 version = "0.2.0"
 dependencies = [
  "async-channel",
- "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
  "futures-util",
  "hex",
  "ignore",
  "libc",
- "maka-agent-facts",
- "maka-agent-ports",
- "maka-capabilities",
  "maka-packages",
  "maka-plugin-core",
- "maka-presentation",
  "maka-sandbox",
- "postcard",
- "regex",
  "rusqlite",
  "schemars 1.2.3",
  "serde",
@@ -6869,7 +6920,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
- "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -6888,6 +6938,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -6911,6 +6962,8 @@ dependencies = [
  "maka-agent-api",
  "maka-agent-authority",
  "maka-agent-facts",
+ "maka-agent-state",
+ "maka-capabilities",
  "maka-event-log",
  "maka-fs-tools",
  "maka-host-runtime",
@@ -6949,6 +7002,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -6965,6 +7019,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -7003,6 +7058,7 @@ name = "maka-host-runtime"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "cap-std",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
@@ -7051,8 +7107,10 @@ dependencies = [
 name = "maka-insights"
 version = "0.2.0"
 dependencies = [
+ "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
  "serde",
  "serde_json",
 ]
@@ -7096,6 +7154,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-code-runtime",
  "maka-plugin-core",
+ "maka-session-state",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7139,6 +7198,7 @@ dependencies = [
  "maka-agent-ports",
  "maka-capabilities",
  "maka-network",
+ "maka-plugin-core",
  "maka-provider-protocol",
  "maka-providers",
  "regex",
@@ -7202,13 +7262,17 @@ dependencies = [
 name = "maka-plugin-core"
 version = "0.2.0"
 dependencies = [
+ "futures-util",
  "hex",
  "jsonschema 0.60.1",
+ "maka-sandbox",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -7217,10 +7281,12 @@ name = "maka-presentation"
 version = "0.2.0"
 dependencies = [
  "maka-agent-facts",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -7232,7 +7298,9 @@ dependencies = [
  "libc",
  "maka-agent-facts",
  "maka-network",
+ "maka-plugin-core",
  "maka-sandbox",
+ "notify",
  "rustix 1.1.5",
  "schemars 1.2.3",
  "serde",
@@ -7285,6 +7353,7 @@ dependencies = [
  "maka-acp-native",
  "maka-agent-native",
  "maka-agent-ports",
+ "maka-agent-state",
  "maka-capabilities",
  "maka-computer-native",
  "maka-config",
@@ -7295,6 +7364,7 @@ dependencies = [
  "maka-interactions-native",
  "maka-model",
  "maka-network",
+ "maka-plugin-core",
  "maka-processes-native",
  "maka-providers",
  "maka-settings-native",
@@ -7342,13 +7412,16 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
+ "maka-agent-state",
  "maka-code-runtime",
  "maka-event-log",
+ "maka-plugin-core",
  "maka-session-state",
  "maka-tools",
  "monty",
  "monty-alloc",
  "monty-types",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -7383,21 +7456,12 @@ dependencies = [
 name = "maka-scheduler"
 version = "0.2.0"
 dependencies = [
- "futures-util",
- "hex",
  "jiff",
  "maka-agent-facts",
- "maka-capabilities",
- "maka-event-log",
- "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "tempfile",
  "thiserror 2.0.21",
- "tokio",
- "tokio-util",
  "uuid",
 ]
 
@@ -7409,6 +7473,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-app-client",
+ "maka-capabilities",
  "maka-event-log",
  "maka-host-runtime",
  "maka-interactions-api",
@@ -7425,6 +7490,7 @@ dependencies = [
 name = "maka-session-import"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "dunce",
  "futures-util",
  "hex",
@@ -7432,6 +7498,9 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
+ "maka-provider-protocol",
+ "maka-sandbox",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -7452,6 +7521,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -7490,6 +7560,7 @@ dependencies = [
  "maka-agent-api",
  "maka-agent-facts",
  "maka-agent-ports",
+ "maka-agent-state",
  "maka-capabilities",
  "maka-config",
  "maka-event-log",
@@ -7539,6 +7610,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-host-runtime",
  "maka-plugin-core",
+ "maka-sandbox",
  "maka-skills",
  "schemars 1.2.3",
  "serde",
@@ -7562,6 +7634,7 @@ dependencies = [
  "maka-fs-tools",
  "maka-host-runtime",
  "maka-network",
+ "maka-packages",
  "maka-plugin-core",
  "maka-process",
  "maka-sandbox",
@@ -7569,6 +7642,7 @@ dependencies = [
  "maka-skills-api",
  "maka-workspace-support",
  "percent-encoding",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -7588,6 +7662,7 @@ dependencies = [
  "crossterm",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-sandbox",
  "maka-workbench",
  "nsh-base",
  "nsh-bundler",
@@ -7611,11 +7686,13 @@ version = "0.2.0"
 dependencies = [
  "jsonschema 0.60.1",
  "maka-agent-facts",
+ "maka-plugin-core",
  "maka-session-state",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
  "tokio-util",
 ]
 
@@ -7625,11 +7702,14 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
+ "maka-agent-state",
  "maka-code-runtime",
  "maka-event-log",
  "maka-js-runtime",
+ "maka-plugin-core",
  "maka-python-runtime",
  "maka-tool-catalog",
+ "rusqlite",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -7800,6 +7880,7 @@ dependencies = [
 name = "maka-workspace-support"
 version = "0.2.0"
 dependencies = [
+ "cap-std",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-fs-tools",
@@ -11088,12 +11169,6 @@ checksum = "ae81208192f9898cbd2424aa42fd4472bd79c44a52092673b101cdca72c89b7c"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "raw-window-handle"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rayon"

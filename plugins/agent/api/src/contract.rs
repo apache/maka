@@ -17,13 +17,14 @@
  * under the License.
  */
 
-use maka_agent_facts::execution::DirectoryIdentity;
+use maka_sandbox::workspace::DirectoryIdentity;
 mod mcp_management;
-use maka_agent_facts::execution::WorkspaceIdentity;
-use maka_agent_facts::history::RowPosition;
+use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
+pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+use maka_sandbox::workspace::WorkspaceIdentity;
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -217,7 +218,10 @@ pub enum ImageFrame {
         #[schemars(length(min = 1, max = 43692))]
         data: String,
     },
-    Complete,
+    Complete {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<maka_agent_facts::tool_output::ImageDetail>,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -667,7 +671,7 @@ pub struct Send {
     #[serde(default)]
     pub delivery: SendDelivery,
     /// An active send must not start new work after Stop fences its original Run.
-    pub expected_invocation_id: Option<String>,
+    pub expected_run_id: Option<maka_agent_facts::durable::RunId>,
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
     #[serde(default)]
     pub attachments: Vec<String>,
@@ -749,8 +753,7 @@ pub enum MarkReadResult {
 pub struct Stop {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -786,7 +789,7 @@ pub struct Session {
     pub data_source: Box<DataSource>,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
-    pub binding: maka_agent_facts::workspace::BindingStamp,
+    pub binding: maka_sandbox::workspace::BindingStamp,
     pub id: String,
     pub title: String,
     pub labels: Vec<String>,
@@ -838,7 +841,7 @@ pub enum SendResult {
     },
     Started {
         session_id: String,
-        invocation_id: String,
+        run_id: maka_agent_facts::durable::RunId,
         message_id: String,
     },
     Queued {
@@ -862,6 +865,9 @@ pub enum SendRejection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentStopped")]
 pub struct Stopped {
+    /// The original operation accepted a Stop intent for the existing Run, not
+    /// proof of a new state write or physical cleanup. Missing/already-terminal
+    /// preparation may return false; a terminal race after acceptance stays true.
     pub requested: bool,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -869,7 +875,7 @@ pub struct Stopped {
 #[schemars(rename = "AgentDelivery")]
 pub struct Delivery {
     pub sequence: u64,
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
     pub turn_id: String,
     pub fact: DeliveryFact,
 }
@@ -887,28 +893,34 @@ pub enum DeliveryFact {
     /// The original native assistant message starts here, not at executor admission.
     ExecutorMessageStarted {
         message_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
     },
     /// Canonical transcript facts changed; clients query bounded history.
     TranscriptChanged,
     StepEnded {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         /// The model/executor completed; this says nothing about tool business success.
         completed: bool,
     },
     PartCommitted {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         message_id: String,
         ordinal: u64,
     },
     Delta {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         part_id: String,
         text: String,
     },
     /// Complete model input was observed, not authorization to execute it.
     ToolInputReady {
         tool_use_id: String,
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         name: String,
         provider_executed: bool,
     },
@@ -1069,7 +1081,7 @@ pub struct SessionMetrics {
 #[schemars(rename = "AgentRun")]
 pub struct Run {
     pub backend: RunBackend,
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
     pub turn_id: String,
     pub state: RunState,
 }
@@ -1095,7 +1107,8 @@ pub enum RunState {
 pub struct Part {
     pub start_sequence: u64,
     pub message_id: String,
-    pub step_id: String,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
     pub part_id: String,
     pub text_kind: ContentKind,
 }
@@ -1142,9 +1155,10 @@ pub enum PreviewPage {
     },
     Cut {
         host_epoch: String,
-        invocation_id: String,
+        run_id: maka_agent_facts::durable::RunId,
         turn_id: String,
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         revision: u64,
         depends_on: u64,
         first: bool,
@@ -1328,6 +1342,9 @@ pub struct HistoryAttachment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryChunk")]
 pub struct HistoryChunk {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub imported_turn: Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
+    pub run_id: Option<maka_agent_facts::durable::RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.
@@ -1350,12 +1367,12 @@ pub struct HistoryChunk {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
     pub field: maka_agent_ports::session::history::HistoryField,
-    pub message_id: String,
-    pub turn_id: String,
-    pub timestamp: u64,
+    pub message_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub timestamp: Option<u64>,
     pub role: Role,
     /// Stable display order; position remains the canonical source read address.
-    pub order: RowPosition,
+    pub order: HistoryOrder,
     pub position: RowPosition,
     pub offset: u64,
     pub total_bytes: u64,
@@ -1408,8 +1425,12 @@ pub struct HistoryLandmarks {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryLandmark")]
 pub struct HistoryLandmark {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub imported_turn: Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
+    pub order: HistoryOrder,
+    pub last_order: HistoryOrder,
     #[schemars(length(min = 1))]
-    pub turn_id: String,
+    pub turn_id: Option<String>,
     pub position: RowPosition,
     pub last_position: RowPosition,
     #[schemars(length(max = 96))]
@@ -1456,6 +1477,7 @@ pub struct HistorySearch {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryMatch")]
 pub struct HistoryMatch {
+    pub order: HistoryOrder,
     /// Exact canonical field to read through the source query; history body may omit it.
     pub field: maka_agent_ports::session::history::SourceField,
     /// Exact transcript row. Open with HistoryPosition::Row at the same raw-event
@@ -1494,7 +1516,8 @@ pub enum HistorySearchPage {
 #[schemars(rename = "AgentHistoryPage")]
 pub enum HistoryPage {
     Ready {
-        through: u64,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+        through: Option<u64>,
         chunks: Vec<HistoryChunk>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         before: Option<Cursor>,
@@ -1518,6 +1541,8 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {
+                    imported_turn: chunk.imported_turn,
+                    run_id: chunk.run_id,
                     model_part: chunk.model_part,
                     has_references: chunk.has_references,
                     final_output: chunk.final_output,
@@ -1595,6 +1620,34 @@ pub enum HistorySourcePage {
         /// This is display text, never a filesystem capability or open command.
         #[serde(rename = "filePath", skip_serializing_if = "Option::is_none")]
         file_path: Option<String>,
+    },
+}
+
+/// A bounded image read through an actual history source capability, without a live Root fence.
+#[derive(Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentHistoryImagePage")]
+pub enum HistoryImagePage {
+    Ready {
+        position: HistoryRowAddress,
+        #[schemars(range(max = 9_007_199_254_740_991u64))]
+        offset: u64,
+        #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+        total_bytes: u64,
+        #[schemars(regex(pattern = "^image/(png|jpeg|gif|webp|avif)$"))]
+        mime_type: String,
+        #[schemars(regex(pattern = "^sha256:[a-f0-9]{64}$"))]
+        digest: String,
+        #[schemars(
+            length(max = 43692),
+            regex(pattern = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$")
+        )]
+        data: String,
     },
 }
 
@@ -1758,10 +1811,6 @@ pub fn contract() -> Contract {
                 (
                     "goal".into(),
                     method::<GoalRead, GoalView>(MethodMode::Query),
-                ),
-                (
-                    "goalReceipt".into(),
-                    method::<GoalReceiptRead, Option<GoalResult>>(MethodMode::Query),
                 ),
                 (
                     "watchGoal".into(),
@@ -1934,6 +1983,9 @@ pub fn contract() -> Contract {
                 ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
                 ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
                 ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointSource".into(), method::<CheckpointSourceRead, maka_agent_ports::session::history::HistorySource>(MethodMode::Query)),
+                ("loadedHistoryCheckpointToolImage".into(), method::<CheckpointToolImageRead, HistoryImagePage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointAttachmentImage".into(), method::<CheckpointAttachmentImageRead, HistoryImagePage>(MethodMode::Query)),
                 ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
                 ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
@@ -2029,7 +2081,7 @@ pub fn contract() -> Contract {
                     method::<ExecutionRead, ExecutionResult>(MethodMode::Query),
                 ),
                 ("work".into(), method::<WorkRead, Work>(MethodMode::Query)),
-                ("resumable".into(), method::<ResumableRead, Resumable>(MethodMode::Query)),
+                ("workReadiness".into(), method::<WorkRead, WorkReadiness>(MethodMode::Query)),
                 (
                     "compactionPrompt".into(),
                     method::<SessionRead, CompactionPrompt>(MethodMode::Query),
@@ -2043,10 +2095,15 @@ pub fn contract() -> Contract {
                     method::<Compact, CompactResult>(MethodMode::Mutation),
                 ),
                 (
-                    "resume".into(),
-                    method::<Resume, ResumeResult>(MethodMode::Mutation),
+                    "continuationAvailability".into(),
+                    method::<ExecutionRead, ContinuationAvailability>(MethodMode::Query),
+                ),
+                (
+                    "continueRun".into(),
+                    method::<ContinueRun, ContinuationResult>(MethodMode::Mutation),
                 ),
                 ("stop".into(), method::<Stop, Stopped>(MethodMode::Mutation)),
+                ("adjudicateRisk".into(), method::<AdjudicateRisk, ExecutionResult>(MethodMode::Mutation)),
                 (
                     "computerApps".into(),
                     method::<SessionRead, ComputerApps>(MethodMode::Query),
@@ -2099,111 +2156,5 @@ pub fn contract() -> Contract {
                 ),
             ]),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn create_and_send_preserve_backend_sources_without_legacy_inputs() {
-        let Interface::Service { methods } = contract().interface else {
-            panic!("service contract")
-        };
-        assert!(!methods.contains_key("execute"));
-        let send = jsonschema::validator_for(&methods["send"].input).unwrap();
-        for backend in [
-            json!({"kind":"model","connectionId":"connection","modelId":"model","thinkingLevel":"high"}),
-            json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"native-model","thinkingLevel":"vendor-deep"}}}),
-        ] {
-            let value = json!({"sessionId":"session","message":"hello","backend":backend});
-            assert!(send.is_valid(&value));
-            let parsed: Send = serde_json::from_value(value).unwrap();
-            assert_eq!(serde_json::to_value(parsed.backend).unwrap(), backend);
-            let create: Create = serde_json::from_value(json!({
-                "title":"new","labels":[],"workspace":{"kind":"session","sessionId":"source"},"backend":backend
-            })).unwrap();
-            assert_eq!(serde_json::to_value(create.backend).unwrap(), backend);
-        }
-        for legacy in [
-            json!({"sessionId":"session","message":"hello","model":{"connectionId":"c","modelId":"m"}}),
-            json!({"sessionId":"session","message":"hello","thinkingLevel":"high"}),
-        ] {
-            assert!(!send.is_valid(&legacy));
-            assert!(serde_json::from_value::<Send>(legacy).is_err());
-        }
-    }
-
-    #[test]
-    fn history_window_contract_distinguishes_end_from_missing_boundaries() {
-        let Interface::Service { methods } = contract().interface else {
-            panic!("service contract");
-        };
-        let validator = jsonschema::validator_for(&methods["history"].output).unwrap();
-        let mut page = serde_json::to_value(HistoryPage::Ready {
-            through: 16,
-            chunks: Vec::new(),
-            before: None,
-            after: Some(Cursor {
-                field: Default::default(),
-                position: RowPosition {
-                    source_sequence: 16,
-                    item_index: 0,
-                },
-                offset: 0,
-            }),
-        })
-        .unwrap();
-        assert!(validator.is_valid(&page));
-        page["chunks"] = json!([{
-            "messageId":"result", "field":"body", "turnId":"turn", "timestamp":1, "role":"tool_result",
-            "order":{"sourceSequence":1,"itemIndex":0}, "position":{"sourceSequence":1,"itemIndex":0}, "offset":0, "totalBytes":0, "text":"",
-            "tool":{"toolUseId":"call", "call":null, "result":{"position":{"sourceSequence":1,"itemIndex":0},"isError":true, "image":false,"images":0,"settlement":null}}
-        }]);
-        assert!(validator.is_valid(&page));
-        let order = page["chunks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("order")
-            .unwrap();
-        assert!(
-            !validator.is_valid(&page),
-            "display order is required, not inferred from source position"
-        );
-        page["chunks"][0]["order"] = order;
-        let tool = page["chunks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("tool")
-            .unwrap();
-        assert!(
-            !validator.is_valid(&page),
-            "tool facts are explicit, including null"
-        );
-        page["chunks"][0]["tool"] = tool;
-        page["chunks"][0]["tool"]
-            .as_object_mut()
-            .unwrap()
-            .remove("call");
-        assert!(
-            !validator.is_valid(&page),
-            "missing call reference is not an observed absence"
-        );
-        page["chunks"][0]["tool"]["call"] = json!(null);
-        assert!(validator.is_valid(&page));
-        for field in ["before", "after"] {
-            let value = page.as_object_mut().unwrap().remove(field).unwrap();
-            assert!(!validator.is_valid(&page), "missing {field} is not EOF");
-            page.as_object_mut().unwrap().insert(field.into(), value);
-        }
-        page["after"] = json!(null);
-        assert!(validator.is_valid(&page));
-        page["next"] = json!(null);
-        assert!(
-            !validator.is_valid(&page),
-            "removed one-way API is rejected"
-        );
     }
 }

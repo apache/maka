@@ -401,6 +401,19 @@ pub(crate) fn clear() {
     }
 }
 
+pub(crate) fn has_selection(surface: &Surface) -> bool {
+    CURRENT.with_borrow(|c| {
+        c.as_ref()
+            .is_some_and(|c| c.surface == surface.key() && c.area.attached() && !c.model.is_empty())
+    })
+}
+
+pub(crate) fn clear_surface(surface: &Surface) {
+    if let Some(current) = take(surface.key(), None) {
+        end(current);
+    }
+}
+
 /// A mount item changed texts or the tree: the selection is clamped to
 /// them at the end of the batch.
 pub(crate) fn tree_changed() {

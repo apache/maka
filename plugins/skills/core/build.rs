@@ -160,7 +160,7 @@ fn split_contracts(files: &mut BTreeMap<String, PathBuf>) {
         let end = members
             .get(at + 1)
             .map(|(_, offset)| *offset)
-            .unwrap_or_else(|| source.rfind("} satisfies").expect("contract object ending"));
+            .unwrap_or_else(|| source.rfind("\n};").expect("contract object ending"));
         let entry = source[*start..end].trim();
         let body = entry
             .strip_prefix(&format!("{name}: "))

@@ -23,7 +23,7 @@ use crate::contract::{McpServerView, McpView, Workspace};
 use client::Client;
 use maka_agent_facts::{configuration::mcp::Transport, tools::ToolDefinition};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
         Arc, RwLock,
@@ -40,23 +40,127 @@ impl ClientGeneration {
     pub fn fresh() -> Self {
         Self(uuid::Uuid::new_v4())
     }
-    pub fn interrupt(self) -> String {
-        format!("mcp_{}", self.0.simple())
-    }
 }
 pub(crate) struct Catalog {
     pub revision: Option<String>,
     pub client_mcp: Option<ClientGeneration>,
     pub _parent: Option<Arc<Catalog>>,
+    // Retains an original published layer's physical owner, not another lookup parent.
+    pub _layer_owner: Option<Arc<Catalog>>,
     pub tools: maka_tools::ToolCatalog,
     pub definitions: Arc<Vec<ToolDefinition>>,
     pub bindings: Arc<BTreeMap<String, Option<String>>>,
+    pub(crate) live_bindings: Vec<super::LiveBinding>,
+}
+impl Catalog {
+    fn with_layer(
+        parent: Arc<Self>,
+        revision: String,
+        overrides: &BTreeSet<String>,
+        live_bindings: Vec<super::LiveBinding>,
+        layer_owner: Option<Arc<Self>>,
+    ) -> Result<Arc<Self>, String> {
+        let mut inherited = BTreeMap::new();
+        parent.collect_bindings(&mut inherited);
+        let suppressed: Vec<_> = inherited
+            .values()
+            .filter(|binding| overrides.contains(&binding.binding.server))
+            .map(|binding| binding.name())
+            .collect();
+        let tools = parent
+            .tools
+            .excluding(&suppressed)
+            .with_additional(
+                live_bindings
+                    .iter()
+                    .map(|binding| binding.registration(None))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|_| "agent_mcp_catalog_invalid")?;
+        let mut definitions: Vec<_> = parent
+            .definitions
+            .iter()
+            .filter(|tool| !suppressed.contains(&tool.name.as_str()))
+            .cloned()
+            .collect();
+        definitions.extend(
+            live_bindings
+                .iter()
+                .map(|binding| binding.definition.clone()),
+        );
+        let mut bindings: BTreeMap<_, _> = parent
+            .bindings
+            .iter()
+            .filter(|(name, _)| !suppressed.contains(&name.as_str()))
+            .map(|(name, binding)| (name.clone(), binding.clone()))
+            .collect();
+        bindings.extend(live_bindings.iter().map(|binding| {
+            (
+                binding.name().to_owned(),
+                Some(binding.binding.generation.clone()),
+            )
+        }));
+        Ok(Arc::new(Self {
+            revision: Some(revision),
+            client_mcp: None,
+            _parent: Some(parent),
+            _layer_owner: layer_owner,
+            tools,
+            definitions: Arc::new(definitions),
+            bindings: Arc::new(bindings),
+            live_bindings,
+        }))
+    }
+    pub(crate) fn unavailable_selected_binding<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Option<&'a str> {
+        let mut bindings = BTreeMap::new();
+        self.collect_bindings(&mut bindings);
+        names.into_iter().find(|name| {
+            self.bindings.contains_key(*name)
+                && !bindings
+                    .get(*name)
+                    .is_some_and(|binding| binding.available())
+        })
+    }
+    pub(crate) fn for_run(
+        &self,
+        access: Arc<crate::owner::access::RunAccess>,
+        tools: maka_tools::ToolCatalog,
+    ) -> Result<maka_tools::ToolCatalog, String> {
+        let mut bindings = BTreeMap::new();
+        self.collect_bindings(&mut bindings);
+        let registrations: Vec<_> = bindings
+            .values()
+            .filter(|binding| self.tools.contains(binding.name()))
+            .map(|binding| binding.registration(Some(access.clone())))
+            .collect();
+        let names: Vec<_> = registrations
+            .iter()
+            .map(|registration| registration.definition.name.as_str())
+            .collect();
+        tools
+            .excluding(&names)
+            .with_additional(registrations)
+            .map_err(|error| error.to_string())
+    }
+    fn collect_bindings<'a>(&'a self, bindings: &mut BTreeMap<&'a str, &'a super::LiveBinding>) {
+        if let Some(parent) = &self._parent {
+            parent.collect_bindings(bindings);
+        }
+        for binding in &self.live_bindings {
+            bindings.insert(binding.name(), binding);
+        }
+    }
 }
 struct Snapshot {
     scope: String,
     acquired: AtomicU64,
     catalog: Arc<Catalog>,
     servers: Option<Servers>,
+    // Exact server keys of this published file layer, including explicit tombstones.
+    overrides: BTreeSet<String>,
 }
 #[derive(Default)]
 struct Snapshots {
@@ -74,16 +178,28 @@ pub(crate) struct Proposal {
     file: files::FileConfiguration,
     global: files::FileConfiguration,
 }
+enum CleanupFailure {
+    Transport(super::CloseError),
+    Work(String),
+}
+impl CleanupFailure {
+    fn message(&self) -> &str {
+        match self {
+            Self::Transport(error) => &error.message,
+            Self::Work(message) => message,
+        }
+    }
+}
 pub(crate) struct Projects {
     pub base: Arc<Catalog>,
     owner: String,
     home: Option<(Arc<cap_std::fs::Dir>, std::path::PathBuf)>,
-    global_names: BTreeMap<String, Vec<String>>,
-    store: Arc<maka_event_log::RootStore>,
+    store: maka_agent_state::Store,
+    run_owner: maka_agent_facts::durable::RunOwner,
     configuration: Arc<maka_config::ConfigurationStore>,
     snapshots: RwLock<Snapshots>,
     opening: std::sync::Mutex<BTreeMap<String, std::sync::Weak<Mutex<()>>>>,
-    cleanup_failure: std::sync::Mutex<Option<String>>,
+    cleanup_failures: std::sync::Mutex<Vec<CleanupFailure>>,
     workers: TaskTracker,
     stop: CancellationToken,
 }
@@ -92,9 +208,9 @@ impl Projects {
     pub fn new(
         base: Catalog,
         owner: String,
-        global_names: BTreeMap<String, Vec<String>>,
         home: Option<(Arc<cap_std::fs::Dir>, std::path::PathBuf)>,
-        store: Arc<maka_event_log::RootStore>,
+        store: maka_agent_state::Store,
+        run_owner: maka_agent_facts::durable::RunOwner,
         configuration: Arc<maka_config::ConfigurationStore>,
         workers: TaskTracker,
         stop: CancellationToken,
@@ -103,15 +219,21 @@ impl Projects {
             base: Arc::new(base),
             owner,
             home,
-            global_names,
             store,
+            run_owner,
             configuration,
             snapshots: RwLock::default(),
             opening: std::sync::Mutex::default(),
-            cleanup_failure: std::sync::Mutex::new(None),
+            cleanup_failures: std::sync::Mutex::new(Vec::new()),
             workers,
             stop,
         }
+    }
+    pub(crate) fn retain_transport_cleanup(&self, error: super::CloseError) {
+        self.cleanup_failures
+            .lock()
+            .expect("MCP cleanup state")
+            .push(CleanupFailure::Transport(error));
     }
     pub async fn proposal(&self, workspace: &Workspace) -> Result<Proposal, String> {
         self.propose(Some(workspace.clone())).await
@@ -137,14 +259,7 @@ impl Projects {
                     return Err("agent_workspace_unavailable".into());
                 }
                 let file = files::layered(&directory, path)?;
-                let identity = maka_agent_facts::artifact::content_digest(
-                    &serde_json::to_vec(&(
-                        &workspace.path,
-                        &workspace.identity,
-                        &workspace.directory_identity,
-                    ))
-                    .expect("workspace identity"),
-                );
+                let identity = Self::workspace_key(&workspace);
                 (identity, file)
             } else {
                 (String::new(), files::FileConfiguration::default())
@@ -271,14 +386,15 @@ impl Projects {
     pub async fn available(
         self: &Arc<Self>,
         workspace: &Workspace,
+        floor: &maka_sandbox::Sandbox,
     ) -> Result<Arc<Catalog>, String> {
         let proposal = self.proposal(workspace).await?;
         if !self.trusted(&proposal).await? {
-            return self.capture_global().await;
+            return self.capture_global(floor).await;
         }
-        self.capture(workspace).await
+        self.capture(workspace, floor).await
     }
-    /// Completion observes captured tools without opening MCP connections.
+    /// Completion reads a captured catalog without opening transports or changing admission.
     pub async fn observed(&self, workspace: Option<&Workspace>) -> Result<Arc<Catalog>, String> {
         let mut proposal = self.propose(workspace.cloned()).await?;
         if !self.trusted(&proposal).await? {
@@ -291,186 +407,354 @@ impl Projects {
             .map(|snapshot| snapshot.catalog.clone())
             .unwrap_or_else(|| self.base.clone()))
     }
-    fn supersede(&self, scope: &str, current: Option<&str>) {
-        let mut snapshots = self.snapshots.write().expect("MCP snapshots");
-        match current {
-            Some(revision)
-                if snapshots.current.contains_key(scope)
-                    || snapshots.revisions.contains_key(revision) =>
-            {
-                snapshots.current.insert(scope.into(), revision.into());
-            }
-            Some(_) => {}
-            None => {
-                snapshots.current.remove(scope);
-            }
-        }
+    fn workspace_key(workspace: &Workspace) -> String {
+        maka_agent_facts::artifact::content_digest(
+            &serde_json::to_vec(&(
+                &workspace.path,
+                &workspace.identity,
+                &workspace.directory_identity,
+            ))
+            .expect("workspace identity"),
+        )
     }
-    async fn prepared(&self, proposal: Proposal) -> Result<Prepared, String> {
-        if proposal.file.path.is_none() && !proposal.workspace.is_empty() {
-            self.supersede(&proposal.workspace, None);
+    /// Compose only actual published capabilities. Files are proposals, not revocations.
+    pub(crate) fn current_activation(
+        &self,
+        workspace: &Workspace,
+        session: &str,
+        activation: &Arc<Catalog>,
+    ) -> Result<Arc<Catalog>, String> {
+        let key = Self::workspace_key(workspace);
+        let client_scope = format!("client:{session}");
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        let mut layer = activation;
+        while !Arc::ptr_eq(layer, &self.base) {
+            let original = layer
+                .revision
+                .as_ref()
+                .and_then(|revision| snapshots.revisions.get(revision))
+                .filter(|snapshot| Arc::ptr_eq(&snapshot.catalog, layer))
+                .ok_or("agent_mcp_activation_unavailable")?;
+            if !original.scope.is_empty() && original.scope != key && original.scope != client_scope
+            {
+                return Err("agent_mcp_activation_unavailable".into());
+            }
+            layer = layer
+                ._parent
+                .as_ref()
+                .ok_or("agent_mcp_activation_unavailable")?;
         }
-        let scope = if proposal.file.path.is_some() {
-            proposal.workspace.as_str()
-        } else {
-            ""
+        let published = |scope: &str| -> Result<Option<Arc<Snapshot>>, String> {
+            snapshots
+                .current
+                .get(scope)
+                .map(|revision| {
+                    snapshots
+                        .revisions
+                        .get(revision)
+                        .cloned()
+                        .ok_or_else(|| "agent_mcp_activation_unavailable".into())
+                })
+                .transpose()
         };
-        self.supersede(
-            scope,
-            (proposal.file.path.is_some() || proposal.global.path.is_some())
-                .then_some(proposal.revision.as_str()),
-        );
-        if proposal.file.path.is_none() && proposal.global.path.is_none() {
-            return Ok(Prepared::Ready(self.base.clone()));
+        let global =
+            published("")?.map_or_else(|| self.base.clone(), |snapshot| snapshot.catalog.clone());
+        let base = match published(&key)? {
+            Some(project) => {
+                let revision = maka_agent_facts::artifact::content_digest(
+                    &serde_json::to_vec(&(
+                        "mcp.published.layers",
+                        &project.catalog.revision,
+                        &global.revision,
+                    ))
+                    .expect("published MCP layers"),
+                );
+                Catalog::with_layer(
+                    global,
+                    revision,
+                    &project.overrides,
+                    project.catalog.live_bindings.clone(),
+                    Some(project.catalog.clone()),
+                )?
+            }
+            None => global,
+        };
+        client::current(&snapshots, session, base)
+    }
+    fn publish_cached(&self, proposal: &Proposal, catalog: &Arc<Catalog>) -> Result<(), String> {
+        let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+        if !snapshots
+            .revisions
+            .get(&proposal.revision)
+            .is_some_and(|snapshot| Arc::ptr_eq(&snapshot.catalog, catalog))
+        {
+            return Err("agent_mcp_activation_unavailable".into());
         }
+        if proposal.file.path.is_some() {
+            let parent = catalog
+                ._parent
+                .as_ref()
+                .expect("published project layer owns its global parent");
+            match &parent.revision {
+                Some(revision) => {
+                    snapshots.current.insert(String::new(), revision.clone());
+                }
+                None => {
+                    snapshots.current.remove("");
+                }
+            }
+            snapshots
+                .current
+                .insert(proposal.workspace.clone(), proposal.revision.clone());
+        } else {
+            snapshots
+                .current
+                .insert(String::new(), proposal.revision.clone());
+            if !proposal.workspace.is_empty() {
+                snapshots.current.remove(&proposal.workspace);
+            }
+        }
+        Ok(())
+    }
+    async fn prepared(
+        &self,
+        proposal: Proposal,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Prepared, String> {
         if !self.trusted(&proposal).await? {
             return Err("agent_mcp_trust_required".into());
         }
+        if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
+            super::require_compatible_floor(floor).map_err(str::to_owned)?;
+        }
+        if proposal.file.path.is_none() && proposal.global.path.is_none() {
+            let catalog = self.base.clone();
+            {
+                let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+                snapshots.current.remove("");
+                if !proposal.workspace.is_empty() {
+                    snapshots.current.remove(&proposal.workspace);
+                }
+            }
+            self.prune().await?;
+            return Ok(Prepared::Ready(catalog));
+        }
         if let Ok(catalog) = self.catalog(Some(&proposal.revision)) {
+            self.publish_cached(&proposal, &catalog)?;
+            self.prune().await?;
             return Ok(Prepared::Ready(catalog));
         }
         Ok(Prepared::Startup(Box::new(proposal)))
     }
-    pub async fn prepare(&self, workspace: &Workspace) -> Result<Prepared, String> {
-        self.prepared(self.proposal(workspace).await?).await
+    pub async fn prepare(
+        &self,
+        workspace: &Workspace,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Prepared, String> {
+        self.prepared(self.proposal(workspace).await?, floor).await
     }
-    pub async fn capture_global(self: &Arc<Self>) -> Result<Arc<Catalog>, String> {
-        match self.prepared(self.propose(None).await?).await? {
+    pub async fn capture_global(
+        self: &Arc<Self>,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Arc<Catalog>, String> {
+        match self.prepared(self.propose(None).await?, floor).await? {
             Prepared::Ready(revision) => Ok(revision),
-            Prepared::Startup(proposal) => self.start(*proposal).await,
+            Prepared::Startup(proposal) => self.start(*proposal, floor).await,
         }
     }
-    pub async fn capture(self: &Arc<Self>, workspace: &Workspace) -> Result<Arc<Catalog>, String> {
-        match self.prepare(workspace).await? {
+    pub async fn capture(
+        self: &Arc<Self>,
+        workspace: &Workspace,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Arc<Catalog>, String> {
+        match self.prepare(workspace, floor).await? {
             Prepared::Ready(revision) => Ok(revision),
-            Prepared::Startup(proposal) => self.start(*proposal).await,
+            Prepared::Startup(proposal) => self.start(*proposal, floor).await,
         }
     }
-    pub async fn start(self: &Arc<Self>, proposal: Proposal) -> Result<Arc<Catalog>, String> {
-        // Opening belongs to Owner, even if the send/query observer disappears.
-        // Shutdown cancels admissions, drains these workers, then closes all sessions.
+    async fn open_layer(
+        &self,
+        file: &files::FileConfiguration,
+        parent: Arc<Catalog>,
+        scope: String,
+        revision: String,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Snapshot, String> {
+        let selected = files::merge(&[], &[file]);
+        if !selected.is_empty() {
+            super::require_compatible_floor(floor).map_err(str::to_owned)?;
+        }
+        let servers = match Servers::open_cancellable(
+            &selected,
+            &self.configuration,
+            self.stop.clone(),
+        )
+        .await
+        {
+            Ok(servers) => servers,
+            Err(error) => {
+                if let Some(material) = error.material {
+                    self.retain_transport_cleanup(super::CloseError {
+                        message: error.message.clone(),
+                        material,
+                    });
+                }
+                return Err(error.message);
+            }
+        };
+        let overrides = file.servers.keys().cloned().collect();
+        let catalog = match Catalog::with_layer(
+            parent,
+            revision,
+            &overrides,
+            servers.live_bindings.clone(),
+            None,
+        ) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                if let Err(cleanup) = servers.close().await {
+                    let message = format!("{error}; {}", cleanup.message);
+                    self.retain_transport_cleanup(cleanup);
+                    return Err(message);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Snapshot {
+            scope,
+            acquired: AtomicU64::new(0),
+            catalog,
+            servers: Some(servers),
+            overrides,
+        })
+    }
+    fn startup_gate(&self, revision: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.opening.lock().expect("MCP startup gates");
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        let gate = gates
+            .get(revision)
+            .and_then(std::sync::Weak::upgrade)
+            .unwrap_or_else(|| Arc::new(Mutex::new(())));
+        gates.insert(revision.to_owned(), Arc::downgrade(&gate));
+        gate
+    }
+    pub async fn start(
+        self: &Arc<Self>,
+        proposal: Proposal,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<Arc<Catalog>, String> {
         let owner = self.clone();
+        let floor = floor.clone();
         self.workers
             .spawn(async move {
-                let gate = {
-                    let mut gates = owner.opening.lock().expect("MCP startup gates");
-                    gates.retain(|_, gate| gate.strong_count() > 0);
-                    let gate = gates
-                        .get(&proposal.revision)
-                        .and_then(std::sync::Weak::upgrade)
-                        .unwrap_or_else(|| Arc::new(Mutex::new(())));
-                    gates.insert(proposal.revision.clone(), Arc::downgrade(&gate));
-                    gate
-                };
+                let gate = owner.startup_gate(&proposal.revision);
                 let _opening = gate.lock().await;
                 if owner.stop.is_cancelled() {
                     return Err("agent_closed".into());
                 }
-                if let Ok(catalog) = owner.catalog(Some(&proposal.revision)) {
-                    return Ok(catalog);
-                }
                 if !owner.trusted(&proposal).await? {
                     return Err("agent_mcp_trust_required".into());
                 }
-                let selected = files::merge(&[], &[&proposal.global, &proposal.file]);
+                if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
+                    super::require_compatible_floor(&floor).map_err(str::to_owned)?;
+                }
+                if let Ok(catalog) = owner.catalog(Some(&proposal.revision)) {
+                    owner.publish_cached(&proposal, &catalog)?;
+                    owner.prune().await?;
+                    return Ok(catalog);
+                }
                 if let Some(error) = owner
-                    .cleanup_failure
+                    .cleanup_failures
                     .lock()
                     .expect("MCP cleanup state")
-                    .as_ref()
+                    .first()
                 {
-                    return Err(error.clone());
+                    return Err(error.message().to_owned());
                 }
-                let mut servers = match Servers::open_cancellable(
-                    &selected,
-                    owner.store.clone(),
-                    &owner.configuration,
-                    owner.stop.clone(),
-                )
-                .await
-                {
-                    Ok(servers) => servers,
-                    Err(error) => {
-                        if !error.cleanup_confirmed {
-                            *owner.cleanup_failure.lock().expect("MCP cleanup state") =
-                                Some(error.message.clone());
-                        }
-                        return Err(error.message);
-                    }
+                let empty = files::FileConfiguration::default();
+                let global_revision = maka_agent_facts::artifact::content_digest(
+                    &serde_json::to_vec(&(Option::<String>::None, &proposal.global, &empty))
+                        .expect("global MCP configuration"),
+                );
+                let global_gate = (global_revision != proposal.revision)
+                    .then(|| owner.startup_gate(&global_revision));
+                let _global_opening = match global_gate.as_ref() {
+                    Some(gate) => Some(gate.lock().await),
+                    None => None,
                 };
-                let suppressed: Vec<_> = proposal
-                    .global
-                    .servers
-                    .keys()
-                    .chain(proposal.file.servers.keys())
-                    .filter_map(|name| owner.global_names.get(name))
-                    .flatten()
-                    .map(String::as_str)
-                    .collect();
-                let tools = match owner
-                    .base
-                    .tools
-                    .excluding(&suppressed)
-                    .with_additional(std::mem::take(&mut servers.registrations))
-                {
-                    Ok(tools) => tools,
-                    Err(_) => {
-                        if let Err(error) = servers.close().await {
-                            *owner.cleanup_failure.lock().expect("MCP cleanup state") =
-                                Some(error.clone());
+                let mut opened_global = None;
+                let global = if proposal.global.path.is_none() {
+                    owner.base.clone()
+                } else if let Ok(catalog) = owner.catalog(Some(&global_revision)) {
+                    catalog
+                } else {
+                    let opened = owner
+                        .open_layer(
+                            &proposal.global,
+                            owner.base.clone(),
+                            String::new(),
+                            global_revision.clone(),
+                            &floor,
+                        )
+                        .await?;
+                    let catalog = opened.catalog.clone();
+                    opened_global = Some(opened);
+                    catalog
+                };
+                let mut opened_project = None;
+                let catalog = if proposal.file.path.is_none() {
+                    global.clone()
+                } else {
+                    match owner
+                        .open_layer(
+                            &proposal.file,
+                            global.clone(),
+                            proposal.workspace.clone(),
+                            proposal.revision.clone(),
+                            &floor,
+                        )
+                        .await
+                    {
+                        Ok(opened) => {
+                            let catalog = opened.catalog.clone();
+                            opened_project = Some(opened);
+                            catalog
+                        }
+                        Err(error) => {
+                            if let Some(opened) = opened_global
+                                && let Some(servers) = opened.servers
+                                && let Err(cleanup) = servers.close().await
+                            {
+                                let message = format!("{error}; {}", cleanup.message);
+                                owner.retain_transport_cleanup(cleanup);
+                                return Err(message);
+                            }
                             return Err(error);
                         }
-                        return Err("agent_mcp_catalog_invalid".into());
                     }
-                };
-                let mut definitions: Vec<_> = owner
-                    .base
-                    .definitions
-                    .iter()
-                    .filter(|tool| !suppressed.contains(&tool.name.as_str()))
-                    .cloned()
-                    .collect();
-                definitions.extend(
-                    tools
-                        .definitions()
-                        .filter(|tool| servers.bindings.contains_key(&tool.name))
-                        .cloned(),
-                );
-                let mut bindings: BTreeMap<_, _> = owner
-                    .base
-                    .bindings
-                    .iter()
-                    .filter(|(name, _)| !suppressed.contains(&name.as_str()))
-                    .map(|(name, binding)| (name.clone(), binding.clone()))
-                    .collect();
-                bindings.extend(servers.bindings.clone());
-                let catalog = Arc::new(Catalog {
-                    revision: Some(proposal.revision.clone()),
-                    client_mcp: None,
-                    _parent: None,
-                    tools,
-                    definitions: Arc::new(definitions),
-                    bindings: Arc::new(bindings),
-                });
-                let scope = if proposal.file.path.is_some() {
-                    proposal.workspace
-                } else {
-                    String::new()
                 };
                 {
                     let mut snapshots = owner.snapshots.write().expect("MCP snapshots");
-                    snapshots
-                        .current
-                        .insert(scope.clone(), proposal.revision.clone());
-                    snapshots.revisions.insert(
-                        proposal.revision,
-                        Arc::new(Snapshot {
-                            scope,
-                            acquired: AtomicU64::new(0),
-                            catalog: catalog.clone(),
-                            servers: Some(servers),
-                        }),
-                    );
+                    if let Some(opened) = opened_global {
+                        snapshots
+                            .revisions
+                            .insert(global_revision.clone(), Arc::new(opened));
+                    }
+                    if proposal.global.path.is_some() {
+                        snapshots.current.insert(String::new(), global_revision);
+                    } else {
+                        snapshots.current.remove("");
+                    }
+                    if let Some(opened) = opened_project {
+                        snapshots
+                            .revisions
+                            .insert(proposal.revision.clone(), Arc::new(opened));
+                        snapshots
+                            .current
+                            .insert(proposal.workspace, proposal.revision);
+                    } else if !proposal.workspace.is_empty() {
+                        snapshots.current.remove(&proposal.workspace);
+                    }
                 }
                 owner.prune().await?;
                 Ok(catalog)
@@ -479,64 +763,72 @@ impl Projects {
             .map_err(|_| "agent_mcp_startup_unknown".to_owned())?
     }
     pub(crate) async fn prune(&self) -> Result<(), String> {
-        let candidates: Vec<_> = {
-            let snapshots = self.snapshots.read().expect("MCP snapshots");
-            snapshots
-                .revisions
-                .iter()
-                .filter(|(revision, snapshot)| {
-                    snapshots.current.get(&snapshot.scope) != Some(revision)
-                        && Arc::strong_count(&snapshot.catalog) == 1
-                })
-                .map(|(revision, snapshot)| {
-                    (
-                        revision.clone(),
-                        snapshot.clone(),
-                        snapshot.acquired.load(Ordering::Relaxed),
-                    )
-                })
-                .collect()
-        };
-        if candidates.is_empty() {
-            return Ok(());
-        }
-        let retained: std::collections::BTreeSet<_> = self
-            .store
-            .accepted_execution_references(&self.owner, "mcp_revision")
-            .await
-            .map_err(|error| error.to_string())?;
-        let retired: Vec<_> = {
-            let mut snapshots = self.snapshots.write().expect("MCP snapshots");
-            let retired = candidates
-                .into_iter()
-                .filter_map(|(revision, original, acquired)| {
-                    let snapshot = snapshots.revisions.get(&revision)?;
-                    if !Arc::ptr_eq(snapshot, &original)
-                        || snapshots.current.get(&snapshot.scope) == Some(&revision)
-                        || retained.contains(&revision)
-                        || Arc::strong_count(&snapshot.catalog) != 1
-                        || snapshot.acquired.load(Ordering::Relaxed) != acquired
-                    {
-                        return None;
-                    }
-                    snapshots.revisions.remove(&revision)
-                })
-                .collect();
-            let Snapshots {
-                revisions, current, ..
-            } = &mut *snapshots;
-            current.retain(|_, revision| revisions.contains_key(revision));
-            retired
-        };
-        for snapshot in retired {
-            if let Some(servers) = &snapshot.servers
-                && let Err(error) = servers.close().await
-            {
-                *self.cleanup_failure.lock().expect("MCP cleanup state") = Some(error.clone());
-                return Err(error);
+        loop {
+            let candidates: Vec<_> = {
+                let snapshots = self.snapshots.read().expect("MCP snapshots");
+                snapshots
+                    .revisions
+                    .iter()
+                    .filter(|(revision, snapshot)| {
+                        snapshots.current.get(&snapshot.scope) != Some(revision)
+                            && Arc::strong_count(&snapshot.catalog) == 1
+                    })
+                    .map(|(revision, snapshot)| {
+                        (
+                            revision.clone(),
+                            snapshot.clone(),
+                            snapshot.acquired.load(Ordering::Relaxed),
+                        )
+                    })
+                    .collect()
+            };
+            if candidates.is_empty() {
+                return Ok(());
+            }
+            let retained: std::collections::BTreeSet<_> = self
+                .store
+                .referenced_mcp_revisions(self.run_owner.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            let retired: Vec<_> = {
+                let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+                let retired = candidates
+                    .into_iter()
+                    .filter_map(|(revision, original, acquired)| {
+                        let snapshot = snapshots.revisions.get(&revision)?;
+                        if !Arc::ptr_eq(snapshot, &original)
+                            || snapshots.current.get(&snapshot.scope) == Some(&revision)
+                            || retained.contains(&revision)
+                            || Arc::strong_count(&snapshot.catalog) != 1
+                            || snapshot.acquired.load(Ordering::Relaxed) != acquired
+                        {
+                            return None;
+                        }
+                        snapshots.revisions.remove(&revision)
+                    })
+                    .collect();
+                let Snapshots {
+                    revisions, current, ..
+                } = &mut *snapshots;
+                current.retain(|_, revision| revisions.contains_key(revision));
+                retired
+            };
+            if retired.is_empty() {
+                return Ok(());
+            }
+            let mut failure = None;
+            for snapshot in retired {
+                if let Some(servers) = &snapshot.servers
+                    && let Err(error) = servers.close().await
+                {
+                    failure.get_or_insert(error.message.clone());
+                    self.retain_transport_cleanup(error);
+                }
+            }
+            if let Some(failure) = failure {
+                return Err(failure);
             }
         }
-        Ok(())
     }
     pub fn retire(&self) {
         self.stop.cancel();
@@ -552,18 +844,19 @@ impl Projects {
             .collect();
         let mut error = self.close_clients().await.err();
         if let Some(failure) = self
-            .cleanup_failure
+            .cleanup_failures
             .lock()
             .expect("MCP cleanup state")
-            .clone()
+            .first()
         {
-            error.get_or_insert(failure);
+            error.get_or_insert(failure.message().to_owned());
         }
         for snapshot in snapshots {
             if let Some(servers) = &snapshot.servers
                 && let Err(cause) = servers.close().await
             {
-                error.get_or_insert(cause);
+                error.get_or_insert(cause.message.clone());
+                self.retain_transport_cleanup(cause);
             }
         }
         error.map_or(Ok(()), Err)

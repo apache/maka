@@ -18,57 +18,15 @@
  */
 
 mod controls;
-
 use super::*;
 use futures_util::FutureExt;
-use maka_agent_engine::{ActivationExit, ModelSource, RunningInvocation};
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::InvocationInput;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_event_log::{
-    StoreError,
-    message_admissions::PendingMessageAdmission,
-    message_interrupts::{InterruptCommand, InterruptReceipt},
+use maka_agent_facts::durable::*;
+use maka_agent_facts::tools::ToolError;
+use maka_agent_state::{
+    Admission, ReadyCause,
+    queue::{Consume, Placement as QueuePlacement},
 };
-
-pub(super) enum PreparedRun {
-    Model(Box<RunInput>),
-    Executor(Box<maka_agent_engine::ExecutorInput<crate::executor::Backend>>),
-}
-struct QueuePreparation {
-    admission: runs::Ordered,
-    cancellation: CancellationToken,
-}
-impl maka_agent_engine::NativeApprovalExecutor for Owner {
-    fn prepare(
-        &self,
-        pending: maka_agent_facts::native_approval::NativeApprovalPending,
-        context: maka_agent_facts::tools::ToolCallContext,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<
-        '_,
-        Result<maka_agent_facts::tools::PreparedEffect, maka_agent_facts::tools::ToolError>,
-    > {
-        Box::pin(async move {
-            let session = self
-                .mutable_session(&pending.invocation.session_id)
-                .await
-                .map_err(maka_agent_facts::tools::ToolError::Failed)?;
-            workspace::validate(
-                &self.workspace_roots,
-                &session.configuration.workspace,
-                &self.managed_worktrees,
-            )
-            .await
-            .map_err(maka_agent_facts::tools::ToolError::Failed)?;
-            self.native_approval_executor
-                .prepare(pending, context, cancellation)
-                .await
-        })
-    }
-}
+use maka_plugin_core::operation::OperationCleanup;
 
 impl Owner {
     pub fn activated(self: &Arc<Self>) {
@@ -80,1325 +38,607 @@ impl Owner {
         self.start_goals();
         self.start_schedules();
         self.start_bot_wake();
-        self.start_activation_wake();
         let owner = self.clone();
-        self.workers.spawn(async move { owner.schedule().await });
+        self.producers.spawn(async move { owner.schedule().await });
     }
 
-    fn start_activation_wake(self: &Arc<Self>) {
-        let owner = self.clone();
-        self.producers.spawn(async move {
-            let mut changes = owner.store.subscribe_activation_changes();
-            let mut controls = owner.store.subscribe_activation_control_changes();
-            let mut reconcile = true;
-            loop {
-                changes.borrow_and_update();
-                if reconcile {
-                    controls.borrow_and_update();
+    /// The SQL levels choose runnable work. Notices only invalidate that read.
+    async fn schedule(self: Arc<Self>) {
+        let mut changes = match self.durable.subscribe() {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::error!(%error, "Agent ready subscription failed");
+                return;
+            }
+        };
+        let root = match self.store.owned_root() {
+            Ok(root) => root,
+            Err(_) => return,
+        };
+        let mut sources = root.capability_changes();
+        let mut cause = ReadyCause::CapabilitySourceChanged;
+        let mut cold_probe = true;
+        let mut authority_due: Option<UnixMillis> = None;
+        loop {
+            changes.borrow_and_update();
+            if self.stop.is_cancelled() {
+                return;
+            }
+            let at = UnixMillis(now() as i64);
+            promote_authority_due(at, &mut authority_due, &mut cause);
+            match self.reconcile_model_readers(cold_probe).await {
+                Ok(()) => cold_probe = false,
+                Err(_) => tracing::error!(
+                    stage = "model_cleanup_reconciliation_failed",
+                    "Agent model cleanup reconciliation failed"
+                ),
+            }
+            if self.schedule_ready_at(at, cause).await.is_err() {
+                tracing::error!(
+                    stage = "ready_reconciliation_failed",
+                    "Agent ready reconciliation failed"
+                );
+            }
+            if cause == ReadyCause::CapabilitySourceChanged {
+                match self
+                    .durable
+                    .next_due_after_with_cause(self.run_owner(), at, cause)
+                    .await
+                {
+                    Ok(due) => authority_due = due,
+                    Err(_) => tracing::error!(
+                        stage = "authority_due_read_failed",
+                        "Agent source-driven due read failed"
+                    ),
                 }
-                if owner.stop.is_cancelled() {
-                    return;
+            }
+            let ordinary_due = match self.durable.next_due_after(self.run_owner(), at).await {
+                Ok(due) => due,
+                Err(_) => {
+                    tracing::error!(stage = "due_read_failed", "Agent due read failed");
+                    None
                 }
-                let scan = async {
-                    if reconcile {
-                        owner.store.reconcile_activation_controls().await?;
-                    }
-                    // Both queries share a cut so a deadline crossed during the scan stays visible.
-                    let cutoff = now();
-                    owner.schedule_activations(cutoff).await?;
-                    owner
-                        .store
-                        .next_model_retry_deadline(cutoff)
+            };
+            let due = ordinary_due.into_iter().chain(authority_due).min();
+            let deadline = async {
+                match due {
+                    Some(due) => {
+                        tokio::time::sleep(Duration::from_millis(
+                            due.0.saturating_sub(now() as i64).max(0) as u64,
+                        ))
                         .await
-                        .map_err(RunError::from)
+                    }
+                    None => std::future::pending::<()>().await,
                 }
-                .await;
-                let deadline = match scan {
-                    Ok(deadline) => deadline,
-                    Err(error) => {
-                        owner.queue_failed("", None, &error);
-                        // Retry the read-only scan after a store outage without
-                        // shutting down unrelated sessions or replaying effects.
-                        Some(now().saturating_add(1000))
+            };
+            cause = ReadyCause::Ordinary;
+            tokio::select! {
+                biased;
+                _ = self.stop.cancelled() => return,
+                changed = sources.changed() => {
+                    if changed.is_err() { return; }
+                    cause = ReadyCause::CapabilitySourceChanged;
+                },
+                changed = changes.changed() => if changed.is_err() { return; },
+                _ = self.wake_notify.notified() => {},
+                _ = deadline => {
+                    if authority_due.is_some_and(|due| due.0 <= now() as i64) {
+                        cause = ReadyCause::CapabilitySourceChanged;
+                        authority_due = None;
                     }
-                };
-                let due = async {
-                    match deadline {
-                        Some(deadline) => {
-                            let deadline = tokio::time::Instant::now().checked_add(
-                                std::time::Duration::from_millis(deadline.saturating_sub(now())),
-                            );
-                            match deadline {
-                                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                                None => std::future::pending::<()>().await,
-                            }
-                        }
-                        None => std::future::pending::<()>().await,
-                    }
-                };
-                reconcile = tokio::select! {
-                    _ = owner.stop.cancelled() => return,
-                    changed = controls.changed() => { if changed.is_err() { return; } true },
-                    changed = changes.changed() => { if changed.is_err() { return; } false },
-                    _ = due => false,
-                };
+                },
             }
-        });
+        }
     }
 
-    pub(super) async fn schedule_activations(
+    pub(super) async fn schedule_ready_at(
         self: &Arc<Self>,
-        cutoff: u64,
-    ) -> Result<(), RunError> {
-        // Keep recovery parked until the cleanup waiter injects shutdown.
-        #[cfg(test)]
-        if self
-            .mcp_shutdown_at_parked_wait
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Ok(());
-        }
-        let mut sessions = self.store.ready_native_approval_sessions().await?;
-        sessions.extend(self.store.due_model_retry_sessions(cutoff).await?);
-        let mut seen = std::collections::HashSet::new();
-        sessions.retain(|session| seen.insert(session.clone()));
-        for session in sessions {
-            if !self.owns(&session) {
-                continue;
-            }
-            if self.runs.has_checkpoints()
-                && let Ok(current) = self.session(&session).await
-                && !self.runs.workspace_available(
-                    &session,
-                    std::path::Path::new(&current.configuration.workspace.path),
-                )
-            {
-                continue;
-            }
-            let mut runs = self.runs.state().await;
-            if runs.closing || self.stop.is_cancelled() {
-                return Ok(());
-            }
-            if runs.busy(&session) {
-                continue;
-            }
-            let cancellation = self.stop.child_token();
-            runs.preparing.insert(session.clone(), cancellation.clone());
-            let owner = self.clone();
-            self.workers.spawn(async move {
-                let admission = tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => {
-                        owner.runs.state().await.preparing.remove(&session);
-                        return;
-                    }
-                    admission = owner.runs.ordered(&session) => admission,
-                };
-                let preparation = QueuePreparation {
-                    admission,
-                    cancellation,
-                };
-                match owner.advance(&session, None, Some(preparation)).await {
-                    Ok(Some(running)) => owner.drive(running).await,
-                    Ok(None) => {}
-                    Err(error) => owner.queue_failed(&session, None, &error),
-                }
-            });
-        }
-        Ok(())
-    }
-
-    // Recover the owner-scoped durable backlog without limiting active Sessions.
-    pub(super) async fn schedule(self: &Arc<Self>) {
-        if let Err(error) = self.schedule_pending().await
-            && !(self.stop.is_cancelled()
-                && matches!(
-                    &error,
-                    RunError::Cancelled
-                        | RunError::Commit(maka_agent_facts::event::CommitError::Retired)
-                        | RunError::Store(StoreError::SessionRetired)
-                ))
-        {
-            tracing::error!(stage = "queue_schedule_failed", cause = crate::diagnostics::run_cause(&error),
-                    consequence = "operation_failed", activation = %self.revision.activation, instance = ?self.data_source.namespace,
-                    "Agent queue scheduling failed");
-        }
-    }
-    pub(super) async fn schedule_pending(self: &Arc<Self>) -> Result<(), RunError> {
+        at: UnixMillis,
+        cause: ReadyCause,
+    ) -> Result<(), String> {
         let mut after = None;
         loop {
-            if self.stop.is_cancelled() {
-                return Ok(());
+            let page = self
+                .durable
+                .ready_runs_with_cause(self.run_owner(), at, after, 64, cause)
+                .await
+                .map_err(|e| e.to_string())?;
+            if page.is_empty() {
+                break;
             }
-            let sessions = self
-                .store
-                .pending_message_sessions(&self.prefix, after.as_deref())
-                .await?;
-            if sessions.is_empty() {
-                return Ok(());
+            for entry in page {
+                after = Some(entry.admission_sequence);
+                if let maka_agent_state::DriverPurpose::LateExternalCleanup { task } = entry.purpose
+                {
+                    if let Err(error) = self.wake_cleanup(entry.run, entry.session_id, task).await {
+                        tracing::error!(run = %entry.run, %error, "Original cleanup source could not be scheduled");
+                    }
+                    continue;
+                }
+                {
+                    let runs = self.runs.state().await;
+                    if runs
+                        .preparing
+                        .get(&entry.session_id)
+                        .is_some_and(|preparing| preparing.run == entry.run)
+                        || runs
+                            .controls
+                            .get(&entry.session_id)
+                            .is_some_and(|control| control.execution.run_id == entry.run)
+                    {
+                        continue;
+                    }
+                }
+                self.wake_run(entry.run).await?;
             }
-            for session in &sessions {
-                if !self.owns(session) {
-                    return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
-                }
-                // The activation wake driver owns parked invocations, including
-                // sessions whose next user message survived a restart.
-                if self
-                    .store
-                    .session(session)
-                    .await?
-                    .activation_checkpoint(session)
-                    .await?
-                    .is_some()
-                {
+        }
+        let mut after = None;
+        loop {
+            let page = self
+                .durable
+                .queue()
+                .ready(self.run_owner(), after.clone(), 64)
+                .await
+                .map_err(|e| e.to_string())?;
+            if page.is_empty() {
+                break;
+            }
+            for ready in page {
+                after = Some(ready.cursor);
+                let session = ready.entry.request.spec.session_id.clone();
+                if !matches!(ready.entry.placement, QueuePlacement::Followup) {
                     continue;
                 }
-                if self.runs.has_checkpoints()
-                    && let Ok(current) = self.session(session).await
-                    && !self.runs.workspace_available(
-                        session,
-                        std::path::Path::new(&current.configuration.workspace.path),
-                    )
-                {
-                    continue;
-                }
-                let mut runs = self.runs.state().await;
-                if runs.closing || self.stop.is_cancelled() {
-                    return Ok(());
-                }
-                if runs.busy(session) {
-                    continue;
-                }
-                let Ok(admission) = self.runs.try_ordered(session) else {
-                    continue;
+                let goal = if matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }) {
+                    match self.goals.gate.clone().try_lock_owned() {
+                        Ok(goal) => Some(goal),
+                        Err(_) => continue,
+                    }
+                } else {
+                    None
                 };
-                let cancellation = self.stop.child_token();
-                runs.preparing.insert(session.clone(), cancellation.clone());
-                let preparation = QueuePreparation {
-                    admission,
-                    cancellation,
+                let ordered = match self.runs.try_ordered(&session) {
+                    Ok(ordered) => ordered,
+                    Err(_) => continue,
                 };
                 let owner = self.clone();
-                let session = session.clone();
                 self.workers.spawn(async move {
-                    match owner.advance(&session, None, Some(preparation)).await {
-                        Ok(Some(running)) => owner.drive(running).await,
-                        Ok(None) => {}
-                        Err(error) => owner.queue_failed(&session, None, &error),
+                    if let Err(error) = owner.admit_queued(&session, ready.entry.request.id, ordered, goal).await {
+                        tracing::error!(%session, %error, "Original queued admission requires reconciliation");
                     }
                 });
             }
-            after = sessions.last().cloned();
-        }
-    }
-    pub(super) async fn start_pending(
-        self: &Arc<Self>,
-        session: &str,
-        admission: runs::Ordered,
-        cancellation: CancellationToken,
-    ) -> Result<(), RunError> {
-        let preparation = QueuePreparation {
-            admission,
-            cancellation,
-        };
-        match self.advance(session, None, Some(preparation)).await {
-            Ok(Some(running)) => {
-                self.workers.spawn(self.clone().drive(running));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.queue_failed(session, None, &error);
-                return Err(error);
-            }
         }
         Ok(())
     }
 
-    async fn advance(
+    async fn admit_queued(
         self: &Arc<Self>,
         session: &str,
-        previous: Option<&Invocation>,
-        reserved: Option<QueuePreparation>,
-    ) -> Result<Option<RunningInvocation>, RunError> {
-        let QueuePreparation {
-            admission,
-            cancellation,
-        } = match reserved {
-            Some(preparation) => preparation,
-            None => QueuePreparation {
-                admission: self.runs.ordered(session).await,
-                cancellation: self.stop.child_token(),
-            },
-        };
-        {
-            let mut runs = admission.state().await;
-            if runs.closing {
-                runs.preparing.remove(session);
-                if previous.is_some() {
-                    runs.controls.remove(session);
-                }
-                return Ok(None);
-            }
-            match (previous, runs.controls.get(session)) {
-                (None, None) => {}
-                (Some(previous), Some(control)) if previous == &control.invocation => {}
-                _ => {
-                    runs.preparing.remove(session);
-                    return Ok(None);
-                }
-            }
-            runs.preparing.insert(session.into(), cancellation.clone());
+        request: maka_agent_state::queue::RequestId,
+        ordered: runs::Ordered,
+        goal: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<(), String> {
+        if self.stop.is_cancelled() {
+            return Ok(());
         }
-        let next = self.next(session, &cancellation).await;
-        let mut runs = admission.state().await;
-        runs.preparing.remove(session);
-        match next {
-            Ok(Some((running, basis))) => {
-                // A durable start retains its original worker even if close won
-                // during admission. Its inherited cancellation drives settlement.
-                self.publish(&mut runs, &running, basis);
-                Ok(Some(running))
-            }
-            Ok(None) => {
-                if previous.is_some() {
-                    runs.controls.remove(session);
-                }
-                self.goals.execution_changed();
-                Ok(None)
-            }
-            Err(error) => {
-                if error.is_cleanup_unconfirmed() {
-                    runs.retained_cleanup.insert(session.into());
-                }
-                runs.controls.remove(session);
-                Err(error)
-            }
-        }
-    }
-    fn queue_failed(&self, session: &str, previous: Option<&Invocation>, error: &RunError) {
-        if !(self.stop.is_cancelled()
-            && matches!(
-                error,
-                RunError::Cancelled
-                    | RunError::Commit(maka_agent_facts::event::CommitError::Retired)
-                    | RunError::Store(StoreError::SessionRetired)
-            ))
-        {
-            tracing::error!(stage = "queue_advance_failed", cause = crate::diagnostics::run_cause(error),
-                consequence = "operation_failed", session_id = %session,
-                turn_id = previous.map(|invocation| invocation.turn_id.as_str()),
-                run_id = previous.map(|invocation| invocation.run_id.as_str()),
-                invocation_id = previous.map(|invocation| invocation.invocation_id.as_str()),
-                activation = %self.revision.activation, "Agent queue advancement failed");
-        }
-    }
-    pub(super) fn publish(
-        self: &Arc<Self>,
-        runs: &mut Runs,
-        running: &RunningInvocation,
-        basis: Arc<MessageBasis>,
-    ) {
-        if let Some(model) = &basis.model {
-            self.title_after_message(running.invocation().clone(), model.clone());
-        }
-        self.goals.execution_changed();
-        runs.controls.insert(
-            running.invocation().session_id.clone(),
-            Control {
-                settlement: basis
-                    .client_mcp
-                    .map(|_| tokio::sync::watch::channel(None).0),
-                #[cfg(test)]
-                handoff: running.handoff().cloned(),
-                preview: running.preview(),
-                compacting: false,
-                invocation: running.invocation().clone(),
-                basis,
-                cancellation: running.cancellation(),
-            },
-        );
-    }
-    pub(super) fn drive(self: Arc<Self>, mut running: RunningInvocation) -> BoxFuture<'static, ()> {
-        Box::pin(async move {
-            let session = running.invocation().session_id.clone();
-            loop {
-                let invocation = running.invocation().clone();
-                let settlement = self
-                    .runs
-                    .state()
-                    .await
-                    .controls
-                    .get(&session)
-                    .filter(|control| control.invocation == invocation)
-                    .and_then(|control| control.settlement.clone())
-                    .map(Settlement);
-                let completion = std::panic::AssertUnwindSafe(running.completion())
-                    .catch_unwind()
-                    .await;
-                if let Some(settlement) = &settlement {
-                    settlement.0.send_replace(Some(
-                        if matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
-                            Ok(())
-                        } else {
-                            Err("agent_execution_cleanup_unconfirmed".into())
-                        },
-                    ));
-                }
-                drop(settlement);
-                if !matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
-                    let mut runs = self.runs.state().await;
-                    let stage = if completion.is_err() {
-                        "queue_completion_panicked"
-                    } else {
-                        "queue_cleanup_unconfirmed"
-                    };
-                    tracing::error!(stage, cause = "cleanup_unconfirmed", consequence = "resources_retained",
-                        session_id = %invocation.session_id, turn_id = %invocation.turn_id,
-                        run_id = %invocation.run_id, invocation_id = %invocation.invocation_id,
-                        activation = %self.revision.activation, "Agent invocation cleanup is unconfirmed");
-                    runs.controls.remove(&session);
-                    runs.retained_cleanup.insert(session.clone());
-                    drop(runs);
-                    match self.advance(&session, None, None).await {
-                        Ok(Some(next)) => {
-                            running = next;
-                            continue;
-                        }
-                        Ok(None) => {}
-                        Err(error) => self.queue_failed(&session, Some(&invocation), &error),
-                    }
-                    return;
-                }
-                let completion = completion.expect("original worker completion");
-                if let Ok(ActivationExit::Parked(_)) = completion.result {
-                    let mut runs = self.runs.state().await;
-                    runs.controls.remove(&session);
-                    drop(runs);
-                    if let Err(error) = self.mcp_projects.prune().await {
-                        tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
-                    }
-                    // Readiness can commit while the old activation still owns admission.
-                    // Recheck only after that worker confirms cleanup.
-                    if let Err(error) = self.schedule_activations(now()).await {
-                        self.queue_failed(&session, Some(&invocation), &error);
-                    }
-                    return;
-                }
-                let next = self.advance(&session, Some(&invocation), None).await;
-                if let Err(error) = self.mcp_projects.prune().await {
-                    tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
-                }
-                match next {
-                    Ok(Some(next)) => running = next,
-                    Ok(None) => return,
-                    Err(error) => {
-                        self.queue_failed(&session, Some(&invocation), &error);
-                        return;
-                    }
-                }
-            }
-        })
-    }
-    async fn next(
-        self: &Arc<Self>,
-        session: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
-        loop {
-            if cancellation.is_cancelled() {
-                return Ok(None);
-            }
-            if self.runs.has_checkpoints() {
-                if self.runs.checkpointed(session) {
-                    return Ok(None);
-                }
-                if let Some(record) = self
-                    .store
-                    .get_session::<StoredSessionConfiguration>(session)
-                    .await?
-                    && let Ok(resolved) = resolve_session(record)
-                    && !self.runs.workspace_available(
-                        session,
-                        std::path::Path::new(&resolved.configuration.workspace.path),
-                    )
-                {
-                    return Ok(None);
-                }
-            }
-            let store = self.store.session(session).await?;
-            if let Some(checkpoint) = store.activation_checkpoint(session).await? {
-                return match &checkpoint.checkpoint.suspension {
-                    maka_agent_facts::native_approval::ActivationSuspension::NativeApprovals => {
-                        self.prepare_native_approval_resume(checkpoint, cancellation)
-                            .await
-                    }
-                    maka_agent_facts::native_approval::ActivationSuspension::ModelRetry {
-                        plan,
-                    } => {
-                        if self
-                            .settle_model_retry_controls(&store, &checkpoint.receipt)
-                            .await?
-                        {
-                            continue;
-                        }
-                        // The append transaction checks the deadline again under fresh custody.
-                        if plan.not_before_unix_ms > now() {
-                            return Ok(None);
-                        }
-                        let receipt = checkpoint.receipt.clone();
-                        match self
-                            .prepare_model_retry_resume(checkpoint, cancellation)
-                            .await
-                        {
-                            Err(
-                                error @ (RunError::Commit(
-                                    maka_agent_facts::event::CommitError::PermissionRevoked
-                                    | maka_agent_facts::event::CommitError::Retired,
-                                )
-                                | RunError::Store(
-                                    StoreError::PermissionRevoked | StoreError::SessionRetired,
-                                )
-                                | RunError::Cancelled),
-                            ) => {
-                                if self.settle_model_retry_controls(&store, &receipt).await? {
-                                    continue;
-                                }
-                                Err(error)
-                            }
-                            result => result,
-                        }
-                    }
-                };
-            }
-            let mut queue = store.message_queue(session).await?;
-            if queue.entries.is_empty() {
-                return Ok(None);
-            }
-            let selected = queue
-                .entries
-                .iter()
-                .position(|entry| entry.source.disposition == MessageDisposition::Steering)
-                .unwrap_or(0);
-            let entry = queue.entries.swap_remove(selected);
-            drop(queue);
-            if let Some(running) = self.prepare_selected(session, &entry, cancellation).await? {
-                return Ok(Some(running));
-            }
-        }
-    }
-    async fn settle_model_retry_controls(
-        &self,
-        store: &maka_event_log::root_store::SessionStore,
-        receipt: &maka_event_log::native_approvals::ParkedActivationReceipt,
-    ) -> Result<bool, RunError> {
-        let mut changes = store.subscribe_commits()?;
-        let mut uncertain = false;
-        loop {
-            match store.settle_controlled_model_retry(receipt).await {
-                Ok(settled) => return Ok(settled),
-                Err(StoreError::CommitUnknown(_) | StoreError::OperationUnknown) if !uncertain => {
-                    uncertain = true;
-                }
-                Err(error) if !uncertain => return Err(error.into()),
-                Err(_) => {
-                    if changes.changed().await.is_err() {
-                        std::future::pending::<()>().await;
-                    }
-                }
-            }
-        }
-    }
-
-    async fn prepare_model_retry_resume(
-        self: &Arc<Self>,
-        checkpoint: maka_event_log::native_approvals::ActivationCheckpointRecord,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
-        let invocation = checkpoint.checkpoint.invocation.clone();
-        let mut basis: MessageBasis = serde_json::from_value(
-            checkpoint.checkpoint.native_basis.clone(),
-        )
-        .map_err(|error| {
-            RunError::InvalidInput(format!("invalid frozen retry native basis: {error}"))
-        })?;
-        basis.mcp_catalog = Some(
-            self.mcp_projects
-                .catalog(basis.mcp_revision.as_deref())
-                .map_err(RunError::InvalidInput)?,
-        );
-        let basis = Arc::new(basis);
-        let store = self.store.session(&invocation.session_id).await?;
-        let current = self
-            .session(&invocation.session_id)
+        let original = self
+            .durable
+            .queue()
+            .entry(session.into(), request.clone())
             .await
-            .map_err(RunError::InvalidInput)?;
-        let permission_basis = Some(maka_agent_facts::workspace::PermissionBasis {
-            boundary_revision: current.configuration.boundary_revision,
-            binding: current.configuration.binding,
-        });
-        let owner = self.clone();
-        let preparing = cancellation.clone();
-        let continuation_basis = basis.clone();
-        let continuation = Box::pin(async move {
-            owner
-                .prepare_frozen_retry(&invocation, continuation_basis, &preparing)
+            .map_err(|e| e.to_string())?
+            .ok_or("agent_queue_request_unavailable")?;
+        let busy = {
+            let runs = ordered.state().await;
+            runs.closing || runs.busy(session)
+        };
+        if busy {
+            return Ok(());
+        }
+        if let Some(run) = self
+            .durable
+            .latest_run(session.into())
+            .await
+            .map_err(|e| e.to_string())?
+            && self
+                .durable
+                .frontier(run)
                 .await
-        });
-        let input = maka_agent_engine::RetryResumeInput {
-            checkpoint,
-            permission_basis,
-            continuation,
-            owner_shutdown: self.stop.clone(),
-            host_epoch: self.revision.activation.clone(),
-        };
-        match self
-            .engine
-            .start_retry_resume(store, input, cancellation.clone())
-            .await
+                .map_err(|e| e.to_string())?
+                .terminal
+                .is_none()
         {
-            Ok(running) => Ok(Some((running, basis))),
-            Err(RunError::Busy) => Ok(None),
-            Err(error) => Err(error),
+            return Ok(());
         }
-    }
-
-    async fn prepare_native_approval_resume(
-        self: &Arc<Self>,
-        checkpoint: maka_event_log::native_approvals::NativeApprovalCheckpoint,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
-        let invocation = checkpoint.checkpoint.invocation.clone();
-        let mut basis: MessageBasis =
-            serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
-                |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
-            )?;
-        if !checkpoint.revoked && !checkpoint.stop_requested {
-            basis.mcp_catalog = Some(
-                self.mcp_projects
-                    .catalog(basis.mcp_revision.as_deref())
-                    .map_err(RunError::InvalidInput)?,
-            );
+        if let Trigger::Goal { goal_id } = &original.request.spec.trigger {
+            if goal.is_none() {
+                return Err("agent_goal_admission_source_changed".into());
+            }
+            self.check_goal_background(session, *goal_id).await?;
         }
-        let basis = Arc::new(basis);
-        let store = self.store.session(&invocation.session_id).await?;
-        let mut configuration = store
-            .invocation_configuration(&invocation)
-            .await?
-            .ok_or_else(|| {
-                RunError::ReconciliationRequired("parked invocation has no configuration".into())
-            })?;
-        let session = self
-            .session(&invocation.session_id)
+        let queue = self
+            .durable
+            .queue()
+            .read(session.into())
             .await
-            .map_err(RunError::InvalidInput)?;
-        // Execution custody is always issued against the current permission ceiling.
-        configuration.boundary_revision = session.configuration.boundary_revision;
-        configuration.workspace_binding = Some(session.configuration.binding);
-        configuration.sandbox_mode = match session.configuration.permissions.access {
-            WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
-            WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
-            WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
+            .map_err(|e| e.to_string())?;
+        let Some(entry) = queue
+            .entries
+            .iter()
+            .find(|entry| matches!(entry.placement, QueuePlacement::Followup))
+        else {
+            return Ok(());
         };
-        configuration.approval_policy = if session.configuration.permissions.request_permissions {
-            ApprovalPolicy::OnRequest
-        } else {
-            ApprovalPolicy::Never
-        };
-        let names = match &basis.mcp_catalog {
-            Some(catalog) => catalog.tools.names(),
-            None => basis
-                .internal_tools
-                .iter()
-                .map(|tool| tool.name.clone())
-                .collect(),
-        };
-        let tool_names = names
-            .into_iter()
-            .filter(|name| {
-                basis
-                    .allowed_tools
-                    .as_ref()
-                    .is_none_or(|allowed| allowed.contains(name))
-            })
-            .collect();
-        let owner = self.clone();
-        let continuation_basis = basis.clone();
-        let continuation_configuration = configuration.clone();
-        let continuation = Box::pin(async move {
-            let basis = continuation_basis;
-            let configuration = continuation_configuration;
-            workspace::validate(
-                &owner.workspace_roots,
-                &basis.workspace,
-                &owner.managed_worktrees,
-            )
-            .await
-            .map_err(RunError::InvalidInput)?;
-            if owner.stop.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            let model = basis.model.clone().ok_or_else(|| {
-                RunError::InvalidInput("native approval requires model basis".into())
-            })?;
-            let source = crate::model::Source::restore(
-                owner.configuration.clone(),
-                owner.credentials.clone(),
-                model,
-                invocation.session_id.clone(),
-                owner.revision.clone(),
-            )?;
-            let prepared = source.capture().await?;
-            if owner.stop.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            let tools = owner
-                .selected_tools(
-                    &invocation.session_id,
-                    &basis,
-                    configuration.tool_discovery,
-                    configuration.editing_tools,
-                )
-                .map_err(RunError::InvalidInput)?;
-            let settings = maka_agent_engine::RunInput {
-                invocation: invocation.clone(),
-                model_source: Some(Arc::new(source)),
-                model_revision: Some(prepared.revision),
-                provider_id: prepared.provider_id,
-                context: prepared.context,
-                provider: prepared.provider,
-                provider_options: prepared.options,
-                main_output_limit: prepared.main_output_limit,
-                supports_vision: prepared.supports_vision,
-                request_fingerprint: Some(basis.fingerprint.clone()),
-                configuration: configuration.clone(),
-                native_activation_basis: Some(basis.clone()),
-                work: (),
-            };
-            Ok(maka_agent_engine::ResumeContinuation { settings, tools })
-        });
-        let input = maka_agent_engine::ResumeInput {
-            configuration,
-            continuation,
-            tool_names,
-            checkpoint,
-            executor: self.clone(),
-            owner_shutdown: self.stop.clone(),
-            host_epoch: self.revision.activation.clone(),
-        };
-        match self
-            .engine
-            .start_resume(store, input, cancellation.clone())
-            .await
-        {
-            Ok(running) => Ok(Some((running, basis))),
-            Err(RunError::Busy) => Ok(None),
-            Err(error) => Err(error),
+        if entry.request.id != request {
+            return Ok(());
         }
-    }
-
-    pub(super) async fn prepare_selected(
-        &self,
-        session: &str,
-        entry: &PendingMessageAdmission,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
-        if entry.execution.owner != self.prefix || !self.owns(session) {
-            return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
+        let current = self.mutable_session(session).await?;
+        if current.archived {
+            return Err("agent_session_configuration_changed".into());
         }
-        let invocation = if entry.source.disposition == MessageDisposition::TurnStarted {
-            entry.invocation.clone()
-        } else {
-            let identity = hex::encode(Sha256::digest(entry.source.message.message_id.as_bytes()));
-            Invocation {
-                session_id: session.into(),
-                turn_id: format!("t_{identity}"),
-                run_id: format!("r_{identity}"),
-                invocation_id: format!("i_{identity}"),
-            }
-        };
-        let attempt = async {
-            let prepared = self.prepare_pending(entry, invocation.clone()).await;
-            if cancellation.is_cancelled() {
-                return Ok(None);
-            }
-            let result = match prepared {
-                Ok((input, basis)) => self
-                    .start(input, cancellation.clone())
+        // This is a current Root capability check, not acceptance of the saved permission basis.
+        let scope = self
+            .current_work_scope(session, &current.configuration)
+            .await
+            .map_err(|e| e.to_string())?;
+        let basis = match &entry.request.spec.budget_basis {
+            Some(reference) => Some(
+                self.durable
+                    .queue()
+                    .content(session.into(), request.clone(), reference.clone())
                     .await
-                    .map(|running| (running, basis)),
-                Err(reason) => {
-                    self.fail_pending(invocation, entry, reason).await?;
-                    return Ok(None);
-                }
-            };
-            match result {
-                Ok(running) => Ok(Some(running)),
-                Err(RunError::Cancelled) if cancellation.is_cancelled() => Ok(None),
-                Err(error @ (RunError::InvalidInput(_) | RunError::ReconciliationRequired(_))) => {
-                    if !cancellation.is_cancelled() {
-                        self.fail_pending(invocation, entry, error).await?;
+                    .map_err(|error| error.to_string())?,
+            ),
+            None => None,
+        };
+        let guard =
+            self.restore_budget_guard(&entry.request.spec, basis, &entry.request.message_id)?;
+        let mut admission =
+            Admission::new(entry.request.spec.clone(), UnixMillis(now() as i64), vec![])
+                .with_queue(Consume {
+                    session: session.into(),
+                    requests: vec![request],
+                    expected_revision: queue.revision,
+                });
+        if let Some(guard) = guard {
+            admission = admission.with_guard(guard);
+        }
+        let run = admission.run();
+        let (lease, effects) = scope.accept(self.stop.child_token());
+        let committed: Result<bool, String> = async {
+            let selected = lease.store();
+            let custody = selected
+                .work_custody()
+                .map_err(|error| error.to_string())?;
+            let writer = self
+                .store
+                .data_writer_for_work(custody.as_ref(), session)
+                .map_err(|error| error.to_string())?;
+            let state = self
+                .durable
+                .with_data_writer(writer)
+                .map_err(|error| error.to_string())?;
+            let mut changed = state.subscribe().map_err(|error| error.to_string())?;
+            changed.borrow_and_update();
+            match state.admit(admission.clone()).await {
+                Ok(_) => return Ok(true),
+                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown | maka_event_log::StoreError::EventConflict) => {}
+                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
+                Err(error) => return Err(error.to_string()),
+            }
+            loop {
+                changed.borrow_and_update();
+                match state.admission_recorded(&admission).await {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {
+                        match state.admit(admission.clone()).await {
+                            Ok(_) => return Ok(true),
+                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown | maka_event_log::StoreError::EventConflict) => {},
+                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
+                            Err(error) => return Err(error.to_string()),
+                        }
+                        match state.admission_recorded(&admission).await {
+                            Ok(true) => return Ok(true),
+                            Ok(false) => {},
+                            Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
+                        }
                     }
-                    Ok(None)
+                    Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
                 }
-                Err(error) => Err(error),
+                if changed.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
             }
         }
         .await;
-        match attempt {
-            Ok(value) => Ok(value),
-            Err(error @ RunError::Commit(maka_agent_facts::event::CommitError::Rejected(_))) => {
-                // Stop can commit its exact source retraction before its
-                // observer gets to cancel the preparing worker's token.
-                let cancelled = async {
-                    let store = self.store.session(session).await?;
-                    store.message_cancelled(session, &entry.source.message.message_id).await
-                }.await.map_err(|lookup| RunError::Internal(format!(
-                    "pending admission rejected ({error}); cancellation lookup failed ({lookup})"
-                )))?;
-                if cancelled {
-                    return Ok(None);
-                }
-                Err(error)
-            }
-            // SQL/commit uncertainty and physical cleanup failures do not
-            // establish a deterministic rejection of the accepted message.
-            Err(error) => Err(error),
+        if effects.settle().await.is_err() {
+            lease.retain_unconfirmed(());
+            return Err("agent_admission_cleanup_unconfirmed".into());
         }
+        lease.finish();
+        if !committed? {
+            return Ok(());
+        }
+        drop(ordered);
+        drop(goal);
+        self.wake_run(run).await
     }
 
-    fn validate_accepted_tools(
-        &self,
-        basis: &MessageBasis,
-        selected_catalog: &crate::mcp::Catalog,
-    ) -> Result<(), String> {
-        let tools_changed = if basis
-            .executor
-            .as_ref()
-            .is_some_and(|executor| executor.selection.executor != "external")
+    pub(super) async fn wake_run(self: &Arc<Self>, run: RunId) -> Result<(), String> {
+        let view = self
+            .durable
+            .frontier(run)
+            .await
+            .map_err(|e| e.to_string())?;
+        if view.spec.owner != self.run_owner()
+            || view.terminal.is_some()
+            || !matches!(view.spec.origin, RunOrigin::Local)
         {
-            !basis.tools.is_empty()
-                || !basis.internal_tools.is_empty()
-                || !basis.internal_bindings.is_empty()
-        } else {
-            basis.tools != self.tool_basis
-                || basis.internal_tools != selected_catalog.definitions
-                || basis.internal_bindings != selected_catalog.bindings
-        };
-        if tools_changed {
-            return Err("agent_tools_changed".into());
+            return Ok(());
         }
-        Ok(())
-    }
-
-    /// Reacquire the accepted model and capabilities under the current permission ceiling.
-    pub(super) async fn prepare_frozen_retry(
-        &self,
-        invocation: &Invocation,
-        basis: Arc<MessageBasis>,
-        cancellation: &CancellationToken,
-    ) -> Result<maka_agent_engine::ResumeContinuation, RunError> {
-        if cancellation.is_cancelled() || self.stop.is_cancelled() {
-            return Err(RunError::Cancelled);
-        }
-        self.validate_background(&basis)
-            .await
-            .map_err(RunError::InvalidInput)?;
-        let catalog = self
-            .mcp_projects
-            .catalog(basis.mcp_revision.as_deref())
-            .map_err(RunError::InvalidInput)?;
-        self.validate_accepted_tools(&basis, &catalog)
-            .map_err(RunError::InvalidInput)?;
-        if basis.executor.is_some() {
-            return Err(RunError::InvalidInput(
-                "frozen model retry requires model basis".into(),
-            ));
-        }
-        let session = self
-            .session(&invocation.session_id)
-            .await
-            .map_err(RunError::Internal)?;
-        basis
-            .validate_background_target(&session)
-            .map_err(RunError::InvalidInput)?;
-        if session.archived
-            || session.configuration.workspace != basis.workspace
-            || session.configuration.binding != basis.binding
-            || !self.accepted_tools_match(
-                &invocation.session_id,
-                &session.configuration.tools,
-                &basis.allowed_tools,
-            )
         {
-            return Err(RunError::InvalidInput(
-                "agent_session_configuration_changed".into(),
-            ));
-        }
-        workspace::validate(
-            &self.workspace_roots,
-            &basis.workspace,
-            &self.managed_worktrees,
-        )
-        .await
-        .map_err(RunError::InvalidInput)?;
-        let store = self.store.session(&invocation.session_id).await?;
-        let mut configuration = store
-            .invocation_configuration(invocation)
-            .await?
-            .ok_or_else(|| {
-                RunError::ReconciliationRequired("frozen invocation has no configuration".into())
-            })?;
-        configuration.boundary_revision = session.configuration.boundary_revision;
-        configuration.workspace_binding = Some(session.configuration.binding);
-        configuration.sandbox_mode = match session.configuration.permissions.access {
-            WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
-            WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
-            WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
-        };
-        configuration.approval_policy = if session.configuration.permissions.request_permissions {
-            ApprovalPolicy::OnRequest
-        } else {
-            ApprovalPolicy::Never
-        };
-        let model = basis.model.clone().ok_or_else(|| {
-            RunError::InvalidInput("frozen model retry requires model basis".into())
-        })?;
-        let source = crate::model::Source::restore(
-            self.configuration.clone(),
-            self.credentials.clone(),
-            model,
-            invocation.session_id.clone(),
-            self.revision.clone(),
-        )?;
-        let prepared = source.capture().await?;
-        if cancellation.is_cancelled() || self.stop.is_cancelled() {
-            return Err(RunError::Cancelled);
-        }
-        let tools = self
-            .selected_tools(
-                &invocation.session_id,
-                &basis,
-                configuration.tool_discovery,
-                configuration.editing_tools,
-            )
-            .map_err(RunError::InvalidInput)?;
-        let settings = maka_agent_engine::RunInput {
-            invocation: invocation.clone(),
-            model_source: Some(Arc::new(source)),
-            model_revision: Some(prepared.revision),
-            provider_id: prepared.provider_id,
-            context: prepared.context,
-            provider: prepared.provider,
-            provider_options: prepared.options,
-            main_output_limit: prepared.main_output_limit,
-            supports_vision: prepared.supports_vision,
-            request_fingerprint: Some(basis.fingerprint.clone()),
-            configuration,
-            native_activation_basis: Some(basis),
-            work: (),
-        };
-        Ok(maka_agent_engine::ResumeContinuation { settings, tools })
-    }
-
-    async fn prepare_pending(
-        &self,
-        entry: &PendingMessageAdmission,
-        invocation: Invocation,
-    ) -> Result<(PreparedRun, Arc<MessageBasis>), RunError> {
-        let basis = async {
-            let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
-                .map_err(|_| "agent_message_basis_invalid")?;
-            self.validate_background(&basis).await?;
-            let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
-            self.validate_accepted_tools(&basis, &selected_catalog)?;
-            // Deserialization allocates independent descriptors. Only after the original
-            // content checks succeed may this admitted basis share the captured catalog.
-            if basis.executor.is_none() {
-                basis.tools = self.tool_basis.clone();
-                basis.internal_tools = selected_catalog.definitions.clone();
-                basis.internal_bindings = selected_catalog.bindings.clone();
-                basis.mcp_catalog = Some(selected_catalog);
-            }
-            let session = self.session(&invocation.session_id).await?;
-            basis.validate_background_target(&session)?;
-            if session.archived
-                || session.configuration.workspace != basis.workspace
-                || session.configuration.binding != basis.binding
-                || !self.accepted_tools_match(
-                    &invocation.session_id,
-                    &session.configuration.tools,
-                    &basis.allowed_tools,
-                )
-                || (basis
-                    .executor
-                    .as_ref()
-                    .is_some_and(|executor| executor.selection.executor != "external")
-                    && basis.allowed_tools.is_some())
-            {
-                return Err("agent_session_configuration_changed".into());
-            }
-            workspace::validate(
-                &self.workspace_roots,
-                &basis.workspace,
-                &self.managed_worktrees,
-            )
-            .await?;
-            Ok::<_, String>(basis)
-        }
-        .await
-        .map_err(|message| match message.as_str() {
-            "agent_tools_changed"
-            | "agent_session_configuration_changed"
-            | "agent_message_basis_invalid"
-            | "scheduler_authorization_changed"
-            | "goal_continuation_stopped" => RunError::InvalidInput(message),
-            _ => RunError::Internal(message),
-        })?;
-        let backend = match (&basis.model, &basis.executor) {
-            (Some(model), None) => {
-                let source = crate::model::Source::restore(
-                    self.configuration.clone(),
-                    self.credentials.clone(),
-                    model.clone(),
-                    invocation.session_id.clone(),
-                    self.revision.clone(),
-                )?;
-                let prepared = source.capture().await?;
-                PreparedBackend::Model(Box::new((source, prepared)))
-            }
-            (None, Some(executor)) => PreparedBackend::Executor(Box::new(
-                self.executors
-                    .restore(executor)
-                    .map_err(RunError::InvalidInput)?,
-            )),
-            _ => return Err(RunError::InvalidInput("agent_message_basis_invalid".into())),
-        };
-        let basis = Arc::new(basis);
-        Ok((
-            self.input(invocation, backend, basis.clone(), entry.source.clone())
-                .await
-                .map_err(RunError::InvalidInput)?,
-            basis,
-        ))
-    }
-    pub(super) async fn input(
-        &self,
-        invocation: Invocation,
-        backend: PreparedBackend,
-        basis: Arc<MessageBasis>,
-        delivered: RootSourceMessage,
-    ) -> Result<PreparedRun, String> {
-        let system_prompt = match (
-            basis.behavior.clone(),
-            skills::prompt(&delivered.message.content)?,
-        ) {
-            (Some(mut behavior), Some(skills)) => {
-                behavior.text.push_str("\n\n");
-                behavior.text.push_str(&skills.text);
-                behavior.sources.extend(skills.sources);
-                Some(behavior)
-            }
-            (behavior, skills) => behavior.or(skills),
-        };
-        if let Some(prompt) = &system_prompt {
-            prompt.validate().map_err(|_| "agent_prompt_invalid")?;
-        }
-        let session = self
-            .store
-            .get_session::<StoredSessionConfiguration>(&invocation.session_id)
-            .await
-            .map_err(|_| "agent_store_unavailable")?
-            .ok_or("agent_session_unavailable")?;
-        let session = resolve_session(session)?;
-        let permissions = &session.configuration.permissions;
-        let mut configuration = InvocationConfiguration {
-            language: basis.language,
-            compaction_prompt: basis.compaction_prompt.clone(),
-            editing_tools: None,
-            tool_discovery: basis.tool_discovery,
-            cwd: basis.workspace.path.clone(),
-            workspace_identity: Some(basis.workspace.identity.clone()),
-            workspace_origin: WorkspaceOrigin::Selected,
-            sandbox_mode: match permissions.access {
-                WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
-                WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
-                WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
-            },
-            approval_policy: if permissions.request_permissions {
-                ApprovalPolicy::OnRequest
-            } else {
-                ApprovalPolicy::Never
-            },
-            boundary_revision: session.configuration.boundary_revision,
-            workspace_binding: Some(session.configuration.binding),
-            collaboration_mode: basis.collaboration_mode,
-            tool_mode: ToolMode::Direct,
-            code_language: Default::default(),
-            model: None,
-            thinking_level: None,
-            system_prompt,
-            tool_composition: None,
-        };
-        Ok(match backend {
-            PreparedBackend::Model(value) => {
-                let (source, prepared) = *value;
-                configuration.model = Some(source.accepted.binding.clone());
-                configuration.thinking_level = source.accepted.thinking_level;
-                configuration.tool_mode = source.accepted.tool_mode;
-                configuration.code_language = source.accepted.code_language;
-                configuration.editing_tools = source.accepted.editing_tools;
-                let tools = self.selected_tools(
-                    &invocation.session_id,
-                    &basis,
-                    basis.tool_discovery,
-                    configuration.editing_tools,
-                )?;
-                PreparedRun::Model(Box::new(RunInput {
-                    model_source: Some(Arc::new(source)),
-                    model_revision: Some(prepared.revision),
-                    provider_id: prepared.provider_id,
-                    invocation,
-                    context: prepared.context,
-                    provider: prepared.provider,
-                    provider_options: prepared.options,
-                    main_output_limit: prepared.main_output_limit,
-                    supports_vision: prepared.supports_vision,
-                    native_activation_basis: Some(basis.clone()),
-                    request_fingerprint: Some(basis.fingerprint.clone()),
-                    configuration,
-                    work: RunWork::Message {
-                        message: delivered.message.content.clone(),
-                        source_messages: vec![delivered],
-                        tools,
-                    },
-                }))
-            }
-            PreparedBackend::Executor(backend) => {
-                let mut backend = *backend;
-                backend.bind_host_tools(self.external_tools(&invocation.session_id, &basis)?);
-                configuration.thinking_level = None;
-                PreparedRun::Executor(Box::new(maka_agent_engine::ExecutorInput {
-                    request: maka_agent_ports::executor::Request {
-                        language: basis.language,
-                        conversation_key: invocation.session_id.clone(),
-                        invocation,
-                        content: delivered.message.content.clone(),
-                        cwd: configuration.cwd.clone(),
-                        instructions: configuration
-                            .system_prompt
-                            .as_ref()
-                            .map(|prompt| prompt.text.clone()),
-                        settings: backend.accepted.selection.settings.clone(),
-                    },
-                    binding: backend,
-                    configuration,
-                    request_fingerprint: Some(basis.fingerprint.clone()),
-                    source_messages: vec![delivered],
-                }))
-            }
-        })
-    }
-    pub(super) async fn start(
-        &self,
-        input: PreparedRun,
-        cancellation: CancellationToken,
-    ) -> Result<RunningInvocation, RunError> {
-        match input {
-            PreparedRun::Model(input) => {
-                self.engine
-                    .start(
-                        self.store.session(&input.invocation.session_id).await?,
-                        *input,
-                        cancellation,
-                    )
-                    .await
-            }
-            PreparedRun::Executor(input) => {
-                self.engine
-                    .start_executor(
-                        self.store
-                            .session(&input.request.invocation.session_id)
-                            .await?,
-                        *input,
-                        cancellation,
-                    )
-                    .await
-            }
-        }
-    }
-    async fn fail_pending(
-        &self,
-        invocation: Invocation,
-        entry: &PendingMessageAdmission,
-        reason: RunError,
-    ) -> Result<(), RunError> {
-        let prerequisite = matches!(
-            reason,
-            RunError::InvalidInput(_) | RunError::ReconciliationRequired(_)
-        );
-        let model_failure = match &reason {
-            RunError::Model(error) => error.failure_cause(),
-            _ => None,
-        };
-        let events = [
-            Fact::InvocationOpened {
-                configuration: None,
-                input: InvocationInput::Message {
-                    content: entry.source.message.content.clone(),
-                    source_messages: vec![entry.source.clone()],
-                    request_fingerprint: None,
-                },
-            },
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Failed {
-                    class: if prerequisite {
-                        "message_prerequisite_changed"
-                    } else {
-                        "message_preparation_failed"
-                    }
-                    .into(),
-                    message: Some(reason.to_string()),
-                    model_failure,
-                },
-            },
-        ]
-        .into_iter()
-        .map(|fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-        self.store
-            .session(&invocation.session_id)
-            .await?
-            .append_batch(&events)
-            .await?;
-        Ok(())
-    }
-    pub async fn stop_run(
-        &self,
-        session: &str,
-        invocation: &str,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-    ) -> Result<bool, String> {
-        let goal = self.goals.gate.lock().await;
-        self.stop_run_id(session, invocation, self.operation_id(operation), &goal)
-            .await
-    }
-    pub(super) async fn stop_run_id(
-        &self,
-        session: &str,
-        invocation: &str,
-        interrupt_id: String,
-        _goal: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<bool, String> {
-        self.session(session).await?;
-        let physical = {
             let runs = self.runs.state().await;
-            runs.controls
-                .get(session)
-                .filter(|control| control.invocation.invocation_id == invocation)
-                .map(|control| {
-                    (
-                        control.invocation.clone(),
-                        control.cancellation.clone(),
-                        runs.preparing.get(session).cloned(),
-                    )
-                })
-        };
-        let (original, cancellation, preparing) = match physical {
-            Some((original, cancellation, preparing)) => (original, Some(cancellation), preparing),
-            None => {
-                let store = self
-                    .store
-                    .session(session)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let Some(parked) = store
-                    .activation_checkpoint(session)
-                    .await
-                    .map_err(|_| "agent_execution_unavailable")?
-                    .filter(|parked| parked.checkpoint.invocation.invocation_id == invocation)
-                else {
-                    return Ok(false);
-                };
-                (parked.checkpoint.invocation, None, None)
-            }
-        };
-        {
-            if let Some(mut saved) = self
-                .goals
-                .repository
-                .read(session)
-                .await
-                .map_err(|error| error.to_string())?
-                && saved.goal.status == maka_goal::goal::Status::Active
-                && saved
-                    .goal
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.invocation().turn_id == original.turn_id)
-            {
-                saved
-                    .goal
-                    .control(maka_goal::goal::Control::Pause)
-                    .map_err(|error| error.to_string())?;
-                self.goals.save(saved).await?;
+            if runs.closing || runs.busy(&view.spec.session_id) {
+                return Ok(());
             }
         }
-        let command = InterruptCommand {
-            host_epoch: self.revision.activation.clone(),
-            session_id: session.into(),
-            interrupt_id,
-            turn_id: original.turn_id.clone(),
-            run_id: original.run_id.clone(),
+        let cancellation = self.stop.child_token();
+        let Some(claim) = self
+            .durable
+            .reserve_driver(
+                run,
+                maka_agent_state::DriverPurpose::Business,
+                cancellation.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
         };
-        loop {
-            let revision = self
-                .store
-                .session(session)
-                .await
-                .map_err(|error| error.to_string())?
-                .message_queue_revision(session)
-                .await
-                .map_err(|_| "agent_queue_unavailable")?;
-            match self
-                .store
-                .session(&command.session_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .interrupt_message_queue(&command, revision, Some(&original))
-                .await
+        let mut runs = self.runs.state().await;
+        if runs.closing || runs.busy(&view.spec.session_id) {
+            claim.deactivate();
+            return Ok(());
+        }
+        let session = view.spec.session_id;
+        let owner = self.clone();
+        let token = cancellation.clone();
+        let target = session.clone();
+        let job = self.workers.spawn(async move {
+            let activity = super::cleanup_driver::DriverActivity(claim.clone());
+            let ordered = tokio::select! {
+                biased;
+                _ = token.cancelled() => None,
+                ordered = owner.runs.ordered(&target) => Some(ordered),
+            };
+            let admitted = if let Some(ordered) = ordered {
+                let state = ordered.state().await;
+                let current = !state.closing
+                    && !token.is_cancelled()
+                    && state
+                        .preparing
+                        .get(&target)
+                        .is_some_and(|preparing| preparing.run == run);
+                drop(state);
+                drop(ordered);
+                current
+            } else {
+                false
+            };
+            if admitted {
+                let (cleanup, retry_ready) = owner.clone().drive_local(claim, target, token).await;
+                drop(activity);
+                owner.physical_availability_changed_after(retry_ready);
+                return cleanup;
+            }
+            let mut state = owner.runs.state().await;
+            if state
+                .preparing
+                .get(&target)
+                .is_some_and(|preparing| preparing.run == run)
             {
-                Ok(InterruptReceipt::Fenced(_)) => {
-                    if let Some(cancellation) = &cancellation {
-                        cancellation.cancel();
-                    }
-                    self.store
-                        .session(session)
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .stop_native_approvals(&original, now())
-                        .await
-                        .map_err(|_| "agent_queue_unavailable")?;
-                    if let Some(preparing) = preparing {
-                        preparing.cancel();
-                    }
-                    return Ok(true);
+                state.preparing.remove(&target);
+            }
+            drop(state);
+            drop(claim);
+            drop(activity);
+            owner.physical_availability_changed();
+            OperationCleanup::Confirmed
+        });
+        let completion = async move {
+            match job.await {
+                Ok(cleanup) => cleanup,
+                Err(_) => OperationCleanup::Unconfirmed,
+            }
+        }
+        .boxed()
+        .shared();
+        runs.preparing.insert(
+            session,
+            PreparingRun {
+                run,
+                cancellation,
+                completion,
+            },
+        );
+        drop(runs);
+        Ok(())
+    }
+
+    async fn drive_local(
+        self: Arc<Self>,
+        claim: maka_agent_state::DriverClaim,
+        session: String,
+        cancellation: CancellationToken,
+    ) -> (OperationCleanup, bool) {
+        let run = claim.run();
+        let initial = async {
+            let root = self
+                .store
+                .owned_root()
+                .map_err(|error| ("root_source_read_failed", RunError::from(error)))?;
+            let view = self
+                .durable
+                .frontier(run)
+                .await
+                .map_err(|error| ("run_frontier_read_failed", RunError::from(error)))?;
+            Ok::<_, (&'static str, RunError)>((root, view))
+        }
+        .await;
+        let (root, view) = match initial {
+            Ok(current) => current,
+            Err((stage, error)) => {
+                tracing::error!(%run, %error, stage, "Agent Run capability probe could not start");
+                claim.deactivate();
+                let mut runs = self.runs.state().await;
+                if runs
+                    .preparing
+                    .get(&session)
+                    .is_some_and(|preparing| preparing.run == run)
+                {
+                    runs.preparing.remove(&session);
                 }
-                Ok(InterruptReceipt::Conflict) => return Ok(false),
-                Err(StoreError::RevisionConflict { .. }) => continue,
-                Err(_) => return Err("agent_queue_unavailable".into()),
+                drop(runs);
+                return (OperationCleanup::Confirmed, false);
             }
+        };
+        let mut sources = root.capability_changes();
+        sources.borrow_and_update();
+        let turn = view.spec.turn_id.clone();
+        let (result, cleanup) = self
+            .run_with_capabilities(view, claim.clone(), cancellation)
+            .await;
+        claim.deactivate();
+        if matches!(&cleanup, OperationCleanup::Unconfirmed) {
+            tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent original Root work remains unconfirmed");
+        } else if let Err(error) = &result {
+            let cause = match error {
+                RunError::Store(error)
+                    if matches!(error.underlying(), maka_event_log::StoreError::Sqlite(_)) =>
+                {
+                    "store_sqlite"
+                }
+                RunError::Store(_)
+                | RunError::Commit(_)
+                | RunError::PublicationUncertain { .. } => "store_unavailable",
+                RunError::Internal(_) => "worker_failed",
+                _ => "execution_failed",
+            };
+            let error_variant = match error {
+                RunError::Blocked(_) => "blocked",
+                RunError::PublicationUncertain { .. } => "publication_uncertain",
+                RunError::Busy => "busy",
+                RunError::ContinuationChanged => "continuation_changed",
+                RunError::ReconciliationRequired(_) => "reconciliation_required",
+                RunError::InvalidInput(_) => "invalid_input",
+                RunError::ModelUnavailable => "model_unavailable",
+                RunError::IsolationUnavailable(_) => "isolation_unavailable",
+                RunError::CompactionFailed(_) => "compaction_failed",
+                RunError::Cancelled => "cancelled",
+                RunError::ModelIncomplete => "model_incomplete",
+                RunError::Commit(_) => "commit",
+                RunError::Store(_) => "store",
+                RunError::Model(_) => "model",
+                RunError::Tool(_) => "tool",
+                RunError::CleanupUnconfirmed => "cleanup_unconfirmed",
+                RunError::Internal(_) => "internal",
+                RunError::Json(_) => "json",
+                RunError::Preparation(_) => "preparation",
+                RunError::PreparationCleanup(_) => "preparation_cleanup",
+            };
+            let tool_error_variant = match error {
+                RunError::Tool(error) => match error {
+                    ToolError::Failed(_) => "failed",
+                    ToolError::Native(_) => "native",
+                    ToolError::Io { .. } => "io",
+                    ToolError::Persistence(_) => "persistence",
+                    ToolError::OutcomeUnknown(_) => "outcome_unknown",
+                    ToolError::OperationUnknown { .. } => "operation_unknown",
+                    ToolError::OperationCleanupUnconfirmed { .. } => {
+                        "operation_cleanup_unconfirmed"
+                    }
+                    ToolError::CleanupUnconfirmed(_) => "cleanup_unconfirmed",
+                },
+                _ => "none",
+            };
+            tracing::error!(stage = "queue_advance_failed", cause, error_variant, tool_error_variant, consequence = "operation_failed", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent driver operation failed after physical settlement");
         }
+        let authority_unavailable = match &result {
+            Ok(maka_agent_engine::DriverExit::Blocked { blockers, .. }) => {
+                !blockers.is_empty()
+                    && blockers.iter().all(|(_, reason)| {
+                        matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
+                    })
+            }
+            Err(RunError::Blocked(reason)) => matches!(
+                reason.as_ref(),
+                BlockerKind::CurrentAuthorityUnavailable { .. }
+            ),
+            _ => false,
+        };
+        let retry = self
+            .finish_local_probe(run, &session, authority_unavailable, &sources)
+            .await;
+        drop(root);
+        (cleanup, retry)
+    }
+    pub(super) async fn finish_local_probe(
+        &self,
+        run: RunId,
+        session: &str,
+        authority_unavailable: bool,
+        sources: &tokio::sync::watch::Receiver<()>,
+    ) -> bool {
+        let mut runs = self.runs.state().await;
+        if runs
+            .preparing
+            .get(session)
+            .is_some_and(|preparing| preparing.run == run)
+        {
+            runs.preparing.remove(session);
+        }
+        if runs
+            .controls
+            .get(session)
+            .is_some_and(|control| control.execution.run_id == run)
+        {
+            runs.controls.remove(session);
+        }
+        drop(runs);
+        // The actual Root is retained by the probing caller until this check.
+        let changed = sources
+            .has_changed()
+            .expect("live probing Root retains its source sender");
+        !authority_unavailable || changed
     }
 }
 
-struct Settlement(tokio::sync::watch::Sender<Option<Result<(), String>>>);
-impl Drop for Settlement {
-    fn drop(&mut self) {
-        let pending = self.0.borrow().is_none();
-        if pending {
-            self.0
-                .send_replace(Some(Err("agent_execution_owner_disappeared".into())));
+fn promote_authority_due(at: UnixMillis, due: &mut Option<UnixMillis>, cause: &mut ReadyCause) {
+    if due.is_some_and(|due| due <= at) {
+        *due = None;
+        *cause = ReadyCause::CapabilitySourceChanged;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn canonical_authority_due_is_promoted_even_when_root_changes_always_win_select() {
+        let mut due = Some(UnixMillis(10));
+        for tick in 9..=11 {
+            let mut cause = ReadyCause::Ordinary;
+            promote_authority_due(UnixMillis(tick), &mut due, &mut cause);
+            assert_eq!(
+                cause,
+                if tick == 10 {
+                    ReadyCause::CapabilitySourceChanged
+                } else {
+                    ReadyCause::Ordinary
+                }
+            );
         }
+        assert!(due.is_none());
     }
 }

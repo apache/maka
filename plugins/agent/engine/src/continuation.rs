@@ -17,290 +17,98 @@
  * under the License.
  */
 
-use crate::{RunContext, RunError, RunInput, model_attempt};
-use maka_agent_facts::continuation::ContinuationClaim;
-use maka_agent_facts::continuation::REPLAY_VERSION;
-use maka_agent_facts::continuation::ReplayEvidence;
-use maka_agent_facts::continuation::RunBoundary;
-use maka_agent_facts::continuation::SessionBase;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::input::InvocationInput;
-use maka_agent_facts::model::prompt_source::source::MessageRole;
-use std::{collections::BTreeSet, sync::Arc};
-use tokio_util::sync::CancellationToken;
+//! Integrity checks for a manual continuation. No driver, scheduling or authority restoration.
+use crate::{RunError, preparation::PreparedRequest, prepared_prompt::PreparedPrompt};
+use maka_agent_facts::{
+    continuation::ContinuationClaim, durable::*, model::prompt_source::source::MessageRole,
+};
+use maka_agent_state::Store;
 
-pub(super) struct PreparedClaim {
-    pub claim: ContinuationClaim,
-    /// Candidate evidence, not a second owner of live Session preferences.
-    pub loaded_basis: BTreeSet<String>,
-}
-
-/// Derive admission evidence from the exact sealed source. The caller supplies
-/// only its boundary, never a replay digest or a pre-authorized claim.
-pub(super) async fn prepare(
-    inner: &Arc<RunContext>,
-    input: &RunInput,
-    source: &RunBoundary,
-    catalog: &maka_tools::ToolCatalog,
-    cancellation: &CancellationToken,
-) -> Result<PreparedClaim, RunError> {
-    let loaded_basis = inner.shared.loaded_snapshot(&input.invocation.session_id)?;
-    let (base, replay) = inspect(
-        inner,
-        input,
-        source,
-        Some(catalog),
-        cancellation,
-        &loaded_basis,
-    )
-    .await?;
-    let pause = match &input.work {
-        crate::RunWork::Handoff { pause, .. } => Some(pause),
-        _ => None,
-    };
-    let claim = ContinuationClaim {
-        id: pause.map_or_else(
-            || uuid::Uuid::new_v4().to_string(),
-            |pause| pause.intent.claim_id.clone(),
-        ),
-        source: source.clone(),
-        base,
-        replay,
-    };
-    match pause {
-        Some(pause) => pause.validate_claim(&claim, &input.invocation),
-        None => claim.validate(&input.invocation),
-    }
-    .map_err(invalid)?;
-    Ok(PreparedClaim {
-        claim,
-        loaded_basis,
-    })
-}
-
-pub(super) async fn inspect(
-    inner: &Arc<RunContext>,
-    input: &RunInput,
-    source: &RunBoundary,
-    catalog: Option<&maka_tools::ToolCatalog>,
-    cancellation: &CancellationToken,
-    loaded_basis: &BTreeSet<String>,
-) -> Result<(SessionBase, ReplayEvidence), RunError> {
-    if source.invocation.session_id != input.invocation.session_id {
-        return Err(invalid("continuation belongs to another Session"));
-    }
-    let prefix = inner
-        .log
-        .run_source(
-            &source.invocation.session_id,
-            &source.invocation.run_id,
-            None,
-        )
-        .await?
-        .ok_or_else(|| invalid("continuation source is missing"))?;
-    if prefix.boundary != *source
-        || !matches!(&prefix.last.event.fact, Fact::InvocationEnded { .. })
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_continuation(
+    state: &Store,
+    target: &ExecutionIdentity,
+    claim: &ContinuationClaim,
+    basis: &maka_sandbox::workspace::PermissionBasis,
+    workspace: &str,
+    prompt: &PreparedPrompt,
+    prepared: &PreparedRequest,
+) -> Result<(), RunError> {
+    let invalid = |message: &str| RunError::ReconciliationRequired(message.into());
+    claim.validate(target).map_err(invalid)?;
+    let original = state.frontier(claim.source.execution.run_id).await?;
+    if original.terminal.is_none()
+        || original.revision != claim.source.high_water
+        || original.spec.session_id != claim.source.execution.session_id
+        || original.spec.turn_id != claim.source.execution.turn_id
+        || original.spec.permission_basis.binding.id != basis.binding.id
+        || original.spec.workspace != workspace
     {
+        return Err(invalid("continuation source boundary or workspace changed"));
+    }
+    let mut history = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = state.history(original.run, after, 256).await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().expect("nonempty history").revision;
+        history.extend(page);
+    }
+    if crate::digest(&history)? != claim.source.digest {
         return Err(invalid(
-            "continuation source is not its exact sealed boundary",
+            "continuation source is not the exact sealed canonical boundary",
         ));
     }
-    let Fact::InvocationOpened {
-        input: opening,
-        configuration: Some(configuration),
-    } = &prefix.opening.event.fact
-    else {
-        return Err(invalid("continuation source has no observed configuration"));
-    };
-    if input.configuration.workspace_identity.is_none()
-        || input.configuration.workspace_identity != configuration.workspace_identity
-    {
-        return Err(invalid("continuation workspace identity changed"));
-    }
-    if let crate::RunWork::Handoff { pause, .. } = &input.work
-        && (configuration.as_ref() != &input.configuration
-            || !matches!(
-                &prefix.last.event.fact,
-                Fact::InvocationEnded {
-                    outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { pause: sealed }
-                } if sealed == pause.as_ref()
-            ))
-    {
-        return Err(invalid("handoff does not match its sealed source"));
-    }
-    let base = match opening {
-        InvocationInput::Message { .. } => {
-            let base = inner.log.source_before_run(&source.invocation).await?;
-            SessionBase {
-                high_water: base.high_water,
-                digest: base.digest,
-            }
-        }
-        InvocationInput::Continuation { claim, .. } | InvocationInput::Handoff { claim, .. } => {
-            claim.base.clone()
-        }
-        _ => return Err(invalid("source is not a resumable model Run")),
-    };
-    let context = Arc::new(inner.log.read_lineage_view(source).await?);
-    let prompt = model_attempt::prompt(
-        inner,
-        input,
-        &context,
-        cancellation,
-        match &input.work {
-            crate::RunWork::Handoff { pause, .. } => pause.execution.replay_base,
-            _ => Some(base.high_water),
-        },
-        &input.invocation.invocation_id,
-        false,
-        model_attempt::rendered_system(input),
-        maka_agent_facts::context::ModelPurpose::Main,
-    )
-    .await?;
-    let arena = prompt.arena().cloned();
-    let result = async {
-        let definitions = if let Some(catalog) = catalog {
-            let tools = maka_tools::RunTools::new(
-                input.configuration.language,
-                inner.log.clone(),
-                input.invocation.clone(),
-                catalog.clone(),
-                input.configuration.tool_mode,
-                inner
-                    .shared
-                    .cells
-                    .clone()
-                    .with_language(input.configuration.code_language),
-                inner.shared.loaded(&input.invocation.session_id),
-            )
-            .with_model(input.provider.tool_context());
-            let selected = if let crate::RunWork::Handoff { pause, .. } = &input.work {
-                if pause.execution.tools.catalog_digest != catalog.digest()
-                    || pause
-                        .execution
-                        .tools
-                        .loaded
-                        .iter()
-                        .any(|name| name.is_empty() || name.len() > 128)
-                {
-                    return Err(RunError::InvalidInput(
-                        "handoff tool catalog changed".into(),
-                    ));
-                }
-                &pause.execution.tools.loaded
-            } else {
-                loaded_basis
-            };
-            tools.replay_selected(selected)
-        } else {
-            Vec::new()
-        };
-        let replay = replay(
-            &inner.cleanup,
-            input,
-            prompt,
-            definitions,
-            &model_attempt::RequestSource::from(context.as_ref()),
-            cancellation,
-        )
-        .await?;
-        if let crate::RunWork::Handoff { pause, .. } = &input.work
-            && replay != pause.execution.replay
-        {
-            return Err(invalid("handoff admission replay changed after sealing"));
-        }
-        Ok((base, replay))
-    }
-    .await;
-    if let Some(arena) = arena
-        && let Err(error) = arena.close().await
-    {
-        return Err(inner.cleanup.preparation_failed(error));
-    }
-    result
-}
-
-/// Shared by reversible handoff preparation and independently verified admission.
-pub(super) async fn replay<W>(
-    cleanup: &crate::cleanup::Evidence,
-    input: &RunInput<W>,
-    mut prompt: crate::prepared_prompt::PreparedPrompt,
-    definitions: Vec<Arc<maka_model::ToolDefinition>>,
-    source: &model_attempt::RequestSource,
-    cancellation: &CancellationToken,
-) -> Result<ReplayEvidence, RunError> {
-    let arena = prompt.arena().cloned();
-    let result = async {
-        let recipes = prompt
-            .recipes()
-            .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
-        let checkpoint = prompt.native_checkpoint_identity();
-        let mut cursor = recipes.open_metadata(0);
-        let mut first_is_user = None;
-        let mut last_is_stable = false;
-        while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            if first_is_user.is_none() && checkpoint == Some(message.logical_identity.as_ref()) {
-                continue;
-            }
-            if message.role != MessageRole::System && first_is_user.is_none() {
-                first_is_user = Some(message.role == MessageRole::User);
-            }
-            last_is_stable = matches!(message.role, MessageRole::User | MessageRole::Tool)
-                || (message.role == MessageRole::Assistant && message.last_is_tool_result);
-        }
-        if first_is_user != Some(true) || !last_is_stable {
-            return Err(invalid(
-                "continuation requires stable user/tool replay boundaries",
-            ));
-        }
-        prompt
-            .compile_wire(
-                input.configuration.language,
-                &input.provider,
-                &input.provider_options,
-                &definitions,
-                cancellation,
-            )
-            .await?;
-        prompt
-            .fit_image_request(
-                input.configuration.language,
-                &input.provider,
-                &input.provider_options,
-                &definitions,
-                input.main_output_limit,
-                cancellation,
-            )
-            .await?;
-        let request = model_attempt::prepare_request(
-            input,
-            prompt,
-            definitions,
-            input.main_output_limit,
-            maka_agent_facts::context::ModelPurpose::Main,
-            Some(source),
-        )?;
-        if cancellation.is_cancelled() {
-            return Err(RunError::Cancelled);
-        }
-        Ok(ReplayEvidence {
-            version: REPLAY_VERSION,
-            digest: request.input_digest,
-            route_identity: request.route_identity,
+    let first_step = history
+        .iter()
+        .find_map(|item| match item.fact {
+            Fact::StepPrepared { step, .. } => Some(step),
+            _ => None,
         })
-    }
-    .await;
-    if let Some(arena) = arena
-        && let Err(error) = arena.close().await
+        .ok_or_else(|| invalid("continuation has no prepared source request"))?;
+    let first = state.request(original.run, first_step).await?;
+    let source_bytes = state.content(original.run, first.source_capture).await?;
+    let source: crate::preparation::RequestSource =
+        serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
+    if source.cut.through_sequence != claim.base.high_water
+        || source.cut.digest != claim.base.digest
     {
-        return Err(cleanup.preparation_failed(error));
+        return Err(invalid("continuation canonical base changed"));
     }
-    result
+    validate_replay_boundary(prompt).await?;
+    if prepared.input_digest != claim.replay.digest
+        || prepared.route_identity != claim.replay.route_identity
+    {
+        return Err(invalid("continuation replay signature changed"));
+    }
+    Ok(())
 }
 
-fn invalid(reason: &str) -> RunError {
-    RunError::ReconciliationRequired(reason.into())
+pub async fn validate_replay_boundary(prompt: &PreparedPrompt) -> Result<(), RunError> {
+    let invalid = |message: &str| RunError::ReconciliationRequired(message.into());
+    let directory = prompt
+        .recipes()
+        .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
+    let checkpoint = prompt.native_checkpoint_identity();
+    let mut cursor = directory.open_metadata(0);
+    let mut first_is_user = None;
+    let mut last_stable = false;
+    while let Some(message) = cursor.next().await? {
+        if first_is_user.is_none() && checkpoint == Some(message.logical_identity.as_ref()) {
+            continue;
+        }
+        if message.role != MessageRole::System && first_is_user.is_none() {
+            first_is_user = Some(message.role == MessageRole::User);
+        }
+        last_stable = matches!(message.role, MessageRole::User | MessageRole::Tool)
+            || (message.role == MessageRole::Assistant && message.last_is_tool_result);
+    }
+    if first_is_user != Some(true) || !last_stable {
+        return Err(invalid(
+            "continuation requires stable user/tool replay boundaries",
+        ));
+    }
+    Ok(())
 }

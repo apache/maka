@@ -44,7 +44,7 @@ mod vault;
 
 use maka_event_log::{StoreError, connection::OwnedConnection, root::RootOwner};
 use rusqlite::Connection;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -85,13 +85,18 @@ pub(crate) enum TransactionMode {
 
 pub struct ConfigurationStore {
     connection: OwnedConnection,
+    owner: Weak<RootOwner>,
 }
 
 impl ConfigurationStore {
     pub async fn for_root(owner: Arc<RootOwner>) -> Result<Self> {
         owner.validate_current()?;
+        let signal_owner = Arc::downgrade(&owner);
         let connection = database::open(owner).await?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            owner: signal_owner,
+        })
     }
 
     pub(crate) async fn transaction<T: Send + 'static>(
@@ -99,8 +104,10 @@ impl ConfigurationStore {
         mode: TransactionMode,
         operation: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        let owner = self.owner.clone();
         self.connection
             .run(move |connection| {
+                let before = connection.total_changes();
                 {
                     let tx = rusqlite::Transaction::new_unchecked(
                         connection,
@@ -110,13 +117,28 @@ impl ConfigurationStore {
                         },
                     )?;
                     match operation(&tx) {
-                        Ok(value) => Ok(tx
-                            .commit()
-                            .map(|()| value)
-                            .map_err(|_| ConfigError::CommitUnknown)),
+                        Ok(value) => {
+                            let result = tx
+                                .commit()
+                                .map(|()| value)
+                                .map_err(|_| ConfigError::CommitUnknown);
+                            if connection.total_changes() != before
+                                && let Some(owner) = owner.upgrade()
+                            {
+                                owner.capability_source_changed();
+                            }
+                            Ok(result)
+                        }
                         Err(error) => {
                             // Finish rollback before the next accepted job can run.
-                            tx.rollback()?;
+                            let rollback = tx.rollback();
+                            if rollback.is_err()
+                                && connection.total_changes() != before
+                                && let Some(owner) = owner.upgrade()
+                            {
+                                owner.capability_source_changed();
+                            }
+                            rollback?;
                             Ok(Err(error))
                         }
                     }

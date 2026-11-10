@@ -32,7 +32,7 @@ struct Backend {
     owner: Arc<Owner>,
     session: String,
     generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
-    original_resources: Arc<maka_capabilities::call::Resources>,
+    original_resources: Arc<maka_plugin_core::work::resources::Resources>,
 }
 impl Owner {
     async fn check_recap(&self, scope: &Scope, session: &str) -> Result<(), ToolError> {
@@ -134,36 +134,16 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let high_water = self
-                .owner
-                .scoped_store(&scope, &self.session)
-                .await
-                .map_err(failed)?
-                .committed_sequence()
-                .await
-                .map_err(persistence)?;
-            let through = input.through.unwrap_or(high_water);
-            if through > high_water {
-                return Err(failed("Recap history fence invalid"));
-            }
-            let page = self
-                .owner
-                .scoped_store(&scope, &self.session)
-                .await
-                .map_err(failed)?
-                .history_text(
-                    &self.session,
-                    through,
-                    input.position,
-                    false,
-                    maka_event_log::transcript::HistoryLimits {
-                        max_bytes: 8192,
-                        max_chunks: Some(8),
-                        max_json_bytes: 96 * 1024,
-                    },
-                )
-                .await
-                .map_err(persistence)?;
+            let page = crate::service::history::read_page(
+                &self.owner,
+                &scope,
+                history::Read {
+                    include_thinking: false,
+                    ..input
+                },
+            )
+            .await
+            .map_err(failed)?;
             self.owner.check_recap(&scope, &self.session).await?;
             Ok(page)
         })
@@ -193,7 +173,8 @@ impl recap::Models for Backend {
             let mut owner_ticket = owner.auxiliary.resources.reserve().map_err(failed)?;
             let session = self.session.clone();
             let captured = owner.clone();
-            let worker = owner.workers.spawn(async move {
+            let (reply, result) = tokio::sync::oneshot::channel();
+            owner.workers.spawn(async move {
                 call_ticket.start();
                 original_ticket.start();
                 owner_ticket.start();
@@ -203,10 +184,46 @@ impl recap::Models for Backend {
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| {
-                    Err(ToolError::CleanupUnconfirmed(
+                    Err(auxiliary::Error::Tool(ToolError::CleanupUnconfirmed(
                         "Recap worker disappeared".into(),
-                    ))
+                    )))
                 });
+                let result = match result {
+                    Err(auxiliary::Error::Cleanup(error)) => {
+                        let message = error.to_string();
+                        let _ = reply.send(Err(ToolError::CleanupUnconfirmed(message.clone())));
+                        match error.wait_physical().await {
+                            Ok(auxiliary::PhysicalSettlement::Acknowledged) => {
+                                call_ticket.complete(Ok(()));
+                                original_ticket.complete(Ok(()));
+                                owner_ticket.complete(Ok(()));
+                            }
+                            Ok(auxiliary::PhysicalSettlement::MetadataFailure(failure)) => {
+                                let diagnostic = failure.to_string();
+                                call_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                                original_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                                owner_ticket.unconfirmed(diagnostic, failure);
+                            }
+                            Err(_) => {
+                                let error = Arc::new(error);
+                                call_ticket.unconfirmed(message.clone(), error.clone());
+                                original_ticket.unconfirmed(message.clone(), error.clone());
+                                owner_ticket.unconfirmed(message, error);
+                            }
+                        }
+                        return;
+                    }
+                    Err(auxiliary::Error::Metadata(failure)) => {
+                        let diagnostic = failure.to_string();
+                        call_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                        original_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                        owner_ticket.unconfirmed(diagnostic, failure.clone());
+                        let _ =
+                            reply.send(Err(ToolError::from(auxiliary::Error::Metadata(failure))));
+                        return;
+                    }
+                    result => result.map_err(ToolError::from),
+                };
                 let cleanup = match &result {
                     Err(ToolError::CleanupUnconfirmed(error)) => Err(error.clone()),
                     _ => Ok(()),
@@ -214,11 +231,11 @@ impl recap::Models for Backend {
                 call_ticket.complete(cleanup.clone());
                 original_ticket.complete(cleanup.clone());
                 owner_ticket.complete(cleanup);
-                result
+                let _ = reply.send(result);
             });
             drop(runs);
-            // Timeout drops only this observer; the original worker retains both cleanup tickets.
-            worker
+            // Dropping the reply observer does not stop the original worker or its cleanup tickets.
+            result
                 .await
                 .map_err(|e| ToolError::CleanupUnconfirmed(e.to_string()))?
         })
@@ -233,7 +250,7 @@ impl Owner {
         dispatch: OperationDispatchScope,
         model: ModelSelection,
         input: llm::Generate,
-    ) -> Result<ModelGeneration, ToolError> {
+    ) -> Result<ModelGeneration, auxiliary::Error> {
         let cancellation = scope.cancellation.child_token();
         let _cancel = cancellation.clone().drop_guard();
         let operation = async {
@@ -249,13 +266,18 @@ impl Owner {
             )
             .await
             .map_err(failed)?;
+            let source = match &self.pricing {
+                Some(pricing) => source.with_pricing(Arc::clone(pricing)),
+                None => source,
+            };
             let prepared = source.capture_auxiliary().await.map_err(failed)?;
-            let quote = self
-                .configuration
-                .quote_model(prepared.provider_id, source.accepted.binding.model.clone())
-                .await
-                .map_err(persistence)?;
+            let quote = source.quote(&prepared).await.map_err(persistence)?;
             self.check_recap(&scope, &session).await?;
+            let admission = auxiliary::IdleLease(Some(
+                self.auxiliary_lease(&scope, &session)
+                    .await
+                    .map_err(ToolError::from)?,
+            ));
             let mut prompt = Vec::new();
             if let Some(content) = input.system {
                 prompt.push(Message::System {
@@ -286,25 +308,14 @@ impl Owner {
                     auxiliary::Admission::Operation {
                         reference: Box::new(reference),
                         scope: Box::new(dispatch),
-                        execution: scope
-                            .identity
-                            .agent()
-                            .filter(|invocation| invocation.session_id == session)
-                            .and_then(|invocation| {
-                                scope.execution().map(|execution| {
-                                    auxiliary::Execution::Invocation(
-                                        execution.clone(),
-                                        invocation.clone(),
-                                    )
-                                })
-                            }),
+                        execution: auxiliary::Execution::Prepared(admission),
                         binding: source.accepted.binding.clone(),
+                        purpose: maka_agent_facts::context::ModelPurpose::Main,
                         session_id: session,
                     },
                     quote,
                 )
                 .await
-                .map_err(ToolError::from)
         };
         tokio::pin!(operation);
         let result = tokio::select! {
@@ -313,12 +324,19 @@ impl Owner {
             result = &mut operation => result,
         };
         match result {
-            Err(error @ (ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))) => {
+            Err(error @ (auxiliary::Error::Cleanup(_) | auxiliary::Error::Metadata(_))) => {
                 Err(error)
             }
-            _ if cancellation.is_cancelled() => Err(ToolError::OutcomeUnknown(
-                "Recap generation cancelled; read its original receipt".into(),
-            )),
+            Err(
+                error @ auxiliary::Error::Tool(
+                    ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_),
+                ),
+            ) => Err(error),
+            _ if cancellation.is_cancelled() => {
+                Err(auxiliary::Error::Tool(ToolError::OutcomeUnknown(
+                    "Recap generation cancelled; read its original receipt".into(),
+                )))
+            }
             result => result,
         }
     }

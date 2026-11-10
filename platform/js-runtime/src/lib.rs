@@ -30,9 +30,11 @@ use deno_core::{JsRuntime, RuntimeOptions, v8};
 use evaluate::evaluate;
 use execution_budget::ExecutionBudget;
 use maka_agent_facts::tools::ToolExecutor;
-use maka_code_runtime::complete;
 use maka_code_runtime::{CellAbort, CellDiagnostic, CellDiagnosticKind, CellResult};
 use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellStore, ToolMetadata, ToolScope};
+use maka_code_runtime::{
+    PreparedCell, RuntimeVmObservation, SourceRuntimeOwner, VmBinding, VmThreadReady, complete,
+};
 use std::sync::{Arc, Mutex, Once};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
@@ -42,6 +44,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct CodeExecutor {
     limits: CellLimits,
+    owner: SourceRuntimeOwner,
 }
 
 impl CodeExecutor {
@@ -54,7 +57,10 @@ impl CodeExecutor {
         {
             return Err(CellAbort::Internal("invalid cell limits".into()));
         }
-        Ok(Self { limits })
+        Ok(Self {
+            limits,
+            owner: SourceRuntimeOwner::default(),
+        })
     }
 
     pub async fn execute(
@@ -84,6 +90,18 @@ impl CodeExecutor {
         &self.limits
     }
 
+    pub fn physical_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.owner.physical_changes()
+    }
+
+    pub async fn observe_binding(&self, binding: &VmBinding) -> RuntimeVmObservation {
+        self.owner.observe_binding(binding).await
+    }
+
+    pub fn release_binding(&self, binding: &VmBinding) -> bool {
+        self.owner.release_binding(binding)
+    }
+
     pub async fn execute_with_context(
         &self,
         source: String,
@@ -95,15 +113,16 @@ impl CodeExecutor {
             .await
     }
 
-    /// Model-facing Code Mode uses an async ES module, without a return value.
-    pub async fn execute_module(
+    /// Prepare a real isolate and frozen module, without executing user code.
+    /// Durable callers must ACK VmBound before consuming execute_bound.
+    pub async fn prepare_module(
         &self,
         source: String,
         tools: Arc<dyn ToolExecutor>,
         cancellation: CancellationToken,
         context: CellContext,
-    ) -> Result<CellResult, CellAbort> {
-        self.execute_source(source, tools, cancellation, context, true)
+    ) -> Result<PreparedCell, CellAbort> {
+        self.prepare_source(source, tools, cancellation, context, true)
             .await
     }
 
@@ -115,25 +134,32 @@ impl CodeExecutor {
         context: CellContext,
         module: bool,
     ) -> Result<CellResult, CellAbort> {
+        self.prepare_source(source, tools, cancellation, context, module)
+            .await?
+            .execute_bound()
+            .await
+    }
+
+    async fn prepare_source(
+        &self,
+        source: String,
+        tools: Arc<dyn ToolExecutor>,
+        cancellation: CancellationToken,
+        context: CellContext,
+        module: bool,
+    ) -> Result<PreparedCell, CellAbort> {
         if cancellation.is_cancelled() {
             return Err(CellAbort::Cancelled);
         }
         let cancellation = cancellation.child_token();
-        // Dropping the caller's future cancels the worker; it does not detach
-        // execution without cleanup.
-        let _cancel_on_drop = cancellation.clone().drop_guard();
         let handle = Handle::current();
         let limits = self.limits.clone();
-        let (reply, result) = tokio::sync::oneshot::channel();
-        // A cell can await another cell through a Host tool. Holding a shared
-        // blocking-pool worker across that wait can starve its own child, so
-        // each independent isolate owns its thread through physical cleanup.
-        std::thread::Builder::new()
-            .name("maka-code-js".into())
-            .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // deno_core's unsynchronized op scheduler requires a
-                    // current-thread runtime. Host effects stay on the host.
+        let owner_cancel = cancellation.clone();
+        self.owner
+            .prepare_thread("maka-code-js", cancellation, move |ready, gate| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // V8's unsynchronized op scheduler stays on this dedicated
+                    // current-thread runtime. Host effects remain on the Host.
                     tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -141,23 +167,29 @@ impl CodeExecutor {
                         .block_on(run_cell(
                             source,
                             tools,
-                            cancellation,
+                            owner_cancel,
                             limits,
                             handle,
                             context,
                             module,
+                            ready,
+                            gate,
                         ))
                 }))
-                .unwrap_or_else(|_| Err(CellAbort::Internal("cell worker panicked".into())));
-                let _ = reply.send(result);
+                .unwrap_or_else(|_| {
+                    Err(CellAbort::VmCleanupUnconfirmed(
+                        "cell worker panicked".into(),
+                    ))
+                })
             })
-            .map_err(|error| CellAbort::Internal(format!("cannot start cell worker: {error}")))?;
-        result
             .await
-            .map_err(|_| CellAbort::Internal("cell worker ended without a reply".into()))?
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The VM thread receives independent tool, resource, call-context and startup-barrier owners"
+)]
 async fn run_cell(
     source: String,
     executor: Arc<dyn ToolExecutor>,
@@ -166,6 +198,8 @@ async fn run_cell(
     host: Handle,
     context: CellContext,
     module: bool,
+    ready: VmThreadReady,
+    start: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<CellResult, CellAbort> {
     if cancellation.is_cancelled() {
         return Err(CellAbort::Cancelled);
@@ -186,6 +220,13 @@ async fn run_cell(
     .map_err(|error| CellAbort::Internal(error.to_string()))?;
     runtime.op_state().borrow_mut().put(scope.clone());
     runtime.op_state().borrow_mut().put(context.clone());
+
+    ready.publish()?;
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(CellAbort::Cancelled),
+        ack = start => if ack.is_err() { return Err(CellAbort::Cancelled); },
+    }
 
     let stopped = Arc::new(Mutex::new(None));
     let isolate = runtime.v8_isolate().thread_safe_handle();

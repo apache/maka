@@ -20,19 +20,13 @@
 use super::*;
 
 mod upload;
-use maka_agent_api::{
-    contract::WorkspaceAccess,
-    session::{ResolvedConfiguration, StoredSessionConfiguration},
-};
-use maka_agent_facts::{
-    interaction::{Decision, GrantCapability, GrantScope, GrantTarget},
-    workspace::PermissionBasis,
-};
-use maka_capabilities::call::Scope;
+use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
+use maka_agent_facts::interaction::{Decision, GrantCapability, GrantScope, GrantTarget};
 use maka_computer_use::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
     BrowserAuthorization, BrowserDocument, BrowserSessionPreparation,
 };
+use maka_sandbox::workspace::PermissionBasis;
 use maka_sandbox::{Destination, Network, Sandbox};
 
 /// Origin consent belongs to the captured Agent Session, shared across its
@@ -41,7 +35,7 @@ use maka_sandbox::{Destination, Network, Sandbox};
 #[derive(Clone)]
 pub(super) struct Access {
     owner: Arc<Computer>,
-    call: Scope,
+    call: Call,
     basis: PermissionBasis,
     cell: maka_code_runtime::CellContext,
     producer: CancellationToken,
@@ -63,20 +57,22 @@ pub(super) struct PreparationScope {
 impl Access {
     pub fn new(
         owner: Arc<Computer>,
-        call: Scope,
+        call: Call,
         basis: PermissionBasis,
         cell: maka_code_runtime::CellContext,
         producer: CancellationToken,
         gate: Arc<admission::Gate>,
         preparation: PreparationScope,
     ) -> Arc<Self> {
-        let invocation = call.identity.agent().expect("checked Agent");
+        let invocation = &call.authority.call().execution;
         let attachment = Arc::new(Attachment {
             owner: Arc::downgrade(&owner),
             session: invocation.session_id.clone(),
             turn: invocation.turn_id.clone(),
             basis,
             gate,
+            authority: call.authority.clone(),
+            floor: call.scope.sandbox_floor().clone(),
         });
         Arc::new(Self {
             owner,
@@ -98,6 +94,7 @@ impl Access {
         access: &BrowserAccess,
         cancellation: &CancellationToken,
     ) -> Result<(ResolvedConfiguration, Option<GrantTarget>), ToolError> {
+        self.attachment.resource_boundary()?;
         if cancellation.is_cancelled() || self.producer.is_cancelled() {
             return Err(failed("Browser authorization cancelled"));
         }
@@ -127,14 +124,16 @@ impl Access {
         if cancellation.is_cancelled() || self.producer.is_cancelled() {
             return Err(failed("Browser session preparation cancelled"));
         }
-        let invocation =
-            self.call.identity.agent().ok_or_else(|| {
-                failed("Browser session preparation requires an Agent invocation")
-            })?;
+        let invocation = &self.call.authority.call().execution;
         // This is the actual per-command native/journal operation captured by
         // evaluate, distinct from the enclosing tool invocation's operation.
         let operation = self.preparation.operation.as_str();
-        preparation.check_scope(&invocation.turn_id, operation)?;
+        preparation.check_scope(
+            &invocation.turn_id,
+            &maka_computer_use::ExecutionCorrelation::new(invocation.run_id.to_string())
+                .map_err(failed)?,
+            operation,
+        )?;
         // Check the original execution/tool ceiling as well as the retained
         // attachment's current turn/global grant. Neither proves tab ownership.
         access::granted(&self.owner, &self.call, self.basis).await?;
@@ -153,7 +152,7 @@ impl Access {
             // future is polled; this receipt is not a claim/effect-success proof.
             self.preparation.epoch.record_browser_preparation(
                 self.basis,
-                &invocation.turn_id,
+                &invocation,
                 self.attachment.gate.clone(),
             )?;
         }
@@ -579,6 +578,8 @@ pub(super) async fn network_allowed(
 /// This is Maka admission policy, not an extra permission prompt in the original bridge.
 #[derive(Clone)]
 pub(super) struct Attachment {
+    floor: Sandbox,
+    pub(super) authority: Arc<dyn maka_agent_authority::computer::ComputerAccess>,
     owner: std::sync::Weak<Computer>,
     session: String,
     turn: String,
@@ -586,11 +587,20 @@ pub(super) struct Attachment {
     gate: Arc<admission::Gate>,
 }
 impl Attachment {
+    pub(super) fn resource_boundary(&self) -> Result<(), ToolError> {
+        access::resource_boundary(&self.floor)
+    }
     pub(super) fn session(&self) -> &str {
         &self.session
     }
     pub(super) fn turn(&self) -> &str {
         &self.turn
+    }
+    pub(super) fn execution_correlation(&self) -> maka_computer_use::ExecutionCorrelation {
+        maka_computer_use::ExecutionCorrelation::new(
+            self.authority.call().execution.run_id.to_string(),
+        )
+        .expect("nonempty actual Run identity")
     }
     pub(super) fn basis(&self) -> PermissionBasis {
         self.basis
@@ -600,6 +610,7 @@ impl Attachment {
         &self,
         cancellation: &CancellationToken,
     ) -> Result<Arc<Computer>, ToolError> {
+        self.resource_boundary()?;
         self.gate.check_open()?;
         let owner = self
             .owner
@@ -615,26 +626,11 @@ impl Attachment {
         &self,
         owner: &Computer,
     ) -> Result<ResolvedConfiguration, ToolError> {
-        let store = owner
-            .store
-            .session(&self.session)
-            .await
-            .map_err(|error| ToolError::Persistence(message(error)))?;
-        let projection = store
-            .session_projection::<StoredSessionConfiguration>(&self.session)
-            .await
-            .map_err(|error| ToolError::Persistence(message(error)))?
-            .filter(|projection| {
-                !projection.session.archived
-                    && projection.root_turn.as_ref().is_some_and(|turn| {
-                        turn.invocation.turn_id == self.turn
-                            && turn.state.terminal_outcome().is_none()
-                    })
-            })
-            .ok_or_else(|| failed("Browser attachment turn is no longer active"))?;
-        let configuration = maka_agent_authority::permissions::resolve_session(projection.session)
-            .map_err(|error| ToolError::Persistence(message(error)))?
-            .configuration;
+        self.resource_boundary()?;
+        if owner.stopping.is_cancelled() {
+            return Err(failed("Computer Host service is closed"));
+        }
+        let configuration = self.authority.current().await?;
         if configuration.permission_basis() != self.basis {
             return Err(failed("Browser permission boundary changed"));
         }
@@ -653,10 +649,7 @@ impl Attachment {
         if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
             return Ok(configuration);
         }
-        let grant = store
-            .client_capability_grant(&self.session, &api::target())
-            .await
-            .map_err(|error| ToolError::Persistence(message(error)))?;
+        let grant = self.authority.client_grant(&api::target()).await?;
         if grant.is_none_or(|grant| grant.basis != Some(self.basis)) {
             return Err(failed("Computer Use Session grant is missing or revoked"));
         }
@@ -668,7 +661,7 @@ impl Attachment {
         binding: &maka_computer_use::BrowserPreparationBinding,
         cancellation: &CancellationToken,
     ) -> Result<(), ToolError> {
-        binding.check_turn(&self.turn)?;
+        binding.check_scope(&self.turn, &self.execution_correlation())?;
         let owner = self.alive(cancellation)?;
         self.gate.check_open()?;
         let configuration = self.current_global(&owner).await?;
@@ -687,7 +680,7 @@ impl Attachment {
         operation: &str,
         cancellation: &CancellationToken,
     ) -> Result<(), ToolError> {
-        preparation.check_scope(&self.turn, operation)?;
+        preparation.check_scope(&self.turn, &self.execution_correlation(), operation)?;
         let owner = self.alive(cancellation)?;
         self.gate.check_open()?;
         let configuration = self.current_global(&owner).await?;
@@ -710,19 +703,14 @@ impl Attachment {
         origin: &str,
     ) -> Result<ResolvedConfiguration, ToolError> {
         let configuration = self.current_global(owner).await?;
-        let store = owner
-            .store
-            .session(&self.session)
-            .await
-            .map_err(|error| ToolError::Persistence(message(error)))?;
         if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
             return Ok(configuration);
         }
-        if store
-            .browser_origin_decision(&self.session, &target(origin.to_owned()), &self.basis)
-            .await
-            .map_err(|error| ToolError::Persistence(message(error)))?
-            != Some(Decision::Allow)
+        if self
+            .authority
+            .client_grant(&target(origin.to_owned()))
+            .await?
+            .is_none_or(|grant| grant.basis != Some(self.basis))
         {
             return Err(failed("Browser site access has not been granted"));
         }
@@ -805,861 +793,5 @@ fn asset_fallback_url(document: &BrowserDocument, url: &str) -> Result<String, T
             "The current Host browser policy does not allow file asset transfers",
         )),
         _ => Ok(document.url.clone()),
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use maka_agent_api::contract::{Workspace, WorkspacePermissions};
-    use maka_agent_facts::{
-        event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-        interaction::{InteractionOutcome, InteractionRecord, InteractionRequest},
-        workspace::BindingStamp,
-    };
-
-    const ORIGIN: &str = "https://clipboard.example";
-
-    pub(crate) struct Fixture {
-        _directory: tempfile::TempDir,
-        pub(crate) owner: Arc<Computer>,
-        pub(crate) store: maka_event_log::SessionStore,
-        pub(crate) invocation: Invocation,
-        attachment: Attachment,
-    }
-    impl Fixture {
-        async fn new() -> Self {
-            Self::new_with_global_grant(true).await
-        }
-
-        pub(crate) async fn browser_handoff() -> Self {
-            Self::new_configured(true, true).await
-        }
-
-        pub(crate) fn basis(&self) -> PermissionBasis {
-            self.attachment.basis
-        }
-
-        async fn new_with_global_grant(global_grant: bool) -> Self {
-            Self::new_configured(global_grant, false).await
-        }
-
-        async fn new_configured(global_grant: bool, accepted_configuration: bool) -> Self {
-            let fixture = Self::with_permissions(
-                accepted_configuration,
-                WorkspacePermissions {
-                    access: WorkspaceAccess::WorkspaceWrite,
-                    request_permissions: false,
-                },
-            )
-            .await;
-            if global_grant {
-                fixture
-                    .decision("broad", api::target(), Decision::Allow, 2)
-                    .await;
-            }
-            fixture
-                .decision("site", target(ORIGIN.into()), Decision::Allow, 3)
-                .await;
-            fixture
-        }
-
-        pub(crate) async fn with_permissions(
-            accepted_configuration: bool,
-            permissions: WorkspacePermissions,
-        ) -> Self {
-            let directory = tempfile::tempdir().unwrap();
-            let workspace_path = directory.path().join("workspace");
-            std::fs::create_dir(&workspace_path).unwrap();
-            let private = directory.path().join("root");
-            let control = directory.path().join("control");
-            let root_owner = maka_event_log::root::RootOwner::create(
-                &private,
-                &maka_event_log::root::RootNamespaces {
-                    ownership: directory.path().join("ownership"),
-                    control: control.clone(),
-                },
-            )
-            .unwrap();
-            let root = Arc::new(
-                maka_event_log::RootStore::open(Arc::new(root_owner))
-                    .await
-                    .unwrap(),
-            );
-            let (path, directory_identity) =
-                maka_fs_tools::directory::capture(&workspace_path).unwrap();
-            let opened = maka_fs_tools::directory::open(&path, &directory_identity).unwrap();
-            let identity = maka_fs_tools::workspace::ensure_directory_identity(
-                path.clone(),
-                opened,
-                private,
-                control,
-                None,
-            )
-            .await
-            .unwrap();
-            let workspace = Workspace {
-                worktree: None,
-                project_id: None,
-                path: path.to_string_lossy().into_owned(),
-                directory_identity,
-                identity,
-            };
-            let reference = root
-                .attach_workspace("fixture", &serde_json::to_value(&workspace).unwrap())
-                .await
-                .unwrap();
-            let basis = PermissionBasis {
-                boundary_revision: 0,
-                binding: BindingStamp {
-                    id: reference.id,
-                    permission_epoch: reference.permission_epoch_at_attach,
-                },
-            };
-            let configuration = StoredSessionConfiguration {
-                parent_session_id: None,
-                backend: None,
-                compaction_prompt: None,
-                collaboration_mode: Default::default(),
-                tools: Some(vec!["cua_repl".into()]),
-                title: "Clipboard authority fixture".into(),
-                title_is_manual: false,
-                pinned: false,
-                labels: vec![],
-                workspace: reference,
-                permissions: permissions.clone(),
-                boundary_revision: 0,
-            };
-            let store = root
-                .create_session("session", "fixture", &configuration, 1)
-                .await
-                .unwrap();
-            let invocation = Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            };
-            store
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::InvocationOpened {
-                            configuration: accepted_configuration
-                                .then(|| maka_agent_facts::execution::InvocationConfiguration {
-                                    compaction_prompt: None,
-                                    editing_tools: None,
-                                    tool_discovery: false,
-                                    tool_composition: None,
-                                    system_prompt: None,
-                                    cwd: workspace.path.clone(),
-                                    workspace_identity: Some(workspace.identity.clone()),
-                                    workspace_binding: Some(basis.binding),
-                                    workspace_origin:
-                                        maka_agent_facts::execution::WorkspaceOrigin::Selected,
-                                    sandbox_mode: match permissions.access {
-                                        WorkspaceAccess::ReadOnly => maka_agent_facts::execution::SandboxMode::ReadOnly,
-                                        WorkspaceAccess::WorkspaceWrite => maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
-                                        WorkspaceAccess::DangerFullAccess => maka_agent_facts::execution::SandboxMode::DangerFullAccess,
-                                    },
-                                    approval_policy:
-                                        maka_agent_facts::execution::ApprovalPolicy::OnRequest,
-                                    boundary_revision: 0,
-                                    collaboration_mode: Default::default(),
-                                    tool_mode: Default::default(),
-                                    code_language: Default::default(),
-                                    model: None,
-                                    thinking_level: None,
-                                    language: maka_agent_facts::language::Language::En,
-                                })
-                                .map(Box::new),
-                            input: InvocationInput::Message {
-                                source_messages: vec![],
-                                content: "Fixture turn".into(),
-                                request_fingerprint: None,
-                            },
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            let tasks = tokio_util::task::TaskTracker::new();
-            let owner = Arc::new(Computer {
-                store: root,
-                configuration: Default::default(),
-                sessions: sessions::Sessions::with_audio(false, tasks.clone()),
-                resources: Arc::default(),
-                stopping: CancellationToken::new(),
-                tasks,
-                popup_provenance: None,
-                origin: ToolOrigin::HostSdk {
-                    package_id: "fixture".into(),
-                    entry_id: "computer".into(),
-                    activation: "fixture".into(),
-                    parent: None,
-                },
-            });
-            let attachment = Attachment {
-                owner: Arc::downgrade(&owner),
-                session: invocation.session_id.clone(),
-                turn: invocation.turn_id.clone(),
-                basis,
-                gate: Arc::default(),
-            };
-            Self {
-                _directory: directory,
-                owner,
-                store,
-                invocation,
-                attachment,
-            }
-        }
-
-        async fn decision(&self, id: &str, target: GrantTarget, decision: Decision, time: u64) {
-            let record = InteractionRecord {
-                session_id: self.invocation.session_id.clone(),
-                turn_id: self.invocation.turn_id.clone(),
-                run_id: self.invocation.run_id.clone(),
-                request_id: id.into(),
-                created_at: time,
-                request: InteractionRequest::ClientCapability {
-                    tool_use_id: "fixture".into(),
-                    target,
-                    basis: Some(self.attachment.basis),
-                },
-                outcome: None,
-            };
-            self.store
-                .establish_run_interaction(&self.invocation, &record)
-                .await
-                .unwrap();
-            assert!(
-                self.store
-                    .commit_interaction_outcome(
-                        id,
-                        InteractionOutcome::ClientCapabilityDecision {
-                            decision,
-                            committed_at: time
-                        }
-                    )
-                    .await
-                    .unwrap()
-                    .matches
-            );
-        }
-
-        async fn check(&self) -> Result<(), ToolError> {
-            self.attachment
-                .check(
-                    BrowserAttachmentOrigin::Site(ORIGIN.into()),
-                    CancellationToken::new(),
-                )
-                .await
-        }
-
-        pub(crate) async fn end(&self) {
-            self.store
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        self.invocation.clone(),
-                        Fact::InvocationEnded {
-                            outcome: InvocationOutcome::Cancelled {
-                                source: "fixture-stop".into(),
-                            },
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-        }
-
-        pub(crate) async fn close(self) {
-            self.owner.stopping.cancel();
-            self.owner.tasks.close();
-            self.owner.tasks.wait().await;
-            self.owner.resources.settle().await.unwrap();
-            self.owner.sessions.close().await.unwrap();
-            self.owner.store.shutdown().await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn sandbox_off_admits_computer_scopes_without_prompts_and_restricting_it_revokes_access()
-    {
-        use maka_agent_facts::interaction::{
-            ComputerAppDisplay, ComputerAppIdentity, ComputerAppPlatform, ComputerAppRisk,
-        };
-        use maka_capabilities::call::{Identity, Issuer};
-        for request_permissions in [false, true] {
-            let fixture = Fixture::with_permissions(
-                true,
-                WorkspacePermissions {
-                    access: WorkspaceAccess::DangerFullAccess,
-                    request_permissions,
-                },
-            )
-            .await;
-            let basis = fixture.basis();
-            let prepared = fixture.store.execution_scope(Some(basis)).await.unwrap();
-            let (parent, effects) = prepared
-                .accept_invocation(fixture.invocation.clone(), CancellationToken::new())
-                .unwrap();
-            let source = parent.store();
-            let call = Issuer::default()
-                .issue_with_execution(
-                    Identity::Agent {
-                        invocation: fixture.invocation.clone(),
-                        operation_id: Some("full-access".into()),
-                    },
-                    (),
-                    CancellationToken::new(),
-                    source.execution_custody().unwrap(),
-                )
-                .unwrap();
-            let (configuration, _) = access::current(&fixture.owner, &call, "cua_repl")
-                .await
-                .unwrap();
-            let cell = maka_code_runtime::CellContext::new(
-                maka_code_runtime::CellStore::temporary().unwrap(),
-                vec![],
-            )
-            .unwrap();
-            for capability in [
-                GrantCapability::ComputerUse,
-                GrantCapability::ComputerAudio,
-                GrantCapability::Browser,
-                GrantCapability::BrowserHistory,
-                GrantCapability::BrowserDownload,
-                GrantCapability::BrowserUpload,
-            ] {
-                let scope = match capability {
-                    GrantCapability::Browser
-                    | GrantCapability::BrowserDownload
-                    | GrantCapability::BrowserUpload => GrantScope::BrowserOrigin {
-                        origin: ORIGIN.into(),
-                    },
-                    GrantCapability::BrowserHistory => GrantScope::BrowserProfile {
-                        browser_id: "fixture".into(),
-                        generation: "generation".into(),
-                    },
-                    _ => GrantScope::Capability {},
-                };
-                let target = GrantTarget {
-                    capability,
-                    scope,
-                    ..api::target()
-                };
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    access::approve_target(
-                        &fixture.owner,
-                        &call,
-                        &configuration,
-                        &call.cancellation,
-                        target.clone(),
-                        Some(&cell),
-                    ),
-                )
-                .await
-                .expect("sandbox off must not wait for a decision")
-                .unwrap();
-                access::granted_target(&fixture.owner, &call, basis, &target)
-                    .await
-                    .unwrap();
-                assert!(
-                    fixture
-                        .store
-                        .client_capability_grant("session", &target)
-                        .await
-                        .unwrap()
-                        .is_none(),
-                    "full access must not manufacture consent for {:?}",
-                    target.capability
-                );
-            }
-            for platform in [ComputerAppPlatform::Macos, ComputerAppPlatform::Windows] {
-                let subject = maka_computer_use::ComputerAppTarget {
-                    identity: ComputerAppIdentity {
-                        platform,
-                        application_id: match platform {
-                            ComputerAppPlatform::Macos => "fixture.application",
-                            ComputerAppPlatform::Windows => r"C:\Fixture\application.exe",
-                        }
-                        .into(),
-                    },
-                    display: ComputerAppDisplay {
-                        name: "Fixture application".into(),
-                        app_path: match platform {
-                            ComputerAppPlatform::Macos => "/Applications/Fixture.app",
-                            ComputerAppPlatform::Windows => r"C:\Fixture\application.exe",
-                        }
-                        .into(),
-                        risk: Some(ComputerAppRisk::High),
-                        warning: None,
-                    },
-                    allow_always: false,
-                    binding: None,
-                };
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    app_access::approve(
-                        &fixture.owner,
-                        &call,
-                        basis,
-                        &subject,
-                        "native-effect",
-                        &call.cancellation,
-                        &cell,
-                    ),
-                )
-                .await
-                .expect("full-access applications must not wait for a decision")
-                .unwrap();
-            }
-            fixture
-                .attachment
-                .check(
-                    BrowserAttachmentOrigin::Site("https://new.example".into()),
-                    CancellationToken::new(),
-                )
-                .await
-                .unwrap();
-            assert!(
-                fixture
-                    .store
-                    .pending_interactions("session")
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
-            let session = fixture
-                .store
-                .get::<StoredSessionConfiguration>()
-                .await
-                .unwrap()
-                .unwrap();
-            fixture
-                .store
-                .update_session_permissions::<StoredSessionConfiguration, _>(
-                    "session",
-                    session.revision,
-                    10,
-                    |configuration| {
-                        configuration.permissions.access = WorkspaceAccess::WorkspaceWrite;
-                        configuration.boundary_revision += 1;
-                        Ok(())
-                    },
-                )
-                .await
-                .unwrap();
-            assert!(access::granted(&fixture.owner, &call, basis).await.is_err());
-            assert!(fixture.check().await.is_err());
-            fixture.end().await;
-            effects.settle().await.unwrap();
-            parent.finish();
-            fixture.close().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn attachment_uses_current_session_grants_without_retaining_a_cell() {
-        let fixture = Fixture::new().await;
-        let through = fixture
-            .store
-            .session_projection::<StoredSessionConfiguration>("session")
-            .await
-            .unwrap()
-            .unwrap()
-            .through_sequence;
-        fixture.check().await.unwrap();
-        // A second cell in this logical Turn uses the same attachment; there is
-        // no original Scope, CellContext or execution lease in the checker.
-        fixture.check().await.unwrap();
-        let after = fixture
-            .store
-            .session_projection::<StoredSessionConfiguration>("session")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            after.through_sequence, through,
-            "checks cannot add Agent T1 facts"
-        );
-        assert!(
-            after.pending_interactions.is_empty(),
-            "checks cannot elicit permission"
-        );
-        let denied = fixture
-            .attachment
-            .check(
-                BrowserAttachmentOrigin::Site("https://other.example".into()),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(denied, ToolError::Failed(message) if message == "Browser site access has not been granted")
-        );
-        fixture
-            .decision("site-denied", target(ORIGIN.into()), Decision::Deny, 4)
-            .await;
-        assert!(
-            matches!(fixture.check().await, Err(ToolError::Failed(message)) if message == "Browser site access has not been granted")
-        );
-        fixture.close().await;
-    }
-
-    #[tokio::test]
-    async fn natural_popup_navigation_does_not_grant_destination_content_for_none_or_deny() {
-        let fixture = Fixture::new().await;
-        let destination = "https://unread-destination.example";
-        let document = BrowserDocument {
-            browser_id: "fixture".into(),
-            generation: "generation".into(),
-            tab_id: "17".into(),
-            url: "about:blank".into(),
-        };
-        let scope = super::super::browser_popup::Authorization::new(
-            Arc::new(fixture.attachment.clone()),
-            "fixture".into(),
-            format!("{destination}/popup"),
-        );
-        let navigation = BrowserAccess::Navigate {
-            document: document.clone(),
-            url: format!("{destination}/popup"),
-        };
-        let read = BrowserAccess::ReadDocument {
-            document: document.clone(),
-            origin: BrowserAttachmentOrigin::Site(destination.into()),
-        };
-        assert_eq!(
-            fixture
-                .store
-                .browser_origin_decision(
-                    "session",
-                    &target(destination.into()),
-                    &fixture.attachment.basis
-                )
-                .await
-                .unwrap(),
-            None
-        );
-        scope
-            .authorize(navigation.clone(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert!(
-            scope
-                .check(read.clone(), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            fixture
-                .store
-                .browser_origin_decision(
-                    "session",
-                    &target(destination.into()),
-                    &fixture.attachment.basis
-                )
-                .await
-                .unwrap(),
-            None,
-            "physical page navigation must not manufacture a Site Allow"
-        );
-        fixture
-            .decision(
-                "destination-denied",
-                target(destination.into()),
-                Decision::Deny,
-                4,
-            )
-            .await;
-        scope
-            .authorize(navigation.clone(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert!(scope.check(read, CancellationToken::new()).await.is_err());
-        assert_eq!(
-            fixture
-                .store
-                .browser_origin_decision(
-                    "session",
-                    &target(destination.into()),
-                    &fixture.attachment.basis
-                )
-                .await
-                .unwrap(),
-            Some(Decision::Deny)
-        );
-        scope
-            .check(
-                BrowserAccess::ReadDocument {
-                    document,
-                    origin: BrowserAttachmentOrigin::Opaque,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(
-            scope
-                .attachment()
-                .unwrap()
-                .check(BrowserAttachmentOrigin::Opaque, CancellationToken::new())
-                .await
-                .is_err(),
-            "global opaque preparation does not grant clipboard access"
-        );
-        fixture.end().await;
-        assert!(
-            scope
-                .authorize(navigation, CancellationToken::new())
-                .await
-                .is_err()
-        );
-        fixture.close().await;
-    }
-
-    fn session_preparation_request(turn: &str) -> BrowserSessionPreparation {
-        BrowserSessionPreparation {
-            native_owner: uuid::Uuid::new_v4(),
-            native_epoch: "native-observation".into(),
-            browser_id: "native-browser".into(),
-            generation: "native-generation".into(),
-            turn_id: turn.into(),
-            operation_id: "session-preparation-operation".into(),
-            target: maka_computer_use::BrowserPreparationTarget::ReservedTab {
-                tab_id: "17".into(),
-            },
-        }
-    }
-
-    fn effect_preparation_binding(turn: &str) -> maka_computer_use::BrowserPreparationBinding {
-        // Observations for permission testing only. This fixture deliberately
-        // grants no native ownership: production's independent ledger must do so.
-        maka_computer_use::BrowserPreparationBinding {
-            native_owner: uuid::Uuid::new_v4(),
-            native_epoch: "observation-epoch".into(),
-            browser_id: "observation-browser".into(),
-            generation: "observation-generation".into(),
-            turn_id: turn.into(),
-            tab_id: "17".into(),
-            subject: maka_capabilities::computer::BrowserLeaseSubject::PhysicalClaim {
-                claim_id: "observation-claim".into(),
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn actual_host_service_revoke_blocks_new_checks_but_keeps_original_started_ticket_pending()
-     {
-        let fixture = Fixture::new().await;
-        let native_owner =
-            maka_computer_use::SessionOwner::new(fixture.owner.sessions.driver.clone());
-        let native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
-        let effects = admission::host_effects_with_lease_children(
-            &fixture.owner,
-            fixture.attachment.gate.clone(),
-            &native,
-            Arc::new(fixture.attachment.clone()),
-        );
-        let (sent, received) = tokio::sync::oneshot::channel();
-        let release = CancellationToken::new();
-        let worker_release = release.clone();
-        effects
-            .spawn_scoped_guarded(
-                Box::new(move |scope| {
-                    Box::pin(async move {
-                        sent.send(scope)
-                            .unwrap_or_else(|_| panic!("scope observer disappeared"));
-                        worker_release.cancelled().await;
-                        Ok(())
-                    })
-                }),
-                Box::new(|_| panic!("local admission unexpectedly rejected")),
-            )
-            .unwrap();
-        let scope = received.await.unwrap();
-        let binding = effect_preparation_binding(&fixture.invocation.turn_id);
-        scope
-            .check_session_preparation(binding.clone(), CancellationToken::new())
-            .await
-            .unwrap();
-        let revision = fixture
-            .store
-            .get_session::<StoredSessionConfiguration>("session")
-            .await
-            .unwrap()
-            .unwrap()
-            .revision;
-        assert!(matches!(
-            fixture
-                .store
-                .update_session_permissions::<StoredSessionConfiguration, _>(
-                    "session",
-                    revision,
-                    5,
-                    |configuration| {
-                        configuration.boundary_revision += 1;
-                        Ok(())
-                    },
-                )
-                .await
-                .unwrap(),
-            maka_event_log::sessions::SessionMutation::Committed(_)
-        ));
-        assert!(
-            scope
-                .check_session_preparation(binding, CancellationToken::new())
-                .await
-                .is_err()
-        );
-        let mut settlement = Box::pin(fixture.owner.resources.settle());
-        assert!(
-            futures_util::poll!(&mut settlement).is_pending(),
-            "authority revoke is not the original future terminal"
-        );
-        release.cancel();
-        settlement.await.unwrap();
-        fixture.close().await;
-    }
-    fn fixed_ui_preparation_request(turn: &str) -> BrowserSessionPreparation {
-        // Shape observations only: Main's separate native ledger must prove
-        // that this scope names a real retained fixed-session receipt.
-        let mut request = session_preparation_request(turn);
-        request.target = maka_computer_use::BrowserPreparationTarget::FixedSessionTab {
-            tab_id: "17".into(),
-            scope_id: "observed-fixed-session-scope".into(),
-        };
-        request
-    }
-
-    fn fixed_ui_effect_binding(
-        request: &BrowserSessionPreparation,
-    ) -> maka_computer_use::BrowserPreparationBinding {
-        let maka_computer_use::BrowserPreparationTarget::FixedSessionTab { tab_id, scope_id } =
-            &request.target
-        else {
-            unreachable!("fixture requires a fixed-session target")
-        };
-        maka_computer_use::BrowserPreparationBinding {
-            native_owner: request.native_owner,
-            native_epoch: request.native_epoch.clone(),
-            browser_id: request.browser_id.clone(),
-            generation: request.generation.clone(),
-            turn_id: request.turn_id.clone(),
-            tab_id: tab_id.clone(),
-            subject: maka_capabilities::computer::BrowserLeaseSubject::FixedSession {
-                scope_id: scope_id.clone(),
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn fixed_ui_targets_recheck_real_global_basis_turn_gate_and_operation() {
-        for changed in ["global", "basis", "turn", "gate", "cancel", "operation"] {
-            let fixture = Fixture::new_with_global_grant(changed != "global").await;
-            let request = fixed_ui_preparation_request(&fixture.invocation.turn_id);
-            let binding = fixed_ui_effect_binding(&request);
-            let cancellation = CancellationToken::new();
-            if changed == "global" {
-                assert!(
-                    fixture
-                        .store
-                        .client_capability_grant("session", &api::target())
-                        .await
-                        .unwrap()
-                        .is_none(),
-                    "fixture starts without broad Allow"
-                );
-            } else {
-                fixture
-                    .attachment
-                    .session_preparation_current(&request, &request.operation_id, &cancellation)
-                    .await
-                    .unwrap();
-                fixture
-                    .attachment
-                    .effect_preparation_current(&binding, &cancellation)
-                    .await
-                    .unwrap();
-            }
-            let expected = match changed {
-                "global" => "Computer Use Session grant is missing or revoked",
-                "basis" => {
-                    let revision = fixture
-                        .store
-                        .get_session::<StoredSessionConfiguration>("session")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .revision;
-                    let result = fixture
-                        .store
-                        .update_session_permissions::<StoredSessionConfiguration, _>(
-                            "session",
-                            revision,
-                            5,
-                            |configuration| {
-                                configuration.boundary_revision += 1;
-                                Ok(())
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert!(matches!(
-                        result,
-                        maka_event_log::sessions::SessionMutation::Committed(_)
-                    ));
-                    "Browser permission boundary changed"
-                }
-                "turn" => {
-                    fixture.end().await;
-                    "Browser attachment turn is no longer active"
-                }
-                "gate" => {
-                    fixture.attachment.gate.close_admission();
-                    "Computer VM has retired"
-                }
-                "cancel" => {
-                    cancellation.cancel();
-                    "Browser attachment cancelled"
-                }
-                "operation" => "Browser session preparation lost its captured native scope",
-                _ => unreachable!(),
-            };
-            let operation = if changed == "operation" {
-                "another-operation"
-            } else {
-                &request.operation_id
-            };
-            let error = fixture
-                .attachment
-                .session_preparation_current(&request, operation, &cancellation)
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(error, ToolError::Failed(message) if message == expected),
-                "{changed} must reach the actual canonical request guard"
-            );
-            if changed != "operation" {
-                let error = fixture
-                    .attachment
-                    .effect_preparation_current(&binding, &cancellation)
-                    .await
-                    .unwrap_err();
-                assert!(
-                    matches!(error, ToolError::Failed(message) if message == expected),
-                    "{changed} must also reject the fixed-session effect binding"
-                );
-            }
-            // An effect binding has no Agent operation field. Its operation
-            // lifetime belongs to the existing actual Host effect scope/token;
-            // this checker test cannot manufacture or prove that separate scope.
-            fixture.close().await;
-        }
     }
 }

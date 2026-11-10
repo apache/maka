@@ -202,8 +202,7 @@ export function createHost(application: UiHost) {
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
     stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
-    setRecentWorkspace: (path: string, remember: boolean) =>
-      nativeHost.setRecentWorkspace(path, remember),
+    setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
@@ -313,7 +312,9 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
     throw new UiError('This action could not be completed.');
-  return reply.receipt.outcome.value as Output<'terminal', M>;
+  if (reply.receipt.outcome.result.kind === 'failure')
+    throw new Error(reply.receipt.outcome.result.diagnostic);
+  return reply.receipt.outcome.result.value as Output<'terminal', M>;
 }
 export const pendingTerminals = (scope: ScopedHost) =>
   scope.pendingTerminals() as Promise<ClientOperation[]>;

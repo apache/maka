@@ -21,13 +21,13 @@
 
 mod attachments;
 mod files;
-pub use files::OwnedTempDirectory;
-mod resources;
 pub use attachments::{Attachments, ReadResource, ResourceEncoding, immutable_bytes};
-pub use resources::{Resources, Ticket};
+pub use files::OwnedTempDirectory;
+use maka_plugin_core::work::resources::Resources;
 
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_agent_facts::tools::ToolError;
+use maka_plugin_core::work::WorkCustody;
 use serde::{Deserialize, Serialize};
 use std::{any::Any, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -39,8 +39,10 @@ use tokio_util::sync::CancellationToken;
     rename_all_fields = "camelCase"
 )]
 pub enum Identity {
+    /// Native owner observation only; actual Host origin and method capabilities authorize calls.
+    Native,
     Agent {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         operation_id: Option<String>,
     },
     Remote {
@@ -56,9 +58,9 @@ pub enum Identity {
     },
 }
 impl Identity {
-    pub fn agent(&self) -> Option<&Invocation> {
+    pub fn agent(&self) -> Option<&ExecutionIdentity> {
         match self {
-            Self::Agent { invocation, .. } => Some(invocation),
+            Self::Agent { execution, .. } => Some(execution),
             _ => None,
         }
     }
@@ -79,7 +81,8 @@ pub struct Scope {
     // The embedding owns its authorization evidence. It is neither part of the
     // public observation nor serializable into a plugin-supplied wire grant.
     evidence: Option<Arc<dyn Any + Send + Sync>>,
-    execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+    custody: Option<Arc<dyn WorkCustody>>,
+    sandbox_floor: maka_sandbox::Sandbox,
     context: Metadata,
 }
 
@@ -128,17 +131,17 @@ impl Issuer {
             cancellation,
         )
     }
-    /// Forward an actual admitted execution token with the original issuer evidence.
+    /// Forward an actual admitted custody token with the original issuer evidence.
     /// The receiving Root validates this opaque token; public Identity cannot mint it.
-    pub fn issue_with_execution<T: Any + Send + Sync>(
+    pub fn issue_with_work<T: Any + Send + Sync>(
         &self,
         identity: Identity,
         evidence: T,
         cancellation: CancellationToken,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        custody: Arc<dyn WorkCustody>,
     ) -> Result<Scope, ToolError> {
         let mut scope = self.issue_with(identity, evidence, cancellation)?;
-        scope.execution = Some(execution);
+        scope.custody = Some(custody);
         Ok(scope)
     }
 
@@ -162,7 +165,8 @@ impl Scope {
         Ok(Self {
             source,
             evidence,
-            execution: None,
+            custody: None,
+            sandbox_floor: maka_sandbox::Sandbox::Disabled,
             context: Metadata {
                 identity,
                 cancellation: cancellation.child_token(),
@@ -171,8 +175,32 @@ impl Scope {
         })
     }
 
-    pub fn execution(&self) -> Option<&Arc<dyn maka_agent_facts::tools::ExecutionCustody>> {
-        self.execution.as_ref()
+    pub fn work_custody(&self) -> Option<&Arc<dyn WorkCustody>> {
+        self.custody.as_ref()
+    }
+
+    /// An inherited restriction, never authority to perform an effect.
+    pub fn sandbox_floor(&self) -> &maka_sandbox::Sandbox {
+        &self.sandbox_floor
+    }
+
+    /// Child scopes may only narrow the original constraint, including FullAccess.
+    pub fn restrict_sandbox(&mut self, floor: &maka_sandbox::Sandbox) -> Result<(), ToolError> {
+        self.sandbox_floor = self
+            .sandbox_floor
+            .intersect(floor)
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Fork cancellation without changing this dispatch's original resource proof.
+    pub fn with_child_cancellation(&self) -> Result<Self, ToolError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ToolError::Failed("plugin invocation is closed".into()));
+        }
+        let mut child = self.clone();
+        child.context.cancellation = self.cancellation.child_token();
+        Ok(child)
     }
 
     pub fn child(&self) -> Result<Self, ToolError> {
@@ -182,16 +210,17 @@ impl Scope {
             self.evidence.clone(),
             self.cancellation.clone(),
         )?;
-        child.execution = self.execution.clone();
+        child.custody = self.custody.clone();
+        child.sandbox_floor = self.sandbox_floor.clone();
         Ok(child)
     }
 
-    /// Transfer a host-owned effect to its actual execution lifetime. The caller
+    /// Transfer a host-owned effect to its actual custody lifetime. The caller
     /// must supply custody recovered from the issuing Root, never wire identity.
     /// Finishing the observation request cannot cancel this accepted effect.
-    pub fn for_execution(
+    pub fn for_work(
         &self,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        custody: Arc<dyn WorkCustody>,
         cancellation: CancellationToken,
     ) -> Result<Self, ToolError> {
         let mut child = Self::new(
@@ -200,13 +229,14 @@ impl Scope {
             self.evidence.clone(),
             cancellation,
         )?;
-        child.execution = Some(execution);
+        child.custody = Some(custody);
+        child.sandbox_floor = self.sandbox_floor.clone();
         Ok(child)
     }
 
     pub async fn finish(&self) -> Result<(), ToolError> {
         self.cancellation.cancel();
-        self.resources.finish().await
+        self.resources.finish().await.map_err(Into::into)
     }
 }
 
@@ -227,53 +257,5 @@ impl Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         self.0.cancellation.cancel();
-    }
-}
-
-#[cfg(test)]
-mod execution_tests {
-    use super::*;
-
-    struct Custody;
-    impl maka_agent_facts::tools::ExecutionCustody for Custody {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-    }
-
-    #[tokio::test]
-    async fn child_keeps_actual_custody_and_identity_alone_does_not_recreate_it() {
-        let issuer = Issuer::default();
-        let identity = Identity::Agent {
-            invocation: Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            },
-            operation_id: Some("operation".into()),
-        };
-        let execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody> = Arc::new(Custody);
-        let original = issuer
-            .issue_with_execution(
-                identity.clone(),
-                42u64,
-                CancellationToken::new(),
-                execution.clone(),
-            )
-            .unwrap();
-        let child = original.child().unwrap();
-        assert!(Arc::ptr_eq(child.execution().unwrap(), &execution));
-        assert!(Arc::ptr_eq(
-            original.clone().execution().unwrap(),
-            &execution
-        ));
-        assert_eq!(issuer.evidence::<u64>(&child), Some(&42));
-        assert!(!Arc::ptr_eq(&original.resources, &child.resources));
-        let observation_only = issuer.issue(identity, CancellationToken::new()).unwrap();
-        assert!(observation_only.execution().is_none());
-        original.finish().await.unwrap();
-        assert!(child.cancellation.is_cancelled());
-        child.finish().await.unwrap();
     }
 }

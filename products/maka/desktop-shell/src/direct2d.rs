@@ -25,11 +25,7 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-#[cfg(test)]
-use nsh_platform_windows::run_app_with_config;
-use nsh_platform_windows::{
-    AppOptions, TrayOptions, quit_app, run_resident_app, with_running_view,
-};
+use nsh_platform_windows::{AppOptions, quit_app, run_app_with_config, with_running_view};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::watch,
@@ -59,10 +55,6 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         endpoint,
         epoch,
     } = first;
-    let directory = config
-        .data_dir
-        .clone()
-        .expect("Host admission sets the client directory");
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     let reloading = config
@@ -72,25 +64,8 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .take_requests();
     carry_out(requests, &runtime);
     refuse_reloads(reloading, runtime.handle());
-    drop(config);
-    let view_bindings = bindings.clone();
-    let handle = runtime.handle().clone();
-    let closed = shell.clone();
-    let closing = shell.clone();
-    let mut tray = TrayOptions::default();
-    tray.title = TITLE.into();
-    tray.open_label = "Open Maka".into();
-    tray.quit_label = "Quit".into();
-    let result = run_resident_app(
-        move || {
-            let mut config =
-                maka_workbench::configuration(view_bindings.registry(None), handle.clone());
-            config.context = config.context.with(view_bindings.reload());
-            config.data_dir = Some(directory.clone());
-            config.assets = Some(view_bindings.assets());
-            config.chunk_loader = Some(view_bindings.chunk_loader());
-            shell.attach(config)
-        },
+    let result = run_app_with_config(
+        shell.attach(config),
         AppOptions {
             app_id: APP_ID.into(),
             title: TITLE.into(),
@@ -98,12 +73,9 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
             ..Default::default()
         },
-        tray,
         move |is_active| {
             active.send_replace(is_active);
         },
-        move || closed.release(),
-        move || closing.prepare_close(),
     );
     runtime.block_on(host::detach(bindings, &endpoint, epoch));
     runtime.shutdown_background();
@@ -116,21 +88,11 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
 
 fn carry_out(requests: Requests, runtime: &Runtime) {
     let Requests {
-        mut close_ready,
         mut exits,
         mut folders,
         mut text_sizes,
         mut notices,
     } = requests;
-    runtime.spawn(async move {
-        while let Some(request) = close_ready.recv().await {
-            with_running_view(move |view| {
-                if request.is_current() {
-                    view.request_close();
-                }
-            });
-        }
-    });
     runtime.spawn(async move {
         while let Some(call) = notices.recv().await {
             call.reject("the Direct2D window does not support system notifications");
@@ -175,11 +137,18 @@ fn refuse_reloads(mut requests: tokio::sync::mpsc::UnboundedReceiver<Request>, r
 #[cfg(test)]
 mod tests {
     use super::*;
-    static NATIVE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const WM_CLOSE: u32 = 0x0010;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        #[link_name = "PostMessageW"]
+        fn post_message(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize)
+        -> i32;
+    }
 
     #[test]
-    fn terminal_exit_closes_the_native_window() {
-        let _serial = NATIVE_TEST.lock().unwrap();
+    fn terminal_exit_closes_the_hidden_native_window_with_close_on_press_disabled() {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -189,17 +158,49 @@ mod tests {
         let (_active, foreground) = watch::channel(false);
         let (shell, requests) = Shell::new(foreground);
         carry_out(requests, &runtime);
-        let mut policy = nsh_engine::Policy::default();
+        let mut policy = nsh_engine::Policy {
+            declared: Some(nsh_engine::Capabilities::all()),
+            ..nsh_engine::Policy::development()
+        };
         policy
             .declared
             .get_or_insert_default()
             .host
-            .push("terminal.exit".into());
+            .extend(["terminal.exit", "test.ready", "test.hidden"].map(String::from));
         let bundle = nsh_engine::Bundle::source(
-            "import { host } from 'nsh'; host.post('terminal.exit');".into(),
+            r#"import { effect, host, signal } from 'nsh';
+                import { Window } from 'nsh/desktop';
+                const main = Window.get('main');
+                const closing = signal(false);
+                main.set({ closeOnPress: false });
+                main.on('closePress', () => { closing.set(true); main.hide(); });
+                effect(() => {
+                    if (closing() && main.state()?.visible === false) {
+                        host.post('test.hidden');
+                        host.post('terminal.exit');
+                    }
+                });
+                requestAnimationFrame(() => host.post('test.ready'));
+            "#
+            .into(),
         )
         .with_policy(policy);
+        let hidden = Arc::new(AtomicBool::new(false));
+        let observed = hidden.clone();
         let config = shell.attach(nsh_engine::EngineConfig::new(bundle));
+        let posted = Arc::new(AtomicBool::new(false));
+        let close_posted = posted.clone();
+        config.host.handle("test.ready", move |_| {
+            let close_posted = close_posted.clone();
+            with_running_view(move |view| {
+                // SAFETY: the running view owns this live HWND; posting does not retain a Rust reference.
+                let ok = unsafe { post_message(view.hwnd().0, WM_CLOSE, 0, 0) };
+                close_posted.store(ok != 0, Ordering::SeqCst);
+            });
+        });
+        config.host.handle("test.hidden", move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
         let (done, finished) = mpsc::channel();
         let timed_out = Arc::new(AtomicBool::new(false));
         let timeout = timed_out.clone();
@@ -229,6 +230,14 @@ mod tests {
             !timed_out.load(Ordering::SeqCst),
             "terminal.exit did not close the native window"
         );
+        assert!(
+            posted.load(Ordering::SeqCst),
+            "could not post the native close"
+        );
+        assert!(
+            hidden.load(Ordering::SeqCst),
+            "ordinary close did not hide the window"
+        );
         assert_eq!(code, std::process::ExitCode::SUCCESS);
     }
 
@@ -246,89 +255,5 @@ mod tests {
             result,
             Err("the Direct2D window cannot reload its UI".into())
         );
-    }
-    #[test]
-    fn native_close_captures_presentation_before_releasing_the_ui() {
-        let _serial = NATIVE_TEST.lock().unwrap();
-        let runtime = Runtime::new().unwrap();
-        let reload = UiReload::default();
-        let mut reload_requests = reload.take_requests();
-        let (_active, foreground) = watch::channel(false);
-        let (shell, requests) = Shell::new(foreground);
-        carry_out(requests, &runtime);
-        let configure = shell.clone();
-        let closing = shell.clone();
-        let closed = shell.clone();
-        let saved = reload.clone();
-        let handle = runtime.handle().clone();
-        let (done, finished) = std::sync::mpsc::channel();
-        let watchdog = std::thread::spawn(move || {
-            if finished
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .is_err()
-            {
-                quit_app();
-                true
-            } else {
-                false
-            }
-        });
-        let mut tray = TrayOptions::default();
-        tray.title = "Window snapshot test".into();
-        tray.open_label = "Open".into();
-        tray.quit_label = "Quit".into();
-        let result = run_resident_app(
-            move || {
-                let mut policy = nsh_engine::Policy::default();
-                policy
-                    .declared
-                    .get_or_insert_default()
-                    .host
-                    .push("*".into());
-                let bundle = nsh_engine::Bundle::source(
-                    "import { host } from 'nsh';
-                     host.on('desktop.prepareClose', ({ id }) => host.post('desktop.closeReady', { id, state: { session: 'original-session', panel: 'settings' } }));
-                     host.post('test.ready');".into()
-                ).with_policy(policy);
-                let mut config = nsh_engine::EngineConfig::new(bundle);
-                config.runtime = Some(handle.clone());
-                config.context = config.context.with(saved.clone());
-                config.host.handle("test.ready", |_| {
-                    with_running_view(|view| view.request_close())
-                });
-                configure.attach(config)
-            },
-            AppOptions {
-                title: "Window snapshot test".into(),
-                size: (320, 240),
-                ..Default::default()
-            },
-            tray,
-            |_| {},
-            move || {
-                closed.release();
-                quit_app();
-            },
-            move || closing.prepare_close(),
-        );
-        done.send(()).unwrap();
-        assert!(
-            !watchdog.join().unwrap(),
-            "native close never completed its UI snapshot"
-        );
-        assert_eq!(result, std::process::ExitCode::SUCCESS);
-        assert_eq!(
-            reload.restored(),
-            serde_json::json!({"session":"original-session", "panel":"settings"})
-        );
-        assert!(
-            reload_requests.try_recv().is_err(),
-            "window close must not request a UI reload"
-        );
-        assert!(
-            shell.events.lock().unwrap().is_none(),
-            "closed UI channel remained owned"
-        );
-        runtime.shutdown_background();
     }
 }

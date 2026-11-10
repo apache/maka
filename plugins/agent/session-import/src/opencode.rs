@@ -19,6 +19,8 @@
 
 //! OpenCode's selected-session snapshot. The database reader must obtain these
 //! rows in one read transaction; conversion never opens an ambient source path.
+mod exact;
+pub use exact::read as read_exact;
 mod database;
 mod wire;
 use crate::{

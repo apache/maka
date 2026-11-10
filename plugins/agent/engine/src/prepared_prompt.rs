@@ -31,7 +31,7 @@ mod wire;
 pub(crate) use owned_overlay::OwnedOverlay;
 
 #[derive(Clone)]
-pub(super) struct PreparedPrompt {
+pub struct PreparedPrompt {
     body: Prompt,
     media_view: Option<Arc<media::MediaView>>,
     resources: Option<maka_model::ModelPreparationResources>,
@@ -67,13 +67,33 @@ impl PreparedPrompt {
         }
     }
 
-    pub fn from_history(history: Arc<crate::history::FrozenHistory>) -> Self {
-        let mut prompt = Self::new(history.prompt());
-        prompt.resources = Some(history.resources().clone());
-        prompt.resident_bytes = history.resident_bytes();
-        prompt.preparation = Some(history.preparation());
-        prompt.arena = Some(history.arena().clone());
+    pub(crate) fn from_canonical(
+        body: Prompt,
+        arena: crate::history::capture_arena::CaptureArena,
+        resources: maka_model::ModelPreparationResources,
+        preparation: Arc<crate::history::preparation::RequestPreparation>,
+        resident_bytes: usize,
+    ) -> Self {
+        let mut prompt = Self::new(body);
+        prompt.resources = Some(resources);
+        prompt.resident_bytes = resident_bytes;
+        prompt.preparation = Some(preparation);
+        prompt.arena = Some(arena);
         prompt
+    }
+
+    pub fn with_frozen_transport(
+        mut self,
+        instructions: Option<&str>,
+        normalization: Option<maka_model::ProviderKind>,
+    ) -> Self {
+        if let Some(instructions) = instructions {
+            self.body = self.body.with_instructions(instructions);
+        }
+        if let Some(normalization) = normalization {
+            self.body = self.body.with_normalization(normalization);
+        }
+        self
     }
 
     pub fn with_resources(mut self, resources: maka_model::ModelPreparationResources) -> Self {
@@ -140,10 +160,10 @@ impl PreparedPrompt {
     pub fn resources(&self) -> Option<&maka_model::ModelPreparationResources> {
         self.resources.as_ref()
     }
-    pub fn arena(&self) -> Option<&crate::history::capture_arena::CaptureArena> {
+    pub(crate) fn arena(&self) -> Option<&crate::history::capture_arena::CaptureArena> {
         self.arena.as_ref()
     }
-    pub fn with_arena(mut self, arena: crate::history::capture_arena::CaptureArena) -> Self {
+    pub(crate) fn with_arena(mut self, arena: crate::history::capture_arena::CaptureArena) -> Self {
         self.arena = Some(arena);
         self
     }
@@ -173,77 +193,43 @@ impl PreparedPrompt {
     pub async fn initialize_overlays(
         &mut self,
         system: Option<Arc<String>>,
-        context: Arc<maka_event_log::context::ContextView>,
-        checkpoint_label: &'static str,
         summary: bool,
         instruction: Option<Arc<String>>,
     ) -> Result<(), crate::RunError> {
-        let suffixes = usize::from(summary) + usize::from(instruction.is_some());
-        let bytes =
-            Self::overlay_plan_bytes(system.is_some(), context.baseline.is_some(), suffixes)
-                .checked_add(OwnedOverlay::checkpoint_payload_bytes(&context))
-                .ok_or_else(|| {
-                    crate::RunError::Preparation(std::io::Error::other(
-                        "native overlay size overflow",
-                    ))
-                })?;
+        let bytes = Self::overlay_plan_bytes(
+            system.is_some(),
+            false,
+            usize::from(summary) + usize::from(instruction.is_some()),
+        );
         if bytes == 0 {
             return Ok(());
         }
         let preparation = self.preparation.as_ref().ok_or_else(|| {
-            crate::RunError::Internal("request overlays lack their staging account".into())
+            crate::RunError::Internal("request overlays lack staging account".into())
         })?;
         let owner = Arc::new(OverlayOwner {
             _lease: preparation
-                .directory(bytes)
+                .plan_directory(bytes)
                 .map_err(crate::RunError::Preparation)?,
         });
         self.overlay_owner = Some(owner.clone());
         self.overlay_resident_bytes = bytes;
         let arena = self.arena.as_ref().ok_or_else(|| {
-            crate::RunError::Internal("request overlays lack their original worker".into())
+            crate::RunError::Internal("request overlays lack original worker".into())
         })?;
-        let (system, checkpoint, instruction) = arena
+        let (system, instruction) = arena
             .with_writer(move |_| {
-                let system = system.map(|text| OwnedOverlay::system(text).bound(owner.clone()));
-                let checkpoint = OwnedOverlay::checkpoint(context, checkpoint_label)
-                    .map(|overlay| overlay.bound(owner.clone()));
-                let instruction = instruction.map(|text| OwnedOverlay::user(text).bound(owner));
-                Ok((system, checkpoint, instruction))
+                Ok((
+                    system.map(|text| OwnedOverlay::system(text).bound(owner.clone())),
+                    instruction.map(|text| OwnedOverlay::user(text).bound(owner)),
+                ))
             })
             .await
             .map_err(crate::RunError::Preparation)?;
         self.system = system;
-        self.prefix = Arc::new(checkpoint.into_iter().collect());
         self.suffix = Arc::new(instruction.into_iter().collect());
         self.rebuild_recipes();
         Ok(())
-    }
-
-    pub async fn freeze_summary_instruction(
-        &self,
-        text: Arc<String>,
-    ) -> Result<OwnedOverlay, crate::RunError> {
-        let owner = self.overlay_owner.clone().ok_or_else(|| {
-            crate::RunError::Internal("summary instruction lacks its reserved overlay owner".into())
-        })?;
-        self.arena
-            .as_ref()
-            .ok_or_else(|| {
-                crate::RunError::Internal("summary instruction lacks its original worker".into())
-            })?
-            .with_writer(move |_| Ok(OwnedOverlay::user(text).bound(owner)))
-            .await
-            .map_err(crate::RunError::Preparation)
-    }
-
-    pub fn push(&mut self, message: OwnedOverlay) {
-        self.wire = None;
-        self.recipe_source = None;
-        let suffix = Arc::make_mut(&mut self.suffix);
-        suffix.reserve_exact(1);
-        suffix.push(message);
-        self.rebuild_recipes();
     }
 
     fn rebuild_recipes(&mut self) {
@@ -393,7 +379,7 @@ impl PreparedPrompt {
             prefix: Identities<'a>,
             suffix: Identities<'a>,
         }
-        let identity = crate::runner::digest(&Identity {
+        let identity = crate::digest(&Identity {
             domain: "maka.prepared-prompt.v1",
             body: self.body.identity(),
             system: self.system.as_ref().map(OwnedOverlay::identity),
@@ -484,7 +470,7 @@ impl MessageSource for OwnedList {
             if count > self.0.len() {
                 return Err(std::io::Error::other("overlay prefix exceeds directory"));
             }
-            crate::runner::digest(&Identities(&self.0[..count])).map_err(std::io::Error::other)
+            crate::digest(&Identities(&self.0[..count])).map_err(std::io::Error::other)
         })
     }
 }

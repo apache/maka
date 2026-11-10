@@ -29,9 +29,6 @@ use std::{
     path::Path,
 };
 
-#[cfg(test)]
-thread_local! { pub(super) static AFTER_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Inventory {
@@ -163,10 +160,43 @@ fn parent(dir: &Dir, path: &str) -> Result<(Dir, String), StoreError> {
     Ok((current, name))
 }
 
+pub(super) fn validate_alias(directory: &Dir, path: &Path) -> Result<(), StoreError> {
+    use cap_fs_ext::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(invalid(
+            "workspace locator no longer names its original directory",
+        ));
+    }
+    #[cfg(unix)]
+    let named = (metadata.dev(), metadata.ino());
+    #[cfg(windows)]
+    let named = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let metadata = cap_std::fs::File::from_std(file).metadata()?;
+        (metadata.dev(), metadata.ino())
+    };
+    let held = directory.dir_metadata()?;
+    if named != (held.dev(), held.ino()) {
+        return Err(invalid(
+            "workspace locator no longer names its original directory",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn capture(
     objects: &Objects,
     request: &Request,
     source: &WorkspaceCapture,
+    dir: &Dir,
 ) -> Result<WorkspaceSnapshot, StoreError> {
     if !source.root.is_absolute() || source.identity.is_empty() {
         return Err(invalid("invalid checkpoint workspace binding"));
@@ -176,20 +206,14 @@ pub(super) fn capture(
     if source_path.starts_with(root_path) || root_path.starts_with(&source_path) {
         return Err(invalid("checkpoint workspace overlaps state root"));
     }
-    let dir = Dir::open_ambient_dir(&source_path, cap_std::ambient_authority())?;
+    validate_alias(dir, &source_path)?;
     let before_root = stamp(&dir.dir_metadata()?)?;
-    let before = scan(&dir, &source_path)?;
-    #[cfg(test)]
-    AFTER_SCAN.with(|hook| {
-        if let Some(action) = hook.borrow_mut().take() {
-            action();
-        }
-    });
+    let before = scan(dir, &source_path)?;
     let mut entries = Vec::new();
     let mut linked = false;
     for (path, expected) in &before {
         objects.owner.validate_current()?;
-        let (parent, name) = parent(&dir, path)?;
+        let (parent, name) = parent(dir, path)?;
         let metadata = parent.symlink_metadata(&name)?;
         if stamp(&metadata)? != *expected {
             return Err(invalid("checkpoint workspace changed during capture"));
@@ -306,12 +330,9 @@ pub(super) fn capture(
             executable,
         });
     }
-    let after = scan(&dir, &source_path)?;
-    let named = Dir::open_ambient_dir(&source.root, cap_std::ambient_authority())?;
-    if before != after
-        || before_root != stamp(&dir.dir_metadata()?)?
-        || before_root != stamp(&named.dir_metadata()?)?
-    {
+    let after = scan(dir, &source_path)?;
+    validate_alias(dir, &source_path)?;
+    if before != after || before_root != stamp(&dir.dir_metadata()?)? {
         return Err(invalid("checkpoint workspace changed during capture"));
     }
     if linked {

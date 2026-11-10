@@ -31,11 +31,13 @@ import {
   keymap,
   windowSize,
   platform,
+  type InputRef,
   type ViewRef,
   type Signal,
   type JSX,
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
+import { CompactComposer } from './CompactComposer';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -44,6 +46,7 @@ import type {
   AgentInteractionResult,
   AgentWorkspaceAccess,
   ModelSelection,
+  RunId,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -283,10 +286,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, remember: boolean) => {
+  const setRecentWorkspace = (path: string) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -296,7 +299,7 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, true).catch(report);
+    void setRecentWorkspace(path).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -396,7 +399,8 @@ export function createConversationUi(
     const owner = handle();
     return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
   });
-  const focusComposer = () => editor?.focus();
+  let compactInput: InputRef | undefined;
+  const focusComposer = () => (compactInput ?? editor)?.focus();
   let browserRoot: ViewRef | undefined;
   let alive = true;
   let controlRead = 0;
@@ -487,7 +491,7 @@ export function createConversationUi(
     if (result.kind === 'recorded') {
       const record = result.record;
       if (
-        record.sessionId === original.sessionId &&
+        record.execution.sessionId === original.sessionId &&
         record.requestId === original.requestId &&
         record.outcome
       ) {
@@ -568,8 +572,9 @@ export function createConversationUi(
       throw new UiError('This action could not be completed.');
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
       throw new UiError('Syncing changes…');
-    const value = receipt.outcome.value;
-    return value;
+    const result = receipt.outcome.result;
+    if (result.kind === 'failure') throw new Error(result.diagnostic);
+    return result.value;
   };
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
@@ -584,7 +589,14 @@ export function createConversationUi(
               original.method,
             ))) &&
         original.sessionId === (input.sessionId ?? null) &&
-        (method !== 'stop' || original.correlation.invocationId === input.invocationId) &&
+        (method !== 'stop' || original.correlation.runId === input.runId) &&
+        (method !== 'continueRun' ||
+          (original.correlation.sourceRunId === input.sourceRunId &&
+            original.correlation.sourceHighWater === input.sourceHighWater)) &&
+        (method !== 'adjudicateRisk' ||
+          (original.correlation.runId === input.runId &&
+            original.correlation.blockerId === input.blockerId &&
+            original.correlation.expectedHighWater === input.expectedHighWater)) &&
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
@@ -1214,13 +1226,7 @@ export function createConversationUi(
     await browsing.refresh();
     return opened;
   };
-  const stop = ({
-    sessionId,
-    invocationId,
-  }: {
-    sessionId: string | null;
-    invocationId: string | null;
-  }) => {
+  const stop = ({ sessionId, runId }: { sessionId: string | null; runId: RunId | null }) => {
     const owner = handle();
     if (
       !alive ||
@@ -1230,15 +1236,15 @@ export function createConversationUi(
       !owner.connected() ||
       selected() !== sessionId ||
       owner.sessionId !== sessionId ||
-      owner.invocation() !== invocationId
+      owner.run() !== runId
     )
       return;
-    void owner.stop(invocationId).catch(report);
+    void owner.stop(runId).catch(report);
   };
   const stopAction = () =>
     inputAction(stop, {
       sessionId: selected(),
-      invocationId: handle()?.invocation() ?? null,
+      runId: handle()?.run() ?? null,
     });
   const closeCommand = (context: ActionContext) =>
     alive &&
@@ -1377,9 +1383,9 @@ export function createConversationUi(
   const commandActivity = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
-  const commandStop = (context: ActionContext & { invocationId: string | null }) => {
+  const commandStop = (context: ActionContext & { runId: RunId | null }) => {
     if (closeCommand(context) && handle()?.connected())
-      void handle()?.stop(context.invocationId).catch(report);
+      void handle()?.stop(context.runId).catch(report);
   };
   const commandQueue = (context: ActionContext) => {
     if (!closeCommand(context)) return false;
@@ -1994,7 +2000,7 @@ export function createConversationUi(
   );
   const commands = (source: ActionContext): CommandEntry[] => {
     const expectedOwner = handle();
-    const expectedInvocation = expectedOwner?.invocation() ?? null;
+    const expectedRun = expectedOwner?.run() ?? null;
     return commandCandidates().flatMap<CommandEntry>(({ contribution, metadata }) => {
       if (!runtime.commandEnabled(contribution, { sessionId: source.sessionId })) return [];
       return [
@@ -2011,8 +2017,7 @@ export function createConversationUi(
                   overlay() === null &&
                   (!['stop', 'queue'].includes(contribution.id) ||
                     ownedContributions().get(contribution.id)?.key !== contribution.key ||
-                    (handle() === expectedOwner &&
-                      expectedOwner?.invocation() === expectedInvocation)),
+                    (handle() === expectedOwner && expectedOwner?.run() === expectedRun)),
               );
             } catch (reason) {
               report(reason);
@@ -2031,6 +2036,16 @@ export function createConversationUi(
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
+    async openBot() {
+      const result = await control('openBot', {});
+      if (result.kind !== 'opened')
+        throw new UiError('Bot could not be opened: {reason}', {
+          reason: result.reason ?? result.kind,
+        });
+      if (alive) botSession.set(result.sessionId);
+      if (result.created) await browsing.refresh();
+      return result.sessionId;
+    },
     async leave() {
       if (
         (pendingSending() && pendingHandoff() === null) ||
@@ -2095,8 +2110,206 @@ export function createConversationUi(
       );
     },
     session(input: ConversationSessionInput) {
+      if (input.firstMessage !== undefined)
+        prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
       bind(input.shell);
       input.attach(sessionHandle);
+      const request = (
+        <View style={{ minHeight: 0, flexShrink: 1 }}>
+          <If when={selected() === null && workspaceError()}>
+            <View
+              style={{
+                marginBottom: 8,
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'center',
+                columnGap: 12,
+                rowGap: 4,
+              }}
+            >
+              <Text
+                tooltip={textTooltip(workspaceError)}
+                style={{ ...bodyTextStyle, color: C.secondary }}
+              >
+                {tr('Folder unavailable')}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Button
+                  accessibilityLabel={tr('Choose another folder…')}
+                  onPress={inputAction(() => recentOpen.set(true), null)}
+                  style={controlStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
+                </Button>
+                <Button
+                  accessibilityLabel={tr('Retry folder')}
+                  onPress={inputAction(() => {
+                    void checkWorkspace();
+                  }, null)}
+                  style={controlStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
+                </Button>
+              </View>
+            </View>
+          </If>
+          <Each<ConversationHandle>
+            of={handle() ? [handle()!] : []}
+            key={(owner: ConversationHandle) => owner.sessionId}
+          >
+            {(item) => {
+              const owner = item();
+              return (
+                <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
+                  <Each
+                    of={owner.interactions().entries.slice(0, 1)}
+                    key={(entry) => entry.requestId}
+                  >
+                    {(entry) => (
+                      <InteractionComposer
+                        sessionId={owner.sessionId}
+                        requestId={entry().requestId}
+                        control={control}
+                        openBeside={shell()?.openBeside}
+                        focusComposer={focusComposer}
+                        confirming={() =>
+                          connectionLost() || !owner.connected() || busy() || !controlsKnown()
+                        }
+                      />
+                    )}
+                  </Each>
+                </View>
+              );
+            }}
+          </Each>
+          <If when={!connectionLost() && status()}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 4,
+                flexShrink: 0,
+              }}
+            >
+              <Text
+                style={[
+                  {
+                    ...bodyTextStyle,
+                    flex: 1,
+                    minWidth: 0,
+                    color: C.muted,
+                  },
+                  { userSelect: 'text' },
+                ]}
+              >
+                {status()}
+              </Text>
+              <Button
+                accessibilityLabel={tr('Dismiss action feedback')}
+                onPress={inputAction(() => status.set(''), null)}
+                style={{
+                  ...controlStyle,
+                  width: 32,
+                  height: 32,
+                  paddingHorizontal: 0,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon name="close" color={C.muted} />
+              </Button>
+            </View>
+          </If>
+          <If
+            when={
+              !connectionLost() &&
+              (handle()?.connected() ?? true) &&
+              (error() ||
+                working() ||
+                !controlsKnown() ||
+                controls().length ||
+                forkNotice()?.id === selected())
+            }
+          >
+            <Scroll
+              accessibilityLabel={tr('Action feedback')}
+              style={{
+                minHeight: bodyTextStyle.lineHeight + 16,
+                flexShrink: 1,
+                backgroundColor: C.card,
+                // A card of its own on the desktop: square corners
+                // flush on the composer's rounded top read as notches.
+                ...(platform.idiom === 'terminal' ? {} : { borderRadius: 8, marginBottom: 8 }),
+              }}
+              contentStyle={{
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                gap: 8,
+              }}
+            >
+              <If when={error()}>
+                <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+                  {error()}
+                </Text>
+              </If>
+              <If when={working()}>
+                <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                  {switching() ? tr('Saving draft before switching…') : tr('Confirming action…')}
+                </Text>
+              </If>
+              <If when={forkNotice()?.id === selected()}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  <Icon name="fork" color={C.secondary} />
+                  <Text
+                    style={{
+                      ...bodyTextStyle,
+                      flex: 1,
+                      color: C.muted,
+                    }}
+                  >
+                    {tr('This is a fork of {title}. The original conversation is unchanged.', {
+                      title: forkNotice()!.title,
+                    })}
+                  </Text>
+                  <Button
+                    onPress={inputAction(openBrowsed, {
+                      id: forkNotice()!.source,
+                      origin: selected(),
+                    })}
+                    style={controlStyle}
+                    hoverStyle={{ backgroundColor: C.cardRaised }}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Text style={{ ...bodyTextStyle, color: C.accent }}>
+                      {tr('Back to original')}
+                    </Text>
+                  </Button>
+                </View>
+              </If>
+              <If when={!controlsKnown() || controls().length > 0}>
+                <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                  {tr('Syncing changes…')}
+                </Text>
+              </If>
+            </Scroll>
+          </If>
+        </View>
+      );
       return (
         <viewRuntimeContext.Provider value={runtime}>
           <View
@@ -2104,7 +2317,21 @@ export function createConversationUi(
               paneRoot = node;
               if (!side || sideKeys === node) return;
               sideKeys = node;
-              bindKeys(node);
+              if (!input.compact) {
+                bindKeys(node);
+                return;
+              }
+              unbindKeys.push(
+                keymap.bind(
+                  'escape',
+                  () => {
+                    if (overlay() !== null) return;
+                    if (handle()?.run() != null) stopAction()();
+                    else input.compact!.close();
+                  },
+                  { when: 'always', within: node },
+                ),
+              );
             }}
             onFileDrop={(event) => {
               fileDragging.set(false);
@@ -2112,9 +2339,20 @@ export function createConversationUi(
             }}
             onFileDragEnter={() => fileDragging.set(true)}
             onFileDragLeave={() => fileDragging.set(false)}
-            style={{ flex: 1, minHeight: 0 }}
+            style={input.compact ? { flexShrink: 1, minHeight: 0 } : { flex: 1, minHeight: 0 }}
           >
-            <If when={selected() === null}>
+            <If when={input.compact !== undefined}>
+              <CompactComposer
+                session={composerSession}
+                stop={() => stopAction()()}
+                expand={input.compact!.expand}
+                chooseModel={() => shell()?.openSettings()}
+                attach={(node) => {
+                  compactInput = node;
+                }}
+              />
+            </If>
+            <If when={selected() === null && input.compact === undefined}>
               <View>
                 <Header
                   title=""
@@ -2129,18 +2367,27 @@ export function createConversationUi(
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (
                 <Conversation
+                  compact={input.compact !== undefined}
                   client={host.session(id())}
                   connectionLost={connectionLost}
                   botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
                   }
-                  foreground={foreground}
+                  foreground={input.compact ? () => true : foreground}
                   control={control}
                   continuationPending={() =>
                     !controlsKnown() ||
                     controls().some(
-                      (original) => original.method === 'resume' && original.sessionId === id(),
+                      (original) =>
+                        original.method === 'continueRun' && original.sessionId === id(),
+                    )
+                  }
+                  riskPending={() =>
+                    !controlsKnown() ||
+                    controls().some(
+                      (original) =>
+                        original.method === 'adjudicateRisk' && original.sessionId === id(),
                     )
                   }
                   fork={async (action) => {
@@ -2212,7 +2459,7 @@ export function createConversationUi(
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;
-                    if (request?.sessionId === next.sessionId) {
+                    if (request !== null && request.sessionId === next.sessionId) {
                       pendingReveal = null;
                       void next
                         .reveal(request.anchor, request.current)
@@ -2227,320 +2474,118 @@ export function createConversationUi(
                 />
               )}
             </Each>
-            <ComposerView
-              dropFiles={(drop) => {
-                dropFiles = drop;
-              }}
-              fileDragging={fileDragging}
-              blocked={reloading}
-              active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
-              session={composerSession}
-              pending={() => (selected() === null && pendingWorkspace() ? pendingComposer() : null)}
-              stopAction={stopAction}
-              needsConnection={noConnections}
-              request={
-                <View style={{ minHeight: 0, flexShrink: 1 }}>
-                  <If when={selected() === null && workspaceError()}>
-                    <View
-                      style={{
-                        marginBottom: 8,
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        columnGap: 12,
-                        rowGap: 4,
-                      }}
-                    >
-                      <Text
-                        tooltip={textTooltip(workspaceError)}
-                        style={{ ...bodyTextStyle, color: C.secondary }}
-                      >
-                        {tr('Folder unavailable')}
-                      </Text>
-                      <View style={{ flexDirection: 'row', gap: 8 }}>
-                        <Button
-                          accessibilityLabel={tr('Choose another folder…')}
-                          onPress={inputAction(() => recentOpen.set(true), null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
-                        </Button>
-                        <Button
-                          accessibilityLabel={tr('Retry folder')}
-                          onPress={inputAction(() => {
-                            void checkWorkspace();
-                          }, null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
-                        </Button>
-                      </View>
-                    </View>
-                  </If>
-                  <Each<ConversationHandle>
-                    of={handle() ? [handle()!] : []}
-                    key={(owner: ConversationHandle) => owner.sessionId}
-                  >
-                    {(item) => {
-                      const owner = item();
-                      return (
-                        <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
-                          <Each
-                            of={owner.interactions().entries.slice(0, 1)}
-                            key={(entry) => entry.requestId}
-                          >
-                            {(entry) => (
-                              <InteractionComposer
-                                sessionId={owner.sessionId}
-                                requestId={entry().requestId}
-                                control={control}
-                                openBeside={shell()?.openBeside}
-                                focusComposer={focusComposer}
-                                confirming={() =>
-                                  connectionLost() ||
-                                  !owner.connected() ||
-                                  busy() ||
-                                  !controlsKnown()
-                                }
-                              />
-                            )}
-                          </Each>
-                        </View>
-                      );
-                    }}
-                  </Each>
-                  <If when={!connectionLost() && status()}>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                        paddingHorizontal: 12,
-                        paddingVertical: 4,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Text
-                        style={[
-                          {
-                            ...bodyTextStyle,
-                            flex: 1,
-                            minWidth: 0,
-                            color: C.muted,
-                          },
-                          { userSelect: 'text' },
-                        ]}
-                      >
-                        {status()}
-                      </Text>
-                      <Button
-                        accessibilityLabel={tr('Dismiss action feedback')}
-                        onPress={inputAction(() => status.set(''), null)}
-                        style={{
-                          ...controlStyle,
-                          width: 32,
-                          height: 32,
-                          paddingHorizontal: 0,
-                          alignItems: 'center',
-                          justifyContent: 'center',
+            <If when={input.compact !== undefined}>{request}</If>
+            <If when={input.compact === undefined}>
+              <ComposerView
+                dropFiles={(drop) => {
+                  dropFiles = drop;
+                }}
+                fileDragging={fileDragging}
+                blocked={reloading}
+                active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
+                session={composerSession}
+                pending={() =>
+                  selected() === null && pendingWorkspace() ? pendingComposer() : null
+                }
+                stopAction={stopAction}
+                needsConnection={noConnections}
+                request={request}
+                attach={(node) => {
+                  for (const unbind of unbindEditorKeys.splice(0)) unbind();
+                  editor = node;
+                  bindKeys(side ? paneRoot : undefined, node);
+                }}
+                commands={composerCommands}
+                models={
+                  <>
+                    <If when={selected() === null && pendingWorkspace() !== null}>
+                      <ModelSelect
+                        owner={pendingModel}
+                        instance={pendingModelInstance}
+                        current={() => alive && selected() === null && pendingWorkspace() !== null}
+                        toggle={() =>
+                          pendingModelInstance.set(
+                            pendingModelInstance() === null ? ++overlayInstance : null,
+                          )
+                        }
+                        close={(instance) => {
+                          if (pendingModelInstance() !== instance) return false;
+                          pendingModelInstance.set(null);
+                          return true;
                         }}
-                        hoverStyle={controlHoverStyle()}
-                        focusStyle={controlFocusStyle()}
-                      >
-                        <Icon name="close" color={C.muted} />
-                      </Button>
-                    </View>
-                  </If>
-                  <If
-                    when={
-                      !connectionLost() &&
-                      (handle()?.connected() ?? true) &&
-                      (error() ||
-                        working() ||
-                        !controlsKnown() ||
-                        controls().length ||
-                        forkNotice()?.id === selected())
-                    }
-                  >
-                    <Scroll
-                      accessibilityLabel={tr('Action feedback')}
-                      style={{
-                        minHeight: bodyTextStyle.lineHeight + 16,
-                        flexShrink: 1,
-                        backgroundColor: C.card,
-                        // A card of its own on the desktop: square corners
-                        // flush on the composer's rounded top read as notches.
-                        ...(platform.idiom === 'terminal'
-                          ? {}
-                          : { borderRadius: 8, marginBottom: 8 }),
-                      }}
-                      contentStyle={{
-                        paddingHorizontal: 16,
-                        paddingVertical: 8,
-                        gap: 8,
-                      }}
+                        manage={({ instance, model, page }) => {
+                          if (pendingModelInstance() !== instance) return;
+                          pendingModelInstance.set(null);
+                          shell()?.openSettings(model, page);
+                        }}
+                        select={async (_instance, backend) => {
+                          if (pendingSending()) return;
+                          updatePending({ backend, modelChosen: true });
+                          await pendingModel.refreshModel();
+                        }}
+                      />
+                    </If>
+                    <Each<ConversationHandle>
+                      of={handle() ? [handle()!] : []}
+                      key={(owner: ConversationHandle) => owner.sessionId}
                     >
-                      <If when={error()}>
-                        <Text
-                          style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}
-                        >
-                          {error()}
-                        </Text>
-                      </If>
-                      <If when={working()}>
-                        <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                          {switching()
-                            ? tr('Saving draft before switching…')
-                            : tr('Confirming action…')}
-                        </Text>
-                      </If>
-                      <If when={forkNotice()?.id === selected()}>
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 8,
-                          }}
-                        >
-                          <Icon name="fork" color={C.secondary} />
-                          <Text
-                            style={{
-                              ...bodyTextStyle,
-                              flex: 1,
-                              color: C.muted,
+                      {(item) => {
+                        const owner = item();
+                        return (
+                          <ModelSelect
+                            owner={owner}
+                            running={() => owner.run() !== null}
+                            instance={() => {
+                              const current = overlay();
+                              return current?.kind === 'models' &&
+                                current.sessionId === owner.sessionId
+                                ? current.instance
+                                : null;
                             }}
-                          >
-                            {tr(
-                              'This is a fork of {title}. The original conversation is unchanged.',
-                              { title: forkNotice()!.title },
-                            )}
-                          </Text>
-                          <Button
-                            onPress={inputAction(openBrowsed, {
-                              id: forkNotice()!.source,
-                              origin: selected(),
-                            })}
-                            style={controlStyle}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={controlFocusStyle()}
-                          >
-                            <Text style={{ ...bodyTextStyle, color: C.accent }}>
-                              {tr('Back to original')}
-                            </Text>
-                          </Button>
-                        </View>
-                      </If>
-                      <If when={!controlsKnown() || controls().length > 0}>
-                        <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                          {tr('Syncing changes…')}
-                        </Text>
-                      </If>
-                    </Scroll>
-                  </If>
-                </View>
-              }
-              attach={(node) => {
-                for (const unbind of unbindEditorKeys.splice(0)) unbind();
-                editor = node;
-                bindKeys(side ? paneRoot : undefined, node);
-              }}
-              commands={composerCommands}
-              models={
-                <>
-                  <If when={selected() === null && pendingWorkspace() !== null}>
-                    <ModelSelect
-                      owner={pendingModel}
-                      instance={pendingModelInstance}
-                      current={() => alive && selected() === null && pendingWorkspace() !== null}
-                      toggle={() =>
-                        pendingModelInstance.set(
-                          pendingModelInstance() === null ? ++overlayInstance : null,
-                        )
+                            current={() => selected() === owner.sessionId && handle() === owner}
+                            toggle={toggleModels}
+                            close={(instance) => closeModels(owner, instance)}
+                            manage={manageModels}
+                            select={(instance, backend) => chooseModel(owner, instance, backend)}
+                          />
+                        );
+                      }}
+                    </Each>
+                  </>
+                }
+                chooseWorkspace={inputAction(invokeCommand, {
+                  id: 'workspace',
+                  sessionId: selected(),
+                })}
+                workspacePicker={
+                  platform.idiom === 'terminal' || side ? undefined : (
+                    <RecentWorkspaces
+                      path={() =>
+                        selected() === null
+                          ? pendingWorkspaceLabel()
+                          : (handle()?.workspace() ?? '')
                       }
-                      close={(instance) => {
-                        if (pendingModelInstance() !== instance) return false;
-                        pendingModelInstance.set(null);
-                        return true;
+                      recent={recentWorkspaces}
+                      open={recentOpen}
+                      changed={(open) => recentOpen.set(open)}
+                      disabled={() => pendingSending() || pendingFileBusy()}
+                      choose={(item) => {
+                        recentOpen.set(false);
+                        void create({ kind: 'directory', path: item.path }, selected(), item.path);
                       }}
-                      manage={({ instance, model, page }) => {
-                        if (pendingModelInstance() !== instance) return;
-                        pendingModelInstance.set(null);
-                        shell()?.openSettings(model, page);
-                      }}
-                      select={async (_instance, backend) => {
-                        if (pendingSending()) return;
-                        updatePending({ backend, modelChosen: true });
-                        await pendingModel.refreshModel();
+                      browse={() => {
+                        recentOpen.set(false);
+                        invokeOwn('workspace');
                       }}
                     />
-                  </If>
-                  <Each<ConversationHandle>
-                    of={handle() ? [handle()!] : []}
-                    key={(owner: ConversationHandle) => owner.sessionId}
-                  >
-                    {(item) => {
-                      const owner = item();
-                      return (
-                        <ModelSelect
-                          owner={owner}
-                          running={() => owner.invocation() !== null}
-                          instance={() => {
-                            const current = overlay();
-                            return current?.kind === 'models' &&
-                              current.sessionId === owner.sessionId
-                              ? current.instance
-                              : null;
-                          }}
-                          current={() => selected() === owner.sessionId && handle() === owner}
-                          toggle={toggleModels}
-                          close={(instance) => closeModels(owner, instance)}
-                          manage={manageModels}
-                          select={(instance, backend) => chooseModel(owner, instance, backend)}
-                        />
-                      );
-                    }}
-                  </Each>
-                </>
-              }
-              chooseWorkspace={inputAction(invokeCommand, {
-                id: 'workspace',
-                sessionId: selected(),
-              })}
-              workspacePicker={
-                platform.idiom === 'terminal' || side ? undefined : (
-                  <RecentWorkspaces
-                    path={() =>
-                      selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
-                    }
-                    recent={recentWorkspaces}
-                    open={recentOpen}
-                    changed={(open) => recentOpen.set(open)}
-                    disabled={() => pendingSending() || pendingFileBusy()}
-                    forget={(path) => {
-                      recentOpen.set(false);
-                      void setRecentWorkspace(path, false).catch(report);
-                    }}
-                    choose={(item) => {
-                      recentOpen.set(false);
-                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
-                    }}
-                    browse={() => {
-                      recentOpen.set(false);
-                      invokeOwn('workspace');
-                    }}
-                  />
-                )
-              }
-              settings={inputAction(invokeCommand, {
-                id: 'settings',
-                sessionId: selected(),
-              })}
-            />
+                  )
+                }
+                settings={inputAction(invokeCommand, {
+                  id: 'settings',
+                  sessionId: selected(),
+                })}
+              />
+            </If>
             <If when={recoveredFork()}>
               <Button
                 onPress={inputAction(openBrowsed, {
@@ -2678,14 +2723,14 @@ export function createConversationUi(
       if (id === 'goal') return handle()?.goal.view()?.enabled ?? pendingWorkspace() !== null;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
-      if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.run() != null;
       if (id === 'queue') {
         const owner = handle();
         return (
           !!owner &&
           owner.connected() &&
           owner.editable() &&
-          owner.invocation() !== null &&
+          owner.run() !== null &&
           !owner.blockedReason() &&
           (!!owner.draft().trim() || owner.attachments.files().length > 0) &&
           !matchComposerCommand(
@@ -2741,7 +2786,7 @@ export function createConversationUi(
         case 'stop':
           return commandStop({
             ...source,
-            invocationId: handle()?.invocation() ?? null,
+            runId: handle()?.run() ?? null,
           });
         case 'queue':
           return commandQueue(source);
@@ -2846,11 +2891,14 @@ function projectComposerSession(
     notice: owner.notice,
     recovering: owner.recovering,
     connected: owner.connected,
-    invocation: owner.invocation,
+    run: owner.run,
+    execution: owner.execution,
     stopping: owner.stopping,
-    resumable: owner.resumable,
-    resuming: owner.resuming,
-    resume: owner.resume,
+    continuation: owner.continuation,
+    continuing: owner.continuing,
+    continueRun: owner.continueRun,
+    adjudicating: owner.adjudicating,
+    adjudicateRisk: owner.adjudicateRisk,
     metrics: owner.metrics,
     contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,

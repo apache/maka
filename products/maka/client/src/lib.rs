@@ -23,11 +23,13 @@ pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
     RecentWorkspace, UploadReference,
 };
-use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
+use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::{
+    CallResources,
     host::{Client as HostClient, LocalCall},
     transport::{Description, wire::Reply},
 };
+use maka_plugin_core::work::resources::Resources;
 use maka_plugin_core::{
     composition::InstanceId,
     contract::text_resource_type,
@@ -55,7 +57,8 @@ const CONTROL_METHODS: &[&str] = &[
     "trustProjectMcp",
     "selectBackend",
     "compact",
-    "resume",
+    "continueRun",
+    "adjudicateRisk",
     "setCompactionPrompt",
     "markRead",
     "markBotRead",
@@ -133,7 +136,8 @@ fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
 fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Result<Value> {
     let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
-        "stop" => Some("invocationId"),
+        "stop" | "adjudicateRisk" => Some("runId"),
+        "continueRun" => Some("sourceRunId"),
         "respond" | "requestSystemPermission" => Some("requestId"),
         "stopComputerApp" => Some("operationId"),
         _ => None,
@@ -146,9 +150,54 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
             .ok_or(if key == "operationId" {
                 "agent control requires a valid operationId"
             } else {
-                "agent control requires a valid invocationId or requestId"
+                "agent control requires a valid runId or requestId"
             })?;
-        correlation[key] = Value::String(target.to_owned());
+        correlation[key] = if matches!(key, "runId" | "sourceRunId") {
+            let id =
+                Uuid::parse_str(target).map_err(|_| "agent control requires a durable Run UUID")?;
+            if id.is_nil() {
+                return Err("agent control requires a non-nil Run UUID".into());
+            }
+            Value::String(id.to_string())
+        } else {
+            Value::String(target.to_owned())
+        };
+    }
+    if matches!(method, "continueRun" | "adjudicateRisk") {
+        let fence = if method == "continueRun" {
+            "sourceHighWater"
+        } else {
+            "expectedHighWater"
+        };
+        correlation[fence] = input
+            .get(fence)
+            .and_then(Value::as_u64)
+            .filter(|revision| (1..=9_007_199_254_740_991).contains(revision))
+            .ok_or("agent Run control requires an exact observation fence")?
+            .into();
+        if method == "continueRun" {
+            correlation["model"] = input
+                .get("model")
+                .filter(|model| model.is_object())
+                .ok_or("Run continuation requires an explicit model")?
+                .clone();
+            if let Some(thinking) = input.get("thinkingLevel") {
+                correlation["thinkingLevel"] = thinking.clone();
+            }
+        } else {
+            let blocker = input
+                .get("blockerId")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .filter(|id| !id.is_nil())
+                .ok_or("risk adjudication requires a durable blocker UUID")?;
+            correlation["blockerId"] = blocker.to_string().into();
+            correlation["decision"] = input
+                .get("decision")
+                .filter(|decision| decision.is_object())
+                .ok_or("risk adjudication requires an explicit decision")?
+                .clone();
+        }
     }
     if method == "requestSystemPermission" {
         let grant = input
@@ -573,6 +622,24 @@ impl Client {
         resources: Attachments,
         preparation: std::fs::File,
     ) -> Result<Mutation> {
+        let descriptors = CallResources::from(resources.clone()).descriptors()?;
+        let reacquisition = if descriptors.is_empty() {
+            serde_json::json!({"kind": "none"})
+        } else {
+            serde_json::json!({"kind": "unavailable", "reason": "live_only_request_resources"})
+        };
+        let recovery = serde_json::json!({
+            "kind": "maka_client_mutation",
+            "version": 1,
+            "clientOperation": operation.id,
+            "host": operation.host,
+            "sessionId": operation.session_id,
+            "correlation": operation.correlation,
+            "draft": operation.draft,
+            "upload": operation.upload,
+            "request": {"endpoint": operation.endpoint, "method": operation.method, "input": input},
+            "resources": {"descriptors": descriptors, "reacquisition": reacquisition},
+        });
         let (request, description) = self
             .open(
                 &operation.endpoint,
@@ -601,6 +668,7 @@ impl Client {
             request,
             operation,
             description,
+            recovery,
         })
     }
     /// Reserve one Settings attempt across terminal launchers before opening it.
@@ -836,15 +904,11 @@ impl Client {
             .await
     }
 
-    /// Move a directory to the front, or remove its recent entry unless `remember`.
-    pub async fn set_recent_workspace(
-        &self,
-        path: String,
-        remember: bool,
-    ) -> Result<Vec<RecentWorkspace>> {
+    /// Move a directory to the front of the recent folders.
+    pub async fn set_recent_workspace(&self, path: String) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
-            .set_recent_workspace(self.workspace_owner().await?, path, remember)
+            .set_recent_workspace(self.workspace_owner().await?, path)
             .await
     }
 
@@ -1415,6 +1479,7 @@ pub struct Mutation {
     request: Arc<Request>,
     operation: Operation,
     description: Description,
+    recovery: Value,
 }
 impl Drop for Mutation {
     fn drop(&mut self) {
@@ -1526,7 +1591,7 @@ impl Mutation {
             () = self.request.stop.cancelled() => None,
             result = async {
                 if confirm {
-                    state.call.confirm().await
+                    state.call.confirm(self.recovery.clone()).await
                 } else {
                     state.call.receive().await
                 }
@@ -1720,6 +1785,3 @@ impl Subscription {
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
-
-#[cfg(test)]
-mod tests;

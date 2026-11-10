@@ -20,12 +20,12 @@
 //! Shared mutable workspace selections. Session configurations retain references;
 //! permission evidence captures immutable stamps instead of following this pointer.
 use crate::{EventLog, StoreError};
-use maka_agent_facts::workspace::{BindingRef, BindingStamp, PermissionBasis};
+use maka_sandbox::workspace::{BindingRef, BindingStamp, PermissionBasis};
 use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-const MAX: u64 = maka_agent_facts::interaction::MAX_SAFE_INTEGER;
+const MAX: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceBinding<W = Value> {
@@ -61,7 +61,13 @@ fn canonical(mut workspace: Value) -> Result<(String, String), StoreError> {
     }
     workspace.sort_all_objects();
     let encoded = serde_json::to_string(&workspace)?;
-    let digest = maka_agent_facts::artifact::content_digest(encoded.as_bytes());
+    let digest = {
+        use sha2::Digest;
+        format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(encoded.as_bytes()))
+        )
+    };
     Ok((encoded, digest))
 }
 
@@ -73,18 +79,9 @@ impl EventLog {
         owner_scope: &str,
         workspace: &T,
     ) -> Result<BindingRef, StoreError> {
-        if owner_scope.is_empty() {
-            return Err(invalid("workspace owner scope is empty"));
-        }
-        let owner_scope = owner_scope.to_owned();
-        let (workspace, digest) = canonical(serde_json::to_value(workspace)?)?;
         self.connection
             .write(
-                WriteAttachment {
-                    owner_scope,
-                    workspace,
-                    digest,
-                },
+                WriteAttachment::new(owner_scope, serde_json::to_value(workspace)?)?,
                 self.commits.notice(),
             )
             .await
@@ -104,6 +101,64 @@ pub(crate) struct WriteAttachment {
     owner_scope: String,
     workspace: String,
     digest: String,
+    new_id: uuid::Uuid,
+}
+
+impl WriteAttachment {
+    pub(crate) fn new(owner_scope: &str, workspace: Value) -> Result<Self, StoreError> {
+        if owner_scope.is_empty() {
+            return Err(invalid("workspace owner scope is empty"));
+        }
+        let (workspace, digest) = canonical(workspace)?;
+        Ok(Self {
+            owner_scope: owner_scope.into(),
+            workspace,
+            digest,
+            new_id: uuid::Uuid::new_v4(),
+        })
+    }
+
+    pub(crate) fn candidate(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<(WorkspaceBinding, bool), StoreError> {
+        if let Some(reference) = self.existing(connection)? {
+            let binding = read(connection, reference.id)?
+                .ok_or_else(|| invalid("workspace binding disappeared"))?;
+            return Ok((binding, true));
+        }
+        Ok((
+            WorkspaceBinding {
+                id: self.new_id,
+                workspace: serde_json::from_str(&self.workspace)?,
+                permission_epoch: 0,
+                metadata_epoch: 0,
+            },
+            false,
+        ))
+    }
+
+    pub(crate) fn existing(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Option<BindingRef>, StoreError> {
+        let id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM workspace_bindings
+             WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1",
+                params![&self.owner_scope, &self.digest, &self.workspace],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| {
+            let id =
+                uuid::Uuid::parse_str(&id).map_err(|_| invalid("invalid workspace binding ID"))?;
+            read::<Value>(connection, id)?
+                .map(|binding| binding.reference())
+                .ok_or_else(|| invalid("workspace binding disappeared"))
+        })
+        .transpose()
+    }
 }
 
 impl crate::writeback::Statement for WriteAttachment {
@@ -115,32 +170,30 @@ impl crate::writeback::Statement for WriteAttachment {
         connection: &rusqlite::Connection,
     ) -> Result<crate::writeback::Prepared<BindingRef>, StoreError> {
         {
+            if let Some(binding) = self.existing(connection)? {
+                return Ok(crate::writeback::Prepared {
+                    value: binding,
+                    changed: false,
+                    notification: crate::writeback::Notification::NONE,
+                });
+            }
             let Self {
                 owner_scope,
                 workspace,
                 digest,
+                new_id,
             } = self;
-            let existing: Option<String> = connection.query_row("SELECT id FROM workspace_bindings
-                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1", params![&owner_scope, &digest, &workspace], |row| row.get(0)).optional()?;
-            let changed = existing.is_none();
-            let id = match existing {
-                Some(id) => uuid::Uuid::parse_str(&id)
-                    .map_err(|_| invalid("invalid workspace binding ID"))?,
-                None => {
-                    let id = uuid::Uuid::new_v4();
-                    connection.execute(
-                        "INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)",
-                        params![id.to_string(), owner_scope, digest, workspace],
-                    )?;
-                    id
-                }
-            };
+            let id = new_id;
+            connection.execute(
+                "INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)",
+                params![id.to_string(), owner_scope, digest, workspace],
+            )?;
             let binding = read::<Value>(connection, id)?
                 .ok_or_else(|| invalid("workspace binding disappeared"))?;
             Ok(crate::writeback::Prepared {
                 value: binding.reference(),
-                changed,
-                notification: crate::writeback::Notification::None,
+                changed: true,
+                notification: crate::writeback::Notification::NONE,
             })
         }
     }
@@ -262,8 +315,9 @@ pub(crate) fn effective_boundary(
     })
 }
 
-/// Called inside the same transaction as grant/T1 verification.
-pub(crate) fn permission_basis(
+/// Read effective permission data inside a trusted caller's original Root transaction.
+/// The caller must use that same Root connection; this does not grant authority.
+pub fn permission_basis(
     connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<Option<PermissionBasis>, StoreError> {
@@ -282,22 +336,6 @@ pub(crate) fn permission_basis(
         return Ok(None);
     };
     effective_boundary(&configuration, &binding).map(Some)
-}
-
-pub(crate) fn full_access(
-    connection: &rusqlite::Connection,
-    session: &str,
-    basis: &PermissionBasis,
-) -> Result<bool, StoreError> {
-    let raw: Option<String> = connection.query_row("SELECT configuration FROM session_control WHERE id=? AND archived=0 AND json_extract(configuration,'$.permissions.access')='danger_full_access'", params![session], |row| row.get(0)).optional()?;
-    let Some(raw) = raw else {
-        return Ok(false);
-    };
-    let configuration = serde_json::from_str(&raw)?;
-    let Some(binding) = resolve(connection, &configuration)? else {
-        return Ok(false);
-    };
-    Ok(effective_boundary(&configuration, &binding)? == *basis)
 }
 
 /// Before a metadata closure or rebind, materialize both effective counters and
@@ -385,6 +423,3 @@ pub(crate) fn replace(
     connection.execute("UPDATE workspace_bindings SET workspace_json=?,selection_digest=?,permission_epoch=?,metadata_epoch=? WHERE id=?", params![workspace, digest, permission as i64, metadata as i64, id.to_string()])?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

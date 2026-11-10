@@ -69,6 +69,15 @@ pub(super) struct HostAssets(pub(super) Arc<Owner>);
 
 impl Assets for HostAssets {
     fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+        let icon: Option<&[u8]> = match uri {
+            "asset:/maka/tray-line.svg" => Some(include_bytes!("../../app/assets/tray-line.svg")),
+            "asset:/maka/tray-bold.svg" => Some(include_bytes!("../../app/assets/tray-bold.svg")),
+            "asset:/maka/tray-tile.svg" => Some(include_bytes!("../../app/assets/tray-tile.svg")),
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            return Ok(icon.to_vec());
+        }
         if let Some(encoded) = uri.strip_prefix("asset:/plugin/") {
             return super::plugins::asset(&self.0, encoded);
         }
@@ -162,7 +171,7 @@ impl AssetSource {
             source.position.validate().map_err(str::to_owned)?;
             if source.offset != 0
                 || source.through > 9_007_199_254_740_991
-                || source.position.source_sequence > source.through
+                || matches!(&source.position, maka_agent_api::contract::HistoryRowAddress::Live { sequence, .. } if *sequence > source.through)
             {
                 return Err("Invalid tool image source".into());
             }
@@ -182,7 +191,9 @@ impl AssetSource {
                     through, position, ..
                 } => {
                     position.validate().map_err(str::to_owned)?;
-                    if *through > 9_007_199_254_740_991 || position.source_sequence > *through {
+                    if *through > 9_007_199_254_740_991
+                        || matches!(position, maka_agent_api::contract::HistoryRowAddress::Live { sequence, .. } if *sequence > *through)
+                    {
                         return Err("Invalid attachment history source".into());
                     }
                 }

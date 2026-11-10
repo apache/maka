@@ -42,6 +42,7 @@ sys-locale.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+maka-sandbox.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 

@@ -169,7 +169,7 @@ impl Objects {
         Ok(serde_json::from_reader(file)?)
     }
     pub(super) fn cleanup(&self, request: &Request) -> Result<(), StoreError> {
-        for kind in ["bundle", "manifest", "workspace", "workspace-file"] {
+        for kind in ["snapshot", "manifest", "workspace", "workspace-file"] {
             let path = self.staging(request, kind)?;
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_file() => fs::remove_file(path)?,

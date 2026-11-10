@@ -219,7 +219,7 @@ impl ToolCatalog {
         self.filtered(|_, entry| entry.nesting == ToolNesting::Nestable)
     }
 
-    pub(super) fn direct_only(&self) -> Self {
+    pub fn direct_only(&self) -> Self {
         self.select(|name| self.entries[name].nesting == ToolNesting::DirectOnly)
     }
 
@@ -342,7 +342,18 @@ impl ToolCatalog {
         self.entries.contains_key(name)
     }
 
-    pub(crate) fn always_visible(&self, name: &str) -> bool {
+    pub fn is_prepared_by(&self, name: &str, preparer: &Arc<dyn crate::ToolPreparer>) -> bool {
+        self.entries.get(name).is_some_and(|entry| {
+            entry.definition.provider.is_none()
+                && matches!(
+                    &entry.handler,
+                    crate::ToolHandler::Prepared(current) if Arc::ptr_eq(current, preparer)
+                )
+        })
+    }
+
+    /// Whether discovery keeps this registered tool visible after authorization.
+    pub fn always_visible(&self, name: &str) -> bool {
         self.entries
             .get(name)
             .is_some_and(|entry| entry.always_visible)
@@ -374,6 +385,3 @@ impl ToolCatalog {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

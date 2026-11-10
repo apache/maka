@@ -822,6 +822,7 @@ export const msg_executionSettingsFailed: Message = [
   '无法读取后端设置，原选择已保留。',
   '無法讀取後端設定，原選擇已保留。',
 ];
+
 export const msg_recoveryTitle: Message = ['Recover application', '恢复应用', '復原應用程式'];
 export const msg_recoveryRefreshFailed: Message = [
   'Could not refresh. The last observation has been kept.',

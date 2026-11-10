@@ -21,10 +21,10 @@
 //! operations. File formats, transactions and coordination belong to plugins.
 
 use crate::storage::Directory;
-use crate::storage::StoreError;
 use cap_fs_ext::MetadataExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
+use maka_plugin_core::storage::StoreError;
 use maka_sandbox::filesystem::{Access, Compiled};
 use serde::{Deserialize, Serialize};
 use std::{

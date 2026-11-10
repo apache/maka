@@ -18,137 +18,143 @@
  */
 
 use super::*;
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
+enum LifecycleEnd {
+    Wait(Result<std::process::ExitStatus, String>),
+    Failed(String),
+    Detached(String),
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The process worker receives independent task, role, command, input and close-channel owners"
+)]
 pub(super) async fn run(
     owner: &Processes,
     context: &Context,
     id: Uuid,
+    resource_ref: String,
+    isolated: maka_process::isolated::TaskOwner,
+    role: Role,
     command: maka_process::Command,
     input: mpsc::Receiver<Write>,
-    session: Option<(&maka_event_log::SessionStore, &ResolvedConfiguration)>,
-) -> Result<Completion, ToolError> {
-    if context.scope().cancellation.is_cancelled() || owner.drain.is_cancelled() {
-        return Ok(Completion::Failed {
-            message: "Process cancelled before launch".into(),
-        });
-    }
-    // Keep startup polled through cancellation: it may already own native
-    // sandbox/network resources. Only the resulting lifecycle can settle it.
-    let mut process = match maka_process::pipe::spawn(command).await {
-        Ok(process) => process,
-        Err(error @ ToolError::CleanupUnconfirmed(_)) => return Err(error),
-        Err(error) => {
-            return Ok(Completion::Failed {
-                message: error.to_string(),
-            });
+    mut close_receive: mpsc::Receiver<oneshot::Sender<Result<Written, String>>>,
+) -> HandlerResult {
+    let result:HandlerResult=async {
+    let setup=match &role { Role::Runtime(_)=>None,Role::Setup(access)=>Some((access.clone(),isolated.home_capture())) };
+    let mut ticket=context.scope().resources.reserve().map_err(diagnostic)?;
+    ticket.start();
+    let mut process=match isolated.spawn_pipe(command).await {
+        Ok(process)=>process,
+        Err(maka_process::isolated::SpawnError::Closed(error))=>{
+            ticket.complete(Ok(()));
+            return Err(HandlerError::Unknown {diagnostic:error.to_string()});
+        },
+        Err(maka_process::isolated::SpawnError::Unconfirmed(failure))=>{
+            let diagnostic=failure.to_string();
+            ticket.unconfirmed(diagnostic.clone(),failure);
+            return Err(HandlerError::Unknown {diagnostic});
+        },
+    };
+    let detached=CancellationToken::new();let finished=CancellationToken::new();let fault=CancellationToken::new();
+    let failure=Mutex::new(None);
+    let lifecycle=async {
+        let mut close_open=true;
+        let end=loop {
+            tokio::select! {biased;
+                status=process.child.wait()=>break LifecycleEnd::Wait(status.map_err(|error|error.to_string())),
+                reason=async {tokio::select! {biased;
+                    ()=context.scope().cancellation.cancelled()=>"Root observer closed",
+                    ()=owner.drain.cancelled()=>"Protocol provider closed",
+                    ()=fault.cancelled()=>"Protocol observer I/O failed",
+                }}=>{
+                    if setup.is_none() {break LifecycleEnd::Detached(format!("{reason}; original private task detached"));}
+                    failure.lock().unwrap().get_or_insert_with(||reason.to_owned());
+                    // Setup owns this original job. Runtime observation never does.
+                    if let Err(error)=process.child.terminate().await {break LifecycleEnd::Failed(error.to_string());}
+                    break LifecycleEnd::Wait(process.child.wait().await.map_err(|error|error.to_string()));
+                },
+                request=close_receive.recv(),if close_open=>{
+                    let Some(reply)=request else {close_open=false;continue;};
+                    let result=process.child.terminate().await.map_err(|error|error.to_string());
+                    let _=reply.send(result.as_ref().map(|_|Written {bytes:0,closed:false}).map_err(Clone::clone));
+                    if let Err(error)=result {break LifecycleEnd::Failed(error);}
+                },
+            }
+        };
+        if !matches!(&end,LifecycleEnd::Wait(Ok(_))) && setup.is_none() {detached.cancel();}
+        finished.cancel();end
+    };
+    let output=async {
+        let announced=context.emit(serde_json::to_value(Progress::Started {id,resource_ref:resource_ref.clone()}).map_err(|error|error.to_string())?).await;
+        if let Err(error)=announced {
+            failure.lock().unwrap().get_or_insert(error.clone());fault.cancel();
+            if setup.is_none() {return Err(error);}
         }
-    };
-    let finished = CancellationToken::new();
-    let fault = CancellationToken::new();
-    let failure = Mutex::new(None);
-    let lifecycle = async {
-        let result = tokio::select! {
-            biased;
-            () = context.scope().cancellation.cancelled() => None,
-            () = owner.drain.cancelled() => None,
-            () = fault.cancelled() => None,
-            result = process.child.wait() => Some(result),
-        };
-        let stopped = result.is_none();
-        let result = match result {
-            Some(result) => result.map_err(|e| e.to_string()),
-            None => match process.child.terminate() {
-                Err(error) => Err(error.to_string()),
-                Ok(()) => tokio::time::timeout(Duration::from_secs(4), process.child.wait())
-                    .await
-                    .map_err(|_| "Protocol process cleanup timed out".to_owned())
-                    .and_then(|r| r.map_err(|e| e.to_string())),
-            },
-        };
-        finished.cancel();
-        result
-            .map(|status| (status, stopped))
-            .map_err(ToolError::CleanupUnconfirmed)
-    };
-    let output = async {
-        context
-            .emit(serde_json::to_value(Progress::Started { id }).expect("process started"))
-            .await?;
-        let ((), ()) = tokio::join!(
-            report(
-                read(process.stdout, Stream::Stdout, context, &finished),
-                &failure,
-                &fault
-            ),
-            report(
-                read(process.stderr, Stream::Stderr, context, &finished),
-                &failure,
-                &fault
-            ),
+        let (stdout,stderr)=tokio::join!(
+            read(process.stdout,Stream::Stdout,context,&detached,&failure,&fault,setup.is_some()),
+            read(process.stderr,Stream::Stderr,context,&detached,&failure,&fault,setup.is_some()),
         );
-        Ok(())
+        stdout.and(stderr)
     };
-    let monitor = async {
-        let Some((store, configuration)) = session else {
-            finished.cancelled().await;
-            return Ok(());
-        };
-        let mut changes = store.subscribe_commits().map_err(|e| e.to_string())?;
-        loop {
-            changes.borrow_and_update();
-            let current = store
-                .get_session::<maka_agent_api::session::StoredSessionConfiguration>(
-                    &context
-                        .scope()
-                        .identity
-                        .agent()
-                        .expect("validated invocation")
-                        .session_id,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            let current = current
-                .filter(|s| !s.archived)
-                .ok_or("Protocol process Session unavailable")?;
-            let current = maka_agent_authority::permissions::resolve_session(current)
-                .map_err(|e| e.to_string())?;
-            if current.configuration.permission_basis() != configuration.permission_basis()
-                || current.configuration.workspace != configuration.workspace
-            {
-                return Err("Protocol process permissions changed".into());
+    let (end,(),pipes)=tokio::join!(lifecycle,report(write(process.stdin,input,&finished),&failure,&fault),output);
+    // Streams have ended; only explicit observation detach uses the local-only fence.
+    let (status,physical)=match end {
+        LifecycleEnd::Detached(diagnostic)=>{
+            #[cfg(unix)]
+            let local=process.child.finish_observation().await.map_err(|error|error.to_string());
+            #[cfg(not(unix))]
+            let local=Err::<(),_>("External helper observation detach is unavailable".to_owned());
+            match local {
+                Ok(())=>(Err(diagnostic),true),
+                Err(error)=>(Err(format!("{diagnostic}; local observation cleanup unconfirmed: {error}")),false),
             }
-            if store
-                .session_retirement(&current.id)
-                .await
-                .map_err(|e| e.to_string())?
-                .is_some()
-            {
-                return Err("Protocol process Session is retiring".into());
-            }
-            tokio::select! {
-                biased;
-                () = finished.cancelled() => return Ok(()),
-                changed = changes.changed() => changed.map_err(|e| e.to_string())?,
-            }
-        }
+        },
+        LifecycleEnd::Wait(status)=>{
+            #[cfg(unix)]
+            let physical=process.child.local_resources_closed();
+            #[cfg(not(unix))]
+            let physical=status.is_ok();
+            (status,physical)
+        },
+        LifecycleEnd::Failed(diagnostic)=>(Err(diagnostic),false),
     };
-    let (result, (), (), ()) = tokio::join!(
-        lifecycle,
-        report(write(process.stdin, input, &finished), &failure, &fault),
-        report(output, &failure, &fault),
-        report(monitor, &failure, &fault),
-    );
-    let (status, stopped) = result?;
-    let error = failure.into_inner().unwrap();
-    Ok(Completion::Exited {
-        code: status.code(),
-        success: status.success() && !stopped && error.is_none(),
-        stopped,
-        error,
-    })
+    if physical {drop(process.child);ticket.complete(Ok(()));}
+    else {
+        let diagnostic=status.as_ref().err().or_else(||pipes.as_ref().err()).cloned()
+            .unwrap_or_else(||"Original local protocol resources remain unconfirmed".into());
+        ticket.unconfirmed(diagnostic,(process.child,setup.as_ref().map(|(_,capture)|capture.clone())));
+    }
+    let status=status.map_err(|diagnostic|HandlerError::Unknown {diagnostic:format!("{diagnostic}; original resource: {resource_ref}")})?;
+    pipes.map_err(|diagnostic|HandlerError::Unknown {diagnostic})?;
+    if let Some(diagnostic)=failure.into_inner().unwrap() {return Err(HandlerError::Unknown {diagnostic});}
+    if let Some((access,capture))=setup {
+        // This is provisional material only. The original top-level operation
+        // publishes it only after the ACP authentication ACK is confirmed.
+        let home=capture.freeze().await.map_err(diagnostic)?;
+        access.0.stage_home(context,home).await.map_err(diagnostic)?;
+    }
+    Ok(HandlerValue::Json(serde_json::to_value(Completion::Exited {
+        code:status.code(),success:status.success(),stopped:false,error:None,
+    }).map_err(diagnostic)?))
+    }.await;
+    // A queued close may arrive after child.wait while streams or the HOME
+    // artifact are still settling. Only the completed original run answers it.
+    close_receive.close();
+    while let Some(reply) = close_receive.recv().await {
+        let settled = result
+            .as_ref()
+            .map(|_| Written {
+                bytes: 0,
+                closed: true,
+            })
+            .map_err(|error| error.to_string());
+        let _ = reply.send(settled);
+    }
+    result
 }
+
 async fn write(
     mut stdin: maka_process::pipe::Input,
     mut input: mpsc::Receiver<Write>,
@@ -164,10 +170,8 @@ async fn write(
             return Ok(());
         };
         let Some(bytes) = request.bytes else {
-            // ChildStdin::shutdown may be a no-op for a pipe. Drop the owned
-            // handle before confirming EOF; pending requests are also closed.
+            // Host stdin EOF detaches the helper relay. It is not a kill.
             drop(stdin);
-            input.close();
             let _ = request.reply.send(Ok(Written {
                 bytes: 0,
                 closed: true,
@@ -180,12 +184,12 @@ async fn write(
             () = finished.cancelled() => Err("Protocol process ended during input".into()),
             result = stdin.write_all(&bytes) => result.map_err(|e| e.to_string()),
         };
-        let error = result.as_ref().err().cloned();
+        let failure = result.as_ref().err().cloned();
         let _ = request.reply.send(result.map(|()| Written {
             bytes: count,
             closed: false,
         }));
-        if let Some(error) = error {
+        if let Some(error) = failure {
             return Err(error);
         }
     }
@@ -204,30 +208,42 @@ async fn read(
     mut source: impl AsyncRead + Unpin,
     stream: Stream,
     context: &Context,
-    finished: &CancellationToken,
+    detached: &CancellationToken,
+    failure: &Mutex<Option<String>>,
+    fault: &CancellationToken,
+    drain_on_error: bool,
 ) -> Result<(), String> {
-    let drain = async {
-        finished.cancelled().await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    };
-    tokio::pin!(drain);
     let mut buffer = vec![0; CHUNK_BYTES];
+    let mut emit = true;
     loop {
         let count = tokio::select! {
-            count = source.read(&mut buffer) => count.map_err(|e| e.to_string())?,
-            () = &mut drain => return Err("Protocol output drain timed out".into()),
+            ()=detached.cancelled()=>return Ok(()),
+            count=source.read(&mut buffer)=>count.map_err(|error|{
+                let diagnostic=error.to_string();failure.lock().unwrap().get_or_insert(diagnostic.clone());fault.cancel();diagnostic
+            })?,
         };
         if count == 0 {
             return Ok(());
+        }
+        if !emit {
+            continue;
         }
         let value = serde_json::to_value(Progress::Output {
             stream,
             bytes: buffer[..count].to_vec(),
         })
-        .expect("process output");
-        tokio::select! {
-            result = context.emit(value) => result?,
-            () = &mut drain => return Err("Protocol output drain timed out".into()),
+        .map_err(|error| error.to_string())?;
+        let result = tokio::select! {
+            ()=detached.cancelled()=>return Ok(()),
+            result=context.emit(value)=>result,
+        };
+        if let Err(error) = result {
+            failure.lock().unwrap().get_or_insert(error.clone());
+            fault.cancel();
+            if !drain_on_error {
+                return Err(error);
+            }
+            emit = false;
         }
     }
 }

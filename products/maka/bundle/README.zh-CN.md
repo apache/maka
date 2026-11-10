@@ -41,7 +41,7 @@
 
 ## 模型发现与子会话
 
-默认安装提供 `ModelList`，由 Agent 聚合原生模型和已启用执行器运行时的带来源目录。以 `{ "kind": "start", "query": "..." }` 开始查询（query 可省略）。将每项带 kind 的 `selection` 作为 `SessionCreate` / `SessionSend` 的 `backend`；不同来源的推理档位不能混用。用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页，遇到 `changed` 时重新查询。目录可用性不是执行或权限授权，也不保证远端连通性、凭证或额度。`SessionResume` 仍为原生模型接续契约。
+默认安装提供 `ModelList`，由 Agent 聚合原生模型和已启用执行器运行时的带来源目录。以 `{ "kind": "start", "query": "..." }` 开始查询（query 可省略）。将每项带 kind 的 `selection` 作为 `SessionCreate` / `SessionSend` 的 `backend`；不同来源的推理档位不能混用。用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页，遇到 `changed` 时重新查询。目录可用性不是执行或权限授权，也不保证远端连通性、凭证或额度。`SessionContinueRun` 接受符合条件的终态原生模型 Run（completed、failed 或 cancelled），需提供 `ModelList` 的 `kind=model` 项对应的 `model: { connectionId, modelId }` 和可选原生 `thinkingLevel`，不接受带 kind 的 executor/backend 选择。它使用 `SessionExecution` 返回的精确 `sourceRunId` 和 `sourceHighWater`，在原效果及清理完成对账后接纳新的接续 Run；不会恢复旧进程或重放原请求。
 
 侧栏会话菜单中的**子会话**在独立、适应窗口大小的弹窗中显示后代树。展开箭头按需读取直接子会话，跨工作区且包含归档会话；点击标题打开对应会话。树沿用不可变的 `parentSessionId` 创建关系，而非 fork 的历史来源。深层树可横向滚动，长分支通过现有会话目录分页加载。
 

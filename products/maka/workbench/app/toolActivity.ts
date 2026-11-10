@@ -16,15 +16,22 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import type { DisplayText } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  AgentDelivery,
+  DisplayText,
+  RunId,
+  StepId,
+  ModelAttemptId,
+} from '../../../../packages/plugin-sdk/src/index.js';
 
 // Display-only source observations. No preview is parsed or used to authorize a tool.
 export type ToolActivity = {
-  invocationId: string;
+  runId: RunId;
   turnId: string;
   toolUseId: string;
-  stepId?: string;
-  startSequence?: number;
+  stepId?: StepId;
+  attemptId?: ModelAttemptId;
+  startSequence: number;
   previewOrder?: number;
   name: string;
   title?: DisplayText;
@@ -33,25 +40,23 @@ export type ToolActivity = {
   inputReady: boolean;
   detail: string;
 };
-type Delivery = {
-  invocationId: string;
-  turnId: string;
-  sequence: number;
-  fact: any;
-};
 
-export function updateToolActivity(active: ToolActivity[], event: Delivery): ToolActivity[] {
+export function updateToolActivity(active: ToolActivity[], event: AgentDelivery): ToolActivity[] {
   const fact = event.fact;
+  const toolUseId = 'toolUseId' in fact ? fact.toolUseId : null;
   const matches = (tool: ToolActivity) =>
-    tool.invocationId === event.invocationId && tool.toolUseId === fact.toolUseId;
+    tool.runId === event.runId && tool.toolUseId === toolUseId;
   const previous = active.find(matches);
-  const start = (source: ToolActivity['source'], phase: ToolActivity['phase']): ToolActivity => ({
-    invocationId: event.invocationId,
+  const start = (
+    source: ToolActivity['source'],
+    phase: ToolActivity['phase'],
+    tool: Extract<AgentDelivery['fact'], { toolUseId: string; name: string }>,
+  ): ToolActivity => ({
+    runId: event.runId,
     turnId: event.turnId,
-    toolUseId: fact.toolUseId,
-    stepId: fact.stepId,
+    toolUseId: tool.toolUseId,
     startSequence: event.sequence,
-    name: fact.name,
+    name: tool.name,
     source,
     phase,
     inputReady: false,
@@ -61,8 +66,9 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
   switch (fact.kind) {
     case 'tool_input_ready':
       next = {
-        ...(previous ?? start(fact.providerExecuted ? 'provider' : 'native', 'preparing')),
+        ...(previous ?? start(fact.providerExecuted ? 'provider' : 'native', 'preparing', fact)),
         stepId: fact.stepId,
+        attemptId: fact.attemptId,
         name: fact.name,
         source: fact.providerExecuted ? 'provider' : 'native',
         startSequence:
@@ -76,7 +82,7 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
       break;
     case 'tool_dispatched':
       next = {
-        ...(previous ?? start('native', 'running')),
+        ...(previous ?? start('native', 'running', fact)),
         source: 'native',
         previewOrder: undefined,
         startSequence:
@@ -85,15 +91,14 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
             : event.sequence,
         phase: 'running',
         name: fact.name,
-        title: fact.title,
+        title: fact.title ?? undefined,
       };
       break;
     case 'executor_tool_start':
       next = {
-        ...(previous ?? start('executor', 'running')),
+        ...(previous ?? start('executor', 'running', fact)),
         source: 'executor',
         phase: 'running',
-        stepId: event.invocationId,
         name: fact.name,
         inputReady: true,
       };
@@ -110,13 +115,14 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
     case 'step_ended':
       return active.filter(
         (tool) =>
-          tool.invocationId !== event.invocationId ||
+          tool.runId !== event.runId ||
           tool.stepId !== fact.stepId ||
+          tool.attemptId !== fact.attemptId ||
           (tool.source === 'native' &&
             (tool.phase === 'running' || (fact.completed && tool.inputReady))),
       );
     case 'ended':
-      return active.filter((tool) => tool.invocationId !== event.invocationId);
+      return active.filter((tool) => tool.runId !== event.runId);
     default:
       return active;
   }
@@ -125,13 +131,13 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
 
 export function latestToolActivity(
   active: ToolActivity[],
-  invocationId: string | null,
+  runId: RunId | null,
   turnId: string | null,
 ): ToolActivity | undefined {
   let latest: ToolActivity | undefined;
   for (const tool of active) {
     if (
-      tool.invocationId === invocationId &&
+      tool.runId === runId &&
       tool.turnId === turnId &&
       (!latest ||
         (tool.previewOrder !== undefined && latest.previewOrder === undefined) ||
@@ -140,7 +146,7 @@ export function latestToolActivity(
           tool.previewOrder > latest.previewOrder) ||
         (tool.previewOrder === undefined &&
           latest.previewOrder === undefined &&
-          tool.startSequence! > latest.startSequence!))
+          tool.startSequence > latest.startSequence))
     )
       latest = tool;
   }

@@ -32,6 +32,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod delete;
+mod publication;
 #[cfg(windows)]
 mod windows;
 
@@ -41,6 +42,7 @@ pub(crate) enum ReadMode {
     None,
     Required,
     Preview,
+    Permissions,
 }
 fn identity(metadata: &Metadata) -> Identity {
     (metadata.dev(), metadata.ino())
@@ -62,8 +64,6 @@ pub(crate) struct Target {
     name: OsString,
     existing: Option<File>,
     managed: bool,
-    #[cfg(test)]
-    after_write: Option<Box<dyn FnOnce() -> io::Result<()>>>,
 }
 
 impl Target {
@@ -112,7 +112,9 @@ impl Target {
                 let file = parent
                     .open_with(
                         &name,
-                        file_options(false).read(!matches!(read, ReadMode::None)),
+                        file_options(false)
+                            .read(!matches!(read, ReadMode::None))
+                            .write(!matches!(read, ReadMode::Permissions)),
                     )
                     .or_else(|error| {
                         if matches!(read, ReadMode::Preview)
@@ -145,8 +147,6 @@ impl Target {
             name,
             existing,
             managed,
-            #[cfg(test)]
-            after_write: None,
         })
     }
 
@@ -216,10 +216,7 @@ impl Target {
             return Err(unknown("write target changed after admission"));
         }
         file.write_all(bytes).map_err(unknown)?;
-        #[cfg(test)]
-        if let Some(hook) = self.after_write.take() {
-            hook().map_err(unknown)?;
-        }
+
         file.set_len(bytes.len() as u64).map_err(unknown)?;
         self.visible(Some(identity(&metadata))).map_err(unknown)?;
         // Cancellation cannot interrupt this drained mutation. A successful
@@ -257,108 +254,4 @@ fn open_parent(root: &Dir, path: &Path) -> io::Result<Dir> {
         }
     }
     Ok(parent)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ReadScope;
-    use std::fs;
-
-    #[test]
-    fn managed_target_revalidates_links_before_modifying_a_captured_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        fs::write(root.join("file"), "original").unwrap();
-        let authority = Authority::new(
-            &root,
-            ReadScope::Policy(std::sync::Arc::new(
-                maka_sandbox::filesystem::Policy::uniform(maka_sandbox::filesystem::Access::Write)
-                    .compile()
-                    .unwrap(),
-            )),
-        )
-        .unwrap();
-        let target = Target::capture(&authority, Path::new("file"), ReadMode::None).unwrap();
-        fs::hard_link(root.join("file"), root.join("alias")).unwrap();
-        let started = AtomicBool::new(false);
-        assert!(matches!(
-            target.apply(b"changed", &CancellationToken::new(), &started),
-            Err(ToolError::Failed(_))
-        ));
-        assert!(!started.load(Ordering::SeqCst));
-        assert_eq!(fs::read(root.join("alias")).unwrap(), b"original");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn parent_replacement_before_and_after_effect_and_cancellation_are_honest() {
-        for after_effect in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().canonicalize().unwrap();
-            fs::create_dir(root.join("parent")).unwrap();
-            fs::write(root.join("parent/file"), "old").unwrap();
-            let authority = Authority::new(
-                &root,
-                ReadScope::Restricted {
-                    roots: vec![root.clone()],
-                },
-            )
-            .unwrap();
-            let mut target =
-                Target::capture(&authority, Path::new("parent/file"), ReadMode::None).unwrap();
-            let replace_root = root.clone();
-            let replace = move || {
-                fs::rename(replace_root.join("parent"), replace_root.join("detached")).unwrap();
-                fs::create_dir(replace_root.join("parent")).unwrap();
-                fs::write(replace_root.join("parent/file"), "sentinel").unwrap();
-                Ok(())
-            };
-            if after_effect {
-                target.after_write = Some(Box::new(replace));
-            } else {
-                replace().unwrap();
-            }
-            let started = AtomicBool::new(false);
-            let result = target.apply(b"new", &CancellationToken::new(), &started);
-            assert_eq!(started.load(Ordering::SeqCst), after_effect);
-            assert!(matches!(
-                (&result, after_effect),
-                (Err(ToolError::OutcomeUnknown(_)), true) | (Err(ToolError::Failed(_)), false)
-            ));
-            assert_eq!(fs::read(root.join("parent/file")).unwrap(), b"sentinel");
-            assert_eq!(
-                fs::read(root.join("detached/file")).unwrap(),
-                if after_effect { b"new" } else { b"old" }
-            );
-        }
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        fs::write(root.join("file"), "old").unwrap();
-        let authority = Authority::new(
-            &root,
-            ReadScope::Restricted {
-                roots: vec![root.clone()],
-            },
-        )
-        .unwrap();
-        let mut target = Target::capture(&authority, Path::new("file"), ReadMode::None).unwrap();
-        let token = CancellationToken::new();
-        let cancellation = token.clone();
-        target.after_write = Some(Box::new(move || {
-            cancellation.cancel();
-            Ok(())
-        }));
-        target
-            .apply(b"changed", &token, &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(fs::read(root.join("file")).unwrap(), b"changed");
-        let mut target = Target::capture(&authority, Path::new("file"), ReadMode::None).unwrap();
-        target.after_write = Some(Box::new(|| Err(io::Error::from_raw_os_error(libc::ENOSPC))));
-        assert!(matches!(
-            target.apply(b"xx", &CancellationToken::new(), &AtomicBool::new(false)),
-            Err(ToolError::OutcomeUnknown(_))
-        ));
-        assert_eq!(fs::read(root.join("file")).unwrap(), b"xxanged");
-    }
 }

@@ -50,6 +50,7 @@ import {
   tui_network_replace,
   tui_session_saving,
   tui_settings_language,
+  tui_choose_model,
   tui_theme_role_number,
   tui_thinking_default,
 } from '../../../../plugins/shared/tui-messages.js';
@@ -315,7 +316,7 @@ export const settingsMessages = {
     '正在取消登入；等待原始結果…',
   ],
   'Checking receipts…': ['Checking receipts…', '正在检查回执…', '正在檢查回執…'],
-  'Choose a model': ['Choose a model', '选择模型', '選擇模型'],
+  'Choose a model': tui_choose_model,
   'Choose model': msg_chooseModel,
   'Choose model and effort': [
     'Choose model and effort',
@@ -1026,6 +1027,11 @@ export const settingsMessages = {
     '請等待目前的設定操作完成。',
   ],
   Palette: ['Palette', '配色', '配色'],
+  'Menu bar icon': ['Menu bar icon', '菜单栏图标', '選單列圖示'],
+  'System tray icon': ['System tray icon', '系统托盘图标', '系統匣圖示'],
+  'Thin line': ['Thin line', '细线', '細線'],
+  'Bold line': ['Bold line', '粗线', '粗線'],
+  'Solid tile': ['Solid tile', '实心方块', '實心方塊'],
   Mist: ['Mist', '雾蓝', '霧藍'],
   Sage: ['Sage', '鼠尾草', '鼠尾草'],
   Sand: ['Sand', '暖灰', '暖灰'],

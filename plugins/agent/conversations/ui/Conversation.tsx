@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import {
+  RiskDecisionDialog,
+  riskActionLabels,
+  sameRiskOffer,
+  type RiskReview,
+} from './RiskDecisionDialog';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -24,6 +30,7 @@ import {
   createTransientText,
   UiError,
   errorText,
+  errorMessage,
   isObservationCancelled,
   renderText,
   type UiText,
@@ -32,10 +39,14 @@ import {
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import type { StagedFile } from 'maka/host';
 import type {
-  AgentResumable,
-  AgentResumeParkReason,
-  AgentResumeResult,
+  AgentAdjudicateRisk,
+  AgentContinuationRejection,
+  AgentContinuationResult,
   AgentExecution,
+  AgentExecutionResult,
+  AgentSendResult,
+  AgentRunBlocker,
+  RunId,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
   batch,
@@ -49,9 +60,9 @@ import {
   View,
   List,
 } from 'nsh';
-import type { ListRef, ViewRef } from 'nsh';
+import type { ListRef, ScrollRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform } from 'nsh';
+import { keymap, platform, Scroll, windowSize } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -80,6 +91,10 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import {
   acceptedSend,
+  sameHistoryRow,
+  compareHistoryOrder,
+  historyTurnKey,
+  rootEventSequence,
   historyFollowPosition,
   mergeChunks,
   openingUserMessage,
@@ -87,7 +102,7 @@ import {
   senderSession,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
-import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
+import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
 import {
   TranscriptOverlay,
   type LivePart,
@@ -95,6 +110,7 @@ import {
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
+  ComposerContinuation,
   ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
@@ -189,6 +205,8 @@ import type {
   AgentSession,
   AgentRunBackend,
   HistoryPosition,
+  HistoryRowAddress,
+  HistoryOrder,
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
@@ -201,12 +219,13 @@ import {
   type DraftAttachment,
 } from '../../../../products/maka/workbench/app/attachmentDraft';
 
-export type ConversationAnchor = { messageId: string; position: Position };
+export type ConversationAnchor = { messageId?: string | null; position: HistoryRowAddress };
 type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
   | { kind: 'message'; anchor: ConversationAnchor };
-type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & {
+type HistoryWindow = Pick<AgentHistoryPage, 'before' | 'after'> & {
+  through: number;
   identity: object;
 };
 
@@ -236,14 +255,14 @@ export type ConversationHandle = Omit<
   title(): string;
 };
 // What the user can do about each reason the Host declined to continue.
-const continuationParked: Record<AgentResumeParkReason, MessageKey> = {
+const continuationRejected: Record<AgentContinuationRejection, MessageKey> = {
   closed: 'Maka is shutting down. Continue after it restarts.',
   archived: 'Restore this conversation to continue it.',
   busy: 'This conversation is busy or has queued messages. Continue once it is idle.',
   source_missing: 'There is no stopped response to continue.',
   source_changed:
     'The conversation changed after this response stopped. Send a new message instead.',
-  source_not_resumable: 'This response cannot be continued. Send a new message instead.',
+  source_not_terminal: 'Wait for this run to finish before continuing.',
   already_continued: 'This response has already been continued.',
   workspace_changed:
     'The workspace changed after this response stopped. Send a new message instead.',
@@ -254,6 +273,7 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   continuationPending(): boolean;
+  riskPending(): boolean;
   /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
   botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
@@ -292,10 +312,9 @@ type ConversationProps = {
   stopAction(): () => void;
   /** Starts the Bot over; offered only on the Bot's own conversation. */
   restartBot?(): Promise<void>;
+  /** Shows only the latest exchange, as tall as its content, with no header. */
+  compact?: boolean;
 };
-function comparePosition(left: Position, right: Position): number {
-  return left.sourceSequence - right.sourceSequence || left.itemIndex - right.itemIndex;
-}
 function indexRows(items: readonly Row[]) {
   const byId = new Map<string, Row>();
   const byMessage = new Map<string, Row>();
@@ -303,15 +322,22 @@ function indexRows(items: readonly Row[]) {
     const id = stableRowId(row);
     // The result supplies current content at the original tool call's seat.
     if (!byId.has(id) || !row.tool?.call || row.tool.result) byId.set(id, row);
-    const message = `${row.messageId}/${row.field}`;
-    if (!byMessage.has(message)) byMessage.set(message, row);
+    if (
+      row.messageId !== undefined &&
+      (row.position === undefined || row.position.kind === 'live')
+    ) {
+      const message = `${row.messageId}/${row.field}`;
+      if (!byMessage.has(message)) byMessage.set(message, row);
+    }
   }
   return { byId, byMessage };
 }
 function receiptMessage(reply: any): UiText {
   const receipt = reply?.receipt;
   if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'returned') {
-    const value = receipt.outcome.value;
+    const result = receipt.outcome.result;
+    if (result.kind === 'failure') return errorMessage(new Error(result.diagnostic));
+    const value = result.value as AgentSendResult;
     return value?.kind === 'rejected'
       ? value.reason === 'turn_stopped'
         ? uiMessage('Stopped before delivery. Your message is kept.')
@@ -347,11 +373,12 @@ export function Conversation(props: ConversationProps) {
   const loadedOpening = (turnId: string | undefined) =>
     openingUserMessage(rows(), turnId, historyWindow()?.before);
   const opensTurn = (row: Row) => {
-    const first = loadedOpening(row.turnId);
+    const first = loadedOpening(historyTurnKey(row));
     return (
       first !== null &&
-      first.position?.sourceSequence === row.position?.sourceSequence &&
-      first.position?.itemIndex === row.position?.itemIndex
+      first.position !== undefined &&
+      row.position !== undefined &&
+      sameHistoryRow(first.position, row.position)
     );
   };
   const overlay = new TranscriptOverlay();
@@ -365,24 +392,26 @@ export function Conversation(props: ConversationProps) {
   const title = signal(sessionId);
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
-  const invocation = signal<string | null>(null);
+  const runId = signal<RunId | null>(null);
   const runBackend = signal<AgentRunBackend | null>(null);
   const toolProgressById = computed(
     () =>
       new Map(
         toolActivity()
-          .filter((item) => item.invocationId === invocation())
+          .filter((item) => item.runId === runId())
           .map((item) => [item.toolUseId, item.phase] as const),
       ),
   );
   const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
-  const resumable = signal<AgentResumable | null>(null);
-  const resuming = signal(false);
-  const confirmingContinuation = () => resuming() || props.continuationPending();
-  const resumeRevision = signal(0);
-  const stoppingRun = signal<string | null>(null);
-  const stopping = () => invocation() !== null && stoppingRun() === invocation();
+  const execution = signal<AgentExecution | null>(null);
+  const continuing = signal(false);
+  const adjudicating = signal(false);
+  const riskReview = signal<RiskReview | null>(null);
+  const confirmingContinuation = () => continuing() || props.continuationPending();
+  const executionRevision = signal(0);
+  const stoppingRun = signal<RunId | null>(null);
+  const stopping = () => runId() !== null && stoppingRun() === runId();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
@@ -421,7 +450,7 @@ export function Conversation(props: ConversationProps) {
   const navigation = signal<HistoryNavigation | null>(null);
   const navigatingTurn = computed(() => {
     const target = navigation();
-    return target?.kind === 'turn' ? target.item.turnId : null;
+    return target?.kind === 'turn' ? target.item.turnKey : null;
   });
   const attachmentMetadataFailed = signal(false);
   const attachmentMetadataReads = new Set<string>();
@@ -533,10 +562,11 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      if (run() === 'waiting_for_user') return { kind: 'waiting', detail: '' };
+      if (run() === 'waiting_for_user' || run() === 'waiting' || run() === 'blocked')
+        return { kind: 'waiting', detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
-        if (part.invocationId !== invocation()) continue;
+        if (part.runId !== runId()) continue;
         const message = `${part.messageId}/${part.field}`;
         const row = liveRows().byMessage.get(message) ?? canonicalRows().byMessage.get(message);
         if (!row || row.closedAt != null) continue;
@@ -544,7 +574,7 @@ export function Conversation(props: ConversationProps) {
         if (!latest || sequence > latest.sequence) latest = { part, row, sequence };
       }
       const currentPreview = live()
-        .filter((row) => row.preview && row.invocationId === invocation() && row.closedAt === null)
+        .filter((row) => row.preview && row.runId === runId() && row.closedAt === null)
         .at(-1);
       if (currentPreview)
         return currentPreview.field === 'body'
@@ -576,7 +606,7 @@ export function Conversation(props: ConversationProps) {
     const next = projectProcessGroups({
       rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
-      activeTurnId: invocation() === null ? null : runTurn(),
+      activeTurnId: runId() === null ? null : runTurn(),
       previous: previousGroups,
     });
     previousGroups = next.entries;
@@ -609,13 +639,13 @@ export function Conversation(props: ConversationProps) {
     () => (canOpenWorker() ? openWorker : undefined),
   );
   const turnExpanded = (turn: TurnPresentation) =>
-    !canFoldTurn(turn) || (turnState(turn.turnId).expanded() ?? !foldsByDefault(turn));
+    !canFoldTurn(turn) || (turnState(turn.turnKey).expanded() ?? !foldsByDefault(turn));
   // Showing something in a folded turn opens it; an open turn keeps folding by default.
   const unfoldTurn = (turn: TurnPresentation) => {
-    if (!turnExpanded(turn)) turnState(turn.turnId).expanded.set(true);
+    if (!turnExpanded(turn)) turnState(turn.turnKey).expanded.set(true);
   };
   type DisplayEntry =
-    | { kind: 'summary'; key: string; turnId: string }
+    | { kind: 'summary'; key: string; turnKey: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
@@ -643,8 +673,8 @@ export function Conversation(props: ConversationProps) {
       const headed = result.some(
         (item) =>
           running !== null &&
-          ((item.kind === 'process' && item.group.turnId === running) ||
-            (item.kind === 'summary' && item.turnId === running)),
+          ((item.kind === 'process' && item.group.turnKey === running) ||
+            (item.kind === 'summary' && item.turnKey === running)),
       );
       if (headed) return;
       workingShown = true;
@@ -670,7 +700,10 @@ export function Conversation(props: ConversationProps) {
         const finished = turn !== undefined && !turn.active && openTurn !== runTurn();
         const turnId = openTurn;
         const slept = [...projection().rowsById.values()].some(
-          (row) => row.turnId === turnId && row.tool?.call?.name === 'sleep',
+          (row) =>
+            (row.position === undefined || row.position.kind === 'live') &&
+            row.turnId === turnId &&
+            row.tool?.call?.name === 'sleep',
         );
         if (
           turn &&
@@ -691,7 +724,12 @@ export function Conversation(props: ConversationProps) {
     };
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
-      const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
+      const turnId =
+        entry.kind === 'process'
+          ? entry.turnKey
+          : row === undefined
+            ? undefined
+            : historyTurnKey(row);
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (botChat && turnId !== openTurn) {
         speak();
@@ -706,14 +744,14 @@ export function Conversation(props: ConversationProps) {
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
             (platform.idiom !== 'terminal' || turnOutcome(turn) === 'completed'))) &&
-        !summaries.has(turn.turnId) &&
+        !summaries.has(turn.turnKey) &&
         (platform.idiom !== 'terminal' || turnOutcome(turn) !== null)
       ) {
-        summaries.add(turn.turnId);
+        summaries.add(turn.turnKey);
         result.push({
           kind: 'summary',
-          key: `turn/${turn.turnId}`,
-          turnId: turn.turnId,
+          key: `turn/${turn.turnKey}`,
+          turnKey: turn.turnKey,
         });
       }
       if (entry.kind === 'process') {
@@ -727,7 +765,7 @@ export function Conversation(props: ConversationProps) {
         // A message the Host wrote on the user's behalf (a worker finishing, a task
         // result) is not something the user said. It stays in Trajectory.
         if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
-        if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
+        if (entry.processTurnKey && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
@@ -736,7 +774,7 @@ export function Conversation(props: ConversationProps) {
           ((row.role === 'user' && !row.origin) ||
             (row.finalOutput && botView() === 'ordinary') ||
             row.role === 'compaction' ||
-            (!row.turnId && row.role !== 'failure'))
+            (historyTurnKey(row) === undefined && row.role !== 'failure'))
         )
           continue;
         result.push({
@@ -768,10 +806,10 @@ export function Conversation(props: ConversationProps) {
   effect(() => {
     const visible = new Set<string>();
     for (const turn of projection().turns.values()) {
-      if (turnExpanded(turn)) visible.add(turn.turnId);
-      else if (previouslyVisible.has(turn.turnId)) {
+      if (turnExpanded(turn)) visible.add(turn.turnKey);
+      else if (previouslyVisible.has(turn.turnKey)) {
         for (const entry of projection().entries) {
-          if (entry.kind === 'process' && entry.turnId === turn.turnId)
+          if (entry.kind === 'process' && entry.turnKey === turn.turnKey)
             groupStates.get(entry.key)?.open.set(false);
         }
       }
@@ -780,11 +818,30 @@ export function Conversation(props: ConversationProps) {
   });
   const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
   const displayKeys = computed(() => display().map((item) => item.key));
+  const latestQuestion = computed(() =>
+    display().findLastIndex(
+      (item) => item.kind === 'row' && currentRow(item.rowId)?.role === 'user',
+    ),
+  );
+  const latestQuestionKey = computed(() => displayKeys()[latestQuestion()] ?? null);
+  // Set by the first follow-up, so the exchanges of this popup stay above the newest one.
+  const compactStart = signal<string | null>(null);
+  const shownKeys = computed(() => {
+    if (!props.compact) return displayKeys();
+    const start = compactStart();
+    const anchored = start === null ? -1 : displayKeys().indexOf(start);
+    const first = anchored >= 0 ? anchored : latestQuestion();
+    return first <= 0 ? displayKeys() : displayKeys().slice(first);
+  });
   const navigationItems = computed<TurnNavigationItem[]>(() => {
     const items = new Map<string, TurnNavigationItem>();
     for (const item of landmarks().items) {
-      items.set(item.turnId, {
-        turnId: item.turnId,
+      const turnKey = historyTurnKey(item);
+      if (turnKey === undefined)
+        throw new UiError('A history landmark has no source turn identity.');
+      items.set(turnKey, {
+        turnKey,
+        order: item.order,
         label: originLabel(item.origin) ?? item.label,
         anchor: {
           kind: 'landmark',
@@ -795,38 +852,44 @@ export function Conversation(props: ConversationProps) {
       });
     }
     for (const row of rows()) {
-      if (!row.turnId || !row.position || row.role === 'compaction') continue;
-      const previous = items.get(row.turnId);
+      const turnKey = historyTurnKey(row);
+      if (turnKey === undefined || !row.position || !row.order || row.role === 'compaction')
+        continue;
+      const previous = items.get(turnKey);
       const label =
         row.role === 'user'
           ? (originLabel(row.origin) ??
             Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join(''))
           : '';
       if (!previous)
-        items.set(row.turnId, {
-          turnId: row.turnId,
+        items.set(turnKey, {
+          turnKey,
+          order: row.order,
           label,
           anchor: { kind: 'loaded', position: row.position },
         });
-      else if (!previous.label && label) items.set(row.turnId, { ...previous, label });
+      else if (!previous.label && label) items.set(turnKey, { ...previous, label });
     }
-    return [...items.values()].sort((left, right) =>
-      comparePosition(left.anchor.position, right.anchor.position),
-    );
+    return [...items.values()].sort((left, right) => compareHistoryOrder(left.order, right.order));
   });
   const entryTurn = (key: string) => {
     const entry = displayByKey().get(key);
-    if (entry?.kind === 'summary') return entry.turnId;
-    if (entry?.kind === 'process') return entry.group.turnId;
-    return entry?.kind === 'row' ? (projection().rowsById.get(entry.rowId)?.turnId ?? null) : null;
+    if (entry?.kind === 'summary') return entry.turnKey;
+    if (entry?.kind === 'process') return entry.group.turnKey;
+    return entry?.kind === 'row'
+      ? (historyTurnKey(projection().rowsById.get(entry.rowId)) ?? null)
+      : null;
   };
   let list: ListRef | undefined;
+  let compactScroll: ScrollRef | undefined;
+  let followCompact = false;
   let alive = true;
   let subscription: Subscription | null = null;
   let transcriptTask: Promise<void> | null = null;
   let wakeReconnect: (() => void) | null = null;
   let readFailure: { stream: Subscription; reason: unknown } | null = null;
-  let refreshFrom: { position: Position; order: Position; field: string } | null = null;
+  let refreshFrom: { position: HistoryRowAddress; order: HistoryOrder; field: string } | null =
+    null;
   let latestKnown = 0;
   let watchLast = 0;
   let runThrough = 0;
@@ -874,7 +937,7 @@ export function Conversation(props: ConversationProps) {
     if (alive) error.set(errorText(reason));
   };
   const publishHistory = (
-    chunks: any[],
+    chunks: AgentHistoryChunk[],
     through: number,
     older = false,
     coveredFrom?: number,
@@ -894,14 +957,15 @@ export function Conversation(props: ConversationProps) {
     hydrateAttachmentMetadata();
   };
   const requestMetadata = (row: Pick<Row, 'position' | 'order' | 'field'> | undefined) => {
-    if (!row?.position) return;
-    const next = { position: row.position, order: row.order!, field: row.field };
+    if (!row?.position || !row.order) return;
+    const next = { position: row.position, order: row.order, field: row.field };
     const order = (a: typeof next, b: typeof next) =>
-      comparePosition(a.order, b.order) || Number(a.field === 'body') - Number(b.field === 'body');
+      compareHistoryOrder(a.order, b.order) ||
+      Number(a.field === 'body') - Number(b.field === 'body');
     if (refreshFrom === null || order(next, refreshFrom) < 0) refreshFrom = next;
     followAgain = true;
   };
-  const publishMetadata = (chunks: any[], through: number) => {
+  const publishMetadata = (chunks: AgentHistoryChunk[], through: number) => {
     rows.set(updateHistoryMetadata(rows(), chunks, through));
     if (!rows().some((row) => row.role === 'user' && row.attachments === undefined))
       attachmentMetadataFailed.set(false);
@@ -916,7 +980,7 @@ export function Conversation(props: ConversationProps) {
       view: 'conversation',
     });
     if (page.through !== through) throw new UiError('History changed its requested fence.');
-    return page;
+    return { ...page, through: page.through };
   };
   const ownsWindow = (identity: object) => alive && historyIdentity === identity;
   // Tail, recall, Home and turn navigation open the same bidirectional window.
@@ -954,7 +1018,7 @@ export function Conversation(props: ConversationProps) {
     refreshFrom = null;
     const task = (async () => {
       let location = position;
-      let page: AgentHistoryPage;
+      let page: Awaited<ReturnType<typeof history>>;
       for (;;) {
         page = await history(through, location);
         if (!canPublish()) return false;
@@ -1029,10 +1093,7 @@ export function Conversation(props: ConversationProps) {
           )
             return;
           const first = page.chunks.find(
-            (chunk: any) =>
-              chunk.position.sourceSequence === position.sourceSequence &&
-              chunk.position.itemIndex === position.itemIndex &&
-              chunk.field === 'body',
+            (chunk) => sameHistoryRow(chunk.position, position) && chunk.field === 'body',
           );
           if (
             !first ||
@@ -1119,18 +1180,24 @@ export function Conversation(props: ConversationProps) {
       });
       if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
-      run.set(observed.run?.state ?? 'idle');
+      if (observed.run) {
+        run.set(observed.run.state);
+        runId.set(observed.run.runId);
+        runBackend.set(observed.run.backend);
+        runTurn.set(observed.run.turnId);
+      } else if (runId() === null) {
+        // Exact execution reads below distinguish terminal history from a Run
+        // whose current activation is simply absent.
+        run.set(rows().length === 0 ? 'idle' : 'loading');
+      }
       compacting.set(observed.compacting);
-      invocation.set(observed.run?.invocationId ?? null);
-      runBackend.set(observed.run?.backend ?? null);
-      runTurn.set(observed.run?.turnId ?? null);
       messagePrediction.source(
         observed.session.parentSessionId === null ? completedTurn : null,
         trigger,
         JSON.stringify(backend()),
       );
-      if (!observed.run) stoppingRun.set(null);
       runThrough = observed.through;
+      executionRevision.set(executionRevision() + 1);
     }
     return observed;
   };
@@ -1149,7 +1216,8 @@ export function Conversation(props: ConversationProps) {
         const fence = latestKnown;
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
-          const windowStart = currentWindow.before ? rows()[0]?.order?.sourceSequence : undefined;
+          const windowStart =
+            currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
           const snap = overlay.snapshot();
           const initial = historyFollowPosition(
             rows().at(-1),
@@ -1191,7 +1259,7 @@ export function Conversation(props: ConversationProps) {
               if (
                 page.after === null ||
                 page.chunks.some((chunk) => {
-                  const order = comparePosition(chunk.order, last.order!);
+                  const order = compareHistoryOrder(chunk.order, last.order!);
                   return (
                     order > 0 ||
                     (order === 0 && (chunk.field === 'body' || last.field === 'thinking'))
@@ -1258,11 +1326,13 @@ export function Conversation(props: ConversationProps) {
           if (event.sequence > runThrough) {
             predictionTriggerTurn = null;
             messagePrediction.source(null, 'live');
-            run.set('running');
-            invocation.set(event.invocationId);
+            run.set('admitted');
+            runId.set(event.runId);
             runBackend.set(null);
             runTurn.set(event.turnId);
-            requestMetadata(rows().find((row) => row.turnId === event.turnId));
+            requestMetadata(
+              rows().find((row) => row.position?.kind === 'live' && row.turnId === event.turnId),
+            );
             void observe().catch(report);
             runThrough = event.sequence;
           }
@@ -1278,11 +1348,13 @@ export function Conversation(props: ConversationProps) {
           changed = true;
           break;
         case 'ended':
-          requestMetadata(rows().find((row) => row.turnId === event.turnId));
-          if (event.sequence > runThrough) {
+          requestMetadata(
+            rows().find((row) => row.position?.kind === 'live' && row.turnId === event.turnId),
+          );
+          if (event.sequence > runThrough && event.runId === runId()) {
             predictionTriggerTurn = fact.failed ? null : event.turnId;
-            run.set(fact.failed ? 'failed' : 'idle');
-            invocation.set(null);
+            run.set('loading');
+            runId.set(null);
             runBackend.set(null);
             compacting.set(null);
             runTurn.set(null);
@@ -1318,7 +1390,10 @@ export function Conversation(props: ConversationProps) {
     // A turn may have ended while its watch was offline. Earlier accepted
     // fragments need the same completion metadata refresh as an ended event.
     const previousTurn = runTurn();
-    if (previousTurn !== null) requestMetadata(rows().find((row) => row.turnId === previousTurn));
+    if (previousTurn !== null)
+      requestMetadata(
+        rows().find((row) => row.position?.kind === 'live' && row.turnId === previousTurn),
+      );
     const observed = await observe();
     if (!alive) return;
     const after = replayStartCursor(observed.through, observed.parts, observed.toolSeeds);
@@ -1467,11 +1542,13 @@ export function Conversation(props: ConversationProps) {
   // Read back to the message that opened the latest turn, within a few pages.
   const loadTurnStart = async () => {
     for (let page = 0; page < 8; page++) {
-      const turnId = rows().at(-1)?.turnId;
+      const turnKey = historyTurnKey(rows().at(-1));
       if (
-        turnId === undefined ||
+        turnKey === undefined ||
         historyWindow()?.before == null ||
-        rows().some((row) => row.role === 'user' && row.field === 'body' && row.turnId === turnId)
+        rows().some(
+          (row) => row.role === 'user' && row.field === 'body' && historyTurnKey(row) === turnKey,
+        )
       )
         return;
       if (!(await loadOlder())) return;
@@ -1522,8 +1599,9 @@ export function Conversation(props: ConversationProps) {
   };
   const revealRow = (row: Row) => {
     reading.set('chat');
-    if (row.turnId) {
-      const turn = projection().turns.get(row.turnId);
+    const rowTurn = historyTurnKey(row);
+    if (rowTurn !== undefined) {
+      const turn = projection().turns.get(rowTurn);
       if (turn) unfoldTurn(turn);
     }
     const id = stableRowId(row);
@@ -1591,10 +1669,10 @@ export function Conversation(props: ConversationProps) {
           if (
             !page.chunks.some(
               (chunk) =>
-                chunk.messageId === anchor.messageId &&
+                (anchor.messageId == null || chunk.messageId === anchor.messageId) &&
                 chunk.field === 'body' &&
                 chunk.offset === 0 &&
-                comparePosition(chunk.position, anchor.position) === 0,
+                sameHistoryRow(chunk.position, anchor.position),
             )
           )
             throw new UiError('The original message could not be verified.');
@@ -1605,10 +1683,10 @@ export function Conversation(props: ConversationProps) {
         throw new UiError('History navigation was cancelled.');
       const row = rows().find(
         (candidate) =>
-          candidate.messageId === anchor.messageId &&
+          (anchor.messageId == null || candidate.messageId === anchor.messageId) &&
           candidate.field === 'body' &&
           candidate.position &&
-          comparePosition(candidate.position, anchor.position) === 0,
+          sameHistoryRow(candidate.position, anchor.position),
       );
       if (!row) throw new UiError('The original message is no longer available.');
       if (!current()) throw new UiError('History navigation was cancelled.');
@@ -1625,10 +1703,7 @@ export function Conversation(props: ConversationProps) {
     if (!alive) return;
     const target: HistoryNavigation = { kind: 'turn', item };
     historyDestination = {
-      position: {
-        kind: 'event',
-        sequence: item.anchor.position.sourceSequence,
-      },
+      position: { kind: 'row', position: item.anchor.position, field: 'body' },
       explicit: true,
       failed: false,
     };
@@ -1638,10 +1713,10 @@ export function Conversation(props: ConversationProps) {
       if (!alive || navigation() !== target) return;
       if (
         !(await resetHistory(
-          { kind: 'event', sequence: item.anchor.position.sourceSequence },
+          { kind: 'row', position: item.anchor.position, field: 'body' },
           observed.through,
           (page) => {
-            if (!page.chunks.some((chunk) => chunk.turnId === item.turnId))
+            if (!page.chunks.some((chunk) => historyTurnKey(chunk) === item.turnKey))
               throw new UiError('This turn is no longer available.');
           },
           () => navigation() === target,
@@ -1649,7 +1724,7 @@ export function Conversation(props: ConversationProps) {
       )
         return;
       if (navigation() !== target) return;
-      const row = rows().find((candidate) => candidate.turnId === item.turnId);
+      const row = rows().find((candidate) => historyTurnKey(candidate) === item.turnKey);
       if (!row) throw new UiError('This turn is no longer available.');
       revealRow(row);
     } finally {
@@ -1817,79 +1892,219 @@ export function Conversation(props: ConversationProps) {
     };
   };
 
-  const resumeBasis = computed(() =>
-    JSON.stringify([
-      resumeRevision(),
-      ready(),
-      archived(),
-      invocation(),
-      readState().revision,
-      readState().through,
-      backend(),
-      props.continuationPending(),
-    ]),
-  );
+  const terminal = (value: AgentExecution): value is ComposerContinuation['source'] =>
+    value.state.kind === 'completed' ||
+    value.state.kind === 'failed' ||
+    value.state.kind === 'cancelled';
+  // A history window is not the session tip. Only an exact tail supplies a
+  // candidate, and execution() must still prove its durable state and fence.
+  const executionSource = computed(() => {
+    const active = runId();
+    if (active !== null) return active;
+    if (!atHistoryTail() || (historyWindow()?.through ?? -1) < readState().through) return null;
+    return rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
+  });
+  const acceptExecution = (value: AgentExecution) => {
+    if (value.sessionId !== sessionId) throw new UiError('Host observed a different session.');
+    const previous = execution();
+    if (previous?.runId === value.runId && previous.highWater > value.highWater) return;
+    execution.set(value);
+    if (terminal(value)) {
+      run.set(value.state.kind === 'failed' ? 'failed' : 'idle');
+      if (runId() === value.runId) {
+        runId.set(null);
+        runBackend.set(null);
+        runTurn.set(null);
+        stoppingRun.set(null);
+      }
+    } else {
+      // No live handle does not prove failure: a durable wait/blocker remains active.
+      runId.set(value.runId);
+      runTurn.set(value.turnId);
+      switch (value.state.kind) {
+        case 'admitted':
+        case 'running':
+        case 'waiting':
+        case 'blocked':
+          run.set(value.state.kind);
+          break;
+      }
+    }
+  };
   effect(() => {
-    resumeBasis();
+    const source = executionSource();
+    executionRevision();
+    readState().through;
+    const loaded = ready();
     let current = true;
     untracked(() => {
-      if (props.continuationPending()) return;
-      resumable.set(null);
-      const selected = backend();
-      if (!ready() || archived() || invocation() || selected?.kind !== 'model') return;
-      void (async () => {
-        const resolved = await host.query('agent', 'model', { backend: selected });
-        if (!alive || !current || resolved.kind !== 'ready') return;
-        const value = await host.query('agent', 'resumable', {
-          sessionId,
-          model: { connectionId: selected.connectionId, modelId: selected.modelId },
-          thinkingLevel: selected.thinkingLevel,
+      if (execution()?.runId !== source) execution.set(null);
+      if (!loaded || source === null) return;
+      void host
+        .query('agent', 'execution', { sessionId, runId: source })
+        .then((result) => {
+          if (!alive || !current || executionSource() !== source) return;
+          if (result.kind !== 'found') return;
+          if (result.execution.runId !== source)
+            throw new UiError('Host observed a different session.');
+          batch(() => acceptExecution(result.execution));
+        })
+        .catch((reason) => {
+          if (alive && current) report(reason);
         });
-        if (alive && current) resumable.set(value);
-      })().catch((reason) => {
-        if (alive && current) report(reason);
-      });
     });
     return () => {
       current = false;
     };
   });
-  const resume = async (source: AgentExecution, expectedBackend: BackendIdentity) => {
-    const observed = resumable();
+  const continuation = computed<ComposerContinuation | null>(() => {
+    const source = execution();
+    if (
+      !ready() ||
+      archived() ||
+      transcriptStatus() !== 'live' ||
+      props.connectionLost() ||
+      (queued()?.entries.length ?? 0) !== 0 ||
+      runId() !== null ||
+      backend()?.kind !== 'model' ||
+      source === null ||
+      source.runId !== executionSource() ||
+      !terminal(source) ||
+      source.state.kind === 'completed'
+    )
+      return null;
+    return { source };
+  });
+  const continueRun = async (source: AgentExecution, expectedBackend: BackendIdentity) => {
+    const observed = continuation();
     if (
       !alive ||
       confirmingContinuation() ||
-      invocation() ||
+      runId() !== null ||
       draft().trim() ||
       attachments.files().length ||
       sendBlockedReason() ||
-      observed?.kind !== 'ready' ||
+      observed === null ||
       observed.source.sessionId !== source.sessionId ||
-      observed.source.invocationId !== source.invocationId ||
+      observed.source.runId !== source.runId ||
       observed.source.highWater !== source.highWater ||
+      !terminal(source) ||
       !sameBackend(backend(), expectedBackend)
     )
       return;
-    resuming.set(true);
+    continuing.set(true);
     try {
       const model = await selection(expectedBackend);
       if (!alive || !model || draft().trim() || attachments.files().length) return;
-      const result: AgentResumeResult = await props.control('resume', {
+      // Re-read the exact source after model resolution; never reopen the old Run
+      // merely because the current activation/handle is missing.
+      const latest = await host.query('agent', 'execution', { sessionId, runId: source.runId });
+      if (
+        !alive ||
+        latest.kind !== 'found' ||
+        latest.execution.sessionId !== sessionId ||
+        latest.execution.runId !== source.runId ||
+        latest.execution.highWater !== source.highWater ||
+        !terminal(latest.execution) ||
+        runId() !== null ||
+        draft().trim() ||
+        attachments.files().length ||
+        !sameBackend(backend(), expectedBackend)
+      )
+        return;
+      const result: AgentContinuationResult = await props.control('continueRun', {
         sessionId,
-        sourceInvocationId: source.invocationId,
+        sourceRunId: source.runId,
         sourceHighWater: source.highWater,
         ...model,
       });
       if (!alive) return;
-      if (result.kind === 'parked') notice.set(uiMessage(continuationParked[result.reason]));
+      if (result.kind === 'rejected') notice.set(uiMessage(continuationRejected[result.reason]));
+      else {
+        if (result.execution.sessionId !== sessionId || result.execution.runId === source.runId)
+          throw new UiError('Host returned an unexpected send result.');
+        batch(() => acceptExecution(result.execution));
+      }
       await observe();
     } catch (reason) {
       report(reason);
     } finally {
       if (alive)
         batch(() => {
-          resuming.set(false);
-          resumeRevision.set(resumeRevision() + 1);
+          continuing.set(false);
+          executionRevision.set(executionRevision() + 1);
+        });
+    }
+  };
+  const riskReviewCurrent = (review: RiskReview) => {
+    const current = execution();
+    return (
+      alive &&
+      current?.state.kind === 'blocked' &&
+      current.sessionId === review.source.sessionId &&
+      current.runId === review.source.runId &&
+      current.highWater === review.source.highWater &&
+      current.state.blockers.some(
+        (blocker) =>
+          blocker.id === review.blockerId &&
+          blocker.offeredActions.some((offer) => sameRiskOffer(offer, review.offer)),
+      )
+    );
+  };
+  const riskUnavailable = () =>
+    !connected()
+      ? uiMessage('Reconnect before submitting a risk decision.')
+      : archived()
+        ? uiMessage('Restore this conversation before submitting a risk decision.')
+        : undefined;
+  const openRiskReview = (review: RiskReview) => {
+    if (!props.visible() || adjudicating() || props.riskPending() || riskReview() !== null) return;
+    const unavailable = riskUnavailable();
+    if (unavailable) {
+      notice.set(unavailable);
+      return;
+    }
+    if (!riskReviewCurrent(review)) {
+      notice.set(uiMessage('This run changed. Close this decision and review the current state.'));
+      return;
+    }
+    riskReview.set(review);
+  };
+  const adjudicateRisk = async (input: AgentAdjudicateRisk) => {
+    if (!alive || adjudicating() || props.riskPending())
+      throw new UiError('Checking the original decision receipt. Do not submit another decision.');
+    const unavailable = riskUnavailable();
+    if (unavailable) throw new UiError(unavailable.key);
+    const source = execution();
+    if (
+      input.sessionId !== sessionId ||
+      source?.state.kind !== 'blocked' ||
+      source.runId !== input.runId ||
+      source.highWater !== input.expectedHighWater ||
+      !source.state.blockers.some((blocker) => blocker.id === input.blockerId)
+    )
+      throw new UiError('This run changed. Close this decision and review the current state.');
+    const blocker = source.state.blockers.find((blocker) => blocker.id === input.blockerId)!;
+    if (!blocker.offeredActions.some((offer) => offer.kind === input.decision.kind))
+      throw new UiError('This action is not offered for the current blocker.');
+    adjudicating.set(true);
+    try {
+      const result: AgentExecutionResult = await props.control('adjudicateRisk', input);
+      if (result.kind !== 'found')
+        throw new UiError('This run is no longer available. Refresh the conversation.');
+      if (result.execution.sessionId !== sessionId || result.execution.runId !== input.runId)
+        throw new UiError('Host returned a different run for this decision.');
+      if (result.execution.highWater <= input.expectedHighWater)
+        throw new UiError('The decision did not advance this run. Refresh before deciding again.');
+      if (!alive) return;
+      batch(() => acceptExecution(result.execution));
+      // A failed refresh does not turn an already-recorded decision into failure.
+      await observe().catch(report);
+    } finally {
+      if (alive)
+        batch(() => {
+          adjudicating.set(false);
+          executionRevision.set(executionRevision() + 1);
         });
     }
   };
@@ -1924,7 +2139,7 @@ export function Conversation(props: ConversationProps) {
   };
 
   const nativeSteer = (delivery: 'steer' | 'queue') =>
-    delivery === 'steer' && invocation() !== null && runBackend() === 'model';
+    delivery === 'steer' && runId() !== null && runBackend() === 'model';
   const modelLoading = (delivery: 'steer' | 'queue' = 'steer') =>
     !nativeSteer(delivery) && backend() !== null && modelDetails().kind === 'loading';
   const autoSending = () => {
@@ -1932,10 +2147,10 @@ export function Conversation(props: ConversationProps) {
     return pending !== null && (!!pending.first || draft() === pending.text);
   };
   const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
-    const expectedInvocationId = invocation() ?? undefined;
-    if (expectedInvocationId !== undefined && runBackend() === null)
+    const expectedRunId = runId() ?? undefined;
+    if (expectedRunId !== undefined && runBackend() === null)
       throw new UiError('Loading session history… Your draft is kept.');
-    if (nativeSteer(delivery)) return { delivery, expectedInvocationId };
+    if (nativeSteer(delivery)) return { delivery, expectedRunId };
     const selected = backend();
     if (expectedBackend !== undefined && !sameBackend(selected, expectedBackend))
       throw new UiError('The model changed before confirmation. Send again to confirm it.');
@@ -1947,7 +2162,7 @@ export function Conversation(props: ConversationProps) {
       });
     return {
       delivery,
-      expectedInvocationId,
+      expectedRunId,
       backend: selected,
     };
   };
@@ -1961,7 +2176,7 @@ export function Conversation(props: ConversationProps) {
         : tr('History unavailable. Retrying automatically; your draft is kept.');
     if (ready() && transcriptStatus() !== 'live')
       return tr('Reconnecting updates… Your draft is kept.');
-    if (!ready() || (invocation() !== null && runBackend() === null))
+    if (!ready() || (runId() !== null && runBackend() === null))
       return tr('Loading session history… Your draft is kept.');
     if (archived() && formerBot())
       return tr(
@@ -2133,8 +2348,9 @@ export function Conversation(props: ConversationProps) {
     original.abandoned ||
     (original.receipt?.kind === 'recorded' &&
       original.receipt.outcome.kind === 'returned' &&
+      original.receipt.outcome.result.kind === 'success' &&
       ['rejected', 'not_your_worker'].includes(
-        (original.receipt.outcome.value as { kind?: string })?.kind ?? '',
+        (original.receipt.outcome.result.value as { kind?: string })?.kind ?? '',
       ));
   const needsRecovery = (original: SendOperation) =>
     !original.abandoned &&
@@ -2351,16 +2567,16 @@ export function Conversation(props: ConversationProps) {
     blocked: () => !draftReady() || sending() || recovering(),
     recover,
   });
-  const stop = async (invocationId: string | null) => {
-    if (!alive || !invocationId || invocation() !== invocationId || stopping()) return;
-    stoppingRun.set(invocationId);
+  const stop = async (targetRunId: RunId | null) => {
+    if (!alive || !targetRunId || runId() !== targetRunId || stopping()) return;
+    stoppingRun.set(targetRunId);
     try {
-      const result = await props.control('stop', { sessionId, invocationId });
+      const result = await props.control('stop', { sessionId, runId: targetRunId });
       if (!alive) return;
       if (!result.requested) await observe();
-      // A requested cancellation is not an ended run. The watch owns that fact.
+      // Stop is a durable admission fence, not proof that in-flight work ended.
     } catch (reason) {
-      if (alive && stoppingRun() === invocationId) stoppingRun.set(null);
+      if (alive && stoppingRun() === targetRunId) stoppingRun.set(null);
       report(reason);
     }
   };
@@ -2406,17 +2622,23 @@ export function Conversation(props: ConversationProps) {
       props.visible() &&
       connected() &&
       !archived() &&
-      invocation() === null &&
+      runId() === null &&
       (queued()?.entries.length ?? 0) === 0 &&
       !sending() &&
       !recovering() &&
       !confirmingContinuation();
-    untracked(() => messagePrediction.eligible(eligible));
+    const composer =
+      !draftReady() || attachments.restoring()
+        ? 'restoring'
+        : draft() !== '' || attachments.files().length > 0 || attachments.blocked() !== ''
+          ? 'occupied'
+          : 'empty';
+    untracked(() => messagePrediction.eligible(eligible, composer));
   });
   const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
-    running: () => connected() && invocation() !== null && !stopping(),
+    running: () => connected() && runId() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');
       return host.query('agent', 'queueMessage', {
@@ -2457,7 +2679,7 @@ export function Conversation(props: ConversationProps) {
     workspace,
     empty: () =>
       ready() &&
-      invocation() === null &&
+      runId() === null &&
       rows().length === 0 &&
       live().length === 0 &&
       unresolved().length === 0 &&
@@ -2475,9 +2697,12 @@ export function Conversation(props: ConversationProps) {
     dismissSend: dismissOriginal,
     recovering: () => !receiptsKnown() || sending() || autoSending(),
     stopping,
-    resumable,
-    resuming: confirmingContinuation,
-    resume,
+    execution,
+    continuation,
+    continuing: confirmingContinuation,
+    continueRun,
+    adjudicating: () => adjudicating() || props.riskPending(),
+    adjudicateRisk,
     metrics: () => metricText(metrics()),
     contextUsage: () => {
       const value = metrics();
@@ -2491,14 +2716,18 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
+      if (props.compact) {
+        if (compactStart() === null) compactStart.set(latestQuestionKey());
+        followCompact = true;
+      }
       void send(event.text);
     },
     sendRendered,
-    invocation,
+    run: runId,
     activeTurn: runTurn,
     activityTurn: () => {
       const group = projection().entries.findLast((entry) => entry.kind === 'process');
-      return group?.kind === 'process' ? group.turnId : null;
+      return group?.kind === 'process' ? group.turnKey : null;
     },
     async flushDraft() {
       if (!draftReady()) {
@@ -2526,12 +2755,13 @@ export function Conversation(props: ConversationProps) {
     focusActivity(turnId) {
       cancelNavigation();
       const group = projection().entries.findLast(
-        (entry) => entry.kind === 'process' && entry.turnId === turnId,
+        (entry) => entry.kind === 'process' && entry.turnKey === turnId,
       );
       if (group?.kind !== 'process') {
         const index = display().findLastIndex(
           (entry) =>
-            entry.kind === 'row' && projection().rowsById.get(entry.rowId)?.turnId === turnId,
+            entry.kind === 'row' &&
+            historyTurnKey(projection().rowsById.get(entry.rowId)) === turnId,
         );
         if (index >= 0) {
           list?.scrollToIndex({ index, viewPosition: 0 });
@@ -2539,7 +2769,7 @@ export function Conversation(props: ConversationProps) {
         }
         return;
       }
-      const turn = projection().turns.get(group.turnId);
+      const turn = projection().turns.get(group.turnKey);
       if (!turn) return;
       unfoldTurn(turn);
       const state = groupState(group.key);
@@ -2563,7 +2793,7 @@ export function Conversation(props: ConversationProps) {
         awayFromLatest.set(false);
         innerReader.set(null);
         const group = projection().entries.findLast(
-          (entry) => entry.kind === 'process' && entry.turnId === (turnId ?? runTurn()),
+          (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
         );
         if (group?.kind === 'process') {
           const state = groupState(group.key);
@@ -2613,7 +2843,7 @@ export function Conversation(props: ConversationProps) {
     stop,
     async compact(prompt) {
       if (!alive) return;
-      if (invocation() !== null) throw new UiError('Wait for the current run before compacting.');
+      if (runId() !== null) throw new UiError('Wait for the current run before compacting.');
       const expectedBackend = backend();
       if (expectedBackend === null) throw new UiError('Choose a model before compacting.');
       const model = await selection(expectedBackend);
@@ -2635,7 +2865,7 @@ export function Conversation(props: ConversationProps) {
       ownHandle.jumpLatest(null, true);
     },
     refresh() {
-      resumeRevision.set(resumeRevision() + 1);
+      executionRevision.set(executionRevision() + 1);
       return observe();
     },
   };
@@ -2651,7 +2881,7 @@ export function Conversation(props: ConversationProps) {
       !atHistoryTail() ||
       awayFromLatest() ||
       navigation() !== null ||
-      invocation() !== null ||
+      runId() !== null ||
       observed.through < runThrough ||
       (historyWindow()?.through ?? -1) < observed.through ||
       observed.tailMessageId === null
@@ -2681,7 +2911,7 @@ export function Conversation(props: ConversationProps) {
         kind: 'process' as const,
         observed,
         exposure,
-        tail,
+        messageId: observed.tailMessageId,
         state,
         row: state.rowNodes.get(id)!,
         reader: state.list,
@@ -2695,7 +2925,7 @@ export function Conversation(props: ConversationProps) {
       kind: 'row' as const,
       observed,
       exposure,
-      tail,
+      messageId: observed.tailMessageId,
       identity: historyIdentity,
     };
   };
@@ -2709,13 +2939,13 @@ export function Conversation(props: ConversationProps) {
     if (!target) return;
     if (
       attemptedRead?.revision === target.observed.revision &&
-      attemptedRead.messageId === target.tail.messageId &&
+      attemptedRead.messageId === target.messageId &&
       attemptedRead.exposure === target.exposure
     )
       return;
     attemptedRead = {
       revision: target.observed.revision,
-      messageId: target.tail.messageId,
+      messageId: target.messageId,
       exposure: target.exposure,
     };
     acknowledging.set(true);
@@ -2745,7 +2975,7 @@ export function Conversation(props: ConversationProps) {
         current.identity !== target.identity ||
         current.exposure !== target.exposure ||
         current.observed.revision !== target.observed.revision ||
-        current.tail.messageId !== target.tail.messageId ||
+        current.messageId !== target.messageId ||
         (target.kind === 'process' &&
           (current.kind !== 'process' ||
             current.state !== target.state ||
@@ -2754,12 +2984,14 @@ export function Conversation(props: ConversationProps) {
         return;
       const attempt = await host.control('markRead', {
         sessionId,
-        messageId: target.tail.messageId,
+        messageId: target.messageId,
       });
       const reply = attempt.reply as OperationReply;
       if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
         throw new UiError('The read confirmation is still unknown.');
-      const result = reply.receipt.outcome.value as AgentMarkReadResult;
+      if (reply.receipt.outcome.result.kind === 'failure')
+        throw new Error(reply.receipt.outcome.result.diagnostic);
+      const result = reply.receipt.outcome.result.value as AgentMarkReadResult;
       if (!alive) return;
       if (result.kind === 'rejected')
         throw new UiError('Read confirmation rejected: {reason}', {
@@ -2847,6 +3079,68 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
+  const blockedExecution = computed(() => {
+    const source = execution();
+    return source?.state.kind === 'blocked' ? { source, blockers: source.state.blockers } : null;
+  });
+  const waitingExecution = computed(() => {
+    const source = execution();
+    return source?.state.kind === 'waiting'
+      ? [...new Set(source.state.waits.map((wait) => wait.kind))]
+      : [];
+  });
+  const blockerLabels: Record<AgentRunBlocker['reason']['kind'], MessageKey> = {
+    current_authority_unavailable: 'Current authority unavailable',
+    external_effect_unknown: 'External operation outcome unknown',
+    operation_unknown: 'Operation outcome unknown',
+    provider_effect_unknown: 'Provider tool outcome unknown',
+    original_admission_unknown: 'Original admission unknown',
+    code_cell_recovery_unavailable: 'Code cell recovery unavailable',
+    unsupported_protocol: 'Protocol recovery unavailable',
+    cleanup_unconfirmed: 'Resource cleanup unconfirmed',
+    tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
+    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
+    resources_unavailable: 'Resources unavailable',
+    external_task_unobservable: 'External task cannot be observed',
+    external_publication_item: 'External output needs reconciliation',
+    external_publication_unavailable: 'External output publication unavailable',
+  };
+  const waitLabels: Record<
+    Extract<AgentExecution['state'], { kind: 'waiting' }>['waits'][number]['kind'],
+    MessageKey
+  > = {
+    cell: 'Waiting for a code cell',
+    external: 'Waiting for the external task',
+    provider_backoff: 'Waiting to retry the provider',
+    model: 'Waiting for the model',
+    approval: 'Waiting for approval',
+    retry: 'Waiting to retry',
+    operation: 'Waiting for the original operation',
+    child: 'Waiting for a child run',
+    blocker: 'Waiting for a blocker',
+  };
+  let botReadThrough = 0;
+  effect(() => {
+    const latest = bot.latest();
+    if (
+      latest === null ||
+      latest.sequence <= botReadThrough ||
+      !props.visible() ||
+      !props.foreground() ||
+      !visibleRows().has(`bot/${latest.turnId}`)
+    )
+      return;
+    botReadThrough = latest.sequence;
+    void (async () => {
+      const attempt = await host.control('markBotRead', { sessionId, through: latest.sequence });
+      const reply = attempt.reply as OperationReply;
+      if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+        throw new UiError('The read confirmation is still unknown.');
+      if (reply.receipt.outcome.result.kind === 'failure')
+        throw new Error(reply.receipt.outcome.result.diagnostic);
+    })().catch(report);
+  });
+
   const railShown = () => ready() && navigationItems().length > 1;
   // The desktop rail's width, kept on both sides so the reading column stays centered.
   const railInset = () => (platform.idiom !== 'terminal' && railShown() ? railWidth() + 8 : 0);
@@ -2861,6 +3155,298 @@ export function Conversation(props: ConversationProps) {
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
   );
+  const entryRow = (key: () => string) => (
+    <View style={readingColumn}>
+      <Each of={[key()]} key={(id: string) => id}>
+        {(ownedKey) => {
+          const initial = displayByKey().get(ownedKey());
+          if (!initial) return <View />;
+          const entry = () => displayByKey().get(ownedKey()) ?? initial;
+          const reveal = () =>
+            list?.scrollToIndex({
+              index: shownKeys().indexOf(ownedKey()),
+              viewPosition: 0,
+              animated: false,
+            });
+          if (initial.kind === 'summary') {
+            const first = projection().turns.get(initial.turnKey);
+            if (!first) return <View />;
+            const turn = () => projection().turns.get(initial.turnKey) ?? first;
+            const images = computed(() =>
+              turnImages(projection().rowsById.values(), initial.turnKey),
+            );
+            const groups = computed(() =>
+              projection().entries.filter(
+                (item): item is ProcessGroup =>
+                  item.kind === 'process' && item.turnKey === initial.turnKey,
+              ),
+            );
+            return (
+              <TurnSummary
+                turn={turn}
+                state={turnState(initial.turnKey)}
+                groups={groups}
+                row={currentRow}
+                expanded={() => turnExpanded(turn())}
+                canFold={() => canFoldTurn(turn())}
+                images={{
+                  sessionId,
+                  through: () => latestKnown,
+                  refs: images,
+                  preview: props.previewImage,
+                }}
+                toggle={(open) => {
+                  turnState(initial.turnKey).expanded.set(open);
+                  if (open) reveal();
+                }}
+              />
+            );
+          }
+          if (initial.kind === 'process') {
+            const group = () => {
+              const latest = entry();
+              return latest.kind === 'process' ? latest.group : initial.group;
+            };
+            const first = projection().turns.get(initial.group.turnKey);
+            if (!first) return <View />;
+            const turn = () => projection().turns.get(initial.group.turnKey) ?? first;
+            const tool = () =>
+              latestToolActivity(
+                toolActivity().filter((item) => group().toolIds.includes(item.toolUseId)),
+                runId(),
+                group().turnKey === runTurn() ? runTurn() : null,
+              );
+            const liveTools = computed(() =>
+              toolActivity().filter((item) =>
+                group().members.some(
+                  (member) =>
+                    member.kind === 'activity' &&
+                    member.toolUseId === item.toolUseId &&
+                    group().toolIds.includes(item.toolUseId),
+                ),
+              ),
+            );
+            return (
+              <TurnPanel
+                group={group}
+                turn={turn}
+                toolActivity={tool}
+                liveTools={liveTools}
+                toolProgress={toolProgress}
+                state={groupState(initial.group.key)}
+                row={currentRow}
+                rowState={rowState}
+                sessionId={sessionId}
+                through={() => latestKnown}
+                previewImage={props.previewImage}
+                openLink={props.openLink}
+                senders={senders}
+                userScroll={() => cancelNavigation()}
+                reveal={reveal}
+                activity={activity}
+                viewport={readingSize}
+                reading={(away) => {
+                  changedReadExposure();
+                  if (away) innerReader.set(initial.group.key);
+                  else if (innerReader() === initial.group.key) innerReader.set(null);
+                }}
+                settled={(atEnd) => {
+                  if (atEnd) readerAtEnd.set(initial.group.key);
+                  else if (readerAtEnd() === initial.group.key) readerAtEnd.set(null);
+                }}
+              />
+            );
+          }
+          if (initial.kind === 'botWorking')
+            return (
+              <BotWorking
+                detail={() => {
+                  const tool = latestToolActivity(toolActivity(), runId(), runTurn());
+                  return tool ? `${tool.name}` : '';
+                }}
+              />
+            );
+          if (initial.kind === 'botWaiting')
+            return (
+              <BotWaiting
+                workers={() => {
+                  const latest = entry();
+                  return latest.kind === 'botWaiting' ? latest.workers : initial.workers;
+                }}
+                open={canOpenWorker() ? openWorker : undefined}
+              />
+            );
+          if (initial.kind === 'botNote')
+            return <BotNote text={() => tr('The Bot did not reply this time')} />;
+          if (initial.kind === 'bot') {
+            const worker = () => {
+              const latest = entry();
+              return latest.kind === 'bot' ? latest.worker : initial.worker;
+            };
+            return (
+              <BotReply
+                worker={
+                  worker() !== undefined && canOpenWorker()
+                    ? {
+                        title: () => {
+                          const id = worker();
+                          return id !== undefined ? (senders.session(id)?.title ?? '') : '';
+                        },
+                        exists: () => {
+                          const id = worker();
+                          return id !== undefined && senders.session(id) !== null;
+                        },
+                        open: () => {
+                          const id = worker();
+                          if (id !== undefined) openWorker(id);
+                        },
+                      }
+                    : undefined
+                }
+                messages={() => bot.forTurn(initial.turnId)}
+                openLink={props.openLink}
+                userScroll={() => cancelNavigation()}
+              />
+            );
+          }
+          const first = currentRow(initial.rowId);
+          if (!first) return <View />;
+          const row = () => currentRow(initial.rowId) ?? first;
+          return (
+            <MessageRow
+              item={row}
+              repeats={() => {
+                const item = displayByKey().get(initial.rowId);
+                return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
+              }}
+              toolMaxHeight={() => readingSize().height}
+              toolProgress={toolProgress}
+              ownerKey={() => initial.rowId}
+              viewState={rowState(initial.rowId)}
+              sessionId={sessionId}
+              through={() => latestKnown}
+              previewImage={props.previewImage}
+              openLink={props.openLink}
+              senders={senders}
+              userScroll={() => cancelNavigation()}
+              onExpand={reveal}
+              onToolReading={(key) => {
+                if (
+                  !alive ||
+                  key !== initial.rowId ||
+                  displayByKey().get(key)?.kind !== 'row' ||
+                  !rowStates.get(key)?.expanded()
+                )
+                  return;
+                innerReader.set(key);
+              }}
+              finalActions={(row, ownerKey, menu) => (
+                <FinalActions
+                  row={row}
+                  ownerKey={ownerKey}
+                  sessionId={sessionId}
+                  through={() => latestKnown}
+                  fork={props.fork}
+                  menu={menu}
+                  extra={
+                    platform.idiom !== 'terminal' && props.edit ? (
+                      <MessageEdit
+                        regenerate
+                        row={() => loadedOpening(historyTurnKey(row()))}
+                        sessionId={sessionId}
+                        through={() => latestKnown}
+                        menu={menu}
+                        opensTurn={() => true}
+                        edit={props.edit!}
+                      />
+                    ) : undefined
+                  }
+                />
+              )}
+              failureActions={
+                platform.idiom === 'terminal'
+                  ? undefined
+                  : (row) => (
+                      // Only where the conversation ends in this failure.
+                      <If when={run() !== 'running' && displayKeys().at(-1) === initial.rowId}>
+                        <TurnRetry
+                          row={() => loadedOpening(historyTurnKey(row()))}
+                          sessionId={sessionId}
+                          through={() => latestKnown}
+                          blocked={() =>
+                            draft().trim() || attachments.files().length > 0
+                              ? tr('Send or clear the draft first.')
+                              : sendBlockedReason()
+                          }
+                          send={send}
+                        />
+                      </If>
+                    )
+              }
+              editMessage={
+                platform.idiom !== 'terminal' && props.edit
+                  ? (row, ownerKey, menu) => (
+                      <MessageEdit
+                        row={row}
+                        ownerKey={ownerKey}
+                        sessionId={sessionId}
+                        through={() => latestKnown}
+                        menu={menu}
+                        opensTurn={() => opensTurn(row())}
+                        edit={props.edit!}
+                      />
+                    )
+                  : undefined
+              }
+            />
+          );
+        }}
+      </Each>
+    </View>
+  );
+  if (props.compact)
+    return (
+      <View
+        ref={(node) => root.set(node)}
+        onLayout={({ bounds: frame }) => readingSize.set(frame.size)}
+        style={{
+          flexShrink: 1,
+          minHeight: 0,
+          borderTopWidth: shownKeys().length ? 1 : 0,
+          borderTopColor: C.line,
+        }}
+      >
+        <Scroll
+          ref={(node) => (compactScroll = node)}
+          onScroll={(event) => {
+            followCompact =
+              event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 32;
+            changedReadExposure();
+          }}
+          style={{ flexShrink: 1, minHeight: 0 }}
+          contentStyle={{ paddingVertical: shownKeys().length ? 16 : 0 }}
+        >
+          <View
+            onLayout={() => {
+              if (followCompact) compactScroll?.scrollToEnd({ animated: false });
+            }}
+          >
+            <List
+              ref={list}
+              viewport="parent"
+              each={shownKeys()}
+              estimatedItemSize={96}
+              onViewableItemsChange={(event) => {
+                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+                changedReadExposure();
+              }}
+            >
+              {entryRow}
+            </List>
+          </View>
+        </Scroll>
+      </View>
+    );
   return (
     <View
       ref={(node) => root.set(node)}
@@ -2922,6 +3508,115 @@ export function Conversation(props: ConversationProps) {
           )
         }
       />
+      <If when={riskReview()}>
+        {(review) => (
+          <RiskDecisionDialog
+            review={review()}
+            current={() => riskReviewCurrent(review())}
+            unavailable={riskUnavailable}
+            pending={() => adjudicating() || props.riskPending()}
+            submit={adjudicateRisk}
+            close={() => riskReview.set(null)}
+          />
+        )}
+      </If>
+      <If when={blockedExecution()}>
+        {(blocked) => (
+          <Scroll style={{ maxHeight: Math.max(160, windowSize().height / 3), flexShrink: 1 }}>
+            <View style={{ ...readingColumn, gap: 12, paddingVertical: 12 }}>
+              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Run blocked')}</Text>
+              <Each of={blocked().blockers} key={(blocker) => blocker.id}>
+                {(blocker) => (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {tr(blockerLabels[blocker().reason.kind])}
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      <Each of={blocker().offeredActions} key={(offer) => offer.kind}>
+                        {(offer) => (
+                          <Button
+                            disabled={
+                              !connected() || adjudicating() || props.riskPending() || archived()
+                            }
+                            onPress={inputAction(openRiskReview, {
+                              source: blocked().source,
+                              blockerId: blocker().id,
+                              offer: offer(),
+                            })}
+                            style={controlStyle}
+                            hoverStyle={{ backgroundColor: C.surface }}
+                            focusStyle={{ backgroundColor: C.raised }}
+                          >
+                            <Text style={{ ...captionTextStyle, color: C.accent }}>
+                              {tr(riskActionLabels[offer().kind])}…
+                            </Text>
+                          </Button>
+                        )}
+                      </Each>
+                    </View>
+                    <If when={blocker().offeredActions.length === 0}>
+                      <Text style={{ ...captionTextStyle, color: C.muted }}>
+                        {tr('No risk action is currently offered.')}
+                      </Text>
+                    </If>
+                    <If
+                      when={
+                        blocker().offeredActions.length > 0 &&
+                        !blocker().offeredActions.some(
+                          (offer) => offer.kind !== 'cancel_blocked_run',
+                        )
+                      }
+                    >
+                      <Text style={{ ...captionTextStyle, color: C.muted }}>
+                        {tr('Observation and replanning are not offered for this blocker.')}
+                      </Text>
+                    </If>
+                  </View>
+                )}
+              </Each>
+            </View>
+          </Scroll>
+        )}
+      </If>
+      <Each of={waitingExecution()} key={(kind) => kind}>
+        {(kind) => (
+          <View style={{ ...readingColumn, paddingVertical: 8 }}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr(waitLabels[kind()])}</Text>
+          </View>
+        )}
+      </Each>
+      <If when={continuation()}>
+        {(candidate) => (
+          <If when={!draft().trim() && attachments.files().length === 0}>
+            <View style={{ ...readingColumn, paddingVertical: 8 }}>
+              <Button
+                disabled={
+                  confirmingContinuation() ||
+                  !!sendBlockedReason() ||
+                  modelDetails().kind !== 'ready'
+                }
+                onPress={inputAction(
+                  (input: { source: AgentExecution; backend: BackendIdentity }) =>
+                    continueRun(input.source, input.backend),
+                  {
+                    source: candidate().source,
+                    backend: backend(),
+                  },
+                )}
+                style={{ ...controlStyle, alignSelf: 'flex-start' }}
+                hoverStyle={{ backgroundColor: C.surface }}
+                focusStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.accent }}>
+                  {confirmingContinuation()
+                    ? tr('Confirming continuation…')
+                    : tr('Continue in a new run')}
+                </Text>
+              </Button>
+            </View>
+          </If>
+        )}
+      </If>
       <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
         <View
           style={{
@@ -3092,269 +3787,7 @@ export function Conversation(props: ConversationProps) {
                 </If>
               }
             >
-              {(key) => (
-                <View style={readingColumn}>
-                  <Each of={[key()]} key={(id: string) => id}>
-                    {(ownedKey) => {
-                      const initial = displayByKey().get(ownedKey());
-                      if (!initial) return <View />;
-                      const entry = () => displayByKey().get(ownedKey()) ?? initial;
-                      const reveal = () =>
-                        list?.scrollToIndex({
-                          index: displayKeys().indexOf(ownedKey()),
-                          viewPosition: 0,
-                          animated: false,
-                        });
-                      if (initial.kind === 'summary') {
-                        const first = projection().turns.get(initial.turnId);
-                        if (!first) return <View />;
-                        const turn = () => projection().turns.get(initial.turnId) ?? first;
-                        const images = computed(() =>
-                          turnImages(projection().rowsById.values(), initial.turnId),
-                        );
-                        const groups = computed(() =>
-                          projection().entries.filter(
-                            (item): item is ProcessGroup =>
-                              item.kind === 'process' && item.turnId === initial.turnId,
-                          ),
-                        );
-                        return (
-                          <TurnSummary
-                            turn={turn}
-                            state={turnState(initial.turnId)}
-                            groups={groups}
-                            row={currentRow}
-                            expanded={() => turnExpanded(turn())}
-                            canFold={() => canFoldTurn(turn())}
-                            images={{
-                              sessionId,
-                              through: () => latestKnown,
-                              refs: images,
-                              preview: props.previewImage,
-                            }}
-                            toggle={(open) => {
-                              turnState(initial.turnId).expanded.set(open);
-                              if (open) reveal();
-                            }}
-                          />
-                        );
-                      }
-                      if (initial.kind === 'process') {
-                        const group = () => {
-                          const latest = entry();
-                          return latest.kind === 'process' ? latest.group : initial.group;
-                        };
-                        const first = projection().turns.get(initial.group.turnId);
-                        if (!first) return <View />;
-                        const turn = () => projection().turns.get(initial.group.turnId) ?? first;
-                        const tool = () =>
-                          latestToolActivity(
-                            toolActivity().filter((item) =>
-                              group().toolIds.includes(item.toolUseId),
-                            ),
-                            invocation(),
-                            group().turnId,
-                          );
-                        const liveTools = computed(() =>
-                          toolActivity().filter((item) =>
-                            group().members.some(
-                              (member) =>
-                                member.kind === 'activity' &&
-                                member.toolUseId === item.toolUseId &&
-                                group().toolIds.includes(item.toolUseId),
-                            ),
-                          ),
-                        );
-                        return (
-                          <TurnPanel
-                            group={group}
-                            turn={turn}
-                            toolActivity={tool}
-                            liveTools={liveTools}
-                            toolProgress={toolProgress}
-                            state={groupState(initial.group.key)}
-                            row={currentRow}
-                            rowState={rowState}
-                            sessionId={sessionId}
-                            through={() => latestKnown}
-                            previewImage={props.previewImage}
-                            openLink={props.openLink}
-                            senders={senders}
-                            userScroll={() => cancelNavigation()}
-                            reveal={reveal}
-                            activity={activity}
-                            viewport={readingSize}
-                            reading={(away) => {
-                              changedReadExposure();
-                              if (away) innerReader.set(initial.group.key);
-                              else if (innerReader() === initial.group.key) innerReader.set(null);
-                            }}
-                            settled={(atEnd) => {
-                              if (atEnd) readerAtEnd.set(initial.group.key);
-                              else if (readerAtEnd() === initial.group.key) readerAtEnd.set(null);
-                            }}
-                          />
-                        );
-                      }
-                      if (initial.kind === 'botWorking')
-                        return (
-                          <BotWorking
-                            detail={() => {
-                              const tool = latestToolActivity(
-                                toolActivity(),
-                                invocation(),
-                                runTurn(),
-                              );
-                              return tool ? `${tool.name}` : '';
-                            }}
-                          />
-                        );
-                      if (initial.kind === 'botWaiting')
-                        return (
-                          <BotWaiting
-                            workers={() => {
-                              const latest = entry();
-                              return latest.kind === 'botWaiting'
-                                ? latest.workers
-                                : initial.workers;
-                            }}
-                            open={canOpenWorker() ? openWorker : undefined}
-                          />
-                        );
-                      if (initial.kind === 'botNote')
-                        return <BotNote text={() => tr('The Bot did not reply this time')} />;
-                      if (initial.kind === 'bot') {
-                        const worker = () => {
-                          const latest = entry();
-                          return latest.kind === 'bot' ? latest.worker : initial.worker;
-                        };
-                        return (
-                          <BotReply
-                            worker={
-                              worker() !== undefined && canOpenWorker()
-                                ? {
-                                    title: () => {
-                                      const id = worker();
-                                      return id !== undefined
-                                        ? (senders.session(id)?.title ?? '')
-                                        : '';
-                                    },
-                                    exists: () => {
-                                      const id = worker();
-                                      return id !== undefined && senders.session(id) !== null;
-                                    },
-                                    open: () => {
-                                      const id = worker();
-                                      if (id !== undefined) openWorker(id);
-                                    },
-                                  }
-                                : undefined
-                            }
-                            messages={() => bot.forTurn(initial.turnId)}
-                            openLink={props.openLink}
-                            userScroll={() => cancelNavigation()}
-                          />
-                        );
-                      }
-                      const first = currentRow(initial.rowId);
-                      if (!first) return <View />;
-                      const row = () => currentRow(initial.rowId) ?? first;
-                      return (
-                        <MessageRow
-                          item={row}
-                          repeats={() => {
-                            const item = displayByKey().get(initial.rowId);
-                            return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
-                          }}
-                          toolMaxHeight={() => readingSize().height}
-                          toolProgress={toolProgress}
-                          ownerKey={() => initial.rowId}
-                          viewState={rowState(initial.rowId)}
-                          sessionId={sessionId}
-                          through={() => latestKnown}
-                          previewImage={props.previewImage}
-                          openLink={props.openLink}
-                          senders={senders}
-                          userScroll={() => cancelNavigation()}
-                          onExpand={reveal}
-                          onToolReading={(key) => {
-                            if (
-                              !alive ||
-                              key !== initial.rowId ||
-                              displayByKey().get(key)?.kind !== 'row' ||
-                              !rowStates.get(key)?.expanded()
-                            )
-                              return;
-                            innerReader.set(key);
-                          }}
-                          finalActions={(row, ownerKey, menu) => (
-                            <FinalActions
-                              row={row}
-                              ownerKey={ownerKey}
-                              sessionId={sessionId}
-                              through={() => latestKnown}
-                              fork={props.fork}
-                              menu={menu}
-                              extra={
-                                platform.idiom !== 'terminal' && props.edit ? (
-                                  <MessageEdit
-                                    regenerate
-                                    row={() => loadedOpening(row().turnId)}
-                                    sessionId={sessionId}
-                                    through={() => latestKnown}
-                                    menu={menu}
-                                    opensTurn={() => true}
-                                    edit={props.edit!}
-                                  />
-                                ) : undefined
-                              }
-                            />
-                          )}
-                          failureActions={
-                            platform.idiom === 'terminal'
-                              ? undefined
-                              : (row) => (
-                                  // Only where the conversation ends in this failure.
-                                  <If
-                                    when={
-                                      run() !== 'running' && displayKeys().at(-1) === initial.rowId
-                                    }
-                                  >
-                                    <TurnRetry
-                                      row={() => loadedOpening(row().turnId)}
-                                      sessionId={sessionId}
-                                      through={() => latestKnown}
-                                      blocked={() =>
-                                        draft().trim() || attachments.files().length > 0
-                                          ? tr('Send or clear the draft first.')
-                                          : sendBlockedReason()
-                                      }
-                                      send={send}
-                                    />
-                                  </If>
-                                )
-                          }
-                          editMessage={
-                            platform.idiom !== 'terminal' && props.edit
-                              ? (row, ownerKey, menu) => (
-                                  <MessageEdit
-                                    row={row}
-                                    ownerKey={ownerKey}
-                                    sessionId={sessionId}
-                                    through={() => latestKnown}
-                                    menu={menu}
-                                    opensTurn={() => opensTurn(row())}
-                                    edit={props.edit!}
-                                  />
-                                )
-                              : undefined
-                          }
-                        />
-                      );
-                    }}
-                  </Each>
-                </View>
-              )}
+              {entryRow}
             </List>
             <If when={platform.idiom === 'terminal' && railShown()}>{rail()}</If>
             <View

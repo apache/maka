@@ -18,27 +18,16 @@
  */
 
 use crate::{EventLog, StoreError};
-use rusqlite::params;
 
 /// Shares the accepted work's transaction: a retiring Session cannot accept new
-/// work, and an accepted use makes a preparing revision no longer disposable.
+/// work. Domain owners enforce their own readiness before accepting work.
 pub(crate) fn retain(connection: &rusqlite::Connection, session: &str) -> Result<(), StoreError> {
     super::removal::require_accepting(connection, session)?;
-    let importing: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM session_imports WHERE session_id=? AND state!='published')",
-        params![session],
-        |row| row.get(0),
-    )?;
-    if importing {
-        return Err(StoreError::InvalidTransition(
-            "Session import is not published".into(),
-        ));
-    }
-    super::copy::retain(connection, session)
+    Ok(())
 }
 
 impl EventLog {
-    /// Native process acceptance has no canonical invocation. The Host pins its
+    /// The Host pins its
     /// admission gate through this commit and actual launch.
     pub async fn retain_session(&self, session: &str) -> Result<(), StoreError> {
         super::validate_id(session)?;

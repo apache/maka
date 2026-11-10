@@ -41,6 +41,17 @@ mod stats;
 pub use stats::{ConnectionResourceStats, SqliteResourceStats};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// A synchronous, read-only SQL query owned by a trusted native domain.
+/// No connection escapes this method. Queries perform no network or external
+/// runtime effects. Source materialization may stream immutable bytes into an
+/// already-owned temporary prepared backing on this blocking lane; it must not
+/// write arbitrary user files or re-enter the writer.
+pub trait Query: Send + 'static {
+    type Output: Send + 'static;
+    fn execute(self, connection: &Connection) -> Result<Self::Output, StoreError>;
+}
+
 const WRITE_CAPACITY: usize = 32;
 const PURE_READERS: usize = 2;
 
@@ -141,7 +152,9 @@ impl OpenOptions {
 
 type Preparation = Box<dyn FnOnce() + Send>;
 type Reply = Box<dyn FnOnce() + Send>;
-type Job = Box<dyn FnOnce(&mut Connection, Result<(), StoreError>) -> (bool, Reply) + Send>;
+type Job = Box<
+    dyn FnOnce(&mut Connection, Result<(), StoreError>, &watch::Sender<()>) -> (bool, Reply) + Send,
+>;
 struct Envelope {
     command: Command,
     _custody: Option<Custody>,
@@ -157,17 +170,13 @@ enum Command {
 }
 enum PreparedWrite {
     Ready(crate::writeback::Request),
-    Preparing(oneshot::Receiver<Result<crate::writeback::Request, Reply>>),
+    Preparing(oneshot::Receiver<Option<crate::writeback::Request>>),
 }
 impl PreparedWrite {
-    fn resolve(self) -> Result<Option<crate::writeback::Request>, Reply> {
+    fn resolve(self) -> Option<crate::writeback::Request> {
         match self {
-            Self::Ready(request) => Ok(Some(request)),
-            Self::Preparing(receiver) => match receiver.blocking_recv() {
-                Ok(Ok(request)) => Ok(Some(request)),
-                Ok(Err(reply)) => Err(reply),
-                Err(_) => Ok(None),
-            },
+            Self::Ready(request) => Some(request),
+            Self::Preparing(receiver) => receiver.blocking_recv().ok().flatten(),
         }
     }
 }
@@ -191,7 +200,6 @@ struct ReadJob {
 struct Admission {
     accepting: Arc<AtomicBool>,
     reads: Vec<Sender<ReadJob>>,
-    observations: Sender<ReadJob>,
     writer: Sender<Envelope>,
     idle_readers: Sender<usize>,
 }
@@ -202,7 +210,6 @@ impl Admission {
         for lane in &self.reads {
             lane.close();
         }
-        self.observations.close();
         let _ = self.writer.try_send(Envelope {
             command: Command::Wake,
             _custody: None,
@@ -216,11 +223,32 @@ impl Drop for Admission {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WriterIdentity(usize);
+impl WriterIdentity {
+    fn of(connection: &Connection) -> Self {
+        // SAFETY: the borrow keeps this SQLite handle live. Only its address is
+        // copied for identity comparison; the raw pointer is never dereferenced.
+        Self(unsafe { connection.handle() } as usize)
+    }
+}
+struct CloseWriterIngress {
+    ingress: Sender<Envelope>,
+    physical_released: Arc<AtomicBool>,
+}
+impl Drop for CloseWriterIngress {
+    fn drop(&mut self) {
+        self.physical_released.store(true, Ordering::Release);
+        self.ingress.close();
+    }
+}
+
 pub struct OwnedConnection {
     admission: Arc<Admission>,
+    writer_identity: WriterIdentity,
+    physical_released: Arc<AtomicBool>,
     writer: WriterIngress,
     reads: Vec<Sender<ReadJob>>,
-    observations: Sender<ReadJob>,
     read_on_owner: bool,
     temporary: bool,
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
@@ -237,46 +265,12 @@ pub(crate) struct WriterIngress {
     preparations: Sender<Preparation>,
     custody: Option<Custody>,
 }
-#[derive(Clone)]
-pub(crate) struct ObservationIngress {
-    jobs: Sender<ReadJob>,
-    custody: Option<Custody>,
-}
-impl ObservationIngress {
-    pub(crate) async fn purge_session(&self, session: String) -> Result<(), StoreError> {
-        let (reply, result) = oneshot::channel();
-        self.jobs
-            .send(ReadJob {
-                _slot: None,
-                open: false,
-                _custody: self.custody.clone(),
-                run: Box::new(move |db, valid| {
-                    let value = valid.and_then(|()| match db {
-                        Some(db) => crate::transcript::purge_cache(db, &session),
-                        None => Ok(()),
-                    });
-                    (
-                        true,
-                        Box::new(move || {
-                            let _ = reply.send(value);
-                        }),
-                    )
-                }),
-            })
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        result.await.map_err(|_| StoreError::OperationUnknown)?
-    }
-}
 impl WriterIngress {
     pub(crate) async fn write<S: crate::writeback::Statement>(
         &self,
         statement: S,
         commits: crate::commits::CommitNotice,
-    ) -> Result<S::Output, StoreError>
-    where
-        crate::writeback::Request: From<crate::writeback::Pending<S>>,
-    {
+    ) -> Result<S::Output, StoreError> {
         let permit = Arc::new(
             self.capacity
                 .clone()
@@ -285,6 +279,8 @@ impl WriterIngress {
                 .map_err(|_| StoreError::ConnectionClosed)?,
         );
         let (reply, result) = oneshot::channel();
+        let pending =
+            crate::writeback::Pending::new(statement, commits, reply, self.failures.clone());
         if S::PREPARE_OFF_THREAD {
             let (prepared, ready) = oneshot::channel();
             self.jobs
@@ -295,38 +291,14 @@ impl WriterIngress {
                 })
                 .await
                 .map_err(|_| StoreError::ConnectionClosed)?;
-            let failures = self.failures.clone();
             self.preparations
                 .try_send(Box::new(move || {
                     let _permit = permit;
-                    match catch_unwind(AssertUnwindSafe(|| statement.prepare()))
-                        .unwrap_or(Err(StoreError::OperationUnknown))
-                    {
-                        Ok(statement) => {
-                            let _ = prepared.send(Ok(crate::writeback::Pending::new(
-                                statement, commits, reply, failures,
-                            )
-                            .into()));
-                        }
-                        Err(error) => {
-                            let notify: Reply = Box::new(move || {
-                                let _ = reply.send(Err(error));
-                            });
-                            if let Err(Err(notify)) = prepared.send(Err(notify)) {
-                                notify();
-                            }
-                        }
-                    }
+                    let _ = prepared.send(Some(pending.prepare().into_request()));
                 }))
                 .map_err(|_| StoreError::ConnectionClosed)?;
         } else {
-            let request = crate::writeback::Pending::new(
-                statement.prepare()?,
-                commits,
-                reply,
-                self.failures.clone(),
-            )
-            .into();
+            let request = pending.prepare().into_request();
             self.jobs
                 .send(Envelope {
                     command: Command::Write(PreparedWrite::Ready(request)),
@@ -366,15 +338,16 @@ impl WriterIngress {
                 let _permit = permit;
                 let value = catch_unwind(AssertUnwindSafe(prepare))
                     .unwrap_or(Err(StoreError::OperationUnknown));
-                let job: Job = Box::new(move |connection, valid| {
-                    let (value, clean, _) = execute(
-                        connection,
-                        valid,
-                        move |connection| operation(connection, value?),
-                        None,
-                    );
+                let job: Job = Box::new(move |connection, valid, changed| {
+                    let before = connection.total_changes();
+                    let (value, clean, _) = execute(connection, valid, move |connection| {
+                        operation(connection, value?)
+                    });
                     if value.is_err() {
                         failures.fetch_add(1, Ordering::AcqRel);
+                    }
+                    if value.is_ok() && connection.total_changes() != before {
+                        changed.send_replace(());
                     }
                     (
                         clean,
@@ -388,10 +361,7 @@ impl WriterIngress {
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
-    #[cfg(test)]
-    pub(crate) fn failures(&self) -> u64 {
-        self.failures.load(Ordering::Acquire)
-    }
+
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
@@ -408,10 +378,14 @@ impl WriterIngress {
             .send(Envelope {
                 _custody: self.custody.clone(),
                 _permit: Some(Arc::new(permit)),
-                command: Command::Run(Box::new(move |connection, valid| {
-                    let (result, clean, _) = execute(connection, valid, operation, None);
+                command: Command::Run(Box::new(move |connection, valid, changed| {
+                    let before = connection.total_changes();
+                    let (result, clean, _) = execute(connection, valid, operation);
                     if result.is_err() {
                         failures.fetch_add(1, Ordering::AcqRel);
+                    }
+                    if result.is_ok() && connection.total_changes() != before {
+                        changed.send_replace(());
                     }
                     (
                         clean,
@@ -432,32 +406,11 @@ fn execute<T>(
     connection: &mut Connection,
     valid: Result<(), StoreError>,
     operation: impl FnOnce(&mut Connection) -> Result<T, StoreError>,
-    cancel: Option<Arc<AtomicBool>>,
 ) -> (Result<T, StoreError>, bool, bool) {
     let mut panicked = false;
     let mut result = match valid {
         Err(error) => Err(error),
         Ok(()) => {
-            if cancel
-                .as_ref()
-                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-            {
-                return (
-                    Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-                        None,
-                    )
-                    .into()),
-                    true,
-                    false,
-                );
-            }
-            if let Some(cancel) = cancel
-                && let Err(error) =
-                    connection.progress_handler(1000, Some(move || cancel.load(Ordering::Acquire)))
-            {
-                return (Err(error.into()), false, false);
-            }
             let result =
                 catch_unwind(AssertUnwindSafe(|| operation(connection))).unwrap_or_else(|_| {
                     panicked = true;
@@ -497,12 +450,27 @@ impl OwnedConnection {
     pub(crate) fn owner_identity(&self) -> std::sync::Weak<AtomicU64> {
         Arc::downgrade(&self.writer.failures)
     }
+    pub(crate) fn require_same_writer(&self, connection: &Connection) -> Result<(), StoreError> {
+        if self.writer_identity != WriterIdentity::of(connection) {
+            return Err(StoreError::InvalidTransition(
+                "foreign physical Root writer".into(),
+            ));
+        }
+        // Read release after comparing the handle, preventing address-reuse ABA.
+        // Ingress can close while accepted jobs drain; only physical EOF/transfer
+        // or unwind marks release before SQLite can be freed or transferred.
+        if self.physical_released.load(Ordering::Acquire) {
+            return Err(StoreError::ConnectionClosed);
+        }
+        Ok(())
+    }
     pub(crate) fn cloned(&self) -> Self {
         Self {
             admission: self.admission.clone(),
+            writer_identity: self.writer_identity,
+            physical_released: self.physical_released.clone(),
             writer: self.writer.clone(),
             reads: self.reads.clone(),
-            observations: self.observations.clone(),
             read_on_owner: self.read_on_owner,
             temporary: self.temporary,
             closed: self.closed.clone(),
@@ -518,24 +486,12 @@ impl OwnedConnection {
         value.writer.custody = value.custody.clone();
         value
     }
-    pub(crate) fn observations(&self) -> ObservationIngress {
-        ObservationIngress {
-            jobs: self.observations.clone(),
-            custody: self.custody.clone(),
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn writer(&self) -> WriterIngress {
-        self.writer.clone()
-    }
+
     pub(crate) async fn write<S: crate::writeback::Statement>(
         &self,
         statement: S,
         commits: crate::commits::CommitNotice,
-    ) -> Result<S::Output, StoreError>
-    where
-        crate::writeback::Request: From<crate::writeback::Pending<S>>,
-    {
+    ) -> Result<S::Output, StoreError> {
         self.require_open()?;
         self.writer.write(statement, commits).await
     }
@@ -557,22 +513,13 @@ impl OwnedConnection {
         authority: ConnectionAuthority,
         initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
     ) -> Result<Self, StoreError> {
-        Self::start(options, authority, initialize, None, None).await
-    }
-    pub(crate) async fn open_tracked(
-        options: OpenOptions,
-        authority: ConnectionAuthority,
-        initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
-        registration: crate::root_store::StageRegistration,
-    ) -> Result<Self, StoreError> {
-        Self::start(options, authority, initialize, Some(registration), None).await
+        Self::start(options, authority, initialize, None).await
     }
     pub async fn from_temporary_connection(connection: Connection) -> Result<Self, StoreError> {
         Self::start(
             OpenOptions::temporary(),
             ConnectionAuthority::Temporary,
             |_| Ok(()),
-            None,
             Some(connection),
         )
         .await
@@ -581,7 +528,6 @@ impl OwnedConnection {
         options: OpenOptions,
         authority: ConnectionAuthority,
         initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
-        mut registration: Option<crate::root_store::StageRegistration>,
         existing: Option<Connection>,
     ) -> Result<Self, StoreError> {
         let read_on_owner =
@@ -592,7 +538,6 @@ impl OwnedConnection {
             async_channel::bounded::<Preparation>(WRITE_CAPACITY);
         let (reads, read_receivers): (Vec<_>, Vec<_>) =
             (0..PURE_READERS).map(|_| async_channel::bounded(1)).unzip();
-        let (observations, observation_receiver) = async_channel::bounded(1);
         let (idle_readers, read_slots) = async_channel::bounded(PURE_READERS);
         for index in 0..PURE_READERS {
             idle_readers
@@ -600,6 +545,8 @@ impl OwnedConnection {
                 .expect("new reader-slot channel fits every lane");
         }
         let accepting = Arc::new(AtomicBool::new(true));
+        let physical_released = Arc::new(AtomicBool::new(false));
+        let writer_physical_released = physical_released.clone();
         let failures = Arc::new(AtomicU64::new(0));
         let capacity = Arc::new(Semaphore::new(WRITE_CAPACITY));
         let (changed, changes) = watch::channel(());
@@ -608,41 +555,26 @@ impl OwnedConnection {
         let admission = Arc::new(Admission {
             accepting: accepting.clone(),
             reads: reads.clone(),
-            observations: observations.clone(),
             writer: jobs.clone(),
             idle_readers: idle_readers.clone(),
         });
-        let handle = Self {
-            admission,
-            writer: WriterIngress {
-                jobs: jobs.clone(),
-                failures,
-                capacity,
-                preparations: preparations.clone(),
-                custody: None,
-            },
-            reads: reads.clone(),
-            observations: observations.clone(),
-            read_on_owner,
-            temporary,
-            closed: async move {
-                completion
-                    .await
-                    .unwrap_or_else(|_| Err("database actor terminated without closing".into()))
-            }
-            .boxed()
-            .shared(),
-            changes,
+        let writer = WriterIngress {
+            jobs: jobs.clone(),
+            failures,
+            capacity,
+            preparations: preparations.clone(),
             custody: None,
-            idle_readers: idle_readers.clone(),
-            read_slots,
         };
+        let close_receipt = async move {
+            completion
+                .await
+                .unwrap_or_else(|_| Err("database actor terminated without closing".into()))
+        }
+        .boxed()
+        .shared();
         std::thread::Builder::new()
             .name("runtime-sqlite-writer".into())
             .spawn(move || {
-                if let Some(registration) = &mut registration {
-                    registration.started();
-                }
                 let authority = Arc::new(authority);
                 let initialized_connection = authority.validate().and_then(|()| match existing {
                     Some(connection) => Ok(connection),
@@ -651,23 +583,26 @@ impl OwnedConnection {
                 let mut connection = match initialized_connection {
                     Ok(connection) => connection,
                     Err(error) => {
+                        writer_physical_released.store(true, Ordering::Release);
                         let _ = ready.send(Err(error));
-                        if let Some(registration) = &mut registration {
-                            registration.complete(true);
-                        }
                         drop(authority);
                         let _ = closed.send(Ok(()));
                         return;
                     }
                 };
+                // Declared after SQLite so unwind marks physical release before
+                // the handle can be freed and its address reused by another actor.
+                let _close_ingress = CloseWriterIngress {
+                    ingress: jobs.clone(),
+                    physical_released: writer_physical_released.clone(),
+                };
                 let init = catch_unwind(AssertUnwindSafe(|| initialize(&mut connection)))
                     .unwrap_or(Err(StoreError::Initialization));
                 if init.is_err() || ready.is_closed() {
+                    writer_physical_released.store(true, Ordering::Release);
+                    receiver.close();
                     let cleanup = close(connection, &authority, Vec::new());
                     let _ = ready.send(Err(init.err().unwrap_or(StoreError::Initialization)));
-                    if let Some(registration) = &mut registration {
-                        registration.complete(cleanup.is_ok());
-                    }
                     drop(authority);
                     let _ = closed.send(cleanup);
                     return;
@@ -693,16 +628,11 @@ impl OwnedConnection {
                             for lane in &reads {
                                 lane.close();
                             }
-                            observations.close();
                         }
                     }
                 }
                 if !read_on_owner {
-                    for (role, input) in read_receivers
-                        .into_iter()
-                        .map(|input| (false, input))
-                        .chain(std::iter::once((true, observation_receiver)))
-                    {
+                    for input in read_receivers {
                         let input = input.clone();
                         let output = jobs.clone();
                         let authority = authority.clone();
@@ -710,20 +640,12 @@ impl OwnedConnection {
                         let read_accepting = accepting.clone();
                         let read_idle = idle_readers.clone();
                         let read_lanes = reads.clone();
-                        let read_observations = observations.clone();
 
                         match std::thread::Builder::new()
-                            .name(
-                                if role {
-                                    "runtime-sqlite-observation"
-                                } else {
-                                    "runtime-sqlite-reader"
-                                }
-                                .into(),
-                            )
+                            .name("runtime-sqlite-reader".into())
                             .spawn(move || {
                                 let result = catch_unwind(AssertUnwindSafe(|| {
-                                    read_loop(input, options, authority, role)
+                                    read_loop(input, options, authority)
                                 }))
                                 .unwrap_or_else(|_| Err("database reader panicked".into()));
                                 if result.is_err() {
@@ -732,7 +654,6 @@ impl OwnedConnection {
                                     for lane in read_lanes {
                                         lane.close();
                                     }
-                                    read_observations.close();
                                 }
                                 let _ = output.send_blocking(Envelope {
                                     command: Command::ReaderClosed(result),
@@ -751,12 +672,12 @@ impl OwnedConnection {
                                 for lane in &reads {
                                     lane.close();
                                 }
-                                observations.close();
                             }
                         }
                     }
                 }
-                let _ = ready.send(startup_error.map_or(Ok(()), Err));
+                let _ = ready
+                    .send(startup_error.map_or_else(|| Ok(WriterIdentity::of(&connection)), Err));
                 let mut pending = None;
                 let mut failure = None;
                 let mut transfer = None;
@@ -773,7 +694,6 @@ impl OwnedConnection {
                         Ok(value) => value,
                         Err(_) => break,
                     };
-                    let before = connection.total_changes();
                     let mut active = Vec::new();
                     if let Some(custody) = envelope._custody {
                         active.push(custody);
@@ -785,23 +705,22 @@ impl OwnedConnection {
                     let (clean, notify): (bool, Option<Reply>) =
                         catch_unwind(AssertUnwindSafe(|| match envelope.command {
                             Command::Run(job) => {
-                                let (clean, reply) = job(&mut connection, authority.validate());
+                                let (clean, reply) =
+                                    job(&mut connection, authority.validate(), &changed);
                                 (clean, Some(reply))
                             }
                             Command::PreparingRun(ready) => match ready.blocking_recv() {
                                 Ok(job) => {
-                                    let (clean, reply) = job(&mut connection, authority.validate());
+                                    let (clean, reply) =
+                                        job(&mut connection, authority.validate(), &changed);
                                     (clean, Some(reply))
                                 }
                                 Err(_) => (true, None),
                             },
                             Command::Write(first) => {
                                 let mut group = Vec::new();
-                                let mut rejected = Vec::new();
-                                match first.resolve() {
-                                    Ok(Some(request)) => group.push(request),
-                                    Ok(None) => {}
-                                    Err(reply) => rejected.push(reply),
+                                if let Some(request) = first.resolve() {
+                                    group.push(request);
                                 }
                                 while group.len() < WRITE_CAPACITY {
                                     match receiver.try_recv() {
@@ -816,10 +735,8 @@ impl OwnedConnection {
                                             if let Some(permit) = _permit {
                                                 permits.push(permit);
                                             }
-                                            match next.resolve() {
-                                                Ok(Some(request)) => group.push(request),
-                                                Ok(None) => {}
-                                                Err(reply) => rejected.push(reply),
+                                            if let Some(request) = next.resolve() {
+                                                group.push(request);
                                             }
                                         }
                                         Ok(other) => {
@@ -830,28 +747,15 @@ impl OwnedConnection {
                                     }
                                 }
                                 if group.is_empty() {
-                                    (
-                                        true,
-                                        Some(Box::new(move || {
-                                            for reply in rejected {
-                                                reply();
-                                            }
-                                        }) as Reply),
-                                    )
+                                    (true, None)
                                 } else {
-                                    let (clean, finish) =
-                                        crate::writeback::commit(&mut connection, group, &|| {
-                                            authority.validate()
-                                        });
-                                    (
-                                        clean,
-                                        Some(Box::new(move || {
-                                            for reply in rejected {
-                                                reply();
-                                            }
-                                            finish();
-                                        }) as Reply),
-                                    )
+                                    let (clean, finish) = crate::writeback::commit(
+                                        &mut connection,
+                                        group,
+                                        &|| authority.validate(),
+                                        &changed,
+                                    );
+                                    (clean, Some(Box::new(finish) as Reply))
                                 }
                             }
                             Command::Wake => (true, None),
@@ -864,7 +768,6 @@ impl OwnedConnection {
                                     for lane in &reads {
                                         lane.close();
                                     }
-                                    observations.close();
                                 }
                                 (true, None)
                             }
@@ -874,7 +777,6 @@ impl OwnedConnection {
                                 for lane in &reads {
                                     lane.close();
                                 }
-                                observations.close();
                                 transfer = Some(reply);
                                 (true, None)
                             }
@@ -887,9 +789,6 @@ impl OwnedConnection {
                                 None,
                             )
                         });
-                    if connection.total_changes() != before {
-                        changed.send_replace(());
-                    }
                     let healthy = clean && connection.is_autocommit();
                     if healthy {
                         drop(active);
@@ -906,7 +805,6 @@ impl OwnedConnection {
                         for lane in &reads {
                             lane.close();
                         }
-                        observations.close();
                         receiver.close();
                         if let Some(notify) = notify {
                             notify();
@@ -918,11 +816,11 @@ impl OwnedConnection {
                 for lane in &reads {
                     lane.close();
                 }
-                observations.close();
                 drop(pending.take());
                 while let Ok(envelope) = receiver.try_recv() {
                     drop(envelope);
                 }
+                receiver.close();
                 drop(receiver);
                 for reader in readers {
                     if reader.join().is_err() {
@@ -935,6 +833,7 @@ impl OwnedConnection {
                         failure.get_or_insert("database preparation worker panicked".into());
                     }
                 }
+                writer_physical_released.store(true, Ordering::Release);
                 let result = if let Some(reply) = transfer {
                     if failure.is_none() {
                         match reply.send(Ok(connection)) {
@@ -951,26 +850,38 @@ impl OwnedConnection {
                 } else {
                     close(connection, &authority, std::mem::take(&mut retained))
                 };
-                let physical_closed = result.is_ok();
                 if let Err(error) = result {
                     failure.get_or_insert(error);
-                }
-                if let Some(registration) = &mut registration {
-                    registration.complete(physical_closed);
                 }
                 drop(authority);
                 drop(retained);
                 let _ = closed.send(failure.map_or(Ok(()), Err));
             })?;
         match initialized.await.unwrap_or(Err(StoreError::Initialization)) {
-            Ok(()) => Ok(handle),
-            Err(cause) => match handle.shutdown().await {
-                Ok(()) => Err(cause),
-                Err(cleanup) => Err(StoreError::StartupCleanupFailed {
-                    cause: Box::new(cause),
-                    cleanup: Box::new(cleanup),
-                }),
-            },
+            Ok(writer_identity) => Ok(Self {
+                reads: admission.reads.clone(),
+                idle_readers: admission.idle_readers.clone(),
+                admission,
+                writer_identity,
+                physical_released,
+                writer,
+                read_on_owner,
+                temporary,
+                closed: close_receipt,
+                changes,
+                custody: None,
+                read_slots,
+            }),
+            Err(cause) => {
+                admission.stop();
+                match close_receipt.await.map_err(StoreError::CloseFailed) {
+                    Ok(()) => Err(cause),
+                    Err(cleanup) => Err(StoreError::StartupCleanupFailed {
+                        cause: Box::new(cause),
+                        cleanup: Box::new(cleanup),
+                    }),
+                }
+            }
         }
     }
     pub async fn run<T: Send + 'static>(
@@ -1023,57 +934,22 @@ impl OwnedConnection {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
-        self.read_job(operation, false, false).await
-    }
-    pub(crate) async fn read_interruptible<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        self.read_job(operation, false, true).await
-    }
-    pub(crate) async fn observe<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        self.read_job(operation, true, true).await
-    }
-    async fn read_job<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
-        observation: bool,
-        interruptible: bool,
-    ) -> Result<T, StoreError> {
         self.require_open()?;
         if self.read_on_owner {
             return self.run(operation).await;
         }
-        let cancel = Arc::new(AtomicBool::new(false));
-        struct Cancel(Arc<AtomicBool>);
-        impl Drop for Cancel {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-        let _cancel = Cancel(cancel.clone());
         let (reply, result) = oneshot::channel();
-        let slot = if observation {
-            None
-        } else {
-            Some(ReadSlot {
-                index: self
-                    .read_slots
-                    .recv()
-                    .await
-                    .map_err(|_| StoreError::ConnectionClosed)?,
-                idle: self.idle_readers.clone(),
-            })
+        let slot = ReadSlot {
+            index: self
+                .read_slots
+                .recv()
+                .await
+                .map_err(|_| StoreError::ConnectionClosed)?,
+            idle: self.idle_readers.clone(),
         };
-        let jobs = match &slot {
-            Some(slot) => &self.reads[slot.index],
-            None => &self.observations,
-        };
+        let jobs = &self.reads[slot.index];
         jobs.send(ReadJob {
-            _slot: slot,
+            _slot: Some(slot),
             open: true,
             _custody: self.custody.clone(),
             run: Box::new(move |db, valid| {
@@ -1089,12 +965,7 @@ impl OwnedConnection {
                         );
                     }
                 };
-                let (value, clean, panicked) = execute(
-                    connection,
-                    valid,
-                    operation,
-                    interruptible.then_some(cancel),
-                );
+                let (value, clean, panicked) = execute(connection, valid, operation);
                 (
                     clean && !panicked,
                     Box::new(move || {
@@ -1112,7 +983,6 @@ fn read_loop(
     input: Receiver<ReadJob>,
     mut options: OpenOptions,
     authority: Arc<ConnectionAuthority>,
-    observation: bool,
 ) -> Result<(), String> {
     options.create = false;
     options.read_only = true;
@@ -1128,10 +998,6 @@ fn read_loop(
         if valid.is_ok() && open && connection.is_none() {
             valid = (|| {
                 let db = options.open()?;
-                crate::sqlite_functions::register(&db)?;
-                if observation {
-                    crate::transcript::initialize_cache(&db)?;
-                }
                 connection = Some(db);
                 Ok(())
             })();
@@ -1172,6 +1038,3 @@ fn close(
         error.to_string()
     })
 }
-
-#[cfg(test)]
-mod tests;

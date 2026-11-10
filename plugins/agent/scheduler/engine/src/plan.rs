@@ -19,11 +19,12 @@
 
 mod edit;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
-    Error,
-    authorization::Authorization,
-    invalid,
-    task::{Create, Creator, Effect, Intent, Outcome, Run, Status, Task, TaskEffect},
+    Error, invalid,
+    task::{Create, Creator, Intent, Outcome, Run, Status, Task, TaskEffect},
 };
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,7 @@ pub enum Misfire {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
-pub struct Fire<E = Effect, A = Authorization> {
+pub struct Fire<E, A> {
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
@@ -55,7 +56,6 @@ pub struct Fire<E = Effect, A = Authorization> {
     #[serde(default)]
     pub authorization: Option<A>,
 }
-pub type Plan = TaskPlan<Effect, Authorization>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -275,55 +275,5 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             .then_some(next)
             .flatten();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::schedule::Schedule;
-
-    #[test]
-    fn recovery_skips_misfires_but_replays_frozen_pending_intent_until_settlement() {
-        let input = Create {
-            title: "Original".into(),
-            intent_body: "Work".into(),
-            schedule: Schedule::Interval {
-                every_seconds: 10,
-                start_at: 1000,
-            },
-            effect: Effect::SessionResume {
-                session_id: "session".into(),
-            },
-            max_fires: Some(1),
-            expires_at: None,
-        };
-        let mut plan =
-            Plan::create("task".into(), input, Creator::User, "UTC".into(), 1000).unwrap();
-        plan.recover(31_000).unwrap();
-        assert_eq!(plan.task.next_fire_at, Some(41_000));
-        assert_eq!(plan.task.fire_count, 0);
-        let fire = plan.claim(41_000).unwrap().unwrap().clone();
-        let mut reopened: Plan =
-            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
-        reopened.task.title = "Edited".into();
-        reopened.task.intent = Intent::Text {
-            body: "Changed".into(),
-        };
-        reopened.recover(61_000).unwrap();
-        assert_eq!(reopened.claim(61_000).unwrap(), Some(&fire));
-        let run = Run {
-            id: fire.id.clone(),
-            at: 61_000,
-            outcome: Outcome::Ok,
-            message: "admitted".into(),
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        };
-        reopened.settle(run.clone()).unwrap();
-        assert_eq!(reopened.task.status, Status::Completed);
-        assert_eq!(reopened.task.fire_count, 1);
-        assert!(reopened.claim(71_000).unwrap().is_none());
-        assert!(reopened.settle(run).is_err());
     }
 }

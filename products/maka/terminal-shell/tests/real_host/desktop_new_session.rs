@@ -809,18 +809,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
-    desktop.press("Choose composer workspace").await;
-    desktop.artifact("recent-folders-remove");
-    desktop.press("Remove this folder from recents").await;
-    desktop
-        .wait("removed folder was still remembered", async {
-            while !desktop.client.recent_workspaces().await.unwrap().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     assert!(workspace.is_dir());
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 1);
@@ -828,28 +816,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         sessions[0]["workspace"]["path"],
         workspace.to_str().unwrap()
     );
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.control("Actions for NSH real Agent").await;
-    desktop
-        .retry(
-            "workspace menu did not open",
-            || !desktop.controls("Choose another folder…").is_empty(),
-            || {
-                if let Some(bounds) = desktop.controls("Choose composer workspace").first() {
-                    desktop.press_at(bounds.center());
-                }
-            },
-        )
-        .await;
-    desktop.control("Choose another folder…").await;
-    assert!(
-        desktop
-            .controls(&format!("Use folder {}", workspace.display()))
-            .is_empty()
-    );
-    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1015,7 +981,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     fixture.finish().await;
 }
 
-async fn desktop_retries_a_failed_turn_in_place() {
+async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
@@ -1027,7 +993,7 @@ async fn desktop_retries_a_failed_turn_in_place() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
-    desktop.press("Retry").await;
+    desktop.press("Continue response").await;
     let retry = desktop.request(&mut fixture).await;
     let users: Vec<_> = retry.body["messages"]
         .as_array()
@@ -1041,6 +1007,13 @@ async fn desktop_retries_a_failed_turn_in_place() {
             .is_some_and(|message| message.to_string().contains("RETRIED_IN_PLACE_MESSAGE")),
         "{}",
         retry.body
+    );
+    assert_eq!(
+        users
+            .iter()
+            .filter(|message| message.to_string().contains("RETRIED_IN_PLACE_MESSAGE"))
+            .count(),
+        1
     );
     retry.finish().await;
     let sessions = desktop.sessions().await;
@@ -1194,6 +1167,20 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await;
     desktop.press("Turn work details").await;
     desktop.control("Toggle tool GetGoal").await;
+    answer
+        .thinking("Checking the log\n\nLook for the next step.")
+        .await;
+    let thinking = desktop.control("Thinking · Checking the log").await;
+    let user = desktop.control("Copy user message").await;
+    let tool = desktop.control("Toggle tool GetGoal").await;
+    let [working] = desktop
+        .controls("Turn work details")
+        .try_into()
+        .expect("the running summary remains visible and expandable while thinking streams");
+    assert!(user.bottom() < working.top());
+    assert!(working.bottom() <= tool.top());
+    assert!(tool.bottom() <= thinking.top());
+    desktop.artifact("streaming-thinking-order");
     answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;
@@ -1702,7 +1689,7 @@ async fn disconnected_desktop(
     shell_shares_its_lines(&desktop, layout == "wide").await;
     let closing = tokio::spawn({
         let store = fixture.store.clone();
-        async move { store.shutdown().await }
+        async move { store.drain().await }
     });
     reply.delta("Wake the original source watcher.").await;
     desktop.control("Details").await;
@@ -1758,7 +1745,6 @@ async fn disconnected_desktop(
     desktop
         .wait("the closed store did not drain", closing)
         .await
-        .unwrap()
         .unwrap();
     desktop.close().await;
     fixture.finish().await;
@@ -2416,456 +2402,6 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
     fixture.finish().await;
 }
 
-async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
-    use super::support::mutate;
-    use maka_agent_api::session::StoredSessionConfiguration;
-    use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest, PermissionRequest};
-
-    let mut fixture = Fixture::configured(Options {
-        session_tools: true,
-        ..Options::default()
-    })
-    .await;
-    let parent = fixture.session.clone();
-    let (_, appearance, _, width, height) = visual_case();
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(
-            nsh_terminal::DevicePixels(1280),
-            nsh_terminal::DevicePixels(900),
-        ),
-        appearance,
-    )
-    .await;
-    let observed = desktop
-        .client
-        .query("agent", "observe", json!({"sessionId":parent}))
-        .await
-        .unwrap();
-    assert_eq!(
-        observed["session"]["permissions"]["access"], "read_only",
-        "the parent must need human approval to allow the child's report write"
-    );
-    let backend = json!({
-        "kind": "model",
-        "connectionId": fixture.selection["connectionId"],
-        "modelId": fixture.selection["modelId"],
-    });
-    mutate(&desktop.client, "send", json!({
-        "sessionId":parent, "message":"Delegate sandbox verification and review any access request.",
-        "backend":backend,
-    })).await;
-    desktop
-        .request(&mut fixture)
-        .await
-        .tool_call("tool_search", json!({"query":"Session"}))
-        .await;
-    let discovered = desktop.request(&mut fixture).await;
-    for name in ["SessionCreate", "SessionSend", "SessionRespond"] {
-        assert!(
-            discovered.body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == name),
-            "missing {name}: {}",
-            discovered.body
-        );
-    }
-    discovered
-        .tool_call(
-            "SessionCreate",
-            json!({
-                "title":"Verify sandbox delegation","labels":[],
-                "workspace":{"kind":"session","sessionId":parent},
-            }),
-        )
-        .await;
-    let created_reply = desktop.request(&mut fixture).await;
-    let created: Value = serde_json::from_str(
-        created_reply.body["messages"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["content"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(created["kind"], "created", "{created}");
-    let child = created["session"]["id"].as_str().unwrap().to_owned();
-    created_reply.tool_call("SessionSend", json!({
-        "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
-        "backend":backend,
-    })).await;
-    let first = desktop.request(&mut fixture).await;
-    let second = desktop.request(&mut fixture).await;
-    let (parent_reply, mut child_reply) =
-        if first.body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
-            (first, second)
-        } else {
-            (second, first)
-        };
-    let store = fixture.store.session(&child).await.unwrap();
-    let projection = store
-        .session_projection::<StoredSessionConfiguration>(&child)
-        .await
-        .unwrap()
-        .unwrap();
-    let binding = projection
-        .session
-        .workspace_binding
-        .as_ref()
-        .unwrap()
-        .stamp();
-    let basis = maka_agent_facts::workspace::PermissionBasis {
-        boundary_revision: projection
-            .session
-            .configuration
-            .workspace
-            .boundary_revision(projection.session.configuration.boundary_revision, binding)
-            .unwrap(),
-        binding,
-    };
-    let invocation = projection.root_turn.unwrap().invocation;
-    let permissions = json!({"filesystem":[{
-        "path":fixture.directory.path().join("workspace/report.md"),"scope":"exact","access":"write"
-    }],"network":"denied"});
-    let record = InteractionRecord {
-        session_id: child.clone(),
-        turn_id: invocation.turn_id.clone(),
-        run_id: invocation.run_id.clone(),
-        request_id: Uuid::new_v4().to_string(),
-        created_at: 1,
-        request: InteractionRequest::Permissions {
-            tool_use_id: Some("write-report".into()),
-            basis,
-            request: PermissionRequest {
-                reason: "Write the sandbox verification report.".into(),
-                command: None,
-                permissions: serde_json::from_value(permissions.clone()).unwrap(),
-            },
-        },
-        outcome: None,
-    };
-    assert!(
-        store
-            .establish_run_interaction(&invocation, &record)
-            .await
-            .unwrap()
-            .matches
-    );
-    desktop.press("Waiting for you").await;
-    desktop
-        .control("Actions for Verify sandbox delegation")
-        .await;
-    desktop.artifact("child-needs-you-inbox");
-    desktop.press("Waiting for you").await;
-    desktop
-        .until("child remained in the normal root sidebar", || {
-            desktop
-                .controls("Actions for Verify sandbox delegation")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    parent_reply.tool_call("SessionRespond", json!({
-        "sessionId":child,"requestId":record.request_id,
-        "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
-    })).await;
-    desktop.control("Approve child decision").await;
-    desktop.control("Verify sandbox delegation").await;
-    desktop.artifact("parent-child-approval");
-    desktop.press("Approve child decision").await;
-    let mut parent_reply = desktop.request(&mut fixture).await;
-    let settled = desktop
-        .client
-        .query(
-            "agent",
-            "interaction",
-            json!({
-                "sessionId":child,"requestId":record.request_id
-            }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(settled["outcome"]["kind"], "permissions_decision");
-    assert_eq!(settled["outcome"]["decision"]["decision"], "allow");
-    parent_reply
-        .delta("Approved this report write for one call after your confirmation.")
-        .await;
-    parent_reply.finish().await;
-    child_reply
-        .delta("Sandbox verification is complete. The report write was approved for one call only.")
-        .await;
-    child_reply.finish().await;
-    desktop
-        .wait(
-            "parent did not finish",
-            fixture.idle(&desktop.client, &parent),
-        )
-        .await;
-    desktop
-        .wait(
-            "child did not finish",
-            fixture.idle(&desktop.client, &child),
-        )
-        .await;
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
-    assert!(
-        desktop
-            .controls("Actions for Verify sandbox delegation")
-            .is_empty(),
-        "child conversations must not appear as sidebar roots"
-    );
-    desktop.press("Actions for NSH real Agent").await;
-    desktop.press("Child conversations").await;
-    desktop.press("Open Verify sandbox delegation").await;
-    assert!(
-        desktop
-            .controls("Open source conversation beside this one")
-            .is_empty()
-    );
-    desktop
-        .retry(
-            "the completed child work details did not open",
-            || !desktop.controls("Agent message").is_empty(),
-            || {
-                let controls = desktop.controls("Turn work details");
-                if controls.len() == 1 {
-                    desktop.press_at(controls[0].center());
-                }
-            },
-        )
-        .await;
-    // The finished turn's summary is its only disclosure; its steps share its icon lane.
-    assert!(desktop.controls("Process group").is_empty());
-    let summary = desktop.control("Turn work details").await;
-    let message = desktop.control("Agent message").await;
-    assert_eq!(message.left(), summary.left());
-    assert!(
-        desktop
-            .controls("Open source conversation beside this one")
-            .is_empty()
-    );
-    desktop.press("Agent message").await;
-    desktop
-        .control("Open source conversation beside this one")
-        .await;
-    desktop
-        .press("Open source conversation beside this one")
-        .await;
-    desktop.control("Close side pane").await;
-    desktop
-        .until(
-            "source conversation did not load its reply beside the child",
-            || (desktop.controls("Copy message").len() == 2).then_some(()),
-        )
-        .await;
-    desktop.artifact("source-conversation-beside");
-    desktop.press("Close side pane").await;
-    desktop
-        .platform
-        .set_viewport(
-            size(
-                nsh_terminal::DevicePixels(width),
-                nsh_terminal::DevicePixels(height),
-            ),
-            1.0,
-        )
-        .unwrap();
-    desktop
-        .until("activity lanes did not settle after resize", || {
-            let summaries = desktop.controls("Turn work details");
-            let messages = desktop.controls("Agent message");
-            let ([summary], [message]) = (summaries.as_slice(), messages.as_slice()) else {
-                return None;
-            };
-            (message.right() <= px(width as f32) && message.left() == summary.left()).then_some(())
-        })
-        .await;
-    desktop.artifact("agent-message-expanded");
-    desktop.press("Agent message").await;
-    desktop.artifact("agent-message-collapsed");
-    desktop.press("Turn work details").await;
-    desktop.artifact("agent-message-default");
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-async fn desktop_child_conversations_manage_nested_and_archived_workers() {
-    use maka_agent_api::session::StoredSessionConfiguration;
-    let fixture = Fixture::open().await;
-    let original = fixture
-        .store
-        .session(&fixture.session)
-        .await
-        .unwrap()
-        .get_session::<StoredSessionConfiguration>(&fixture.session)
-        .await
-        .unwrap()
-        .unwrap()
-        .configuration;
-    let prefix = fixture.session.rsplit_once('_').unwrap().0;
-    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
-    let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
-    let disposable = format!("{prefix}_{}", Uuid::new_v4().simple());
-    for (id, parent, title) in [
-        (&child, &fixture.session, "Archived worker"),
-        (&grandchild, &child, "Verification worker"),
-        (&disposable, &fixture.session, "Disposable worker"),
-    ] {
-        let mut configuration = original.clone();
-        configuration.parent_session_id = Some(parent.clone());
-        configuration.title = title.into();
-        configuration.backend = Some(
-            serde_json::from_value(json!({
-                "kind":"model", "connectionId":fixture.selection["connectionId"],
-                "modelId":fixture.selection["modelId"], "thinkingLevel":null,
-            }))
-            .unwrap(),
-        );
-        fixture
-            .store
-            .create_session(id, id, &configuration, 1)
-            .await
-            .unwrap();
-    }
-    fixture
-        .store
-        .session(&child)
-        .await
-        .unwrap()
-        .change_session_archived::<StoredSessionConfiguration>(&child, None, true, 2)
-        .await
-        .unwrap();
-    let (theme, appearance, layout, width, height) = visual_case();
-    let width = if layout == "narrow" { 640 } else { width };
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(
-            nsh_terminal::DevicePixels(width),
-            nsh_terminal::DevicePixels(height),
-        ),
-        appearance,
-    )
-    .await;
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
-    desktop.press("Actions for NSH real Agent").await;
-    desktop.press("Child conversations").await;
-    let first = desktop.control("Open Archived worker").await;
-    desktop.press("Expand Archived worker").await;
-    let last = desktop.control("Open Verification worker").await;
-    assert!(
-        last.left() > first.left(),
-        "a grandchild must be visibly nested beneath its parent"
-    );
-    assert!(
-        last.right() <= px(width as f32 - 16.0),
-        "deep rows stay inside the dialog's viewport"
-    );
-    desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
-    for (id, title, action, archived) in [
-        (
-            &grandchild,
-            "Verification worker",
-            "Archive conversation",
-            true,
-        ),
-        (
-            &grandchild,
-            "Verification worker",
-            "Restore conversation",
-            false,
-        ),
-        (&child, "Archived worker", "Restore conversation", false),
-        (
-            &disposable,
-            "Disposable worker",
-            "Archive conversation",
-            true,
-        ),
-    ] {
-        desktop.right_click(&format!("Open {title}")).await;
-        desktop.control(action).await;
-        desktop.artifact(&format!(
-            "child-menu-{}-{theme}-{layout}",
-            if archived { "archive" } else { "restore" }
-        ));
-        desktop.press(action).await;
-        desktop
-            .wait("tree action did not change the targeted worker", async {
-                loop {
-                    let observed = desktop
-                        .client
-                        .query("agent", "observe", json!({"sessionId":id}))
-                        .await
-                        .unwrap();
-                    if observed["session"]["archived"] == archived {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await;
-        desktop
-            .until("tree action menu did not settle", || {
-                (desktop.controls(action).is_empty()
-                    && desktop.controls("Close child conversations").len() == 1)
-                    .then_some(())
-            })
-            .await;
-        desktop.control("Open Verification worker").await;
-    }
-    desktop.press("Actions for Disposable worker").await;
-    desktop.press("Delete conversation").await;
-    desktop.control("Confirm delete conversation").await;
-    assert!(
-        fixture
-            .store
-            .get_session::<StoredSessionConfiguration>(&disposable)
-            .await
-            .unwrap()
-            .is_some(),
-        "opening delete confirmation must not delete the worker"
-    );
-    desktop.artifact(&format!("child-delete-confirmation-{theme}-{layout}"));
-    desktop.press("Confirm delete conversation").await;
-    desktop
-        .until("deleted worker remained in the tree", || {
-            (desktop.controls("Open Disposable worker").is_empty()
-                && desktop.controls("Close child conversations").len() == 1)
-                .then_some(())
-        })
-        .await;
-    assert!(
-        fixture
-            .store
-            .get_session::<StoredSessionConfiguration>(&disposable)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let previous = desktop.platform.text_input_target();
-    desktop.press("Open Verification worker").await;
-    desktop.target_after(previous).await;
-    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
-    desktop
-        .wait(
-            "opening a descendant did not bind its draft to that conversation",
-            super::support::wait_draft(&desktop.client, &grandchild, "OPENED_TREE_GRANDCHILD"),
-        )
-        .await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
 async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
@@ -3005,7 +2541,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_recovers_an_unavailable_remembered_folder",
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
-    "desktop_retries_a_failed_turn_in_place",
+    "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
@@ -3018,8 +2554,6 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_mermaid_renders_markdown_and_toggles_its_source",
     "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft",
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
-    "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside",
-    "desktop_child_conversations_manage_nested_and_archived_workers",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
 ];
@@ -3049,8 +2583,8 @@ pub(crate) fn run(name: &str) {
             .block_on(
                 desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot(),
             ),
-        "desktop_retries_a_failed_turn_in_place" => {
-            runtime.block_on(desktop_retries_a_failed_turn_in_place())
+        "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
+            runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())
         }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())
@@ -3089,11 +2623,6 @@ pub(crate) fn run(name: &str) {
             .block_on(
                 desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes(),
             ),
-        "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside" => runtime
-            .block_on(desktop_parent_reviews_child_access_and_opens_attributed_sender_beside()),
-        "desktop_child_conversations_manage_nested_and_archived_workers" => {
-            runtime.block_on(desktop_child_conversations_manage_nested_and_archived_workers())
-        }
         "desktop_composer_large_paste_keeps_controls_on_screen" => {
             runtime.block_on(desktop_composer_large_paste_keeps_controls_on_screen())
         }

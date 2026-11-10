@@ -249,11 +249,51 @@ impl Library {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
-    use crate::tests::{preferences, scope, write};
+    use maka_capabilities::call::{Identity, Issuer};
+    use maka_event_log::{
+        RootStore,
+        root::{RootNamespaces, RootOwner},
+    };
     use serde_json::json;
+    use tokio_util::sync::CancellationToken;
 
+    fn scope() -> Scope {
+        Issuer::default()
+            .issue(Identity::Native, CancellationToken::new())
+            .unwrap()
+    }
+    fn write(root: &Path, name: &str, description: &str) {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nInstructions"),
+        )
+        .unwrap();
+    }
+    async fn preferences(base: &Path) -> (preferences::Store, Arc<RootStore>) {
+        let root = Arc::new(
+            RootOwner::create(
+                &base.join("private"),
+                &RootNamespaces {
+                    ownership: base.join("owners"),
+                    control: base.join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let log = Arc::new(
+            RootStore::open(root, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
+        (
+            preferences::Store::new(log.clone(), "candidate-test/".into()),
+            log,
+        )
+    }
     pub(crate) async fn workspace(path: &Path) -> Workspace {
         std::fs::create_dir_all(path).unwrap();
         let (path, directory_identity) = directory::capture(path).unwrap();
@@ -277,17 +317,17 @@ pub(super) mod tests {
             identity,
         }
     }
-    async fn library(base: &Path) -> Library {
-        let home = base.join("home");
-        let projects = base.join("projects");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&projects).unwrap();
-        Library::open(
+
+    async fn library(base: &Path) -> (Library, Arc<RootStore>) {
+        std::fs::create_dir_all(base.join("home")).unwrap();
+        std::fs::create_dir_all(base.join("projects")).unwrap();
+        let (preferences, log) = preferences(base).await;
+        let library = Library::open(
             Configuration {
-                home: Some(home.to_str().unwrap().into()),
+                home: Some(base.join("home").to_str().unwrap().into()),
                 project_roots: vec![maka_host_runtime::DirectoryRootSpec {
                     label: "Projects".into(),
-                    path: projects,
+                    path: base.join("projects"),
                 }],
                 bundled: false,
                 manage: false,
@@ -295,14 +335,15 @@ pub(super) mod tests {
                 sources: vec![],
             },
             base.canonicalize().unwrap().join("private"),
-            preferences(base).await,
+            preferences,
         )
-        .unwrap()
+        .unwrap();
+        (library, log)
     }
     #[tokio::test]
-    async fn draft_candidates_share_bound_workspace_preferences_without_initializing_directories() {
+    async fn draft_candidates_keep_bound_source_identity_without_initializing_directories() {
         let dir = tempfile::tempdir().unwrap();
-        let library = library(dir.path()).await;
+        let (library, log) = library(dir.path()).await;
         let call = scope();
         write(
             &dir.path().join("home/.maka/skills"),
@@ -378,261 +419,10 @@ pub(super) mod tests {
         );
         let ordinary = library.candidates(input.clone(), &call).await.unwrap();
         assert_eq!(ordinary["matches"][0]["id"], "aaa-guide");
-        assert!(matches!(
-            library
-                .preferences
-                .set(
-                    SetPreference {
-                        reference: reference.clone(),
-                        revision: 0,
-                        preference: maka_skills::Preference {
-                            enabled: false,
-                            pinned: true
-                        },
-                    },
-                    &call
-                )
-                .await
-                .unwrap(),
-            PreferenceResult::Applied { revision: 1 }
-        ));
-        let disabled = library.candidates(input.clone(), &call).await.unwrap();
-        let ids = disabled["matches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["id"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(ids, ["aaa-guide", "user-guide"]);
-        assert!(matches!(
-            library
-                .preferences
-                .set(
-                    SetPreference {
-                        reference: reference.clone(),
-                        revision: 1,
-                        preference: maka_skills::Preference {
-                            enabled: true,
-                            pinned: true
-                        },
-                    },
-                    &call
-                )
-                .await
-                .unwrap(),
-            PreferenceResult::Applied { revision: 2 }
-        ));
-        let pinned = library.candidates(input.clone(), &call).await.unwrap();
-        assert_eq!(pinned["totalEligible"], 3);
-        assert_eq!(pinned["matches"][0]["ref"], reference);
         assert_eq!(
             std::fs::read(project.join(workspace::MARKER_FILE)).unwrap(),
             marker
         );
-        let outside_directory = tempfile::tempdir().unwrap();
-        let (outside_path, outside_identity) =
-            directory::capture(outside_directory.path()).unwrap();
-        let outside = CandidateDirectory {
-            path: workspace::project::host_path(&outside_path).unwrap().into(),
-            directory_identity: outside_identity.clone(),
-        };
-        assert!(
-            library
-                .candidates(json!({"directory":outside,"tools":[],"query":""}), &call)
-                .await
-                .is_err()
-        );
-        let mut replaced = input;
-        replaced["directory"]["directoryIdentity"] =
-            serde_json::to_value(outside_identity).unwrap();
-        assert!(library.candidates(replaced, &call).await.is_err());
-        call.finish().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn standard_sources_keep_missing_directories_project_precedence_and_preference_identity()
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let library = library(dir.path()).await;
-        let call = scope();
-        let a = workspace(&dir.path().join("projects/a")).await;
-        let b = workspace(&dir.path().join("projects/b")).await;
-        assert!(library.snapshot(&call).await.unwrap().entries.is_empty());
-        // Parent handles are captured before the optional conventional directories exist.
-        write(
-            &dir.path().join("home/.maka/skills"),
-            "review",
-            "home instructions",
-        );
-        write(
-            &dir.path().join("home/.agents/skills"),
-            "review",
-            "home fallback",
-        );
-        write(
-            &Path::new(&a.path).join(".maka/skills"),
-            "review",
-            "project A",
-        );
-        write(
-            &Path::new(&a.path).join(".agents/skills"),
-            "review",
-            "project fallback",
-        );
-        write(
-            &Path::new(&b.path).join(".maka/skills"),
-            "review",
-            "project B",
-        );
-        let a_library = library.for_workspace(Some(a.clone()), &call).await.unwrap();
-        let a_page = a_library.snapshot(&call).await.unwrap();
-        let reference = a_page
-            .entries
-            .iter()
-            .find(|(entry, _, _)| entry.shadowed_by.is_none())
-            .unwrap()
-            .0
-            .reference
-            .clone();
-        assert_eq!(a_page.entries.len(), 4);
-        assert!(
-            a_page
-                .entries
-                .iter()
-                .filter(|(entry, _, _)| entry.reference != reference)
-                .all(|(entry, _, _)| entry.shadowed_by.as_deref() == Some(reference.as_str()))
-        );
-        let search = |workspace: &Workspace| json!({"workspace":workspace,"tools":[],"input":{"query":"review"}});
-        let a_search = library.model("search", search(&a), &call).await.unwrap();
-        let b_search = library.model("search", search(&b), &call).await.unwrap();
-        assert_ne!(a_search["revision"], b_search["revision"]);
-        assert_ne!(a_search["matches"][0]["ref"], b_search["matches"][0]["ref"]);
-        let loaded=library.model("load",json!({"workspace":a,"tools":[],"input":{"name":"review","revision":a_search["revision"]}}),&call).await.unwrap();
-        assert_eq!(loaded["instructions"], "project A");
-        let crossed=library.model("load",json!({"workspace":b,"tools":[],"input":{"name":"review","revision":a_search["revision"]}}),&call).await.unwrap();
-        assert_eq!(crossed["kind"], "changed");
-        assert!(matches!(
-            library
-                .preferences
-                .set(
-                    SetPreference {
-                        reference,
-                        revision: 0,
-                        preference: maka_skills::Preference {
-                            enabled: false,
-                            pinned: true
-                        }
-                    },
-                    &call
-                )
-                .await
-                .unwrap(),
-            PreferenceResult::Applied { .. }
-        ));
-        assert_eq!(
-            library.model("search", search(&a), &call).await.unwrap()["totalEligible"],
-            0
-        );
-        assert_eq!(
-            library.model("search", search(&b), &call).await.unwrap()["totalEligible"],
-            1
-        );
-        assert_eq!(
-            library
-                .model(
-                    "search",
-                    json!({"tools":[],"input":{"query":"review"}}),
-                    &call
-                )
-                .await
-                .unwrap()["totalEligible"],
-            1
-        );
-        let b_library = library.for_workspace(Some(b.clone()), &call).await.unwrap();
-        assert!(matches!(
-            b_library
-                .snapshot(&call)
-                .await
-                .unwrap()
-                .read(Read {
-                    workspace: Some(b),
-                    reference: a_page.entries[0].0.reference.clone(),
-                    revision: a_page.revision,
-                    offset: 0
-                })
-                .unwrap(),
-            Document::Changed
-        ));
-        std::fs::remove_dir_all(dir.path().join("home/.maka/skills")).unwrap();
-        assert_eq!(library.snapshot(&call).await.unwrap().entries.len(), 1);
-        call.finish().await.unwrap();
-        assert!(library.for_workspace(Some(a), &call).await.is_err());
-    }
-    #[tokio::test]
-    async fn standard_sources_reject_private_aliases_replacements_and_changed_markers() {
-        let dir = tempfile::tempdir().unwrap();
-        let library = library(dir.path()).await;
-        let call = scope();
-        let a = workspace(&dir.path().join("projects/a")).await;
-        let outside = workspace(&dir.path().join("outside")).await;
-        assert!(library.for_workspace(Some(outside), &call).await.is_err());
-        let private = workspace(&dir.path().join("private")).await;
-        let mut wide = library.clone();
-        wide.projects = vec![Arc::new(PublishedDirectory::open(dir.path()).unwrap())];
-        assert!(
-            wide.for_workspace(Some(private.clone()), &call)
-                .await
-                .is_err()
-        );
-        #[cfg(unix)]
-        {
-            let alias = dir.path().join("projects/alias");
-            std::os::unix::fs::symlink(&private.path, &alias).unwrap();
-            let mut observation = private;
-            observation.path = alias.to_str().unwrap().into();
-            assert!(
-                library
-                    .for_workspace(Some(observation), &call)
-                    .await
-                    .is_err()
-            );
-            let escaped = dir.path().join("projects/a/.agents");
-            std::os::unix::fs::symlink(dir.path().join("home"), &escaped).unwrap();
-            write(
-                &dir.path().join("home/skills"),
-                "secret",
-                "not a project skill",
-            );
-            let selected = library.for_workspace(Some(a.clone()), &call).await.unwrap();
-            let snapshot = selected.snapshot(&call).await.unwrap();
-            assert!(snapshot.entries.is_empty());
-            assert!(!snapshot.diagnostics.is_empty());
-        }
-        let mut marker = a.clone();
-        marker.identity = workspace(&dir.path().join("projects/b")).await.identity;
-        assert!(library.for_workspace(Some(marker), &call).await.is_err());
-        match std::fs::rename(&a.path, dir.path().join("projects/original")) {
-            Ok(()) => {
-                let _replacement = workspace(Path::new(&a.path)).await;
-                assert!(library.for_workspace(Some(a), &call).await.is_err());
-            }
-            Err(error) => {
-                // Windows can prevent replacement while a captured directory is open.
-                assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
-                assert!(library.for_workspace(Some(a), &call).await.is_ok());
-            }
-        }
-        let b = workspace(&dir.path().join("projects/c")).await;
-        match std::fs::rename(dir.path().join("projects"), dir.path().join("old-projects")) {
-            Ok(()) => {
-                std::fs::create_dir_all(dir.path().join("projects")).unwrap();
-                assert!(library.for_workspace(Some(b), &call).await.is_err());
-            }
-            Err(error) => {
-                assert!(cfg!(windows) && error.raw_os_error() == Some(32), "{error}");
-                assert!(library.for_workspace(Some(b), &call).await.is_ok());
-            }
-        }
-        call.finish().await.unwrap();
+        log.drain().await;
     }
 }

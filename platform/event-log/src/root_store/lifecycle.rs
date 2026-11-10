@@ -28,6 +28,11 @@ pub(super) struct Lifecycle {
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
     maintenance: Option<tokio::sync::oneshot::Sender<()>>,
 }
+enum CloseFailure {
+    RetainedWork,
+    Unconfirmed(String),
+}
+
 impl Lifecycle {
     pub(super) async fn start(
         log: Arc<EventLog>,
@@ -84,7 +89,7 @@ impl Lifecycle {
                         // have stopped using SQL. Keep their live
                         // actors and original authority so valid execution pins
                         // can still persist known results before quarantining.
-                        return Err("accepted Root work cleanup is unconfirmed".into());
+                        return Err(CloseFailure::RetainedWork);
                     }
                     log.request_shutdown();
                     let mut failures: Vec<String> = runtime.block_on(log.shutdown()).err().map(|error|error.to_string()).into_iter().collect();
@@ -92,25 +97,51 @@ impl Lifecycle {
                     if failures.is_empty() {
                         Ok(())
                     } else {
-                        Err(failures.join("; "))
+                        Err(CloseFailure::Unconfirmed(failures.join("; ")))
                     }
                 }))
                 .unwrap_or_else(|_| {
-                    Err("Root lifecycle owner panicked before confirming cleanup".into())
+                    Err(CloseFailure::Unconfirmed(
+                        "Root lifecycle owner panicked before confirming cleanup".into(),
+                    ))
                 });
-                let failed = result.is_err();
-                if !failed {
-                    drop(log);
-                    drop(gates);
-                }
-                let _ = done.send(result);
-                if failed {
-                    // Retain the original authority and unconfirmed work. Reporting
-                    // failure is not permission to install a replacement Root.
-                    loop {
-                        std::thread::park();
+                match result {
+                    Ok(()) => {
+                        drop(log);
+                        drop(gates);
+                        let _ = done.send(Ok(()));
+                    }
+                    Err(CloseFailure::RetainedWork) => {
+                        let _ = done.send(Err("accepted Root work cleanup is unconfirmed".into()));
+                        // The original failure receipt stays failed. Only actual
+                        // original settlement can release the retained authority.
+                        let closed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            runtime.block_on(async {
+                                gates.wait_for_settlement().await;
+                                log.request_shutdown();
+                                log.shutdown().await
+                            })
+                        }));
+                        match closed {
+                            Ok(Ok(())) => {
+                                drop(log);
+                                drop(gates);
+                            }
+                            failure => {
+                                if let Ok(Err(error)) = failure {
+                                    eprintln!("Root late cleanup close is unconfirmed: {error}");
+                                }
+                                loop { std::thread::park(); }
+                            }
+                        }
+                    }
+                    Err(CloseFailure::Unconfirmed(error)) => {
+                        let _ = done.send(Err(error));
+                        // A failed SQL close or lost owner has no release proof.
+                        loop { std::thread::park(); }
                     }
                 }
+
             })?;
         match started.await {
             Ok(Ok(())) => Ok(Self {
@@ -134,90 +165,8 @@ impl Lifecycle {
             .send(())
             .map_err(|_| StoreError::ConnectionClosed)
     }
-    #[cfg(test)]
-    pub(super) fn receipt(&self) -> Shared<BoxFuture<'static, Result<(), String>>> {
-        self.closed.clone()
-    }
+
     pub(super) async fn wait(&self) -> Result<(), StoreError> {
         self.closed.clone().await.map_err(StoreError::CloseFailed)
-    }
-}
-
-/// Captured from the live Root; temporary stage SQL joins the same shutdown
-/// barrier as physical Session work without becoming a permanent store.
-#[derive(Clone)]
-pub(crate) struct StageOwner {
-    root: Arc<root::RootOwner>,
-    gates: Arc<gates::Gates>,
-}
-
-impl RootStore {
-    pub(crate) fn stage_owner(&self) -> Result<StageOwner, StoreError> {
-        self.require_open()?;
-        Ok(StageOwner {
-            root: self.log.owned_root()?,
-            gates: self.gates.clone(),
-        })
-    }
-}
-
-impl StageOwner {
-    pub(crate) fn validate_current(&self) -> Result<(), StoreError> {
-        self.root.validate_current()?;
-        Ok(())
-    }
-    pub(crate) async fn open(
-        &self,
-        options: crate::connection::OpenOptions,
-        initialize: impl FnOnce(&mut SqliteConnection) -> Result<(), StoreError> + Send + 'static,
-    ) -> Result<crate::connection::OwnedConnection, StoreError> {
-        self.validate_current()?;
-        // No await separates registration from spawning the actual SQL owner.
-        self.gates.start_work()?;
-        let registration = StageRegistration(StageState::Unstarted(self.clone()));
-        crate::connection::OwnedConnection::open_tracked(
-            options,
-            crate::connection::ConnectionAuthority::Root(self.root.clone()),
-            initialize,
-            registration,
-        )
-        .await
-    }
-}
-
-/// Moved to the original connection thread before initialization can yield.
-/// Losing that thread's terminal report is failure, never inferred completion.
-pub(crate) struct StageRegistration(StageState);
-enum StageState {
-    Unstarted(StageOwner),
-    Started(StageOwner),
-    Completed,
-}
-impl StageRegistration {
-    pub(crate) fn started(&mut self) {
-        let StageState::Unstarted(owner) = std::mem::replace(&mut self.0, StageState::Completed)
-        else {
-            unreachable!("only an unstarted SQL stage can start")
-        };
-        self.0 = StageState::Started(owner);
-    }
-    pub(crate) fn complete(&mut self, clean: bool) {
-        if let StageState::Unstarted(owner) | StageState::Started(owner) =
-            std::mem::replace(&mut self.0, StageState::Completed)
-        {
-            if clean {
-                owner.gates.finish_work();
-            } else {
-                owner.gates.close();
-                owner.gates.retain_unconfirmed(owner.root);
-            }
-        }
-    }
-}
-impl Drop for StageRegistration {
-    fn drop(&mut self) {
-        // spawn failure destroys an unstarted closure without ever opening SQL.
-        // Once started, only the explicit actual-close path may acknowledge it.
-        self.complete(matches!(self.0, StageState::Unstarted(_)));
     }
 }

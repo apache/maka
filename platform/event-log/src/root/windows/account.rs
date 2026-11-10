@@ -19,13 +19,8 @@
 
 use super::{LocalAllocation, checked};
 use std::{
-    ffi::OsString,
     io,
-    os::windows::{
-        ffi::OsStringExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    },
-    path::PathBuf,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr,
 };
 use windows_sys::Win32::{
@@ -35,7 +30,6 @@ use windows_sys::Win32::{
         TokenUser,
     },
     System::Threading::{GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken},
-    UI::Shell::GetUserProfileDirectoryW,
 };
 
 pub(super) fn token() -> io::Result<OwnedHandle> {
@@ -123,23 +117,4 @@ pub(super) unsafe fn sid_text(sid: PSID) -> io::Result<String> {
 /// SID of the effective filesystem identity, including an impersonated caller.
 pub fn account_sid() -> io::Result<String> {
     AccountSid::current()?.text()
-}
-
-/// Uses the OS account token, never HOME/USERPROFILE/APPDATA overrides.
-pub fn account_home() -> io::Result<PathBuf> {
-    let token = token()?;
-    let mut buffer = vec![0u16; 32768];
-    let mut size = buffer.len() as u32;
-    // SAFETY: writable UTF-16 buffer and its exact capacity are supplied.
-    checked(unsafe {
-        GetUserProfileDirectoryW(token.as_raw_handle(), buffer.as_mut_ptr(), &mut size)
-    })?;
-    if size == 0 || size as usize > buffer.len() || buffer[size as usize - 1] != 0 {
-        return Err(io::Error::other("invalid OS account profile path"));
-    }
-    let path = PathBuf::from(OsString::from_wide(&buffer[..size as usize - 1]));
-    if !path.is_absolute() {
-        return Err(io::Error::other("OS account profile must be absolute"));
-    }
-    Ok(path)
 }

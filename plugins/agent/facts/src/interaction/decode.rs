@@ -75,8 +75,9 @@ fn request(v: &Value) -> Result<InteractionRequest> {
             }
         }
         Some("permissions") => {
-            shape(v, &["kind", "toolUseId", "basis", "request"])?;
+            shape(v, &["kind", "toolUseId", "target", "basis", "request"])?;
             InteractionRequest::Permissions {
+                target: field(v, "target")?,
                 tool_use_id: field(v, "toolUseId")?,
                 basis: field(v, "basis")?,
                 request: field(v, "request")?,

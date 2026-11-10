@@ -17,11 +17,9 @@
  * under the License.
  */
 
-//! Load receipts reference an immutable snapshot; they never create a Session.
+//! Load receipts pin opaque immutable material; they never create a Session.
 use super::*;
 use crate::checkpoints::{LoadOperation, LoadRequest, LoadState, LoadedCheckpoint, load_key};
-use crate::transcript::{HistoryLimits, HistoryOwner};
-use maka_agent_ports::session::history::{HistoryView, Page, Position};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use uuid::Uuid;
 
@@ -50,20 +48,15 @@ impl HistoryCheckpoints {
                 }
                 return Ok(loaded);
             }
-            let head = journal::read_head(&log, request.scope.clone(), request.session_id.clone())
-                .await?
-                .filter(|head| head.revision == request.load.revision)
-                .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
-            let manifest = objects.manifest(&head.manifest)?;
-            if manifest.root_id != objects.root_id()
-                || manifest.scope != request.scope
-                || manifest.inventory.root_session_id != request.session_id
-            {
-                return Err(invalid("checkpoint origin differs"));
-            }
-            if let Some(snapshot) = manifest.workspace() {
-                workspace::verify(&objects, snapshot)?;
-            }
+            let (head, manifest) = selected_checkpoint(
+                &log,
+                &objects,
+                &request.scope,
+                &request.session_id,
+                request.load.revision,
+            )
+            .await?;
+            objects.read(&manifest.history.object)?;
             claim(&log, request, head, manifest).await
         })
         .await
@@ -85,136 +78,64 @@ impl HistoryCheckpoints {
             .transpose()
     }
 
-    pub async fn loaded_history(
-        &self,
-        operation: Uuid,
-        session: String,
-        position: Position,
-        thinking: bool,
-    ) -> Result<Page, StoreError> {
-        let (log, capture, through, _) = self.loaded(operation, &session).await?;
-        log.history_view_owned(
-            HistoryOwner::snapshot(capture, session),
-            through,
-            position,
-            thinking,
-            HistoryView::Text,
-            HistoryLimits {
-                max_bytes: 32 * 1024,
-                max_chunks: Some(8),
-                max_json_bytes: 64 * 1024,
+    /// Read the original load receipt without reopening its immutable files.
+    pub async fn loaded_checkpoint(&self, operation: Uuid) -> Result<LoadedCheckpoint, StoreError> {
+        let key = load_key(&self.scope, self.session.id(), operation)?;
+        let (request, loaded) = read(&self.session.scoped().await?, key.clone())
+            .await?
+            .ok_or_else(|| invalid("checkpoint load receipt missing"))?;
+        request.validate()?;
+        if request.scope != self.scope
+            || request.session_id != self.session.id()
+            || request.load.operation != operation
+            || request.key()? != key
+            || loaded.head.revision != request.load.revision
+        {
+            return Err(invalid("checkpoint load origin differs"));
+        }
+        Ok(loaded)
+    }
+
+    /// Read the original loaded bytes even after the live checkpoint Head moves.
+    /// Only the canonical history owner may decode or statically import them.
+    pub async fn loaded_snapshot(&self, operation: Uuid) -> Result<Checkout, StoreError> {
+        let key = load_key(&self.scope, self.session.id(), operation)?;
+        let scope = self.scope.clone();
+        let session = self.session.id().to_owned();
+        read_worker(
+            self.session.scoped().await?,
+            self.session.gates.clone(),
+            move |log, objects| async move {
+                let (request, loaded) = read(&log, key)
+                    .await?
+                    .ok_or_else(|| invalid("checkpoint load receipt missing"))?;
+                if request.scope != scope || request.session_id != session {
+                    return Err(invalid("checkpoint load origin differs"));
+                }
+                let LoadState::Ready { history, workspace } = &loaded.state else {
+                    return Err(invalid("checkpoint is not ready"));
+                };
+                let manifest = objects.manifest(&loaded.head.manifest)?;
+                if manifest.root_id != objects.root_id()
+                    || manifest.scope != scope
+                    || manifest.session_id != session
+                    || &manifest.history != history
+                    || &manifest.workspace != workspace
+                {
+                    return Err(invalid("checkpoint load manifest differs"));
+                }
+                if let Some(workspace) = manifest.workspace() {
+                    workspace::verify(&objects, workspace)?;
+                }
+                let snapshot = objects.read(&manifest.history.object)?;
+                Ok(Checkout {
+                    head: loaded.head,
+                    manifest,
+                    snapshot,
+                })
             },
         )
         .await
-    }
-
-    pub async fn loaded_artifacts(
-        &self,
-        operation: Uuid,
-        session: String,
-        offset: u64,
-    ) -> Result<crate::artifacts::ArtifactPage, StoreError> {
-        let offset = i64::try_from(offset).map_err(|_| StoreError::ArtifactOffset)?;
-        let (log, capture, _, revision) = self.loaded(operation, &session).await?;
-        log.connection.read(move |db| {
-            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
-            let total: i64 = tx.query_row("SELECT COUNT(*) FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=?", rusqlite::params![&capture, &session], |row| row.get(0))?;
-            let rows: Vec<String> = tx.prepare_cached("SELECT record_json FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=? ORDER BY json_extract(record_json,'$.createdAt') DESC,id ASC LIMIT 32 OFFSET ?")?.query_map(rusqlite::params![capture, session, offset], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
-            let records = rows.into_iter().map(|raw| serde_json::from_str(&raw)).collect::<Result<_,_>>()?;
-            Ok(crate::artifacts::ArtifactPage { revision, records, total: total as u64 })
-        }).await
-    }
-
-    pub async fn stream_loaded_artifact<F, Fut>(
-        &self,
-        operation: Uuid,
-        session: String,
-        artifact: String,
-        offset: u64,
-        mut emit: F,
-    ) -> Result<(), StoreError>
-    where
-        F: FnMut(
-                Option<(
-                    maka_agent_facts::artifact::Artifact,
-                    u64,
-                    crate::artifacts::ArtifactChunk,
-                )>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: Future<Output = Result<(), StoreError>> + Send + 'static,
-    {
-        crate::sessions::validate_id(&artifact)?;
-        let (log, capture, _, _) = self.loaded(operation, &session).await?;
-        let mut offset = offset;
-        loop {
-            let (capture, session, artifact) = (capture.clone(), session.clone(), artifact.clone());
-            let at = i64::try_from(offset).map_err(|_| StoreError::ArtifactOffset)?;
-            let row: Option<(String,i64,Vec<u8>)> = log.connection.read(move |db| {
-                Ok(db.query_row("SELECT a.record_json,length(c.payload),substr(c.payload,?4+1,32768) FROM history_snapshot_artifacts a JOIN contents c USING(content_sha256) WHERE a.capture_key=?1 AND a.session_id=?2 AND a.id=?3", rusqlite::params![capture, session, artifact, at], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?)
-            }).await?;
-            let Some((raw, total, bytes)) = row else {
-                return emit(None).await;
-            };
-            let total = crate::sequence_number(total)?;
-            if offset > total {
-                return Err(StoreError::ArtifactOffset);
-            }
-            let next = offset + bytes.len() as u64;
-            emit(Some((
-                serde_json::from_str(&raw)?,
-                offset,
-                crate::artifacts::ArtifactChunk {
-                    total_bytes: total,
-                    bytes,
-                },
-            )))
-            .await?;
-            if next >= total {
-                return Ok(());
-            }
-            offset = next;
-        }
-    }
-
-    async fn loaded(
-        &self,
-        operation: Uuid,
-        session: &str,
-    ) -> Result<(EventLog, String, u64, String), StoreError> {
-        crate::sessions::validate_id(session)?;
-        let key = load_key(&self.scope, self.session.id(), operation)?;
-        let log = self.session.scoped().await?;
-        let (_, loaded) = read(&log, key)
-            .await?
-            .ok_or_else(|| invalid("checkpoint load receipt missing"))?;
-        let LoadState::Ready {
-            session_ids,
-            through,
-            ..
-        } = &loaded.state
-        else {
-            return Err(invalid("checkpoint is not ready"));
-        };
-        if !session_ids.iter().any(|id| id == session) {
-            return Err(StoreError::SessionNotFound);
-        }
-        let digest = loaded.head.manifest.digest;
-        let lookup = digest.clone();
-        let capture = log
-            .connection
-            .read(move |db| {
-                db.query_row(
-                    "SELECT capture_key FROM history_snapshots WHERE digest=?",
-                    rusqlite::params![lookup],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(StoreError::MaterialCollected)
-            })
-            .await?;
-        Ok((log, capture, *through, digest))
     }
 }
 
@@ -222,10 +143,21 @@ async fn read(
     log: &EventLog,
     key: String,
 ) -> Result<Option<(LoadRequest, LoadedCheckpoint)>, StoreError> {
-    log.connection.read(move |db|{
-        let row:Option<(String,String)>=db.query_row("SELECT request_json,result_json FROM history_checkpoint_loads WHERE load_key=?", rusqlite::params![key], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
-        row.map(|(request,result)|Ok((serde_json::from_str(&request)?,serde_json::from_str(&result)?))).transpose()
-    }).await
+    log.connection
+        .read(move |db| {
+            let row: Option<(String, String)> = db.query_row(
+            "SELECT request_json,result_json FROM history_checkpoint_loads WHERE load_key=?",
+            rusqlite::params![key], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+            row.map(|(request, result)| {
+                Ok((
+                    serde_json::from_str(&request)?,
+                    serde_json::from_str(&result)?,
+                ))
+            })
+            .transpose()
+        })
+        .await
 }
 
 async fn claim(
@@ -234,19 +166,42 @@ async fn claim(
     head: Head,
     manifest: Manifest,
 ) -> Result<LoadedCheckpoint, StoreError> {
-    log.connection.run(move |db|{
-        let tx=Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
-        let current:Option<String>=tx.query_row("SELECT head_json FROM history_checkpoint_heads WHERE session_id=?", rusqlite::params![&request.session_id], |row| row.get(0)).optional()?;
-        if current.as_deref().map(serde_json::from_str::<Head>).transpose()?.as_ref()!=Some(&head) {
-            return Err(invalid("history checkpoint revision unavailable"));
-        }
-        let through:i64=tx.query_row("SELECT c.through_sequence FROM history_snapshots s JOIN history_snapshot_captures c USING(capture_key) WHERE s.digest=?", rusqlite::params![&head.manifest.digest], |row| row.get(0)).optional()?.ok_or(StoreError::MaterialCollected)?;
-        let value=LoadedCheckpoint { head, state:LoadState::Ready {
-            session_ids:manifest.inventory.sessions.iter().map(|s|s.id.clone()).collect(),
-            through:crate::sequence_number(through)?, workspace:manifest.workspace().cloned(), transfer_digest:manifest.transfer_digest
-        }};
-        tx.execute("INSERT INTO history_checkpoint_loads VALUES(?,?,?)", rusqlite::params![request.key()?, serde_json::to_string(&request)?, serde_json::to_string(&value)?])?;
-        tx.commit().map_err(StoreError::CommitUnknown)?;
-        Ok(value)
-    }).await
+    log.connection
+        .run(move |db| {
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
+                    rusqlite::params![&request.session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current
+                .as_deref()
+                .map(serde_json::from_str::<Head>)
+                .transpose()?
+                .as_ref()
+                != Some(&head)
+            {
+                return Err(invalid("history checkpoint revision unavailable"));
+            }
+            let value = LoadedCheckpoint {
+                head,
+                state: LoadState::Ready {
+                    history: manifest.history,
+                    workspace: manifest.workspace,
+                },
+            };
+            tx.execute(
+                "INSERT INTO history_checkpoint_loads VALUES(?,?,?)",
+                rusqlite::params![
+                    request.key()?,
+                    serde_json::to_string(&request)?,
+                    serde_json::to_string(&value)?,
+                ],
+            )?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(value)
+        })
+        .await
 }

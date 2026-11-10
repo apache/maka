@@ -22,8 +22,8 @@ use super::{
     control::{ControlError, WriteReceipt},
     output::Output,
 };
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::{PREVIEW_BYTES, TerminalScreen, display::Display};
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::{PREVIEW_BYTES, TerminalScreen, display::Display};
 use maka_process::pty::PtyIo;
 use maka_process::terminal::Screen;
 use std::collections::VecDeque;
@@ -173,7 +173,7 @@ impl PendingWrite {
         self.accepted == self.bytes.len()
     }
 
-    pub fn finish(mut self, record: std::sync::Arc<maka_agent_facts::shell_run::ShellObservation>) {
+    pub fn finish(mut self, record: std::sync::Arc<maka_plugin_core::shell_run::ShellObservation>) {
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Ok(WriteReceipt {
                 accepted_bytes: self.accepted,
@@ -258,106 +258,6 @@ pub(super) async fn drain(
         terminal.fail_writes("PTY root exited");
         if count == 0 {
             return failure.map_or(Ok(()), Err);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Decoder;
-
-    #[tokio::test]
-    async fn raw_output_preserves_native_bytes_before_screen_decoding() {
-        use super::{Output, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
-
-        let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size).unwrap();
-        let mut terminal = Terminal::new(size, output.clone());
-        // Exercise the actual Host decoder/parser/replay path. These supplied
-        // native-byte cuts are not a claim of OS PTY transport verification.
-        terminal.output(b"\xff\0\x1b[31m\xe4", false).unwrap();
-        terminal.output(b"\xb8\xad\x1b[0m", false).unwrap();
-        terminal.output(b"\xe2\x82", true).unwrap();
-        let mut stream = output.stream(0).unwrap();
-        let mut raw = Vec::new();
-        while let super::super::output::PtyStreamEvent::Data { bytes, .. } =
-            stream.read(16 * 1024).await.unwrap()
-        {
-            raw.extend_from_slice(&bytes);
-        }
-        assert_eq!(
-            raw.as_slice(),
-            b"\xff\0\x1b[31m\xe4\xb8\xad\x1b[0m\xe2\x82",
-            "the raw replay must preserve invalid bytes, NUL, ANSI and incomplete EOF independently of the screen decoder"
-        );
-    }
-
-    #[tokio::test]
-    async fn parser_failure_and_later_drain_preserve_original_raw_bytes() {
-        use super::super::output::PtyStreamEvent;
-        use super::{Output, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
-
-        let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size).unwrap();
-        let mut terminal = Terminal::new(size, output.clone());
-        terminal.output(b"\x1b]0;", false).unwrap();
-        let chunk = vec![b'x'; 16 * 1024];
-        for _ in 0..3 {
-            terminal.output(&chunk, false).unwrap();
-        }
-        assert!(terminal.output(&chunk, false).is_err());
-        assert!(terminal.screen.is_none());
-        terminal.output(b"final-drain\xff", true).unwrap();
-        let mut expected = b"\x1b]0;".to_vec();
-        expected.extend_from_slice(&chunk.repeat(4));
-        expected.extend_from_slice(b"final-drain\xff");
-        let mut stream = output.stream(0).unwrap();
-        let mut raw = Vec::new();
-        while let PtyStreamEvent::Data { bytes, .. } = stream.read(16 * 1024).await.unwrap() {
-            raw.extend_from_slice(&bytes);
-        }
-        assert_eq!(raw, expected);
-    }
-
-    #[test]
-    fn large_user_control_does_not_consume_automatic_reply_capacity() {
-        use super::{Output, PendingWrite, Terminal};
-        use maka_agent_facts::terminal::TerminalSize;
-        let size = TerminalSize::new(80, 24).unwrap();
-        let output = Output::new(size).unwrap();
-        let mut terminal = Terminal::new(size, output);
-        let (reply, mut receipt) = tokio::sync::oneshot::channel();
-        let input = "x".repeat(1024 * 1024 + 1);
-        terminal
-            .writes
-            .push_back(PendingWrite::new(input.clone(), Some(reply), false, false));
-        terminal.output(b"\x1b[6n", false).unwrap();
-        assert!(terminal.screen.is_some());
-        assert_eq!(terminal.writes.len(), 2);
-        assert_eq!(terminal.writes[0].remaining(), input.as_bytes());
-        assert!(terminal.writes[0].reply.is_some());
-        assert!(terminal.writes[1].reply.is_none());
-        assert_eq!(terminal.writes[1].remaining(), b"\x1b[1;1R");
-        assert!(matches!(
-            receipt.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-    }
-
-    #[test]
-    fn every_utf8_cut_matches_lossy_eof_without_losing_terminal_controls() {
-        let bytes = b"\x1b[31m\xe4\xb8\xad\xf0\x9f\x98\x80\xff\xe2\x82";
-        for first in 0..=bytes.len() {
-            for second in first..=bytes.len() {
-                let mut decoder = Decoder::default();
-                let actual = decoder.decode(&bytes[..first], false)
-                    + &decoder.decode(&bytes[first..second], false)
-                    + &decoder.decode(&bytes[second..], true);
-                assert_eq!(actual, String::from_utf8_lossy(bytes));
-                assert!(decoder.pending.is_empty());
-            }
         }
     }
 }

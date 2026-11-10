@@ -24,15 +24,14 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::{
     ComputerAppDecision, ComputerAppPlatform, ComputerAppRisk, GrantCapability, GrantScope,
-    SystemPermissionGrant,
+    PermissionDecision, PermissionScope, SystemPermissionGrant,
 };
-use maka_sandbox::grant;
 
 pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::Error> {
     use PermissionKind::{AllowAlways, AllowOnce, RejectOnce};
     let choice = |id, name, kind| PermissionChoice { id, name, kind };
     let mut offer = Permission {
-        session: snapshot.session_id.clone(),
+        session: snapshot.execution.session_id.clone(),
         request_id: snapshot.request_id.clone(),
         title: String::new(),
         description: None,
@@ -61,8 +60,9 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             request,
             ..
         } => {
+            snapshot.validate()?;
             offer.title = if tool_use_id.is_none() {
-                format!("{} (permission for this turn)", request.reason)
+                format!("{} (permission for this Run)", request.reason)
             } else {
                 request.reason.clone()
             };
@@ -77,7 +77,7 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 choice(
                     "allow_once",
                     if tool_use_id.is_none() {
-                        "Allow for this turn"
+                        "Allow for this Run"
                     } else {
                         "Allow once"
                     },
@@ -218,6 +218,7 @@ pub(super) fn answer(
             request,
             ..
         } => {
+            snapshot.validate()?;
             let allow = match response {
                 None => false,
                 Some(selected) => match selected.as_str() {
@@ -228,18 +229,18 @@ pub(super) fn answer(
             };
             InteractionAnswer::Permissions {
                 decision: if allow {
-                    grant::Decision::Allow {
+                    PermissionDecision::Allow {
                         permissions: request.permissions.clone(),
-                        // Executor baseline approval is necessarily turn-scoped;
+                        // Executor baseline approval is necessarily Run-scoped;
                         // request() discloses this in both title and option label.
                         scope: if tool_use_id.is_some() {
-                            grant::Scope::Once
+                            PermissionScope::Once
                         } else {
-                            grant::Scope::Turn
+                            PermissionScope::Run
                         },
                     }
                 } else {
-                    grant::Decision::Deny
+                    PermissionDecision::Deny
                 },
             }
         }
@@ -289,476 +290,4 @@ pub(super) fn answer(
         },
         _ => return Err("Expected a permission interaction".into()),
     })
-}
-#[cfg(test)]
-mod tests {
-    use super::super::tests::{Callback, request, snapshot};
-    use super::*;
-    use agent_client_protocol::v2::schema as acp;
-    use maka_agent_facts::interaction::PermissionRequest;
-    use maka_sandbox::Network;
-    use serde_json::json;
-    fn answer(
-        snapshot: &InteractionRecord,
-        value: serde_json::Value,
-    ) -> Result<InteractionAnswer, crate::Error> {
-        let response = super::super::Response::Permission(crate::transport::v2::permission_answer(
-            serde_json::from_value(value)?,
-        )?);
-        super::super::answer(snapshot, response)
-    }
-
-    fn permission(tool: Option<&str>) -> InteractionRecord {
-        snapshot(InteractionRequest::Permissions {
-            tool_use_id: tool.map(str::to_owned),
-            basis: maka_agent_facts::workspace::PermissionBasis {
-                boundary_revision: 0,
-                binding: maka_agent_facts::workspace::BindingStamp {
-                    id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
-                    permission_epoch: 0,
-                },
-            },
-            request: PermissionRequest {
-                reason: "Access network".into(),
-                command: None,
-                permissions: grant::Permissions {
-                    filesystem: vec![],
-                    network: Network::Allowed,
-                },
-            },
-        })
-    }
-
-    fn computer_app(allow_always: bool, risk: Option<ComputerAppRisk>) -> InteractionRecord {
-        use maka_agent_facts::interaction::{
-            ComputerAppDisplay, ComputerAppPlatform, GrantCapability, GrantTarget,
-        };
-        let InteractionRequest::Permissions { basis, .. } = permission(Some("tool")).request else {
-            panic!("permission basis");
-        };
-        snapshot(InteractionRequest::ComputerApp {
-            tool_use_id: "tool_application".into(),
-            native_operation_id: "native_operation".into(),
-            target: GrantTarget {
-                provider_id: "computer".into(),
-                contract_id: "desktop".into(),
-                server_id: "workspace_computer".into(),
-                tool_name: "cua".into(),
-                capability: GrantCapability::ComputerUse,
-                scope: GrantScope::ComputerApp {
-                    platform: ComputerAppPlatform::Macos,
-                    application_id: "org.example.Editor".into(),
-                },
-            },
-            basis,
-            display: ComputerAppDisplay {
-                name: "Example Editor".into(),
-                app_path: "/Volumes/Work/Example Editor.app".into(),
-                risk,
-                warning: Some("This application can read private documents.".into()),
-            },
-            allow_always,
-            authority_revision: 0,
-        })
-    }
-
-    #[test]
-    fn computer_app_prompt_discloses_trusted_identity_risk_and_offered_lifetimes() {
-        let record = computer_app(true, Some(ComputerAppRisk::High));
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        assert_eq!(callback.title, "Allow computer access to Example Editor");
-        assert_eq!(
-            callback.description.as_deref(),
-            Some(
-                "Application: Example Editor\nPath: /Volumes/Work/Example Editor.app\nBundle ID: org.example.Editor\nRisk: High\nThis application can read private documents."
-            )
-        );
-        assert_eq!(
-            serde_json::to_value(&callback.options).unwrap(),
-            json!([
-                {"optionId":"allow_once","name":"Allow once","kind":"allow_once"},
-                {"optionId":"allow_session","name":"Allow for this session","kind":"allow_always"},
-                {"optionId":"allow_always","name":"Always allow","kind":"allow_always"},
-                {"optionId":"reject_once","name":"Deny","kind":"reject_once"}
-            ])
-        );
-        let Some(acp::RequestPermissionSubject::ToolCall(subject)) = callback.subject else {
-            panic!("tool subject");
-        };
-        let subject = serde_json::to_value(subject).unwrap();
-        assert_eq!(subject["toolCall"]["toolCallId"], "tool_application");
-        assert_eq!(
-            subject["toolCall"]["rawInput"]["target"]["scope"],
-            json!({"kind":"computer_app","platform":"macos","applicationId":"org.example.Editor"})
-        );
-    }
-
-    #[test]
-    fn computer_app_unknown_risk_is_explicit_and_persistence_is_never_invented() {
-        let record = computer_app(false, None);
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        assert_eq!(
-            callback.description.as_deref(),
-            Some(
-                "Application: Example Editor\nPath: /Volumes/Work/Example Editor.app\nBundle ID: org.example.Editor\nRisk: Unknown; risk information is unavailable for this application.\nThis application can read private documents."
-            )
-        );
-        assert_eq!(
-            callback
-                .options
-                .iter()
-                .map(|option| option.option_id.to_string())
-                .collect::<Vec<_>>(),
-            ["allow_once", "allow_session", "reject_once"]
-        );
-        assert!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_always"}})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn computer_app_answers_preserve_selected_scope_and_cancel_only_the_operation() {
-        let record = computer_app(true, Some(ComputerAppRisk::Low));
-        for (option, decision) in [
-            ("allow_once", ComputerAppDecision::Once),
-            ("allow_session", ComputerAppDecision::Session),
-            ("allow_always", ComputerAppDecision::Always),
-            ("reject_once", ComputerAppDecision::Deny),
-        ] {
-            assert_eq!(
-                answer(
-                    &record,
-                    json!({"outcome":{"outcome":"selected","optionId":option}})
-                )
-                .unwrap(),
-                InteractionAnswer::ComputerApp { decision }
-            );
-        }
-        assert_eq!(
-            answer(&record, json!({"outcome":{"outcome":"cancelled"}})).unwrap(),
-            InteractionAnswer::ComputerAppCancel {}
-        );
-        for response in [
-            json!({"outcome":{"outcome":"selected","optionId":"allow"}}),
-            json!({"outcome":{"outcome":"_future_approval"}}),
-        ] {
-            assert!(answer(&record, response).is_err());
-        }
-    }
-
-    fn system_permission() -> InteractionRecord {
-        snapshot(InteractionRequest::SystemPermission {
-            tool_use_id: "tool_system".into(),
-            grants: vec![
-                SystemPermissionGrant::Accessibility,
-                SystemPermissionGrant::ScreenRecording,
-            ],
-            application: "Maka Host".into(),
-            application_location: None,
-        })
-    }
-
-    #[test]
-    fn system_permission_prompt_names_grants_and_offers_only_cancel() {
-        let record = system_permission();
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        assert_eq!(
-            callback.title,
-            "Maka Host needs Accessibility and Screen Recording"
-        );
-        assert_eq!(
-            callback.description.as_deref(),
-            Some(
-                "Grant Accessibility and Screen Recording to Maka Host in System Settings > Privacy & Security. The tool call continues automatically once the access is granted."
-            )
-        );
-        assert_eq!(
-            serde_json::to_value(&callback.options).unwrap(),
-            json!([{"optionId":"reject_once","name":"Cancel","kind":"reject_once"}])
-        );
-        let Some(acp::RequestPermissionSubject::ToolCall(subject)) = callback.subject else {
-            panic!("tool subject");
-        };
-        let subject = serde_json::to_value(subject).unwrap();
-        assert_eq!(subject["toolCall"]["toolCallId"], "tool_system");
-        assert_eq!(
-            subject["toolCall"]["rawInput"]["grants"],
-            json!(["accessibility", "screen_recording"])
-        );
-    }
-
-    #[test]
-    fn system_permission_answers_can_only_cancel() {
-        let record = system_permission();
-        for response in [
-            json!({"outcome":{"outcome":"cancelled"}}),
-            json!({"outcome":{"outcome":"selected","optionId":"reject_once"}}),
-        ] {
-            assert_eq!(
-                answer(&record, response).unwrap(),
-                InteractionAnswer::SystemPermissionCancel {}
-            );
-        }
-        for response in [
-            json!({"outcome":{"outcome":"selected","optionId":"allow_once"}}),
-            json!({"outcome":{"outcome":"_future_approval"}}),
-        ] {
-            assert!(answer(&record, response).is_err());
-        }
-    }
-
-    #[test]
-    fn computer_output_audio_is_named_and_remains_a_session_capability() {
-        let InteractionRequest::ComputerApp {
-            mut target, basis, ..
-        } = computer_app(false, None).request
-        else {
-            panic!("application target");
-        };
-        target.capability = GrantCapability::ComputerAudio;
-        target.scope = GrantScope::Capability {};
-        let record = snapshot(InteractionRequest::ClientCapability {
-            tool_use_id: "tool_audio".into(),
-            target,
-            basis: Some(basis),
-        });
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        assert_eq!(
-            callback.title,
-            "Allow computer output audio for this session"
-        );
-        assert_eq!(
-            callback
-                .options
-                .iter()
-                .map(|option| option.option_id.to_string())
-                .collect::<Vec<_>>(),
-            ["allow_session", "reject_once"]
-        );
-        assert_eq!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_session"}})
-            )
-            .unwrap(),
-            InteractionAnswer::ClientCapability {
-                decision: Decision::Allow
-            }
-        );
-        assert!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_always"}})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn permission_rejects_an_elicitation_response() {
-        let response = super::super::Response::Elicitation(super::super::FormAnswer::Cancel);
-        assert!(super::super::answer(&permission(Some("tool")), response).is_err());
-    }
-
-    #[test]
-    fn permission_denial_and_cancellation_never_approve() {
-        let snapshot = permission(Some("tool"));
-        for response in [
-            json!({"outcome":{"outcome":"cancelled"}}),
-            json!({"outcome":{"outcome":"selected","optionId":"reject_once"}}),
-        ] {
-            assert_eq!(
-                answer(&snapshot, response).unwrap(),
-                InteractionAnswer::Permissions {
-                    decision: grant::Decision::Deny
-                }
-            );
-        }
-        assert!(
-            answer(
-                &snapshot,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_always"}})
-            )
-            .is_err()
-        );
-        assert!(answer(&snapshot, json!({"outcome":{"outcome":"_future_approval"}})).is_err());
-    }
-
-    #[test]
-    fn baseline_and_tool_approval_preserve_exact_permissions_and_disclose_scope() {
-        for (tool, scope) in [
-            (None, grant::Scope::Turn),
-            (Some("tool"), grant::Scope::Once),
-        ] {
-            let snapshot = permission(tool);
-            let callback =
-                super::super::tests::request(&snapshot, &acp::ClientCapabilities::default())
-                    .unwrap();
-            let Callback::Permission(typed) = callback else {
-                panic!("Expected permission callback")
-            };
-            if tool.is_none() {
-                assert_eq!(typed.options[0].name, "Allow for this turn");
-                assert!(typed.subject.is_none());
-            } else {
-                assert!(matches!(
-                    typed.subject,
-                    Some(acp::RequestPermissionSubject::ToolCall(_))
-                ));
-            }
-            let InteractionRequest::Permissions { request, .. } = &snapshot.request else {
-                panic!()
-            };
-            assert_eq!(
-                answer(
-                    &snapshot,
-                    json!({"outcome":{"outcome":"selected","optionId":"allow_once"}})
-                )
-                .unwrap(),
-                InteractionAnswer::Permissions {
-                    decision: grant::Decision::Allow {
-                        permissions: request.permissions.clone(),
-                        scope
-                    }
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn command_permission_uses_v2_command_subject() {
-        use maka_agent_facts::interaction::PermissionCommand;
-        let InteractionRequest::Permissions {
-            basis, mut request, ..
-        } = permission(None).request.clone()
-        else {
-            panic!()
-        };
-        request.command = Some(PermissionCommand {
-            command: "curl https://example.com".into(),
-            cwd: "/tmp".into(),
-        });
-        let snapshot = snapshot(InteractionRequest::Permissions {
-            tool_use_id: Some("tool".into()),
-            basis,
-            request,
-        });
-        let callback =
-            super::super::tests::request(&snapshot, &acp::ClientCapabilities::default()).unwrap();
-        let Callback::Permission(callback) = callback else {
-            panic!("Expected permission callback")
-        };
-        let Some(acp::RequestPermissionSubject::Command(command)) = callback.subject else {
-            panic!("Expected command subject")
-        };
-        assert_eq!(command.cwd.0, std::path::Path::new("/tmp"));
-        assert_eq!(command.tool_call_id.unwrap().to_string(), "tool");
-    }
-    #[test]
-    fn service_approval_names_the_exact_call_and_never_offers_persistent_authority() {
-        let record = snapshot(InteractionRequest::ServiceApproval {
-            tool_use_id: "original-call".into(),
-            tool_name: "Run".into(),
-            service: "maka.process.Process@1".into(),
-            method: "execute".into(),
-            binding: "binding".into(),
-            through: 42,
-        });
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        let encoded = serde_json::to_value(callback).unwrap();
-        assert!(encoded.to_string().contains("maka.process.Process@1"));
-        assert!(encoded.to_string().contains("original-call"));
-        assert_eq!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_once"}})
-            )
-            .unwrap(),
-            InteractionAnswer::ServiceApproval {
-                decision: Decision::Allow
-            }
-        );
-        assert!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_session"}})
-            )
-            .is_err()
-        );
-        assert_eq!(
-            answer(&record, json!({"outcome":{"outcome":"cancelled"}})).unwrap(),
-            InteractionAnswer::ServiceApproval {
-                decision: Decision::Deny
-            }
-        );
-    }
-
-    #[test]
-    fn browser_file_download_request_names_the_origin_and_keeps_its_exact_scope() {
-        let InteractionRequest::ComputerApp {
-            mut target, basis, ..
-        } = computer_app(false, None).request
-        else {
-            panic!("application target");
-        };
-        target.capability = GrantCapability::BrowserDownload;
-        target.scope = GrantScope::BrowserOrigin {
-            origin: "https://download.example".into(),
-        };
-        let record = snapshot(InteractionRequest::ClientCapability {
-            tool_use_id: "download_tool".into(),
-            target: target.clone(),
-            basis: Some(basis),
-        });
-        let Callback::Permission(callback) =
-            request(&record, &acp::ClientCapabilities::default()).unwrap()
-        else {
-            panic!("permission callback");
-        };
-        assert_eq!(
-            callback.title,
-            "Allow browser file downloads from https://download.example for this session"
-        );
-        assert!(
-            callback
-                .description
-                .as_deref()
-                .unwrap()
-                .contains("browser_download")
-        );
-        assert_eq!(
-            answer(
-                &record,
-                json!({"outcome":{"outcome":"selected","optionId":"allow_session"}})
-            )
-            .unwrap(),
-            InteractionAnswer::ClientCapability {
-                decision: Decision::Allow
-            }
-        );
-    }
 }

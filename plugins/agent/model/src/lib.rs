@@ -22,6 +22,8 @@ pub use maka_capabilities::model_preparation::{
     StagedPreparation, WorkLease,
 };
 
+mod cleanup;
+pub use cleanup::{ModelCleanupObserver, StreamCleanupError, StreamCleanupStage};
 mod delta;
 pub use maka_agent_facts::model::error::ModelError;
 pub use maka_agent_facts::model::error::ProviderFailure;
@@ -166,6 +168,7 @@ pub struct ModelStream {
     receiver: mpsc::Receiver<Result<Emission, ModelError>>,
     cancellation: CancellationToken,
     worker: StreamWorker,
+    cleanup: ModelCleanupObserver,
     output: StreamOutput,
     pending_delta: Option<delta::PendingDelta>,
 }
@@ -181,13 +184,10 @@ enum StreamOutput {
     Ended,
 }
 
-/// Physical stream ownership was lost or a cancelled adapter failed to drain.
-/// This is separate from a provider's ordinary business failure.
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("model stream cleanup is unconfirmed")]
-pub struct StreamCleanupError;
-
 impl ModelStream {
+    pub fn cleanup_observer(&self) -> ModelCleanupObserver {
+        self.cleanup.clone()
+    }
     pub async fn next(&mut self) -> Option<Result<Emission, ModelError>> {
         if matches!(self.output, StreamOutput::Ended) {
             return None;
@@ -206,7 +206,7 @@ impl ModelStream {
                         biased;
                         event = self.receiver.recv() => event,
                         result = worker => {
-                            let cleanup = result.unwrap_or(Err(StreamCleanupError));
+                            let cleanup = result.unwrap_or_else(|error|Err(self.cleanup.unobservable(StreamCleanupStage::Worker,Arc::new(error),None)));
                             let unconfirmed = cleanup.is_err();
                             self.worker = StreamWorker::Joined(cleanup);
                             self.receiver.close();
@@ -292,9 +292,18 @@ impl ModelStream {
         self.receiver.close();
         self.pending_delta = None;
         while self.receiver.try_recv().is_ok() {}
-        match &mut self.worker {
-            StreamWorker::Running(worker) => worker.await.unwrap_or(Err(StreamCleanupError)),
-            StreamWorker::Joined(cleanup) => cleanup.clone(),
+        let original = self.cleanup.clone();
+        let joined = async {
+            match &mut self.worker {
+                StreamWorker::Running(worker) => worker.await.unwrap_or_else(|error| {
+                    Err(original.unobservable(StreamCleanupStage::Worker, Arc::new(error), None))
+                }),
+                StreamWorker::Joined(result) => result.clone(),
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(6), joined).await {
+            Ok(result) => result,
+            Err(_) => Err(self.cleanup.pending()),
         }
     }
 }
@@ -312,11 +321,35 @@ pub struct ModelExecutor {
     networks: Arc<network::Pool>,
 }
 
+#[derive(Clone, Debug)]
+pub enum StreamOpeningError {
+    Preparation(ModelError),
+    Cleanup(StreamCleanupError),
+}
+impl std::fmt::Display for StreamOpeningError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preparation(error) => std::fmt::Display::fmt(error, f),
+            Self::Cleanup(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for StreamOpeningError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Preparation(error) => Some(error),
+            Self::Cleanup(error) => Some(error),
+        }
+    }
+}
+
 /// A provider login uses the same proxy routing and HTTP implementation as model requests.
 pub fn provider_transport(
     policy: &maka_network::Policy,
 ) -> Result<Arc<dyn maka_agent_ports::model::Transport>, ModelError> {
-    network::Pool::default().get(policy)
+    network::Pool::default()
+        .get(policy)
+        .map(|network| network as Arc<dyn maka_agent_ports::model::Transport>)
 }
 
 impl ModelExecutor {
@@ -325,7 +358,9 @@ impl ModelExecutor {
         &self,
         policy: &maka_network::Policy,
     ) -> Result<Arc<dyn maka_agent_ports::model::Transport>, ModelError> {
-        self.networks.get(policy)
+        self.networks
+            .get(policy)
+            .map(|network| network as Arc<dyn maka_agent_ports::model::Transport>)
     }
 
     pub fn new(idle_timeout: Duration) -> Result<Self, ModelError> {
@@ -411,8 +446,16 @@ impl ModelExecutor {
         conversation: Option<Conversation>,
         binding: maka_agent_ports::model::Binding,
     ) -> Result<ModelStream, ModelError> {
-        self.stream_with_source(request, cancellation, conversation, binding, None)
+        match self
+            .stream_with_source(request, cancellation, conversation, binding, None)
             .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(StreamOpeningError::Preparation(error)) => Err(error),
+            Err(StreamOpeningError::Cleanup(_)) => {
+                unreachable!("an unscoped stream cannot own a source cleanup failure")
+            }
+        }
     }
 
     pub async fn stream_with_source(
@@ -422,67 +465,131 @@ impl ModelExecutor {
         conversation: Option<Conversation>,
         binding: maka_agent_ports::model::Binding,
         source: Option<maka_agent_ports::model::RequestSource>,
-    ) -> Result<ModelStream, ModelError> {
-        for tool in &request.tools {
-            if let Some(provider) = &tool.provider {
-                provider
-                    .validate()
-                    .map_err(|error| ModelError::Adapter(error.into()))?;
-                let protocol = request.provider.tool_context().provider_tools;
-                let compatible = match protocol {
-                    Some(maka_agent_facts::tools::ProviderToolProtocol::OpenaiResponses) => {
-                        provider.id.starts_with("openai.")
+    ) -> Result<ModelStream, StreamOpeningError> {
+        let cancellation = cancellation.child_token();
+        let prepared = async {
+            for tool in &request.tools {
+                if let Some(provider) = &tool.provider {
+                    provider
+                        .validate()
+                        .map_err(|error| ModelError::Adapter(error.into()))?;
+                    let protocol = request.provider.tool_context().provider_tools;
+                    let compatible = match protocol {
+                        Some(maka_agent_facts::tools::ProviderToolProtocol::OpenaiResponses) => {
+                            provider.id.starts_with("openai.")
+                        }
+                        Some(maka_agent_facts::tools::ProviderToolProtocol::AnthropicMessages) => {
+                            provider.id.starts_with("anthropic.")
+                        }
+                        None => false,
+                    };
+                    if !compatible {
+                        return Err(ModelError::Adapter(
+                            "provider tool does not match the selected adapter".into(),
+                        ));
                     }
-                    Some(maka_agent_facts::tools::ProviderToolProtocol::AnthropicMessages) => {
-                        provider.id.starts_with("anthropic.")
-                    }
-                    None => false,
-                };
-                if !compatible {
-                    return Err(ModelError::Adapter(
-                        "provider tool does not match the selected adapter".into(),
-                    ));
                 }
             }
-        }
-        // Public requests also cross JSON clients. Keep their integer contract
-        // independent of the selected provider implementation.
-        if request
-            .max_output_tokens
-            .is_some_and(|value| value == 0 || value > 9_007_199_254_740_991)
-        {
-            return Err(ModelError::Adapter(
-                "maxOutputTokens must be a positive JavaScript safe integer".into(),
-            ));
-        }
-        request.prompt = reasoning::normalize(request.prompt, &request.provider.kind)?;
-        let cancellation = cancellation.child_token();
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
-            result = auth::resolve(&mut request.provider.auth) => result?,
-        }
-        if let Some(limit) = request
-            .provider
-            .image_input
-            .as_ref()
-            .and_then(|image| image.request_bytes)
-        {
-            let bytes = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
-                result = request.encoded_request_sizes() => result?.largest(),
-            };
-            if bytes > limit {
-                return Err(ModelError::ImageInputPayloadTooLarge { bytes, limit });
+            // Public requests also cross JSON clients. Keep their integer contract
+            // independent of the selected provider implementation.
+            if request
+                .max_output_tokens
+                .is_some_and(|value| value == 0 || value > 9_007_199_254_740_991)
+            {
+                return Err(ModelError::Adapter(
+                    "maxOutputTokens must be a positive JavaScript safe integer".into(),
+                ));
             }
+            request.prompt = reasoning::normalize(request.prompt, &request.provider.kind)?;
+            if let Some(source) = &source {
+                source.frozen.authorize(cancellation.clone()).await?;
+            }
+            let authenticated = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(ModelError::Cancelled),
+                result = auth::resolve(&mut request.provider.auth) => result,
+            };
+            if let Err(error) = &authenticated
+                && error.cleanup_unconfirmed()
+            {
+                return Err(error.clone());
+            }
+            if let Some(source) = &source {
+                source.frozen.authorize(cancellation.clone()).await?;
+            }
+            authenticated?;
+            if let Some(limit) = request
+                .provider
+                .image_input
+                .as_ref()
+                .and_then(|image| image.request_bytes)
+            {
+                let measured = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(ModelError::Cancelled),
+                    result = request.encoded_request_sizes() => result,
+                };
+                if measured
+                    .as_ref()
+                    .is_err_and(|error| error.cleanup_unconfirmed())
+                {
+                    return Err(measured.expect_err("failed physical preparation"));
+                }
+                if let Some(source) = &source {
+                    source.frozen.authorize(cancellation.clone()).await?;
+                }
+                let bytes = measured?.largest();
+                if bytes > limit {
+                    return Err(ModelError::ImageInputPayloadTooLarge { bytes, limit });
+                }
+            }
+            let network = self.networks.get(&request.provider.network)?;
+            let request = request.into_adapter()?;
+            Ok((request, network))
         }
+        .await;
+        let (request, network) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let error = if !error.cleanup_unconfirmed() {
+                    source
+                        .as_ref()
+                        .and_then(|source| source.frozen.authorization_failure())
+                        .unwrap_or(error)
+                } else {
+                    error
+                };
+                if let Some(source) = source {
+                    if error.cleanup_unconfirmed() {
+                        return Err(StreamOpeningError::Cleanup(
+                            StreamCleanupError::Unobservable {
+                                stage: StreamCleanupStage::Adapter,
+                                cause: Arc::new(error),
+                                original: source.frozen.authorization_failure().map(Arc::new),
+                                material: Some(source),
+                            },
+                        ));
+                    }
+                    if let Err(cleanup) = source.cleanup.close().await {
+                        return Err(StreamOpeningError::Cleanup(
+                            StreamCleanupError::Unobservable {
+                                stage: StreamCleanupStage::Source,
+                                cause: Arc::new(cleanup),
+                                original: Some(Arc::new(error)),
+                                material: Some(source),
+                            },
+                        ));
+                    }
+                }
+                return Err(StreamOpeningError::Preparation(error));
+            }
+        };
         let (sender, receiver) = mpsc::channel(4);
         let worker_cancel = cancellation.clone();
         let idle_timeout = self.idle_timeout;
         let watchdog = !binding.enforces_idle_timeout();
-        let network = self.networks.get(&request.provider.network)?;
-        let request = request.into_adapter()?;
+        let (cleanup_sender, cleanup_observer) = ModelCleanupObserver::channel(source.clone());
+        let original_cleanup = cleanup_observer.clone();
         let worker = tokio::spawn(async move {
             let failure_sender = sender.clone();
             let adapter_cancel = worker_cancel.child_token();
@@ -494,8 +601,12 @@ impl ModelExecutor {
                 transport: network,
                 events: events.clone(),
                 cancellation: adapter_cancel.clone(),
+                source: source.clone(),
             });
             let operation = async {
+                if let Some(source) = &source {
+                    source.frozen.authorize(adapter_cancel.clone()).await?;
+                }
                 let session = match conversation {
                     Some(conversation) => {
                         conversation
@@ -525,70 +636,68 @@ impl ModelExecutor {
                     .await
             };
             let mut operation = Box::pin(operation);
-            let operation_started = tokio::time::Instant::now();
-            let mut cleanup = Ok(());
-            let result = loop {
+            let mut original_cause = None;
+            let (reported, result) = loop {
                 let deadline = *progress.borrow_and_update() + idle_timeout;
                 let cause = tokio::select! {
                     biased;
-                    result = &mut operation => break result,
-                    _ = worker_cancel.cancelled() => ModelError::Cancelled,
-                    _ = tokio::time::sleep_until(deadline), if watchdog => ModelError::TimedOut,
-                    Ok(()) = progress.changed() => continue,
+                    result=&mut operation=>break (false,result),
+                    _=worker_cancel.cancelled()=>ModelError::Cancelled,
+                    _=tokio::time::sleep_until(deadline),if watchdog=>ModelError::TimedOut,
+                    Ok(())=progress.changed()=>continue,
                 };
+                original_cause = Some(Arc::new(cause.clone()));
+                cleanup_sender.send_replace(cleanup::Observation::Running(original_cause.clone()));
                 adapter_cancel.cancel();
-                // Give the original adapter a bounded cleanup window. Expiry
-                // reports unknown physical cleanup; its owner must keep its fence.
-                let cleanup_started = tokio::time::Instant::now();
-                let outcome =
-                    match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
-                        Err(_) => Some("timeout"),
-                        Ok(Err(error)) if error.cleanup_unconfirmed() => {
-                            Some("adapter_cleanup_unconfirmed")
-                        }
-                        _ => None,
-                    };
-                if let Some(outcome) = outcome {
-                    tracing::error!(
-                        stage = "model_adapter_cancel",
-                        outcome,
-                        timeout_ms = 6000_u64,
-                        elapsed_ms = cleanup_started.elapsed().as_millis(),
-                        "cleanup unconfirmed"
-                    );
-                    cleanup = Err(StreamCleanupError);
-                }
-                break Err(cause);
+                let _ = failure_sender.send(Err(cause)).await;
+                // The caller's six-second budget never owns or drops this original future.
+                break (true, operation.as_mut().await);
             };
             drop(operation);
-            let result = if cleanup.is_ok()
-                && !result.as_ref().is_err_and(ModelError::cleanup_unconfirmed)
-            {
-                if let Some(source) = &source {
-                    match source.cleanup.close().await {
-                        Ok(()) => result,
-                        Err(error) => {
-                            tracing::error!(stage = "model_materialization_close", %error, "cleanup unconfirmed");
-                            Err(ModelError::CleanupUnconfirmed)
-                        }
-                    }
+            adapter_cancel.cancel();
+            if !reported && let Err(error) = &result {
+                let cause = source
+                    .as_ref()
+                    .and_then(|source| source.frozen.authorization_failure())
+                    .unwrap_or_else(|| error.clone());
+                original_cause = Some(Arc::new(cause.clone()));
+                cleanup_sender.send_replace(cleanup::Observation::Running(original_cause.clone()));
+                let _ = failure_sender.send(Err(cause)).await;
+            }
+            let cleanup = if let Err(error) = result {
+                if error.cleanup_unconfirmed() {
+                    Err(original_cleanup.unobservable(
+                        StreamCleanupStage::Adapter,
+                        Arc::new(error),
+                        original_cause.clone(),
+                    ))
                 } else {
-                    result
+                    Ok(())
                 }
             } else {
-                result
+                Ok(())
             };
-            if let Err(error) = result {
-                if error.cleanup_unconfirmed() {
-                    tracing::error!(
-                        stage = "model_adapter_stream",
-                        outcome = "adapter_cleanup_unconfirmed",
-                        elapsed_ms = operation_started.elapsed().as_millis(),
-                        "cleanup unconfirmed"
-                    );
-                    cleanup = Err(StreamCleanupError);
+            let cleanup = match cleanup {
+                Err(error) => Err(error),
+                Ok(()) => match &source {
+                    Some(source) => source.cleanup.close().await.map_err(|error| {
+                        original_cleanup.unobservable(
+                            StreamCleanupStage::Source,
+                            Arc::new(error),
+                            original_cause,
+                        )
+                    }),
+                    None => Ok(()),
+                },
+            };
+            match &cleanup {
+                Ok(()) => {
+                    original_cleanup.release_material();
+                    cleanup_sender.send_replace(cleanup::Observation::Confirmed);
                 }
-                let _ = failure_sender.send(Err(error)).await;
+                Err(error) => {
+                    cleanup_sender.send_replace(cleanup::Observation::Unobservable(error.clone()));
+                }
             }
             cleanup
         });
@@ -596,6 +705,7 @@ impl ModelExecutor {
             receiver,
             cancellation,
             worker: StreamWorker::Running(worker),
+            cleanup: cleanup_observer,
             output: StreamOutput::Receiving,
             pending_delta: None,
         })

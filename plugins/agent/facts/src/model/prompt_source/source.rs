@@ -334,24 +334,121 @@ impl TextSource {
         (self.bytes, self.encoding)
     }
 }
+/// Equality commitments for replay only, never caller or cleanup evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayOrigin {
+    Unattested,
+    Observed {
+        model: [u8; 32],
+        codex: CodexReplayOrigin,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexReplayOrigin {
+    Absent,
+    Unhashed,
+    Hashed([u8; 32]),
+}
+pub const REPLAY_ORIGIN_WORDS: usize = 10;
+impl ReplayOrigin {
+    pub fn observed(model: &str, codex: Option<&crate::context::CodexRequestProvenance>) -> Self {
+        use sha2::{Digest, Sha256};
+        fn commitment(domain: &[u8], value: &str) -> [u8; 32] {
+            let mut hash = Sha256::new();
+            hash.update(domain);
+            hash.update(value.as_bytes());
+            hash.finalize().into()
+        }
+        Self::Observed {
+            model: commitment(b"maka.replay.model\0", model),
+            codex: match codex {
+                None => CodexReplayOrigin::Absent,
+                Some(source) => match &source.compatibility {
+                    None => CodexReplayOrigin::Unhashed,
+                    Some(value) => CodexReplayOrigin::Hashed(commitment(
+                        b"maka.replay.codex\0",
+                        &value.comp_hash,
+                    )),
+                },
+            },
+        }
+    }
+    pub fn encode(self) -> [u64; REPLAY_ORIGIN_WORDS] {
+        let mut words = [0; REPLAY_ORIGIN_WORDS];
+        if let Self::Observed { model, codex } = self {
+            words[0] = 1;
+            for (word, chunk) in words[1..5].iter_mut().zip(model.as_chunks::<8>().0) {
+                *word = u64::from_le_bytes(*chunk);
+            }
+            words[5] = match codex {
+                CodexReplayOrigin::Absent => 0,
+                CodexReplayOrigin::Unhashed => 1,
+                CodexReplayOrigin::Hashed(hash) => {
+                    for (word, chunk) in words[6..10].iter_mut().zip(hash.as_chunks::<8>().0) {
+                        *word = u64::from_le_bytes(*chunk);
+                    }
+                    2
+                }
+            };
+        }
+        words
+    }
+    pub fn decode(words: [u64; REPLAY_ORIGIN_WORDS]) -> io::Result<Self> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid replay origin");
+        if words[0] == 0 && words.iter().all(|word| *word == 0) {
+            return Ok(Self::Unattested);
+        }
+        if words[0] != 1 {
+            return Err(invalid());
+        }
+        let digest = |range: &[u64]| -> [u8; 32] {
+            let mut value = [0; 32];
+            for (bytes, word) in value.as_chunks_mut::<8>().0.iter_mut().zip(range) {
+                *bytes = word.to_le_bytes();
+            }
+            value
+        };
+        let codex = match words[5] {
+            0 if words[6..].iter().all(|word| *word == 0) => CodexReplayOrigin::Absent,
+            1 if words[6..].iter().all(|word| *word == 0) => CodexReplayOrigin::Unhashed,
+            2 => CodexReplayOrigin::Hashed(digest(&words[6..10])),
+            _ => return Err(invalid()),
+        };
+        Ok(Self::Observed {
+            model: digest(&words[1..5]),
+            codex,
+        })
+    }
+}
+
 /// One already-validated JSON value, preserving its insertion order.
 #[derive(Clone, Debug)]
 pub struct JsonSource {
     bytes: SourceBytes,
     measure: Option<RawJsonMeasure>,
+    replay_origin: ReplayOrigin,
 }
 impl JsonSource {
     pub fn new(bytes: SourceBytes) -> Self {
         Self {
             bytes,
             measure: None,
+            replay_origin: ReplayOrigin::Unattested,
         }
+    }
+    pub fn replay_origin(&self) -> ReplayOrigin {
+        self.replay_origin
+    }
+    pub fn with_replay_origin(mut self, origin: ReplayOrigin) -> Self {
+        self.replay_origin = origin;
+        self
     }
     /// The caller guarantees that the measure describes these exact complete JSON bytes.
     pub fn measured(bytes: SourceBytes, measure: RawJsonMeasure) -> Self {
         Self {
             bytes,
             measure: Some(measure),
+            replay_origin: ReplayOrigin::Unattested,
         }
     }
     pub fn bytes(&self) -> &SourceBytes {
@@ -369,9 +466,15 @@ impl JsonSource {
         } else {
             None
         };
+        let replay_origin = if range.start == 0 && self.bytes.len() == Some(range.end) {
+            self.replay_origin
+        } else {
+            ReplayOrigin::Unattested
+        };
         Ok(Self {
             bytes: self.bytes.slice(range)?,
             measure,
+            replay_origin,
         })
     }
 }
@@ -470,6 +573,10 @@ pub struct ToolResultRecipe {
     pub provider_options: Option<JsonSource>,
 }
 #[derive(Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Recipe cursors yield parts by value; keep tool results inline to avoid an allocation per result"
+)]
 pub enum AssistantRecipe {
     CodexCompaction {
         item: JsonSource,

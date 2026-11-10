@@ -19,7 +19,7 @@
 
 use super::*;
 use maka_agent_facts::{artifact::ArtifactSource, attachment::StorageRef};
-use maka_event_log::{SessionStore, artifacts::ArtifactReadScope};
+use maka_agent_state::artifacts::{ArtifactStore, SessionScope};
 use std::{collections::BTreeSet, io::Write};
 
 #[derive(Serialize)]
@@ -44,8 +44,26 @@ enum Media {
     Text,
     Image(&'static str),
 }
+#[derive(Debug)]
+pub(super) enum PreparationError {
+    Unsupported(String),
+    Source(Error),
+}
+impl From<Error> for PreparationError {
+    fn from(error: Error) -> Self {
+        Self::Source(error)
+    }
+}
+impl From<PreparationError> for Error {
+    fn from(error: PreparationError) -> Self {
+        match error {
+            PreparationError::Unsupported(message) => Self::Invalid(message),
+            PreparationError::Source(error) => error,
+        }
+    }
+}
 impl Media {
-    fn parse(mime: &str) -> Result<Self, Error> {
+    fn parse(mime: &str) -> Result<Self, PreparationError> {
         match mime {
             "image/png" => Ok(Self::Image("png")),
             "image/jpeg" => Ok(Self::Image("jpg")),
@@ -53,7 +71,7 @@ impl Media {
             "image/webp" => Ok(Self::Image("webp")),
             "application/json" => Ok(Self::Text),
             mime if mime.starts_with("text/") => Ok(Self::Text),
-            _ => Err(Error::Invalid(format!(
+            _ => Err(PreparationError::Unsupported(format!(
                 "External agent attachment media unsupported: {mime}"
             ))),
         }
@@ -61,11 +79,12 @@ impl Media {
 }
 
 pub(super) async fn prepare(
-    store: &SessionStore,
-    session: &str,
+    store: &ArtifactStore,
+    scope: &SessionScope,
     content: &maka_agent_facts::input::MessageInput,
     cancellation: &CancellationToken,
-) -> Result<Materials, Error> {
+    material_root: &std::path::Path,
+) -> Result<Materials, PreparationError> {
     let mut materials = Materials {
         message: content.text.clone(),
         images: Vec::new(),
@@ -80,29 +99,33 @@ pub(super) async fn prepare(
         else {
             return Err(Error::Invalid(
                 "External agent attachment must be a session user upload".into(),
-            ));
+            )
+            .into());
         };
-        if session_id != session || !seen.insert(relative_path) {
+        if session_id != &scope.session || !seen.insert(relative_path) {
             return Err(Error::Invalid(
                 "External agent attachment must be a distinct upload owned by this session".into(),
-            ));
+            )
+            .into());
         }
         let attachment = attachment.clone();
+        let material_root = material_root.to_owned();
         let cancellation = cancellation.clone();
         // The artifact reader owns the blocking snapshot and all payload I/O;
         // metadata, source and digest are checked together, not in a second lookup.
         materials = store
-            .with_artifact(
-                ArtifactReadScope::Session(session),
-                relative_path,
-                move |record, reader| -> Result<Materials, Error> {
+            .with_content(
+                scope.clone(),
+                relative_path.clone(),
+                move |record, reader| -> Result<Materials, PreparationError> {
                     record
                         .validate_attachment(&attachment)
                         .map_err(|e| Error::Invalid(e.to_string()))?;
                     if record.source != ArtifactSource::UserUpload {
                         return Err(Error::Invalid(
                             "External agent attachment is not an immutable user upload".into(),
-                        ));
+                        )
+                        .into());
                     }
                     let digest = record.summary.as_deref().ok_or_else(|| {
                         Error::Invalid("External agent upload digest missing".into())
@@ -116,7 +139,7 @@ pub(super) async fn prepare(
                                 materials.directory = Some(
                                     tempfile::Builder::new()
                                         .prefix("maka-native-")
-                                        .tempdir()
+                                        .tempdir_in(&material_root)
                                         .map_err(io_error)?,
                                 );
                             }
@@ -144,7 +167,7 @@ pub(super) async fn prepare(
                     let mut buffer = [0u8; 64 * 1024];
                     while remaining > 0 {
                         if cancellation.is_cancelled() {
-                            return Err(Error::Cancelled);
+                            return Err(Error::Cancelled.into());
                         }
                         let length = remaining.min(buffer.len() as u64) as usize;
                         let chunk = &mut buffer[..length];
@@ -157,9 +180,9 @@ pub(super) async fn prepare(
                         remaining -= length as u64;
                     }
                     if format!("sha256:{}", hex::encode(hash.finalize())) != digest {
-                        return Err(Error::Invalid(
-                            "External agent upload digest mismatch".into(),
-                        ));
+                        return Err(
+                            Error::Invalid("External agent upload digest mismatch".into()).into(),
+                        );
                     }
                     if image.is_none() {
                         let text = String::from_utf8(text).map_err(|_| {
@@ -180,7 +203,7 @@ pub(super) async fn prepare(
             .ok_or_else(|| Error::Invalid("External agent user upload unavailable".into()))??;
     }
     if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
+        return Err(Error::Cancelled.into());
     }
     Ok(materials)
 }

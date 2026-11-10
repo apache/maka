@@ -48,6 +48,25 @@ export interface ConversationShell {
 
 export interface ConversationSessionHandle {
   leave(): Promise<boolean>;
+  /** Finds or creates the Maka Bot conversation and returns its id. */
+  openBot(): Promise<string>;
+}
+
+export interface QuickToolHandle {
+  /** How many rows the tool shows for the current query. */
+  rows(): number;
+  activate(row: number): void;
+}
+
+/** A view drawn in the quick launcher, below its input. */
+export interface QuickToolInput {
+  query(): string;
+  /** Which of the tool's rows the keyboard selection is on. */
+  selected(): number | null;
+  /** Dismisses the launcher once a row has done its work. */
+  close(): void;
+  report(reason: unknown): void;
+  attach(handle: QuickToolHandle): void;
 }
 
 export interface ConversationPreviewHandle {
@@ -61,8 +80,17 @@ export interface ConversationNavigationInput {
   readonly shell: ConversationShell;
 }
 
+/** What a conversation drawn compactly, with its input on top, leaves to its host. */
+export interface ConversationCompact {
+  expand(): void;
+  close(): void;
+}
+
 export interface ConversationSessionInput {
   readonly shell: ConversationShell;
+  /** Sent once the pane can send, in a conversation with no draft. */
+  readonly firstMessage?: string | undefined;
+  readonly compact?: ConversationCompact | undefined;
   attach(handle: ConversationSessionHandle): void;
 }
 
@@ -84,6 +112,8 @@ export const conversationSessionView = defineUiViewContract<ConversationSessionI
 export const conversationPreviewView = defineUiViewContract<ConversationPreviewInput>(
   'maka.conversations.preview',
 );
+
+export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');
 
 export interface SettingsRoute {
   readonly instance: InstanceId;

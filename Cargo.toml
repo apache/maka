@@ -21,6 +21,7 @@ default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
     "platform/session-state",
     "plugins/agent/facts",
+    "plugins/agent/state",
     "platform/packages",
     "plugins/agent/ports",
     "platform/capabilities",
@@ -89,9 +90,9 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+asyncband = "*"
 mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "05a430bc17a3e1b3fa2131524fc52e4319e07298" }
 flatbuffers = "25.12.19"
-postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
@@ -108,6 +109,7 @@ nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = 
 nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math"] }
 maka-ui-build = { path = "tools/ui-build" }
 maka-agent-facts = { path = "plugins/agent/facts" }
+maka-agent-state = { path = "plugins/agent/state" }
 maka-packages = { path = "platform/packages" }
 maka-agent-ports = { path = "plugins/agent/ports" }
 maka-capabilities = { path = "platform/capabilities" }

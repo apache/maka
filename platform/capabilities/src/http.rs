@@ -25,21 +25,10 @@ pub mod upload;
 use crate::call::Scope;
 pub use bytes::Bytes;
 use futures_util::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
+use maka_plugin_core::http::Method;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum Method {
-    Get,
-    Head,
-    Post,
-    Put,
-    Patch,
-    Delete,
-    Options,
-}
 
 /// A single-use, pull-driven upload. Retrying opens a fresh source; the transport
 /// never buffers a complete body to make it replayable. Dropping the stream must

@@ -23,7 +23,14 @@ use crate::applications::operations::{
     Dispatch, DispatchClaim, DispatchLifetime, PreparedOperation,
 };
 use maka_plugin_core::operation::{
-    OperationCleanup, OperationObservation, OperationOutcome, RecoveryRef,
+    OperationCleanup, OperationObservation, OperationOutcome, OperationResult, RecoveryContract,
+    RecoveryRef,
+};
+use maka_plugin_core::{
+    composition::InstanceId,
+    deployment::DeploymentRef,
+    package::{Implementation, PackageRef},
+    plan::InstanceEntry,
 };
 
 #[derive(Clone)]
@@ -33,68 +40,223 @@ pub struct OperationStore {
     closed: Arc<AtomicBool>,
     gates: Arc<gates::Gates>,
 }
+/// Provider fact authority over one Root/deployment and direct namespace.
+/// Native ownership follows package id + implementation across bundle revisions;
+/// JavaScript remains bound to its complete immutable package.
+#[derive(Clone)]
+pub struct ProviderJournal {
+    deployment: uuid::Uuid,
+    namespace: InstanceId,
+    package: PackageRef,
+    implementation: Implementation,
+    log: Weak<EventLog>,
+}
+
+/// Only authoritative facts for the exact original operation. This is never an
+/// Execution, DispatchClaim, replay permit, or proof the handler did not start.
+#[derive(Clone)]
+pub struct RecoveredOperation {
+    reference: RecoveryRef,
+    log: Weak<EventLog>,
+}
+impl ProviderJournal {
+    pub fn deployment(&self) -> uuid::Uuid {
+        self.deployment
+    }
+    pub fn namespace(&self) -> &InstanceId {
+        &self.namespace
+    }
+    pub fn package(&self) -> &PackageRef {
+        &self.package
+    }
+
+    pub async fn operation(
+        &self,
+        reference: &RecoveryRef,
+    ) -> Result<RecoveredOperation, StoreError> {
+        reference
+            .validate()
+            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+        if reference.source.deployment != self.deployment || reference.namespace != self.namespace {
+            return Err(StoreError::InvalidTransition(
+                "foreign provider operation journal".into(),
+            ));
+        }
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        let log = owner.scoped(owner.clone());
+        // Inspect the original source, never current bindings. This authorizes
+        // original provider facts, not execution or interpretation of old code.
+        let loaded = log
+            .load_application_at(&reference.source)
+            .await?
+            .ok_or_else(|| {
+                StoreError::InvalidTransition("original provider source is missing".into())
+            })?;
+        let instance = loaded
+            .plan()
+            .instances()
+            .get(&self.namespace)
+            .filter(|instance| !instance.disabled && instance.package.id == self.package.id)
+            .ok_or_else(|| {
+                StoreError::InvalidTransition(
+                    "original provider package or namespace differs".into(),
+                )
+            })?;
+        let Some(InstanceEntry::Host(entry)) = &instance.entry else {
+            return Err(StoreError::InvalidTransition(
+                "original provider requires a Host entry".into(),
+            ));
+        };
+        let same_provider = match (&self.implementation, &entry.implementation) {
+            (
+                Implementation::Native {
+                    implementation: issuer,
+                },
+                Implementation::Native {
+                    implementation: original,
+                },
+            ) => issuer == original,
+            (Implementation::JavaScript { .. }, Implementation::JavaScript { .. }) => {
+                instance.package == self.package && self.implementation == entry.implementation
+            }
+            _ => false,
+        };
+        if !same_provider {
+            return Err(StoreError::InvalidTransition(
+                "original provider implementation differs".into(),
+            ));
+        }
+        let declared = entry.exports.get(&reference.export).ok_or_else(|| {
+            StoreError::InvalidTransition("original provider export is missing".into())
+        })?;
+        let contract = RecoveryContract::for_method(&declared.contract, &reference.method)
+            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+        if contract != reference.contract {
+            return Err(StoreError::EventConflict);
+        }
+        log.operation_observation(reference).await?.ok_or_else(|| {
+            StoreError::InvalidTransition("original provider operation is not recorded".into())
+        })?;
+        Ok(RecoveredOperation {
+            reference: reference.clone(),
+            log: self.log.clone(),
+        })
+    }
+}
+
+impl RecoveredOperation {
+    pub fn reference(&self) -> &RecoveryRef {
+        &self.reference
+    }
+
+    pub async fn observation(&self) -> Result<OperationObservation, StoreError> {
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        owner
+            .scoped(owner.clone())
+            .operation_observation(&self.reference)
+            .await?
+            .ok_or_else(|| {
+                StoreError::InvalidTransition("original provider operation is not recorded".into())
+            })
+    }
+
+    /// Original provider's actual handler return, including an explicit error.
+    /// Reopening a Root, observing a child effect, or NotRecorded is not evidence.
+    /// The provider must reconcile the original job/receipt protocol and schema;
+    /// unsupported versions block rather than replay through a newer handler.
+    pub async fn record_returned(
+        &self,
+        result: OperationResult,
+    ) -> Result<OperationObservation, StoreError> {
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        owner
+            .scoped(owner.clone())
+            .record_provider_returned(&self.reference, result)
+            .await
+    }
+
+    /// The provider supplies actual physical cleanup evidence. Current-Root
+    /// custody (including an expired weak tombstone) can never be bypassed here.
+    pub async fn record_cleanup(
+        &self,
+        cleanup: OperationCleanup,
+    ) -> Result<OperationObservation, StoreError> {
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        owner
+            .scoped(owner.clone())
+            .record_provider_cleanup(&self.reference, cleanup)
+            .await
+    }
+}
+
 /// One admitted provider attempt, retaining original dispatch and Session work.
 /// The physical worker must finish provider cleanup before settling this handle.
-pub struct OperationAuxiliary {
-    log: EventLog,
-    id: uuid::Uuid,
+/// A physical child of the original dispatch and selected Session work.
+pub struct OperationWork {
     work: Arc<crate::applications::operations::DispatchWork>,
-    lease: Option<SessionExecutionLease>,
+    lease: Option<SessionWorkLease>,
 }
-impl Drop for OperationAuxiliary {
+impl OperationWork {
+    /// Call only after the owned native worker has confirmed physical cleanup.
+    pub fn finish_after_cleanup(mut self) {
+        self.work.finish();
+        self.lease.take().expect("live operation work").finish();
+    }
+}
+impl Drop for OperationWork {
     fn drop(&mut self) {
         if self.lease.is_some() {
-            // Lost provider custody can never become a confirmed parent cleanup.
             self.work.quarantine();
         }
     }
 }
-// Admission has not dispatched a provider; settlement is called only after its
-// physical cleanup. In both phases SQL uncertainty affects facts, not cleanup.
-struct AuxiliaryCompletion {
-    work: Option<Arc<crate::applications::operations::DispatchWork>>,
-    lease: Option<SessionExecutionLease>,
-}
-impl Drop for AuxiliaryCompletion {
-    fn drop(&mut self) {
-        if let Some(work) = self.work.take() {
-            work.finish();
-        }
-        if let Some(lease) = self.lease.take() {
-            lease.finish();
-        }
-    }
-}
-impl OperationAuxiliary {
-    pub fn id(&self) -> uuid::Uuid {
-        self.id
-    }
-    pub async fn observe(
-        &self,
-        usage: maka_agent_facts::model::ModelUsage,
-    ) -> Result<(), StoreError> {
-        self.log.observe_auxiliary_model(self.id, usage).await
-    }
-    /// The physical worker has confirmed cleanup, but accounting persistence
-    /// failed. Preserve its pending journal for recovery; invent no outcome.
-    pub fn release_after_cleanup(mut self) {
-        drop(AuxiliaryCompletion {
-            work: Some(self.work.clone()),
-            lease: self.lease.take(),
-        });
-    }
-    pub async fn settle(mut self, outcome: crate::usage::Outcome) -> Result<(), StoreError> {
-        let completion = AuxiliaryCompletion {
-            work: Some(self.work.clone()),
-            lease: self.lease.take(),
-        };
-        let result = self.log.settle_auxiliary_model(self.id, outcome).await;
-        drop(completion);
-        result
-    }
-}
 
 impl RootStore {
+    /// Trusted native Root authority explicitly selects a provider, never a guest
+    /// read reference. Resolve its declarations from the exact committed source.
+    pub async fn provider_journal(
+        &self,
+        source: DeploymentRef,
+        namespace: InstanceId,
+    ) -> Result<ProviderJournal, StoreError> {
+        self.require_open()?;
+        namespace
+            .validate()
+            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+        let loaded = self
+            .log
+            .load_application_at(&source)
+            .await?
+            .ok_or_else(|| {
+                StoreError::InvalidTransition("original provider source is missing".into())
+            })?;
+        let instance = loaded
+            .plan()
+            .instances()
+            .get(&namespace)
+            .filter(|instance| !instance.disabled)
+            .ok_or_else(|| {
+                StoreError::InvalidTransition(
+                    "provider namespace is not executable in the original source".into(),
+                )
+            })?;
+        let Some(InstanceEntry::Host(entry)) = &instance.entry else {
+            return Err(StoreError::InvalidTransition(
+                "provider namespace requires an original Host entry".into(),
+            ));
+        };
+        let package = instance.package.clone();
+        let implementation = entry.implementation.clone();
+        self.require_open()?;
+        Ok(ProviderJournal {
+            deployment: source.deployment,
+            namespace,
+            package,
+            implementation,
+            log: Arc::downgrade(&self.log),
+        })
+    }
+
     pub fn operation(&self, reference: &RecoveryRef) -> Result<OperationStore, StoreError> {
         self.require_open()?;
         self.log.operation_domain(reference)?;
@@ -155,18 +317,44 @@ impl OperationStore {
             .dispatch_prepared_with_lifetime(prepared, Some(lifetime))
             .await
     }
-    pub async fn finish_operation(
+    pub fn start_operation(&self, claim: &DispatchClaim) -> Result<(), StoreError> {
+        self.check(claim.reference())?;
+        self.owner()?.start_operation(claim)
+    }
+    pub async fn prevent_operation_before_start(
         &self,
         claim: &DispatchClaim,
-        outcome: OperationOutcome,
-        cleanup: OperationCleanup,
     ) -> Result<OperationObservation, StoreError> {
         self.check(claim.reference())?;
-        // Original accepted work may settle while Root admission is closed.
         let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
         owner
             .scoped(owner.clone())
-            .finish_operation(claim, outcome, cleanup)
+            .prevent_operation_before_start(claim)
+            .await
+    }
+    pub async fn record_operation_outcome(
+        &self,
+        claim: &DispatchClaim,
+        outcome: OperationOutcome,
+    ) -> Result<OperationObservation, StoreError> {
+        self.check(claim.reference())?;
+        // Accepted work may settle after admission closes, without a new grant.
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        owner
+            .scoped(owner.clone())
+            .record_operation_outcome(claim, outcome)
+            .await
+    }
+    pub async fn record_operation_cleanup(
+        &self,
+        claim: &DispatchClaim,
+        cleanup: OperationCleanup,
+    ) -> Result<OperationObservation, StoreError> {
+        self.check(claim.reference())?;
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        owner
+            .scoped(owner.clone())
+            .record_operation_cleanup(claim, cleanup)
             .await
     }
     pub async fn operation_observation(&self) -> Result<Option<OperationObservation>, StoreError> {
@@ -178,91 +366,46 @@ impl OperationStore {
     }
 }
 
-impl OperationStore {
-    pub async fn begin_auxiliary_operation_model(
-        &self,
-        dispatch: &crate::applications::operations::OperationDispatchScope,
-        lease: SessionExecutionLease,
-        binding: maka_agent_facts::execution::ModelBinding,
-        language: maka_agent_facts::language::Language,
-        quote: Option<maka_agent_facts::pricing::Quote>,
-    ) -> Result<OperationAuxiliary, StoreError> {
-        let mut completion = AuxiliaryCompletion {
-            work: None,
-            lease: Some(lease),
-        };
-        let (log, id, work) = self
-            .admit_auxiliary_operation_model(
-                dispatch,
-                completion.lease.as_ref().expect("prepared Session lease"),
-                binding,
-                language,
-                quote,
-            )
-            .await?;
-        Ok(OperationAuxiliary {
-            log,
-            id,
-            work,
-            lease: completion.lease.take(),
-        })
-    }
-
-    async fn admit_auxiliary_operation_model(
-        &self,
-        dispatch: &crate::applications::operations::OperationDispatchScope,
-        lease: &SessionExecutionLease,
-        binding: maka_agent_facts::execution::ModelBinding,
-        language: maka_agent_facts::language::Language,
-        quote: Option<maka_agent_facts::pricing::Quote>,
-    ) -> Result<
-        (
-            EventLog,
-            uuid::Uuid,
-            Arc<crate::applications::operations::DispatchWork>,
-        ),
-        StoreError,
-    > {
-        self.check(dispatch.reference())?;
-        let session = lease.store();
-        if !Arc::ptr_eq(&self.gates, &session.gates) {
-            return Err(StoreError::InvalidTransition(
-                "foreign Session execution lease".into(),
-            ));
+struct PendingWork(Option<SessionWorkLease>);
+impl Drop for PendingWork {
+    fn drop(&mut self) {
+        if let Some(lease) = self.0.take() {
+            lease.finish();
         }
-        let pins = session
-            .execution
-            .as_ref()
-            .ok_or(StoreError::ConnectionClosed)?
-            .custody()?;
-        // Accepted work retains access during Root draining. Its Session lease
-        // is registered in the original Root's lifetime and retirement gates.
-        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
-        let work = dispatch.acquire(&owner, &self.reference)?;
-        let mut completion = AuxiliaryCompletion {
-            work: Some(work.clone()),
-            lease: None,
-        };
-        // Mark accepted use in the original Session transaction before entering
-        // the independent source journal. Work pins prevent physical retirement.
-        session.scoped().await?.retain_session(session.id()).await?;
-        let log = owner.scoped(Arc::new((owner.clone(), pins, work.clone())));
-        let id = log
-            .begin_bound_auxiliary_operation_model(
-                self.reference.clone(),
-                binding,
-                session.id().to_owned(),
-                language,
-                quote,
-            )
-            .await?;
-        drop(completion.work.take());
-        Ok((log, id, work))
     }
 }
-
-#[cfg(test)]
-mod tests;
+impl OperationStore {
+    pub async fn acquire_work(
+        &self,
+        dispatch: &crate::applications::operations::OperationDispatchScope,
+        lease: SessionWorkLease,
+    ) -> Result<OperationWork, StoreError> {
+        let mut pending = PendingWork(Some(lease));
+        self.check(dispatch.reference())?;
+        let session = pending.0.as_ref().expect("prepared work").store();
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        let selected = session.owner()?;
+        if !std::ptr::eq(
+            owner
+                .root_owner
+                .as_deref()
+                .ok_or(StoreError::ConnectionClosed)?,
+            selected
+                .root_owner
+                .as_deref()
+                .ok_or(StoreError::ConnectionClosed)?,
+        ) {
+            return Err(StoreError::InvalidTransition("foreign Session work".into()));
+        }
+        session.work_lifetime()?;
+        session.scoped().await?.retain_session(session.id()).await?;
+        let work = dispatch.acquire(&owner, &self.reference)?;
+        Ok(OperationWork {
+            work,
+            lease: pending.0.take(),
+        })
+    }
+}
 
 // Root lifetime covers the actual first dispatch through its durable settlement,
 // including the gap after the provider has drained but before the receipt write.

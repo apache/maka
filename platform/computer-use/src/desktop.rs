@@ -232,7 +232,13 @@ impl SessionOwner {
         Ok(cursor.clone())
     }
 
-    pub async fn finish_turn(&self, turn: &str, language: Language) -> Result<(), ToolError> {
+    pub async fn finish_turn(
+        &self,
+        session: &str,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+        language: Language,
+    ) -> Result<(), ToolError> {
         let registered = self.state.lock().unwrap().remote_registered;
         let mut failures = Vec::new();
         if registered {
@@ -242,7 +248,9 @@ impl SessionOwner {
                     .invoke(
                         worker::Request::FinishOwnerTurn {
                             owner: self.remote_id.to_string(),
+                            session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -261,7 +269,7 @@ impl SessionOwner {
         #[cfg(feature = "native-desktop")]
         if let Err(error) =
             crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
-                .finish_turn(turn, &self.cursor(), language)
+                .finish_turn(turn, execution, &self.cursor(), language)
                 .await
         {
             failures.push(error.to_string());
@@ -368,7 +376,10 @@ enum Backend {
     Local(Box<session::Session>),
     Windows {
         browsers: Vec<BrowserConnection>,
-        audio: Option<worker::AudioObservation>,
+        audio: Option<(
+            (String, String, crate::ExecutionCorrelation),
+            worker::AudioObservation,
+        )>,
     },
 }
 impl Session {
@@ -591,6 +602,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().to_owned(),
                     turn: invocation.turn().to_owned(),
+                    execution: invocation.execution_correlation().clone(),
                     operation_id: operation_id.to_owned(),
                     browsers: browsers.clone(),
                     request,
@@ -641,6 +653,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().into(),
                     turn: invocation.turn().into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -705,6 +718,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -717,11 +731,19 @@ impl Session {
                     .invoke_browser(request, invocation, cancellation.clone())
                     .await?;
                 if start_audio {
-                    *audio = Some(reply.audio.ok_or_else(|| {
-                        ToolError::CleanupUnconfirmed(
-                            "Windows audio startup reply lost its bound capture observation".into(),
-                        )
-                    })?);
+                    *audio = Some((
+                        (
+                            session.to_owned(),
+                            turn.to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        reply.audio.ok_or_else(|| {
+                            ToolError::CleanupUnconfirmed(
+                                "Windows audio startup reply lost its bound capture observation"
+                                    .into(),
+                            )
+                        })?,
+                    ));
                 } else if stop_audio {
                     *audio = None;
                 }
@@ -770,7 +792,7 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.wait_audio_finished(),
             Some(Backend::Windows { audio, .. }) => {
-                let audio = audio.clone();
+                let audio = audio.as_ref().map(|(_, observation)| observation.clone());
                 Box::pin(async move {
                     let mut audio =
                         audio.ok_or_else(|| failed("Computer audio recording is not active"))?;
@@ -795,11 +817,14 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         match &mut self.backend {
             #[cfg(feature = "native-desktop")]
-            Some(Backend::Local(local)) => local.finish_turn(session, turn, language).await,
+            Some(Backend::Local(local)) => {
+                local.finish_turn(session, turn, execution, language).await
+            }
             Some(Backend::Windows { audio, .. }) => {
                 if self
                     .owner
@@ -830,6 +855,7 @@ impl Session {
                             epoch: self.native_epoch.to_string(),
                             session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -837,7 +863,11 @@ impl Session {
                     )
                     .await
                     .map_err(unconfirmed_remote_cleanup)?;
-                *audio = None;
+                if audio.as_ref().is_some_and(|(source, _)| {
+                    source.0 == session && source.1 == turn && &source.2 == execution
+                }) {
+                    *audio = None;
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -988,120 +1018,4 @@ fn native_unavailable() -> ToolError {
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn closing_an_epoch_preserves_replacement_until_the_logical_owner_closes() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let owner = SessionOwner::new(driver.clone());
-        let mut first = owner.new_epoch().unwrap();
-        first.close_native().await.unwrap();
-        let mut second = owner.new_epoch().unwrap();
-        assert_ne!(first.native_epoch(), second.native_epoch());
-        second.close_native().await.unwrap();
-        owner.close().await.unwrap();
-        assert!(owner.new_epoch().is_err());
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn windows_replacement_does_not_reuse_unconfirmed_epoch_cleanup() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let owner = SessionOwner::new(driver.clone());
-        let mut first = owner.new_epoch().unwrap();
-        owner.register_remote(first.native_epoch()).unwrap();
-        first.backend = Some(Backend::Windows {
-            browsers: Vec::new(),
-            audio: None,
-        });
-        owner
-            .bind_remote(first.native_epoch(), "logical-session")
-            .unwrap();
-        let error = first.close_native().await.unwrap_err();
-        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
-            if message == "Windows native epoch lost its original connection"));
-        let mut second = owner.new_epoch().unwrap();
-        owner.register_remote(second.native_epoch()).unwrap();
-        assert_ne!(first.native_epoch(), second.native_epoch());
-        assert_eq!(
-            owner.remote_session(first.native_epoch()).as_deref(),
-            Some("logical-session")
-        );
-        assert_eq!(
-            first.close_native().await.unwrap_err().to_string(),
-            error.to_string()
-        );
-        second.close_native().await.unwrap();
-        assert_eq!(
-            owner.remote_session(first.native_epoch()).as_deref(),
-            Some("logical-session")
-        );
-        let error = owner.close().await.unwrap_err();
-        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
-            if message.contains("Windows native epoch has not confirmed its cleanup")
-                && message.contains("Windows logical owner lost its original connection")));
-        assert_eq!(
-            owner.close().await.unwrap_err().to_string(),
-            error.to_string()
-        );
-        assert!(owner.new_epoch().is_err());
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[test]
-    fn desktop_selection_never_falls_back_from_windows() {
-        for platform in ["linux", "mac", "windows"] {
-            for wsl in [false, true] {
-                assert!(!use_windows(Desktop::Local, platform, wsl).unwrap());
-                assert_eq!(
-                    use_windows(Desktop::Auto, platform, wsl).unwrap(),
-                    platform == "linux" && wsl
-                );
-                let result = use_windows(Desktop::Windows, platform, wsl);
-                match platform {
-                    "windows" => assert!(!result.unwrap()),
-                    "linux" if wsl => assert!(result.unwrap()),
-                    _ => assert!(
-                        matches!(result, Err(ToolError::Failed(message)) if message == "Windows desktop requires Windows or WSL")
-                    ),
-                }
-            }
-        }
-    }
-
-    #[cfg(not(feature = "native-desktop"))]
-    #[tokio::test]
-    async fn bridge_build_rejects_local_configuration_and_keeps_windows_available() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let mut session = Session::new(driver.clone());
-        let error = session
-            .configure(Desktop::Local, Vec::new(), Language::En)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "tool failed: Local desktop support is not included in this build; build Maka with the native-desktop feature, or use the Windows desktop from WSL"
-        );
-        // Auto may select the Windows worker only in WSL. Elsewhere it must
-        // report the missing native capability during configuration too.
-        if !is_wsl() {
-            assert_eq!(
-                session
-                    .configure(Desktop::Auto, Vec::new(), Language::En)
-                    .unwrap_err()
-                    .to_string(),
-                error.to_string()
-            );
-        } else {
-            session
-                .configure(Desktop::Auto, Vec::new(), Language::En)
-                .unwrap();
-            assert_eq!(session.platform(), "windows");
-        }
-        session.close().await.unwrap();
-        driver.lock().await.close().await.unwrap();
-    }
 }

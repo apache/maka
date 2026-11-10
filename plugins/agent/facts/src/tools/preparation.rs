@@ -18,7 +18,7 @@
  */
 
 use crate::{
-    event::Invocation,
+    durable::ExecutionIdentity,
     tool_call::{ToolRejection, tool_use_id},
     tool_output::ToolSuccess,
     tools::{ToolError, ToolExecutor, ToolFuture},
@@ -79,6 +79,7 @@ pub struct PreparedEffect {
     execution: Option<PreparedExecution>,
     pub(super) title: Option<crate::display::Text>,
     pub(super) presentation: Option<String>,
+    approval: Option<crate::durable::ApprovalId>,
     admissions: Vec<Admission>,
     leases: Vec<Box<dyn Send>>,
     admission_observers: Vec<AdmissionObserver>,
@@ -92,9 +93,31 @@ impl PreparedEffect {
             execution: Some(PreparedExecution::Inline(Box::new(execute))),
             title: None,
             presentation: None,
+            approval: None,
             admissions: Vec::new(),
             leases: Vec::new(),
             admission_observers: Vec::new(),
+        }
+    }
+
+    /// Names the canonical pending decision; only original admission consumes its grant.
+    pub fn requiring_approval(mut self, approval: crate::durable::ApprovalId) -> Self {
+        self.approval = Some(approval);
+        self
+    }
+
+    pub fn approval_id(&self) -> Option<crate::durable::ApprovalId> {
+        self.approval
+    }
+
+    /// Freeze the producer's actual copy in the admitted Run's original locale.
+    pub fn display(&self, locale: &str) -> crate::durable::ToolDisplay {
+        crate::durable::ToolDisplay {
+            title: self
+                .title
+                .as_ref()
+                .map(|title| title.resolve(locale).to_owned()),
+            presentation: self.presentation.clone(),
         }
     }
 
@@ -111,6 +134,21 @@ impl PreparedEffect {
             execute,
         }));
         effect
+    }
+
+    /// Consume live admission guards after the durable ToolAdmitted transaction.
+    /// The actual worker, not its observer, retains the returned owner until drain.
+    pub fn begin(
+        mut self,
+        admitted_sequence: u64,
+        cancellation: CancellationToken,
+    ) -> Result<RunningEffect, ToolError> {
+        self.admitted(admitted_sequence);
+        self.admit()?;
+        Ok(RunningEffect {
+            effect: self,
+            cancellation,
+        })
     }
 
     pub(super) fn take_execution(&mut self) -> PreparedExecution {
@@ -179,26 +217,71 @@ impl PreparedEffect {
         }
     }
 }
+/// Live one-shot work with all original admission leases. Never reconstructed
+/// from a RunSpec or serialized as durable execution authority.
+pub struct RunningEffect {
+    effect: PreparedEffect,
+    cancellation: CancellationToken,
+}
+impl RunningEffect {
+    /// Establish at most once; the owner retains its execution and leases while waiting.
+    pub fn establish_approval(&mut self) -> Option<ToolFuture<EstablishedApproval>> {
+        match self.effect.take_execution() {
+            PreparedExecution::Inline(execute) => {
+                self.effect.set_execution(execute);
+                None
+            }
+            PreparedExecution::NativeApproval(PreparedNativeApproval { establish, execute }) => {
+                self.effect.set_execution(execute);
+                Some(establish(self.cancellation.clone()))
+            }
+        }
+    }
+
+    /// Keep custody separate from polling, so unwinding cannot release admission
+    /// leases before the owner has published the original outcome.
+    pub fn execute(mut self) -> (EffectCustody, ToolFuture<ToolSuccess>) {
+        let cancellation = self.cancellation.clone();
+        let future: ToolFuture<ToolSuccess> = match self.effect.take_execution() {
+            PreparedExecution::Inline(execute) => {
+                Box::pin(async move { execute(cancellation).await })
+            }
+            PreparedExecution::NativeApproval(_) => Box::pin(async {
+                Err(ToolError::Failed(
+                    "native approval has not been established".into(),
+                ))
+            }),
+        };
+        (
+            EffectCustody {
+                _effect: self.effect,
+            },
+            future,
+        )
+    }
+}
+
+/// Original one-shot admission leases, retained through durable settlement.
+/// This owner cannot dispatch or reconstruct another execution.
+pub struct EffectCustody {
+    _effect: PreparedEffect,
+}
+
 pub type PreparationFuture =
     Pin<Box<dyn Future<Output = Result<PreparedEffect, ToolRejection>> + Send>>;
-
-/// In-process custody supplied by the actual execution owner. Only that owner
-/// can recover its private concrete token; serialized identities cannot mint it.
-pub trait ExecutionCustody: std::any::Any + Send + Sync {
-    fn as_any(&self) -> &dyn std::any::Any;
-}
 
 /// Host-owned identity; neither model arguments nor Code Mode may choose it.
 #[derive(Clone)]
 pub struct ToolCallContext {
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub operation_id: String,
-    pub execution: Option<Arc<dyn ExecutionCustody>>,
+    pub call: crate::tool_call::ToolCallIdentity,
+    pub custody: Option<Arc<dyn maka_plugin_core::work::WorkCustody>>,
 }
 
 impl ToolCallContext {
     pub fn tool_use_id(&self) -> String {
-        tool_use_id(&self.invocation.invocation_id, &self.operation_id)
+        tool_use_id(self.execution.run_id, &self.operation_id)
     }
 }
 
@@ -264,7 +347,10 @@ pub enum ToolNesting {
     DirectOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolSemantics {
     Parallel,
     ExclusiveStep,

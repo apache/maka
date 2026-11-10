@@ -746,10 +746,11 @@ define_class!(
             self.pointer(event);
         }
 
-        /// The Edit menu's Copy (Cmd+C): the selected text.
+        /// The Edit menu's Copy (Cmd+C): the selected text of the surface
+        /// this view belongs to, as its keys do.
         #[unsafe(method(copy:))]
         fn copy(&self, _sender: Option<&AnyObject>) {
-            if let Some(surface) = self.input_surface() {
+            if let Some(surface) = self.keyboard_surface() {
                 crate::text::copy(&surface);
             }
         }
@@ -758,7 +759,7 @@ define_class!(
         /// selectable view's.
         #[unsafe(method(selectAll:))]
         fn select_all(&self, _sender: Option<&AnyObject>) {
-            if let Some(surface) = self.input_surface() {
+            if let Some(surface) = self.keyboard_surface() {
                 crate::text::select_all(&surface);
             }
         }

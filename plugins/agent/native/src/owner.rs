@@ -21,18 +21,38 @@ use crate::{
     Configuration, IMPLEMENTATION, NativeContext, configuration_schema, contract::*, workspace,
 };
 use futures_util::future::BoxFuture;
-use maka_agent_engine::{Engine, RunError, RunInput, RunWork};
+use maka_agent_engine::{Engine, RunError};
 
+pub(crate) mod access;
 mod assistant;
 mod attachments;
 mod auxiliary;
-mod bot;
 mod checkpoints;
 mod compaction;
 mod computer_apps;
 mod context;
+mod continuation;
+mod creation;
 mod discovery;
 mod execution;
+pub(crate) use access::RunAccess;
+mod capture;
+mod capture_budget;
+mod catalog;
+mod driver_assembly;
+mod driver_cells;
+mod driver_executor;
+mod driver_executor_inputs;
+mod driver_executor_publication;
+mod driver_external_effects;
+mod send;
+use send::NativeMutation;
+mod bot;
+mod cleanup_driver;
+mod cleanup_source;
+mod driver;
+mod driver_cleanup;
+mod driver_model;
 mod external_setup;
 mod files;
 mod fork;
@@ -40,6 +60,7 @@ mod git;
 mod global_instructions;
 mod goal;
 mod imports;
+mod initialization;
 mod interactions;
 mod lifecycle;
 mod mcp;
@@ -54,6 +75,7 @@ mod recall;
 mod recap;
 mod runs;
 mod scheduler;
+pub(crate) mod setup;
 mod skills;
 mod steering;
 mod system_permission;
@@ -64,7 +86,7 @@ mod worktrees;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;
 use maka_agent_facts::configuration::policy::RuntimePolicySnapshot;
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_agent_facts::execution::*;
 use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::input::MessageInput;
@@ -94,101 +116,75 @@ pub(crate) fn resolve_session(
         .map_err(|_| "agent_workspace_binding_unavailable".into())
 }
 
-/// Frozen accepted message prerequisites, interpreted only by this Agent.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MessageBasis {
-    #[serde(skip)]
+/// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
+#[derive(Clone)]
+struct CapturedRun {
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     mcp_revision: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     client_mcp: Option<crate::mcp::ClientGeneration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     compaction_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "is_agent_collaboration")]
     collaboration_mode: CollaborationMode,
-    #[serde(default, skip_serializing_if = "BackgroundKind::is_schedule")]
     background_kind: BackgroundKind,
-    #[serde(default)]
     tool_discovery: bool,
-    #[serde(default)]
     allowed_tools: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     background: Option<ScheduledTarget>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     behavior: Option<SystemPrompt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<crate::model::AcceptedModel>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     executor: Option<crate::executor::Accepted>,
     workspace: Workspace,
-    binding: maka_agent_facts::workspace::BindingStamp,
+    binding: maka_sandbox::workspace::BindingStamp,
     fingerprint: String,
     tools: Arc<Vec<crate::tools::SelectedTool>>,
-    #[serde(default, skip_serializing_if = "Language::is_english")]
     language: Language,
 }
-impl maka_agent_engine::NativeActivationBasis for MessageBasis {
-    fn checkpoint_value(&self) -> serde_json::Result<Value> {
-        serde_json::to_value(self)
-    }
-}
-fn is_agent_collaboration(mode: &CollaborationMode) -> bool {
-    *mode == CollaborationMode::Agent
-}
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Default, PartialEq, Eq)]
 enum BackgroundKind {
     #[default]
-    Schedule,
+    Interactive,
+    Schedule {
+        task_id: String,
+    },
     Goal(Uuid),
-    Discovery,
-}
-impl BackgroundKind {
-    fn is_schedule(&self) -> bool {
-        *self == Self::Schedule
-    }
-}
-enum PreparedBackend {
-    Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
-    Executor(Box<crate::executor::Backend>),
 }
 #[derive(Clone)]
 struct Control {
-    settlement: Option<tokio::sync::watch::Sender<Option<Result<(), String>>>>,
-    #[cfg(test)]
-    handoff: Option<maka_agent_engine::HandoffGate>,
     compacting: bool,
     preview:
         tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
-    invocation: Invocation,
-    basis: Arc<MessageBasis>,
+    execution: ExecutionIdentity,
+    access: std::sync::Weak<access::RunAccess>,
+    basis: Arc<CapturedRun>,
     cancellation: CancellationToken,
+}
+#[derive(Clone)]
+struct PreparingRun {
+    run: maka_agent_facts::durable::RunId,
+    cancellation: CancellationToken,
+    completion: futures_util::future::Shared<
+        BoxFuture<'static, maka_plugin_core::operation::OperationCleanup>,
+    >,
 }
 #[derive(Default)]
 struct Runs {
-    checkpoints: Arc<std::sync::Mutex<BTreeMap<String, Vec<std::path::PathBuf>>>>,
     closing: bool,
     controls: BTreeMap<String, Control>,
-    preparing: BTreeMap<String, CancellationToken>,
+    preparing: BTreeMap<String, PreparingRun>,
     /// Original execution custody retained after its worker has ended.
-    retained_cleanup: BTreeSet<String>,
+    retained_cleanup: BTreeMap<String, Vec<Arc<driver_cleanup::RetainedScope>>>,
 }
 impl Runs {
     fn busy(&self, session: &str) -> bool {
         self.controls.contains_key(session)
             || self.preparing.contains_key(session)
-            || self.checkpoints.lock().unwrap().contains_key(session)
+            || self.retained_cleanup.contains_key(session)
     }
 }
 struct CreationPolicy {
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
+    caller: Option<maka_agent_state::CallerFence>,
 }
 
 fn intersect_tools(
@@ -207,7 +203,14 @@ fn intersect_tools(
 }
 
 pub(crate) struct Owner {
+    model_reader_process: maka_process::lifetime::ProcessIdentity,
     pub store: Arc<RootStore>,
+    helper: std::path::PathBuf,
+    pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
+    pub(super) durable: maka_agent_state::Store,
+    pub(super) services: maka_host_runtime::application::NativeServices,
+    wake_notify: tokio::sync::Notify,
+    physical_changes: tokio::sync::watch::Sender<()>,
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
@@ -232,9 +235,9 @@ pub(crate) struct Owner {
     /// The user's home directory, which a leading `~` in a caller's path
     /// stands for.
     pub home: Option<std::path::PathBuf>,
-    engine: Engine,
+    code_executor: maka_tools::CodeExecutor,
     tools: maka_tools::ToolCatalog,
-    native_approval_executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
+    internal_registrations: Vec<maka_agent_facts::tools::ToolRegistration>,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
@@ -246,37 +249,12 @@ pub(crate) struct Owner {
     pub(super) executors: crate::executor::Executors,
     runs: Arc<runs::Registry>,
     workers: TaskTracker,
+    cleanup_workers: TaskTracker,
     producers: TaskTracker,
     producer_gate: Arc<Mutex<()>>,
-    #[cfg(test)]
-    title_write_gate: std::sync::Mutex<Option<Arc<title::WriteGate>>>,
-    #[cfg(test)]
-    mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool,
-    #[cfg(all(test, target_os = "macos"))]
-    file_native_hints: std::sync::atomic::AtomicBool,
     stop: CancellationToken,
 }
-
 impl Owner {
-    async fn has_parked_invocation(&self, session: &str) -> Result<bool, String> {
-        match async {
-            self.store
-                .session(session)
-                .await?
-                .activation_checkpoint(session)
-                .await
-        }
-        .await
-        {
-            Ok(checkpoint) => Ok(checkpoint.is_some()),
-            Err(
-                maka_event_log::StoreError::SessionNotFound
-                | maka_event_log::StoreError::SessionRetired,
-            ) => Ok(false),
-            Err(_) => Err("agent_execution_unavailable".into()),
-        }
-    }
-
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }
@@ -300,11 +278,11 @@ impl Owner {
         context: &maka_agent_facts::tools::ToolCallContext,
     ) -> Result<maka_event_log::SessionStore, String> {
         let custody = context
-            .execution
+            .custody
             .as_deref()
-            .ok_or("agent_execution_custody_unavailable")?;
+            .ok_or("agent_work_custody_unavailable")?;
         self.store
-            .session_for_execution(custody, &context.invocation)
+            .session_for_work(custody, &context.execution.session_id)
             .map_err(|error| error.to_string())
     }
     pub(crate) fn resolve_language(&self, snapshot: &RuntimePolicySnapshot) -> Language {
@@ -316,18 +294,35 @@ impl Owner {
     }
 
     pub(crate) async fn executor_setup(
-        &self,
+        self: &Arc<Self>,
         input: maka_agent_api::executor::setup::Input,
         context: maka_host_runtime::application::Context,
-    ) -> Result<Value, String> {
-        self.executors.setup(input, context).await
+    ) -> Result<maka_host_runtime::application::HandlerValue, String> {
+        let context = Arc::new(context);
+        let binding = self.executors.setup_binding(&input.executor)?;
+        let purpose = match &input.action {
+            maka_agent_api::executor::setup::Action::Check => setup::SetupPurpose::Check,
+            maka_agent_api::executor::setup::Action::Authenticate { .. } => {
+                setup::SetupPurpose::Authenticate
+            }
+        };
+        let source = self.setup_source(context.clone(), binding, purpose)?;
+        self.executors.setup(input, &context, source).await
     }
 
     pub async fn open(
         context: NativeContext,
         input: Value,
         catalog: Arc<maka_providers::catalog::Catalog>,
-    ) -> Result<Arc<Self>, String> {
+        durable: maka_agent_state::Store,
+        helper: std::path::PathBuf,
+        pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
+    ) -> Result<Arc<Self>, initialization::InitializationError> {
+        let model_reader_process =
+            tokio::task::spawn_blocking(maka_process::lifetime::ProcessIdentity::current)
+                .await
+                .map_err(|_| "agent_model_process_capture_worker_failed")?
+                .map_err(|_| "agent_model_process_capture_failed")?;
         let mut additional = Vec::new();
         let mut internal_bindings = BTreeMap::new();
         if !jsonschema_valid(&input) {
@@ -336,6 +331,14 @@ impl Owner {
         let settings: Configuration =
             serde_json::from_value(input).map_err(|_| "agent_configuration_invalid")?;
         let persistence = context.persistence().ok_or("agent_requires_persistence")?;
+        durable
+            .validate_root(
+                &persistence
+                    .store()
+                    .data_writer()
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
         let root = persistence
             .store()
             .owned_root()
@@ -345,7 +348,7 @@ impl Owner {
             deployment: persistence.source().deployment,
             namespace: context.activation().instance().clone(),
         };
-        let prefix = maka_host_runtime::storage::instance_prefix(
+        let prefix = maka_agent_authority::session_namespace(
             &persistence.source().state_domain,
             persistence.source().deployment,
             context.activation().instance(),
@@ -359,8 +362,6 @@ impl Owner {
         } else {
             workspace::open(settings.import_roots.clone(), root.canonical_path())?
         };
-        let cells = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
-            .map_err(|_| "agent_executor_unavailable")?;
         let workers = TaskTracker::new();
         let stop = CancellationToken::new();
         let revision = SourceRevision {
@@ -374,7 +375,20 @@ impl Owner {
         // Match Codex's five-minute stream idle allowance for slow model steps.
         let models = ModelExecutor::for_source(Duration::from_secs(300), revision.clone())
             .map_err(|_| "agent_executor_unavailable")?;
-        let auxiliary = auxiliary::Auxiliary::new(models.clone());
+        let run_owner = maka_agent_facts::durable::RunOwner {
+            deployment: data_source.deployment,
+            namespace: data_source.namespace.clone(),
+        };
+        let auxiliary = auxiliary::Auxiliary::new(models.clone(), run_owner.clone());
+        let code_executor = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
+            .and_then(|executor| {
+                executor.with_python_worker(helper.with_file_name(if cfg!(windows) {
+                    "maka-python-worker.exe"
+                } else {
+                    "maka-python-worker"
+                }))
+            })
+            .map_err(|_| "agent_executor_unavailable")?;
         let configured_locale = LanguagePreference::from_locale(&settings.locale);
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
@@ -396,6 +410,8 @@ impl Owner {
         );
         let recall = Arc::new(recall::Recall {
             store: persistence.store().clone(),
+            durable: durable.clone(),
+            owner: run_owner,
             prefix: prefix.clone(),
             data_source: data_source.clone(),
             enabled: settings.recall,
@@ -431,7 +447,7 @@ impl Owner {
         let recap_storage = Arc::new(maka_host_runtime::storage::Storage::new(
             persistence.store().clone(),
             prefix.clone(),
-            maka_capabilities::storage::Namespace::new(
+            maka_plugin_core::storage::Namespace::new(
                 "maka.session-recap",
                 maka_plugin_core::scope::Scope::Profile,
             )
@@ -443,29 +459,26 @@ impl Owner {
         let bot = Arc::new(bot::Bot::new(persistence.store().clone(), prefix.clone()));
         // Bot identity must be known before activation schedules queued work.
         if let Err(error) = bot.load().await {
-            configuration
-                .shutdown()
-                .await
-                .map_err(|_| "agent_configuration_cleanup_unconfirmed")?;
-            return Err(format!("agent_bot_unavailable: {error}"));
+            return Err(initialization::InitializationError::owned(
+                format!("agent_bot_unavailable: {error}"),
+                configuration,
+                None,
+                persistence.store().clone(),
+            ));
         }
         if settings.bot {
             additional.extend(bot.tools());
         }
-        let mut mcp = match crate::mcp::Servers::open(
-            &settings.mcp_servers,
-            persistence.store().clone(),
-            &configuration,
-        )
-        .await
-        {
+        let internal_registrations = additional.clone();
+        let mut mcp = match crate::mcp::Servers::open(&settings.mcp_servers, &configuration).await {
             Ok(mcp) => mcp,
             Err(error) => {
-                configuration
-                    .shutdown()
-                    .await
-                    .map_err(|_| "agent_configuration_cleanup_unconfirmed")?;
-                return Err(error);
+                return Err(initialization::InitializationError::owned(
+                    error.message,
+                    configuration,
+                    error.material,
+                    persistence.store().clone(),
+                ));
             }
         };
         additional.append(&mut mcp.registrations);
@@ -476,7 +489,6 @@ impl Owner {
             .collect();
         let prepared_tools = crate::tools::catalog(
             context.services(),
-            persistence.store().clone(),
             configuration.clone(),
             &settings.tools,
             additional,
@@ -510,18 +522,7 @@ impl Owner {
                 catalog.tools = catalog
                     .tools
                     .with_always_visible(&[discovery::COMPLETE])
-                    .map_err(|error| error.to_string())?;
-            }
-            if settings.recall {
-                catalog.tools = catalog
-                    .tools
-                    .with_request_binding(
-                        maka_agent_facts::tools::ToolPreparer::names(recall.as_ref())
-                            .into_iter()
-                            .collect(),
-                        recall.clone(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|e| e.to_string())?;
             }
             Ok(catalog)
         });
@@ -532,25 +533,28 @@ impl Owner {
             host_tools,
             resource_reads,
             discovery_reads,
-            executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
             Err(error) => {
                 let mcp_cleanup = mcp.close().await;
-                configuration
-                    .shutdown()
-                    .await
-                    .map_err(|error| {
-                        tracing::error!(stage = "configuration_store_shutdown", cause = crate::diagnostics::config_cause(&error),
-                            activation = %context.activation().epoch(), instance = ?context.activation().instance(),
-                            "Agent configuration store cleanup failed");
-                        "agent_configuration_cleanup_unconfirmed"
-                    })?;
-                mcp_cleanup?;
-                return Err(error);
+                let (message, material) = match mcp_cleanup {
+                    Ok(()) => (error, None),
+                    Err(cleanup) => (
+                        format!("{error}; MCP cleanup: {}", cleanup.message),
+                        Some(cleanup.material),
+                    ),
+                };
+                return Err(initialization::InitializationError::owned(
+                    message,
+                    configuration,
+                    material,
+                    persistence.store().clone(),
+                ));
             }
         };
         let credentials = crate::model::Credentials {
+            #[cfg(test)]
+            observation: None,
             executor: models.clone(),
             inventory: Arc::new(crate::model::codex_inventory::Authority::new(
                 workers.clone(),
@@ -561,24 +565,18 @@ impl Owner {
                 stop.clone(),
             )),
         };
-        let engine = Engine::with_resources(
-            models,
-            cells,
-            Some(Arc::new(crate::model::Prices(configuration.clone()))),
-            context.services().model_preparation_resources(),
-        )
-        .map_err(|error| error.to_string())?;
         let mcp_projects = Arc::new(crate::mcp::Projects::new(
             crate::mcp::Catalog {
                 revision: None,
                 client_mcp: None,
+                live_bindings: mcp.live_bindings.clone(),
                 _parent: None,
+                _layer_owner: None,
                 tools: tools.clone(),
                 definitions: Arc::new(internal_tools),
                 bindings: Arc::new(internal_bindings),
             },
             prefix.clone(),
-            mcp.names.clone(),
             instruction_home.clone().zip(
                 settings
                     .assistant
@@ -586,12 +584,18 @@ impl Owner {
                     .and_then(|assistant| assistant.home.as_ref())
                     .map(std::path::PathBuf::from),
             ),
-            persistence.store().clone(),
+            durable.clone(),
+            maka_agent_facts::durable::RunOwner {
+                deployment: data_source.deployment,
+                namespace: data_source.namespace.clone(),
+            },
             configuration.clone(),
             workers.clone(),
             stop.child_token(),
         ));
         let owner = Arc::new(Self {
+            helper,
+            pricing,
             goals,
             auxiliary,
             todo,
@@ -600,6 +604,11 @@ impl Owner {
             scheduler,
             recall,
             store: persistence.store().clone(),
+            model_reader_process,
+            durable,
+            services: context.services().clone(),
+            wake_notify: tokio::sync::Notify::new(),
+            physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
             data_source,
             workspace_roots,
@@ -614,9 +623,9 @@ impl Owner {
             configuration,
             catalog,
             credentials,
-            engine,
+            code_executor,
             tools,
-            native_approval_executor,
+            internal_registrations,
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
@@ -629,32 +638,50 @@ impl Owner {
             runs: Arc::default(),
             titles: title::Registry::default(),
             workers,
+            cleanup_workers: TaskTracker::new(),
             producers: TaskTracker::new(),
             producer_gate: Arc::default(),
-            #[cfg(test)]
-            title_write_gate: std::sync::Mutex::default(),
-            #[cfg(test)]
-            mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(all(test, target_os = "macos"))]
-            file_native_hints: std::sync::atomic::AtomicBool::new(true),
             stop,
         });
-        if let Err(error) = async {
-            owner
-                .revoke_lost_client_mcp()
-                .await
-                .map_err(|error| error.to_string())?;
-            owner.restore_discovery().await
+        if let Err(error) = owner.durable.ensure_diagnostics(owner.run_owner()).await {
+            return Err(initialization::InitializationError::instance(
+                error.to_string(),
+                owner,
+            ));
         }
-        .await
-        {
-            let cleanup = owner.close().await;
-            return Err(match cleanup {
-                Ok(()) => error.to_string(),
-                Err(cleanup) => format!("{error}; Agent cleanup: {cleanup}"),
-            });
+        if let Err(error) = owner.restore_discovery().await {
+            return Err(initialization::InitializationError::instance(error, owner));
         }
         Ok(owner)
+    }
+    #[cfg(test)]
+    pub(crate) fn with_model_observation(
+        mut self: Arc<Self>,
+        observation: crate::model::Observation,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("install fixture observation before publishing the Native owner")
+            .credentials
+            .observation = Some(observation);
+        self
+    }
+
+    pub(crate) fn physical_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.physical_changes.subscribe()
+    }
+    fn physical_availability_changed(&self) {
+        self.physical_availability_changed_after(true);
+    }
+    fn physical_availability_changed_after(&self, retry_ready: bool) {
+        self.physical_changes.send_modify(|_| {});
+        self.goals.execution_changed();
+        self.scheduler.execution_changed();
+        if retry_ready {
+            self.wake_notify.notify_one();
+            if let Ok(root) = self.store.owned_root() {
+                root.capability_source_changed();
+            }
+        }
     }
     pub fn operation_id(&self, operation: &maka_plugin_core::operation::RecoveryRef) -> String {
         // Use the actual complete original reference. UUIDs alone do not name
@@ -693,15 +720,14 @@ impl Owner {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
-        if let (Some(invocation), Some(execution)) = (
-            scope
-                .identity
-                .agent()
-                .filter(|invocation| invocation.session_id == id),
-            scope.execution(),
-        ) {
+        if scope
+            .identity
+            .agent()
+            .is_some_and(|execution| execution.session_id == id)
+        {
+            let custody = scope.work_custody().ok_or("agent_work_custody_required")?;
             self.store
-                .session_for_execution(execution.as_ref(), invocation)
+                .session_for_work(custody.as_ref(), id)
                 .map_err(|error| match error {
                     maka_event_log::StoreError::SessionNotFound => {
                         "agent_session_unavailable".to_owned()
@@ -750,28 +776,16 @@ impl Owner {
         &self,
         id: &str,
     ) -> Result<SessionRecord<ResolvedConfiguration>, String> {
-        if self.runs.checkpointed(id) {
-            return Err("agent_checkpoint_busy".into());
-        }
-        let session = self.session(id).await?;
-        if !self.runs.workspace_available(
-            id,
-            std::path::Path::new(&session.configuration.workspace.path),
-        ) {
-            return Err("agent_checkpoint_busy".into());
-        }
-        Ok(session)
+        self.session(id).await
     }
     pub(crate) fn caller_store(
         &self,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<maka_event_log::SessionStore, String> {
-        let invocation = scope.identity.agent().ok_or("agent_invocation_required")?;
-        let custody = scope
-            .execution()
-            .ok_or("agent_execution_custody_required")?;
+        let execution = scope.identity.agent().ok_or("agent_execution_required")?;
+        let custody = scope.work_custody().ok_or("agent_work_custody_required")?;
         self.store
-            .session_for_execution(custody.as_ref(), invocation)
+            .session_for_work(custody.as_ref(), &execution.session_id)
             .map_err(|error| error.to_string())
     }
 
@@ -783,18 +797,10 @@ impl Owner {
             return Ok(CreationPolicy {
                 permissions: self.settings.permissions.clone(),
                 tools: None,
+                caller: None,
             });
         };
-        // Un-custodied Agent calls (such as external ACP session forwarding)
-        // resolve the session directly; custody selects the real caller store.
-        let store = match scope.execution() {
-            Some(_) => self.caller_store(scope)?,
-            None => self
-                .store
-                .session(&invocation.session_id)
-                .await
-                .map_err(|error| error.to_string())?,
-        };
+        let store = self.caller_store(scope)?;
         let caller = store
             .get::<StoredSessionConfiguration>()
             .await
@@ -802,14 +808,47 @@ impl Owner {
             .filter(|session| !session.archived)
             .ok_or("agent_session_unavailable")?;
         let caller = resolve_session(caller)?.configuration;
+        let custody = scope.work_custody().ok_or("agent_work_custody_required")?;
+        let writer = self
+            .store
+            .data_writer_for_work(custody.as_ref(), &invocation.session_id)
+            .map_err(|error| error.to_string())?;
+        let view = self
+            .durable
+            .with_data_writer(writer)
+            .map_err(|error| error.to_string())?
+            .frontier(invocation.run_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if view.spec.session_id != invocation.session_id
+            || !matches!(
+                view.spec.origin,
+                maka_agent_facts::durable::RunOrigin::Local
+            )
+            || view.stopped
+            || view.terminal.is_some()
+        {
+            return Err("agent_execution_closed".into());
+        }
+        if view.spec.permission_basis != caller.permission_basis() {
+            return Err("agent_session_configuration_changed".into());
+        }
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
+        let fence = maka_agent_state::CallerFence {
+            execution: invocation.clone(),
+            expected_basis: Some(view.spec.permission_basis),
+        };
         Ok(CreationPolicy {
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
-            tools: if self.bot.is(&invocation.session_id) {
+            tools: if self.settings.bot && self.bot.is(&invocation.session_id) {
                 None
             } else {
                 caller.tools
             },
+            caller: Some(fence),
         })
     }
 
@@ -818,10 +857,15 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<Created, String> {
+    ) -> Result<NativeMutation<Created>, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.create_inner(input, &operation, &scope).await })
+            Box::pin(async move {
+                owner
+                    .create_inner(input, &operation, &scope, creation::Purpose::Session)
+                    .await
+                    .map(creation::PreparedCreation::into_session)
+            })
         })
         .await
     }
@@ -830,24 +874,23 @@ impl Owner {
         input: Create,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<Created, String> {
+        purpose: creation::Purpose,
+    ) -> Result<creation::PreparedCreation, String> {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
-            return Ok(Created::Rejected { reason });
+            return Ok(creation::PreparedCreation::Rejected(reason));
         }
-        let backend = self.use_bot_model(scope, input.backend).await;
+        let backend = self.use_bot_model(scope, input.backend).await?;
         if let Some(backend) = &backend
             && !self.backend_available(backend).await?
         {
-            return Ok(Created::Rejected {
-                reason: Rejection::ToolsUnavailable,
-            });
+            return Ok(creation::PreparedCreation::Rejected(
+                Rejection::ToolsUnavailable,
+            ));
         }
         let id = self.operation_id(operation);
         let admission = self.runs.session(&id).await;
         if admission.state().await.closing {
-            return Ok(Created::Rejected {
-                reason: Rejection::Closed,
-            });
+            return Ok(creation::PreparedCreation::Rejected(Rejection::Closed));
         }
         let policy = self.creation_policy(scope).await?;
         let mut permissions = policy.permissions;
@@ -872,49 +915,49 @@ impl Owner {
                 .iter()
                 .any(|name| name == bot::SEND_USER || name == bot::SLEEP)
         }) {
-            return Ok(Created::Rejected {
-                reason: Rejection::ToolsUnavailable,
-            });
+            return Ok(creation::PreparedCreation::Rejected(
+                Rejection::ToolsUnavailable,
+            ));
         }
         if let Some(names) = &mut tools {
             names.sort();
             if names.windows(2).any(|pair| pair[0] == pair[1]) {
-                return Ok(Created::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::ToolsUnavailable,
+                ));
             }
         }
-        let selected = match input.workspace {
+        let (selected, project) = match input.workspace {
             WorkspaceSelection::IsolatedGit { path } => {
                 let Some(workspace) = self.isolated_workspace(&path, operation, scope).await?
                 else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (workspace, None)
             }
             WorkspaceSelection::Project { project, path } => {
-                let Some(workspace) = self.select_project(project, &path).await? else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                let Some(prepared) = self.select_project(project, &path).await? else {
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (prepared.workspace, Some(prepared.project))
             }
             WorkspaceSelection::Directory { path } => {
-                let Some(workspace) = self.create_project_workspace(&path).await? else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                let Some(prepared) = self.create_project_workspace(&path).await? else {
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 };
-                workspace
+                (prepared.workspace, Some(prepared.project))
             }
             WorkspaceSelection::Session { session_id } => {
                 if !self.owns(&session_id) {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 }
                 let Some(session) = self
                     .store
@@ -922,9 +965,9 @@ impl Owner {
                     .await
                     .map_err(|_| "agent_store_unavailable")?
                 else {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 };
                 let session = resolve_session(session)?;
                 // A user may start a conversation in the workspace of one they archived;
@@ -934,9 +977,9 @@ impl Owner {
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
                 {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::SessionUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::SessionUnavailable,
+                    ));
                 }
                 if workspace::validate(
                     &self.workspace_roots,
@@ -946,175 +989,156 @@ impl Owner {
                 .await
                 .is_err()
                 {
-                    return Ok(Created::Rejected {
-                        reason: Rejection::WorkspaceUnavailable,
-                    });
+                    return Ok(creation::PreparedCreation::Rejected(
+                        Rejection::WorkspaceUnavailable,
+                    ));
                 }
-                session.configuration.workspace
+                (session.configuration.workspace, None)
             }
         };
         if let Some(names) = &tools
             && names.iter().any(|name| !self.tools.contains(name))
         {
             // A ceiling containing only baseline tools never starts project servers.
-            let catalog = self.mcp_projects.available(&selected).await?;
+            let root = self
+                .store
+                .owned_root()
+                .map_err(|error| error.to_string())?
+                .canonical_path()
+                .to_path_buf();
+            let workspace = selected.clone();
+            let access = permissions.access;
+            let (sandbox, _) =
+                tokio::task::spawn_blocking(move || workspace::sandbox(&workspace, access, &root))
+                    .await
+                    .map_err(|error| error.to_string())??;
+            let floor = sandbox
+                .intersect(scope.sandbox_floor())
+                .map_err(|error| error.to_string())?;
+            let catalog = self.mcp_projects.available(&selected, &floor).await?;
             if names
                 .iter()
                 .any(|name| !self.tools.contains(name) && !catalog.tools.contains(name))
             {
-                return Ok(Created::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::ToolsUnavailable,
+                ));
             }
         }
-        let binding = self
-            .store
-            .attach_workspace(&self.prefix, &selected)
-            .await
-            .map_err(|_| "agent_workspace_binding_unavailable")?;
-        let record = self
-            .store
-            .create_session(
-                &id,
-                &operation.fingerprint,
-                &StoredSessionConfiguration {
-                    parent_session_id: scope
-                        .identity
-                        .agent()
-                        .map(|source| source.session_id.clone()),
-                    backend,
-                    compaction_prompt: None,
-                    collaboration_mode: CollaborationMode::Agent,
-                    tools,
-                    title: input.title,
-                    title_is_manual: !input.automatic_title,
-                    pinned: false,
-                    labels: input.labels,
-                    workspace: binding,
-                    permissions,
-                    boundary_revision: 0,
-                },
-                now(),
-            )
-            .await
-            .map_err(|_| "agent_creation_failed")?;
-        Ok(Created::Created {
-            session: Box::new(crate::service::summary(
-                self,
-                resolve_session(
-                    record
-                        .get()
-                        .await
-                        .map_err(|_| "agent_creation_failed")?
-                        .ok_or("agent_creation_failed")?,
-                )?,
-            )),
-        })
-    }
-    pub async fn mark_read(&self, input: MarkRead) -> Result<MarkReadResult, String> {
-        if self.runs.checkpointed(&input.session_id) {
-            return Ok(MarkReadResult::Rejected {
-                reason: Rejection::Busy,
-            });
-        }
-        let runs = self.runs.lock().await;
-        if self.runs.checkpointed(&input.session_id) {
-            return Ok(MarkReadResult::Rejected {
-                reason: Rejection::Busy,
-            });
-        }
-        if runs.closing {
-            return Ok(MarkReadResult::Rejected {
-                reason: Rejection::Closed,
-            });
-        }
-        if !self.owns(&input.session_id) {
-            return Ok(MarkReadResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
-        }
-        let session = self
-            .store
-            .get_session::<StoredSessionConfiguration>(&input.session_id)
-            .await
-            .map_err(|_| "agent_store_unavailable")?;
-        if session.is_none() {
-            return Ok(MarkReadResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
-        }
-        // The original store compares the exposed message with the durable tail
-        // inside its transaction. A stale reader cannot clear a newer message.
-        let record = self
-            .store
-            .set_session_read_marker::<StoredSessionConfiguration>(
-                &input.session_id,
-                &input.message_id,
-            )
-            .await
-            .map_err(|_| "agent_read_marker_failed")?;
-        Ok(MarkReadResult::Observed {
-            session: Box::new(crate::service::summary(self, resolve_session(record)?)),
-        })
+        let parent_session_id = scope
+            .identity
+            .agent()
+            .map(|source| source.session_id.clone());
+        self.prepare_created_session(
+            &id,
+            operation,
+            &selected,
+            project,
+            scope,
+            policy.caller,
+            purpose,
+            move |binding| StoredSessionConfiguration {
+                parent_session_id,
+                backend,
+                compaction_prompt: None,
+                collaboration_mode: CollaborationMode::Agent,
+                tools,
+                title: input.title,
+                title_is_manual: !input.automatic_title,
+                pinned: false,
+                labels: input.labels,
+                workspace: binding,
+                permissions,
+                boundary_revision: 0,
+            },
+        )
+        .await
     }
     pub async fn metadata(
-        &self,
+        self: &Arc<Self>,
         input: Metadata,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<MetadataResult, String> {
+        _operation: &maka_plugin_core::operation::RecoveryRef,
+    ) -> Result<NativeMutation<MetadataResult>, String> {
         if input.permissions.is_some()
             && !matches!(
                 scope.identity,
                 maka_capabilities::call::Identity::Remote { .. }
             )
         {
-            return Ok(MetadataResult::Rejected {
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                 reason: Rejection::PermissionChangeRequiresUser,
-            });
+            }));
         }
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
-            return Ok(MetadataResult::Rejected { reason });
-        }
-        if self.runs.checkpointed(&input.session_id) {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::Busy,
-            });
-        }
-        let runs = self.runs.lock().await;
-        if self.runs.checkpointed(&input.session_id) {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::Busy,
-            });
-        }
-        if runs.closing {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::Closed,
-            });
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
+                reason,
+            }));
         }
         if !self.owns(&input.session_id) {
-            return Ok(MetadataResult::Rejected {
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                 reason: Rejection::SessionUnavailable,
-            });
+            }));
         }
-        let Some(session) = self
-            .store
-            .get_session::<StoredSessionConfiguration>(&input.session_id)
+        let ordered = Arc::new(self.runs.ordered(&input.session_id).await);
+        if self.stop.is_cancelled()
+            || scope.cancellation.is_cancelled()
+            || self.runs.state().await.closing
+        {
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
+                reason: Rejection::Closed,
+            }));
+        }
+        let Some(record) = self
+            .canonical_catalog()?
+            .record(&input.session_id)
             .await
-            .map_err(|_| "agent_store_unavailable")?
+            .map_err(|error| error.to_string())?
         else {
-            return Ok(MetadataResult::Rejected {
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                 reason: Rejection::SessionUnavailable,
-            });
+            }));
         };
-        if session.archived {
-            return Ok(MetadataResult::Rejected {
+        if record.metadata.archived {
+            return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                 reason: Rejection::SessionUnavailable,
-            });
+            }));
         }
-        use maka_event_log::sessions::SessionMutation;
-        let permissions = input.permissions.is_some();
-        let update = move |configuration: &mut StoredSessionConfiguration| {
-            // Policy changes do not turn an automatic title into a manual title.
+        if record.metadata.revision != input.expected_revision {
+            return Ok(NativeMutation::Returned(MetadataResult::RevisionConflict {
+                expected: input.expected_revision,
+                actual: record.metadata.revision,
+            }));
+        }
+        let configuration: StoredSessionConfiguration =
+            serde_json::from_value(record.metadata.configuration.clone())
+                .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
+        let policy_changed = input.permissions.as_ref().is_some_and(|change| {
+            change.settings != configuration.permissions || change.revoke_grants
+        });
+        let guard = if policy_changed {
+            let busy = self.runs.state().await.busy(&input.session_id)
+                || self.mcp_projects.has_any_client(&input.session_id);
+            let guard = self
+                .durable
+                .quiescence_guard(self.run_owner(), input.session_id.clone())
+                .map_err(|error| error.to_string())?;
+            if busy
+                || !guard
+                    .observe()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_quiescent()
+            {
+                return Ok(NativeMutation::Returned(MetadataResult::Rejected {
+                    reason: Rejection::Busy,
+                }));
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        self.prepare_configuration(record, ordered, guard, move |configuration| {
             if (input.permissions.is_none() && input.pinned.is_none())
                 || configuration.title != input.title
             {
@@ -1125,9 +1149,7 @@ impl Owner {
             if let Some(pinned) = input.pinned {
                 configuration.pinned = pinned;
             }
-            if input.permissions.as_ref().is_some_and(|change| {
-                change.settings != configuration.permissions || change.revoke_grants
-            }) {
+            if policy_changed {
                 configuration.boundary_revision = configuration
                     .boundary_revision
                     .checked_add(1)
@@ -1142,38 +1164,19 @@ impl Owner {
                 configuration.permissions = change.settings;
             }
             Ok(())
-        };
-        let changed = if permissions {
-            self.store
-                .update_session_permissions(
-                    &input.session_id,
-                    input.expected_revision,
-                    now(),
-                    update,
-                )
-                .await
-        } else {
-            self.store
-                .update_session_metadata(&input.session_id, input.expected_revision, update)
-                .await
-        }
-        .map_err(|_| "agent_metadata_failed")?;
-        match changed {
-            SessionMutation::Committed(record) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, resolve_session(*record)?)),
-            }),
-            SessionMutation::RevisionConflict { expected, actual } => {
-                Ok(MetadataResult::RevisionConflict { expected, actual })
-            }
-        }
+        })
+        .await
     }
     pub(super) async fn tool_names(
         self: &Arc<Self>,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<crate::contract::ToolNames, String> {
-        self.resource_work(scope, |owner, _scope| {
+        self.resource_work(scope, |owner, scope| {
             Box::pin(async move {
-                let catalog = owner.mcp_projects.capture_global().await?;
+                let catalog = owner
+                    .mcp_projects
+                    .capture_global(scope.sandbox_floor())
+                    .await?;
                 Ok(crate::contract::ToolNames {
                     names: catalog.tools.names(),
                 })
@@ -1184,7 +1187,7 @@ impl Owner {
     fn selected_tools(
         &self,
         session: &str,
-        basis: &MessageBasis,
+        basis: &CapturedRun,
         discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> Result<maka_tools::ToolCatalog, String> {
@@ -1205,14 +1208,6 @@ impl Owner {
         };
         Ok(selected)
     }
-    fn external_tools(
-        &self,
-        session: &str,
-        basis: &MessageBasis,
-    ) -> Result<crate::executor::external::HostTools, String> {
-        let selected = self.selected_tools(session, basis, false, None)?;
-        Ok(self.external_catalog_tools(selected))
-    }
     fn select_catalog_tools(
         &self,
         catalog: &maka_tools::ToolCatalog,
@@ -1220,24 +1215,23 @@ impl Owner {
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> maka_tools::ToolCatalog {
-        // SendUser and sleep are granted by Bot identity, independent of the tool list.
         let bot = session.is_some_and(|session| self.bot.is(session));
+        let investigation = session.is_some_and(|id| {
+            self.scheduler
+                .investigation
+                .read()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|active| active == id)
+        });
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
-                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
-                (*name == discovery::COMPLETE
-                    && !session.is_some_and(|id| {
-                        self.scheduler
-                            .investigation
-                            .read()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|active| active.session_id == id)
-                    }))
-                    || (speaks && !bot)
-                    || (!(speaks && bot)
+                let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
+                (*name == discovery::COMPLETE && !investigation)
+                    || (bot_only && !bot)
+                    || (!(bot && bot_only)
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
                         }))
@@ -1250,10 +1244,7 @@ impl Owner {
             .collect();
         catalog.excluding(&excluded)
     }
-    fn external_catalog_tools(
-        &self,
-        selected: maka_tools::ToolCatalog,
-    ) -> crate::executor::external::HostTools {
+    fn external_catalog(&self, selected: maka_tools::ToolCatalog) -> maka_tools::ToolCatalog {
         let excluded = selected
             .names()
             .into_iter()
@@ -1264,474 +1255,7 @@ impl Owner {
         for name in &self.resource_reads {
             catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
         }
-        crate::executor::external::HostTools {
-            catalog,
-            resource_reads: self.resource_reads.clone(),
-        }
-    }
-
-    pub async fn send(
-        self: &Arc<Self>,
-        input: Send,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-        parent: &maka_capabilities::call::Scope,
-    ) -> Result<crate::contract::SendResult, String> {
-        let Send {
-            session_id: id,
-            message: text,
-            backend: selection,
-            attachments,
-            delivery,
-            expected_invocation_id,
-        } = input;
-        if text.trim().is_empty() && attachments.is_empty() {
-            return Err("agent_message_invalid".into());
-        }
-        let admission = self.runs.session(&id).await;
-        if let Some(expected) = expected_invocation_id
-            && self
-                .store
-                .session(&id)
-                .await
-                .map_err(|error| error.to_string())?
-                .invocation_stopped(&expected)
-                .await
-                .map_err(|error| error.to_string())?
-        {
-            return Ok(SendResult::Rejected {
-                session_id: id,
-                reason: SendRejection::TurnStopped,
-                skills: None,
-            });
-        }
-        let queued = {
-            let runs = admission.state().await;
-            if runs.closing {
-                return Err("agent_closed".into());
-            }
-            let current = runs.controls.get(&id);
-            current.map(|control| control.invocation.clone())
-        };
-        let parked = if queued.is_none() {
-            self.store
-                .session(&id)
-                .await
-                .map_err(|error| error.to_string())?
-                .activation_checkpoint(&id)
-                .await
-                .map_err(|_| "agent_execution_unavailable")?
-        } else {
-            None
-        };
-        let queued = queued.or_else(|| {
-            parked
-                .as_ref()
-                .map(|parked| parked.checkpoint.invocation.clone())
-        });
-        let session = self.mutable_session(&id).await?;
-        if session.archived {
-            return Err("agent_session_configuration_changed".into());
-        }
-        let mut interruption = None;
-        if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
-            let control = admission.state().await.controls.get(&id).cloned();
-            if let Some(control) = control {
-                match control
-                    .basis
-                    .executor
-                    .as_ref()
-                    .map_or(crate::executor::ActiveDelivery::Steer, |executor| {
-                        self.executors.active_delivery(executor)
-                    }) {
-                    crate::executor::ActiveDelivery::Steer => {
-                        return self
-                            .steer_message(
-                                text,
-                                attachments,
-                                &control.invocation,
-                                &control.basis,
-                                operation,
-                                parent,
-                            )
-                            .await;
-                    }
-                    crate::executor::ActiveDelivery::InterruptResume => {
-                        interruption = Some(control)
-                    }
-                    crate::executor::ActiveDelivery::InterruptUnsupported => {
-                        return Err(
-                            "agent_executor_soft_interrupt_unsupported; use delivery=queue".into(),
-                        );
-                    }
-                    crate::executor::ActiveDelivery::Queue => {}
-                }
-            }
-            if let Some(parked) = parked {
-                let mut basis: MessageBasis =
-                    serde_json::from_value(parked.checkpoint.native_basis)
-                        .map_err(|error| format!("invalid parked execution basis: {error}"))?;
-                basis.mcp_catalog = Some(self.mcp_projects.catalog(basis.mcp_revision.as_deref())?);
-                let result = self
-                    .steer_message(
-                        text,
-                        attachments,
-                        &parked.checkpoint.invocation,
-                        &basis,
-                        operation,
-                        parent,
-                    )
-                    .await?;
-                if matches!(result, SendResult::Queued { .. }) {
-                    self.store
-                        .session(&id)
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .close_run_interactions(
-                            &parked.checkpoint.invocation,
-                            maka_agent_facts::interaction::ClosureReason::Steered,
-                            now(),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                return Ok(result);
-            }
-        }
-        let selection = selection
-            .or_else(|| {
-                interruption
-                    .as_ref()
-                    .map(|control| BackendPreference::Executor {
-                        selection: control
-                            .basis
-                            .executor
-                            .as_ref()
-                            .expect("interrupt-resume requires an external executor")
-                            .selection
-                            .clone(),
-                    })
-            })
-            .or_else(|| session.configuration.backend.clone());
-        let Some(selection) = self.use_bot_model(parent, selection).await else {
-            return Ok(SendResult::Rejected {
-                session_id: id,
-                reason: SendRejection::ModelUnavailable,
-                skills: None,
-            });
-        };
-        let backend = match selection {
-            BackendPreference::Model {
-                connection_id,
-                model_id,
-                thinking_level,
-            } => {
-                let prepared = async {
-                    let selection = ModelSelection {
-                        connection_id,
-                        model_id,
-                    };
-                    crate::model::Source::select(
-                        self.configuration.clone(),
-                        self.catalog.clone(),
-                        self.credentials.clone(),
-                        selection,
-                        thinking_level,
-                        id.clone(),
-                        self.revision.clone(),
-                    )
-                    .await
-                }
-                .await;
-                match prepared {
-                    Ok(prepared) => PreparedBackend::Model(Box::new(prepared)),
-                    Err(error) => {
-                        tracing::warn!(%error, session_id = %id, "Message model preparation failed before admission");
-                        return Ok(SendResult::Rejected {
-                            session_id: id,
-                            reason: SendRejection::ModelUnavailable,
-                            skills: None,
-                        });
-                    }
-                }
-            }
-            BackendPreference::Executor { selection } => {
-                if self
-                    .admitted_tools(&id, &session.configuration.tools)
-                    .is_some()
-                    && selection.executor != "external"
-                {
-                    return Err("agent_executor_cannot_enforce_tool_selection".into());
-                }
-                PreparedBackend::Executor(Box::new(self.executors.select(selection)?))
-            }
-        };
-        let (model, executor) = match &backend {
-            PreparedBackend::Model(value) => (Some(value.0.accepted.clone()), None),
-            PreparedBackend::Executor(value) => (None, Some(value.accepted.clone())),
-        };
-        workspace::validate(
-            &self.workspace_roots,
-            &session.configuration.workspace,
-            &self.managed_worktrees,
-        )
-        .await?;
-        let external = executor.is_some();
-        let host_bridge = executor
-            .as_ref()
-            .is_some_and(|executor| executor.selection.executor == "external");
-        let snapshot = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(|_| "agent_preferences_unavailable")?;
-        let language = self.resolve_language(&snapshot);
-        // Preserve ordinary send ordering. Only actual external startup leaves
-        // the admission gate; parsing and a cached catalog do not reorder work.
-        let (admission, queued, selected_catalog) = if external {
-            (admission, queued, self.mcp_projects.base.clone())
-        } else {
-            match self
-                .mcp_projects
-                .prepare(&session.configuration.workspace)
-                .await?
-            {
-                crate::mcp::Prepared::Ready(revision) => (admission, queued, revision),
-                crate::mcp::Prepared::Startup(proposal) => {
-                    drop(admission);
-                    let revision = self.mcp_projects.start(*proposal).await?;
-                    let admission = self.runs.session(&id).await;
-                    let queued = {
-                        let runs = admission.state().await;
-                        if runs.closing || self.stop.is_cancelled() {
-                            return Err("agent_closed".into());
-                        }
-                        let current = runs.controls.get(&id);
-                        current.map(|control| control.invocation.clone())
-                    };
-                    let queued = match queued {
-                        Some(invocation) => Some(invocation),
-                        None => self
-                            .store
-                            .session(&id)
-                            .await
-                            .map_err(|error| error.to_string())?
-                            .activation_checkpoint(&id)
-                            .await
-                            .map_err(|_| "agent_execution_unavailable")?
-                            .map(|parked| parked.checkpoint.invocation),
-                    };
-                    let current = self.mutable_session(&id).await?;
-                    if current.configuration != session.configuration || current.archived {
-                        return Err("agent_session_configuration_changed".into());
-                    }
-                    (admission, queued, revision)
-                }
-            }
-        };
-        let selected_catalog = self.mcp_projects.with_client(&id, selected_catalog)?;
-        if external && !host_bridge && selected_catalog.revision.is_some() {
-            return Err("agent_executor_cannot_use_session_mcp".into());
-        }
-        let basis = MessageBasis {
-            mcp_revision: selected_catalog.revision.clone(),
-            client_mcp: selected_catalog.client_mcp,
-            mcp_catalog: Some(selected_catalog.clone()),
-            language,
-            compaction_prompt: Some(self.effective_compaction_prompt(
-                session.configuration.compaction_prompt.as_deref(),
-                &snapshot,
-                language,
-            )),
-            collaboration_mode: session.configuration.collaboration_mode,
-            background_kind: BackgroundKind::Schedule,
-            tool_discovery: !external && self.settings.tool_discovery,
-            allowed_tools: self.admitted_tools(&id, &session.configuration.tools),
-            background: None,
-            internal_tools: if external && !host_bridge {
-                Arc::default()
-            } else {
-                selected_catalog.definitions.clone()
-            },
-            internal_bindings: if external && !host_bridge {
-                Arc::default()
-            } else {
-                selected_catalog.bindings.clone()
-            },
-            behavior: self.bot_behavior(
-                &id,
-                self.capture_behavior(
-                    (!host_bridge).then_some(&session.configuration.workspace),
-                    &snapshot,
-                    language,
-                )
-                .await?,
-                &snapshot,
-                language,
-                self.admitted_tools(&id, &session.configuration.tools)
-                    .as_deref(),
-            ),
-            model,
-            executor,
-            workspace: session.configuration.workspace.clone(),
-            binding: session.configuration.binding,
-            fingerprint: operation.fingerprint.clone(),
-            tools: if external && !host_bridge {
-                Arc::default()
-            } else {
-                self.tool_basis.clone()
-            },
-        };
-        let identity = self.operation_id(operation);
-        let invocation = queued.clone().unwrap_or_else(|| Invocation {
-            session_id: id.clone(),
-            turn_id: format!("t_{identity}"),
-            run_id: format!("r_{identity}"),
-            invocation_id: format!("i_{identity}"),
-        });
-        let mut message: MessageInput = text.into();
-        message.attachments = self.attachment_refs(&id, attachments).await?;
-        let unprepared = message;
-        let (message, required_tools) = match self
-            .prepare_skills(
-                unprepared.clone(),
-                language,
-                Some(session.configuration.workspace.clone()),
-                parent,
-                self.skill_tool_names(
-                    &id,
-                    &basis,
-                    basis.model.as_ref().and_then(|model| model.editing_tools),
-                )?,
-            )
-            .await?
-        {
-            skills::Input::Ready {
-                message,
-                required_tools,
-            } => (message, required_tools),
-            skills::Input::Rejected { reason, skills } => {
-                return Ok(SendResult::Rejected {
-                    session_id: id,
-                    reason,
-                    skills,
-                });
-            }
-        };
-        let delivered = RootSourceMessage {
-            message: DeliveredMessage {
-                origin: parent.identity.agent().cloned().map(|invocation| {
-                    maka_agent_facts::message::MessageOrigin::Session { invocation }
-                }),
-                message_id: format!("m_{identity}"),
-                submitted_content_digest: unprepared
-                    .content_digest()
-                    .map_err(|_| "agent_message_invalid")?,
-                content: message.clone(),
-            },
-            unprepared_content: unprepared,
-            submitted_placement: if queued.is_some() {
-                Placement::NextTurn
-            } else {
-                Placement::CurrentTurn
-            },
-            disposition: if queued.is_some() {
-                MessageDisposition::Followup
-            } else {
-                MessageDisposition::TurnStarted
-            },
-            submitted_intent: None,
-        };
-        let pending = maka_event_log::message_admissions::PendingMessageAdmission {
-            execution: maka_event_log::message_admissions::PendingExecution {
-                owner: self.prefix.clone(),
-                basis: serde_json::to_value(&basis).expect("accepted message basis"),
-            },
-            invocation: invocation.clone(),
-            steering_invocation: None,
-            source: delivered.clone(),
-            required_tools,
-            admitted_at: now(),
-        };
-        if queued.is_some() {
-            loop {
-                let revision = self
-                    .store
-                    .session(&id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .message_queue_revision(&id)
-                    .await
-                    .map_err(|_| "agent_queue_unavailable")?;
-                match self
-                    .store
-                    .session(&pending.invocation.session_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .admit_queued_message(&self.revision.activation, revision, pending.clone())
-                    .await
-                {
-                    Ok(receipt) => {
-                        if let Some(control) = &interruption {
-                            self.store
-                                .session(&id)
-                                .await
-                                .map_err(|error| error.to_string())?
-                                .close_run_interactions(
-                                    &control.invocation,
-                                    maka_agent_facts::interaction::ClosureReason::Steered,
-                                    now(),
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            control.cancellation.cancel();
-                        }
-                        return Ok(SendResult::Queued {
-                            session_id: id,
-                            message_id: delivered.message.message_id,
-                            revision: receipt.queue_revision,
-                        });
-                    }
-                    Err(maka_event_log::StoreError::RevisionConflict { .. }) => continue,
-                    Err(error) => {
-                        tracing::warn!(%error, "queued message admission failed");
-                        return Err("agent_admission_failed".into());
-                    }
-                }
-            }
-        }
-        let basis = Arc::new(basis);
-        let input = self
-            .input(invocation.clone(), backend, basis.clone(), delivered)
-            .await?;
-        self.store
-            .session(&pending.invocation.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .admit_message(pending)
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, "message admission failed");
-                "agent_admission_failed"
-            })?;
-        let cancellation = self.stop.child_token();
-        let running = match self.start(input, cancellation.clone()).await {
-            Ok(running) => running,
-            Err(error) => {
-                if error.is_cleanup_unconfirmed() {
-                    admission.state().await.retained_cleanup.insert(id.clone());
-                }
-                return Err(public_error(error));
-            }
-        };
-        self.publish(&mut *admission.state().await, &running, basis);
-        let owner = self.clone();
-        self.workers
-            .spawn(async move { owner.drive(running).await });
-        Ok(crate::contract::SendResult::Started {
-            session_id: invocation.session_id.clone(),
-            invocation_id: invocation.invocation_id,
-            message_id: format!("m_{identity}"),
-        })
+        catalog
     }
 }
 fn metadata_rejection(title: &str, labels: &[String]) -> Option<Rejection> {
@@ -1755,8 +1279,9 @@ impl Owner {
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
-            || self.runs.has_checkpoints()
+            || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()
+            || !self.cleanup_workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()
         {
@@ -1785,7 +1310,8 @@ impl Owner {
             owner.producers.wait().await;
             owner.workers.close();
             owner.workers.wait().await;
-            owner.engine.drain().await;
+            owner.cleanup_workers.close();
+            owner.cleanup_workers.wait().await;
             let scheduler = owner.scheduler.finish().await;
             let todo = owner.todo.finish().await;
             let bot = owner.bot.finish().await;
@@ -1794,13 +1320,18 @@ impl Owner {
             let executors = owner.executors.finish().await;
             let auxiliary = owner.auxiliary.resources.finish().await;
             let projects = owner.mcp_projects.close().await;
-            let mcp = owner.mcp.close().await;
+            let mcp = owner.mcp.close().await.map_err(|error| {
+                let diagnostic = error.message.clone();
+                owner.mcp_projects.retain_transport_cleanup(error);
+                diagnostic
+            });
             let configuration = owner.configuration.shutdown().await;
             if let Err(error) = &configuration {
                 tracing::error!(stage = "configuration_store_shutdown", cause = crate::diagnostics::config_cause(error),
                     activation = %owner.revision.activation, instance = ?owner.data_source.namespace,
                     "Agent configuration store cleanup failed");
             }
+            owner.try_confirm_retained_scopes().await;
             let runs = owner.runs.lock().await;
             if !runs.retained_cleanup.is_empty() || !runs.preparing.is_empty() {
                 return Err("agent_cleanup_unconfirmed".into());
@@ -1845,9 +1376,6 @@ fn public_error(error: RunError) -> String {
     }
     .into()
 }
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) fn owns_session(prefix: &str, id: &str) -> bool {
     id.strip_prefix(prefix).is_some_and(|tail| {

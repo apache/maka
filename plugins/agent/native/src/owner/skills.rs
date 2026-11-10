@@ -106,13 +106,13 @@ impl Owner {
     pub(super) fn skill_tool_names(
         &self,
         session: &str,
-        basis: &MessageBasis,
+        basis: &CapturedRun,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> Result<Vec<String>, String> {
         match &basis.executor {
-            Some(executor) if executor.selection.executor == "external" => {
-                Ok(self.external_tools(session, basis)?.catalog.names())
-            }
+            Some(executor) if executor.selection.executor == "external" => Ok(self
+                .external_catalog(self.selected_tools(session, basis, false, None)?)
+                .names()),
             Some(_) => Ok(Vec::new()),
             None => Ok(self.selected_tools(session, basis, false, editing)?.names()),
         }
@@ -166,7 +166,7 @@ impl Owner {
         };
         let tool_names = |selected: maka_tools::ToolCatalog| {
             if external {
-                self.external_catalog_tools(selected).catalog.names()
+                self.external_catalog(selected).names()
             } else {
                 selected.names()
             }
@@ -235,20 +235,20 @@ impl Owner {
         };
         let payload = payload.map_err(|_| "agent_skill_query_invalid")?;
         let import = library.selected.import.clone();
+        let services = library.services.select_import_method(&import, 0, method)?;
         let mut ticket = parent
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = match parent.execution() {
-            Some(execution) => library.services.request_with_execution(
+        let request = match parent.work_custody() {
+            Some(custody) => services.request_with_work(
                 parent.identity.clone(),
                 parent.cancellation.child_token(),
-                execution.clone(),
+                custody.clone(),
             ),
-            None => library
-                .services
-                .request(parent.identity.clone(), parent.cancellation.child_token()),
-        }?;
+            None => services.request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?
+        .with_sandbox_floor(parent.sandbox_floor())?;
         let result = self
             .workers
             .spawn(async move {
@@ -270,14 +270,13 @@ impl Owner {
         if parent.cancellation.is_cancelled() {
             return Err("agent_skill_call_cancelled".into());
         }
-        if let CompletionTarget::Draft { workspace } = &input.target {
-            if self
+        if let CompletionTarget::Draft { workspace } = &input.target
+            && self
                 .draft_completion_workspace(workspace.as_ref(), parent)
                 .await?
                 != draft_workspace
-            {
-                return Err("agent_completion_workspace_changed".into());
-            }
+        {
+            return Err("agent_completion_workspace_changed".into());
         }
         candidates(result)
     }
@@ -336,20 +335,22 @@ impl Owner {
         })
         .map_err(|_| "agent_skill_preparation_invalid")?;
         let import = library.selected.import.clone();
+        let services = library
+            .services
+            .select_import_method(&import, 0, "prepare")?;
         let mut ticket = parent
             .resources
             .reserve()
             .map_err(|_| "agent_skill_call_closed")?;
-        let request = match parent.execution() {
-            Some(execution) => library.services.request_with_execution(
+        let request = match parent.work_custody() {
+            Some(custody) => services.request_with_work(
                 parent.identity.clone(),
                 parent.cancellation.child_token(),
-                execution.clone(),
+                custody.clone(),
             ),
-            None => library
-                .services
-                .request(parent.identity.clone(), parent.cancellation.child_token()),
-        }?;
+            None => services.request(parent.identity.clone(), parent.cancellation.child_token()),
+        }?
+        .with_sandbox_floor(parent.sandbox_floor())?;
         let result = self
             .workers
             .spawn(async move {

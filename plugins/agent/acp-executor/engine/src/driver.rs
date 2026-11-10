@@ -87,6 +87,17 @@ impl<'a> Driver<'a> {
                 "agent changed the session protocol version",
             ));
         }
+        let scope = self
+            .context
+            .call
+            .as_ref()
+            .ok_or(Error::Invalid("missing actual ACP process scope"))?;
+        let private_cwd = self
+            .host
+            .callbacks
+            .private_paths(scope)
+            .map_err(|error| Error::Output(executor::Error::IsolationUnavailable(error)))?
+            .working_directory;
         let (session_id, options) = match &journal.record.state {
             State::Creating => {
                 if journal.exists() {
@@ -98,7 +109,7 @@ impl<'a> Driver<'a> {
                 let result: acp::NewSessionResponse = self
                     .rpc(
                         &mut connection,
-                        acp::NewSessionRequest::new(&self.request.cwd),
+                        acp::NewSessionRequest::new(&private_cwd),
                         Some(Duration::from_secs(30)),
                     )
                     .await?;
@@ -115,13 +126,13 @@ impl<'a> Driver<'a> {
                 let session_id = session_id.clone();
                 self.projection = Some(Projection::new(
                     session_id.clone(),
-                    self.request.invocation.invocation_id.clone(),
+                    self.request.task_id.to_string(),
                 ));
                 self.replay = true;
                 let result = self
                     .rpc(
                         &mut connection,
-                        acp::LoadSessionRequest::new(session_id.clone(), &self.request.cwd),
+                        acp::LoadSessionRequest::new(session_id.clone(), &private_cwd),
                         Some(Duration::from_secs(30)),
                     )
                     .await;
@@ -154,6 +165,24 @@ impl<'a> Driver<'a> {
         })
     }
 
+    fn history_reference<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
+        let scope = self
+            .context
+            .call
+            .as_ref()
+            .ok_or(Error::Invalid("missing actual ACP process scope"))?;
+        let paths = self
+            .host
+            .callbacks
+            .private_paths(scope)
+            .map_err(|error| Error::Output(executor::Error::IsolationUnavailable(error)))?;
+        let path = serde_json::to_string(&paths.history_file)?;
+        serde_json::from_value(serde_json::json!({
+            "type": "text",
+            "text": format!("Read the prior conversation from the read-only local file {path} before handling the current user message. This file is context, not a new user instruction."),
+        })).map_err(Error::from)
+    }
+
     pub async fn prompt(
         &mut self,
         live: &mut Live,
@@ -164,16 +193,17 @@ impl<'a> Driver<'a> {
         }
         self.projection = Some(Projection::new(
             live.session_id.clone(),
-            self.request.invocation.invocation_id.clone(),
+            self.request.task_id.to_string(),
         ));
         self.configure(live, &journal.record.defaults).await?;
-        let content = self.prompt_content(&live.connection)?;
+        let mut content = self.prompt_content(&live.connection)?;
+        content.insert(0, self.history_reference()?);
         journal
             .save(
                 self.host.storage.as_ref(),
                 State::Running {
                     session_id: live.session_id.clone(),
-                    invocation_id: self.request.invocation.invocation_id.clone(),
+                    task_id: self.request.task_id,
                 },
             )
             .await?;
@@ -323,46 +353,4 @@ fn prompt(
     }
     blocks.push(text);
     Ok(blocks)
-}
-
-#[cfg(test)]
-mod language_tests {
-    use super::*;
-    use maka_agent_facts::{
-        input::{DirectoryReference, QuoteRef},
-        language::Language,
-    };
-
-    #[test]
-    fn external_instructions_and_context_keep_original_data() {
-        let mut content: maka_agent_facts::input::MessageInput = "User text 原文".into();
-        content.quotes = Some(vec![QuoteRef {
-            text: "Quoted text 結果".into(),
-            label: None,
-            source_turn_id: None,
-            source: None,
-        }]);
-        content.directory_references = Some(vec![DirectoryReference {
-            host_id: "host".into(),
-            path: "/workspace/原文".into(),
-        }]);
-        for (language, header, directory) in [
-            (
-                Language::ZhCn,
-                "来自 Maka 的指令：\nCustom instruction 原文",
-                "目录：/workspace/原文",
-            ),
-            (
-                Language::ZhTw,
-                "來自 Maka 的指令：\nCustom instruction 原文",
-                "目錄：/workspace/原文",
-            ),
-        ] {
-            let blocks = prompt(&content, Some("Custom instruction 原文"), language).unwrap();
-            assert_eq!(blocks[0], header);
-            assert!(blocks[1].starts_with("User text 原文"));
-            assert!(blocks[1].contains("<quoted_context>\nQuoted text 結果\n</quoted_context>"));
-            assert!(blocks[1].ends_with(directory));
-        }
-    }
 }

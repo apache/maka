@@ -138,11 +138,95 @@ struct Shown {
     /// Bumped by each `SetTray`: a late icon load of an earlier tray is
     /// dropped.
     generation: u64,
+    registration: Registration,
+}
+
+/// Where the item stands with the watcher. A pending attempt is forgotten when
+/// its watcher goes, so that watcher's late reply can't count.
+#[derive(Clone, Copy, PartialEq)]
+enum Registration {
+    Absent,
+    Pending(u64),
+    Accepted,
 }
 
 thread_local! {
     static TRAY: RefCell<Option<Shown>> = const { RefCell::new(None) };
     static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ATTEMPT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ON_LOST: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Whether a panel's watcher holds the tray icon now, so the user can reach it.
+pub fn tray_registered() -> bool {
+    TRAY.with(|t| {
+        t.borrow()
+            .as_ref()
+            .is_some_and(|shown| shown.registration == Registration::Accepted)
+    })
+}
+
+/// Runs `callback` when the watcher is absent, refuses the icon or stops
+/// holding it. An icon the app removes itself does not count.
+pub fn on_tray_lost(callback: impl Fn() + 'static) {
+    ON_LOST.with(|slot| *slot.borrow_mut() = Some(Box::new(callback)));
+}
+
+/// Starts a registration with a watcher that just appeared.
+fn begin_registration() -> Option<u64> {
+    let attempt = ATTEMPT.with(|a| {
+        a.set(a.get() + 1);
+        a.get()
+    });
+    TRAY.with(|t| {
+        t.borrow_mut().as_mut().map(|shown| {
+            shown.registration = Registration::Pending(attempt);
+            attempt
+        })
+    })
+}
+
+/// Records a watcher's answer, if `attempt` is still the one awaited.
+fn finish_registration(attempt: u64, accepted: bool) {
+    let refused = TRAY.with(|t| {
+        let mut tray = t.borrow_mut();
+        let Some(shown) = tray
+            .as_mut()
+            .filter(|shown| shown.registration == Registration::Pending(attempt))
+        else {
+            return false;
+        };
+        shown.registration = if accepted {
+            Registration::Accepted
+        } else {
+            Registration::Absent
+        };
+        !accepted
+    });
+    if refused {
+        notify_lost();
+    }
+}
+
+/// The watcher left the bus.
+fn withdraw_registration() {
+    let lost = TRAY.with(|t| {
+        t.borrow_mut().as_mut().is_some_and(|shown| {
+            shown.registration = Registration::Absent;
+            true
+        })
+    });
+    if lost {
+        notify_lost();
+    }
+}
+
+fn notify_lost() {
+    ON_LOST.with(|slot| {
+        if let Some(callback) = slot.borrow().as_ref() {
+            callback();
+        }
+    });
 }
 
 /// Shows, changes or removes (`None`) the app's tray icon.
@@ -184,6 +268,7 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
             Ok(bus) => bus,
             Err(e) => {
                 log::warn!("nsh: no session bus for the tray icon: {e}");
+                notify_lost();
                 return;
             }
         };
@@ -196,6 +281,7 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
             &app_id,
             &app_name,
         ) else {
+            notify_lost();
             return;
         };
         TRAY.with(|t| *t.borrow_mut() = Some(shown));
@@ -260,8 +346,12 @@ fn publish(
         bus,
         WATCHER,
         gio::BusNameWatcherFlags::NONE,
-        move |bus, _, _| register(&bus, &watched),
-        |_, _| {},
+        move |bus, _, _| {
+            if let Some(attempt) = begin_registration() {
+                register(&bus, &watched, attempt);
+            }
+        },
+        |_, _| withdraw_registration(),
     );
     let title = if app_name.is_empty() {
         app_id.to_owned()
@@ -282,11 +372,12 @@ fn publish(
         entries,
         revision: 1,
         generation,
+        registration: Registration::Absent,
     })
 }
 
 /// Tells the watcher about the item called `name`.
-fn register(bus: &gio::DBusConnection, name: &str) {
+fn register(bus: &gio::DBusConnection, name: &str, attempt: u64) {
     bus.call(
         Some(WATCHER),
         WATCHER_PATH,
@@ -297,10 +388,11 @@ fn register(bus: &gio::DBusConnection, name: &str) {
         gio::DBusCallFlags::NONE,
         5000,
         gio::Cancellable::NONE,
-        |result| {
-            if let Err(e) = result {
+        move |result| {
+            if let Err(e) = &result {
                 log::warn!("nsh: the tray's watcher refused the icon: {e}");
             }
+            finish_registration(attempt, result.is_ok());
         },
     );
 }

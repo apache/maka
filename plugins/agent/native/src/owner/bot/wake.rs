@@ -21,8 +21,7 @@
 //! ordinary Session; the Bot only keeps a durable watch per worker so that each
 //! finished run is reported to it once, even across restarts.
 use super::*;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_event_log::turns::InvocationState;
+use maka_agent_facts::durable::{ExecutionIdentity, RunId, Terminal};
 
 const WATCH_PREFIX: &str = "watch/";
 const POLL: Duration = Duration::from_secs(2);
@@ -41,18 +40,18 @@ struct Watch {
     model: ModelSelection,
     thinking_level: Option<ThinkingLevel>,
     workspace: Workspace,
-    binding: maka_agent_facts::workspace::BindingStamp,
-    /// The last finished invocation already reported to the Bot.
-    notified: Option<String>,
+    binding: maka_sandbox::workspace::BindingStamp,
+    /// The last finished logical Run already reported to the Bot.
+    notified: Option<RunId>,
 }
 
 impl Bot {
     /// Record or refresh the watch for `worker`, keeping what was already reported.
-    async fn watch(
+    async fn watch_mutation(
         &self,
         worker: &str,
         route: crate::owner::notifications::ReturnRoute,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Mutation, StoreError> {
         let key = watch_key(worker);
         // Read the record itself: one an earlier build wrote may no longer decode, and a
         // refresh has to be able to replace it. What it had reported is then unknown.
@@ -73,10 +72,7 @@ impl Bot {
             binding: route.binding,
             notified,
         };
-        self.storage
-            .batch(vec![Self::mutation(key, revision, &watch)?])
-            .await
-            .map(drop)
+        Self::mutation(key, revision, &watch)
     }
     /// Every stored watch with its revision. A record that does not decode is returned as
     /// its error, so the caller can still retire it when its worker is gone.
@@ -107,33 +103,7 @@ impl Bot {
             }
         }
     }
-    /// A watch this build cannot read, as an older build might have written.
-    #[cfg(test)]
-    pub(in crate::owner) async fn plant_unreadable_watch(&self, worker: &str) {
-        let stale = serde_json::json!({"route": {"model": {"context": {}}}, "notified": null});
-        let revision = self
-            .storage
-            .read(watch_key(worker))
-            .await
-            .expect("read watch")
-            .map(|record| record.revision);
-        self.storage
-            .batch(vec![Mutation {
-                key: watch_key(worker),
-                expected_revision: revision,
-                data: Data::Present(stale),
-            }])
-            .await
-            .expect("plant watch");
-    }
-    #[cfg(test)]
-    pub(in crate::owner) async fn has_watch(&self, worker: &str) -> bool {
-        self.storage
-            .read(watch_key(worker))
-            .await
-            .expect("read watch")
-            .is_some_and(|record| record.data.value().is_some())
-    }
+
     async fn forget(&self, worker: &str, revision: Option<u64>) -> Result<(), StoreError> {
         self.storage
             .batch(vec![Mutation {
@@ -147,27 +117,26 @@ impl Bot {
 }
 
 impl Owner {
-    /// After the Bot creates or sends to a conversation, remember to wake it when
-    /// that conversation finishes. Best effort: the effect already happened, and
-    /// the next send refreshes the watch.
-    pub(crate) async fn bot_watch(&self, scope: &maka_capabilities::call::Scope, worker: &str) {
+    pub(in crate::owner) async fn prepare_bot_watch(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+        worker: &str,
+    ) -> Result<Vec<Mutation>, String> {
         let Some(source) = scope.identity.agent() else {
-            return;
+            return Ok(Vec::new());
         };
+        if self.settings.bot {
+            self.bot.load().await.map_err(|error| error.to_string())?;
+        }
         if !self.bot.is(&source.session_id) || !self.owns(worker) {
-            return;
+            return Ok(Vec::new());
         }
-        let result = async {
-            let route = self.return_route(source).await?;
-            self.bot
-                .watch(worker, route)
-                .await
-                .map_err(|error| error.to_string())
-        }
-        .await;
-        if let Err(error) = result {
-            eprintln!("Bot worker watch: {error}");
-        }
+        let route = self.return_route(source).await?;
+        self.bot
+            .watch_mutation(worker, route)
+            .await
+            .map(|mutation| vec![mutation])
+            .map_err(|error| error.to_string())
     }
 
     /// Native workers inherit the Bot's admitted model; an explicitly selected
@@ -177,22 +146,20 @@ impl Owner {
         &self,
         scope: &maka_capabilities::call::Scope,
         backend: Option<crate::contract::BackendPreference>,
-    ) -> Option<crate::contract::BackendPreference> {
+    ) -> Result<Option<crate::contract::BackendPreference>, String> {
         if matches!(
             backend,
             Some(crate::contract::BackendPreference::Executor { .. })
         ) {
-            return backend;
+            return Ok(backend);
         }
         let Some(source) = scope.identity.agent() else {
-            return backend;
+            return Ok(backend);
         };
         if !self.bot.is(&source.session_id) {
-            return backend;
+            return Ok(backend);
         }
-        let Ok(route) = self.return_route(source).await else {
-            return backend;
-        };
+        let route = self.return_route(source).await?;
         let binding = route.binding_model();
         let thinking_level = match &backend {
             Some(crate::contract::BackendPreference::Model {
@@ -204,11 +171,11 @@ impl Owner {
             }
             _ => None,
         };
-        Some(crate::contract::BackendPreference::Model {
+        Ok(Some(crate::contract::BackendPreference::Model {
             connection_id: binding.connection_id.clone(),
             model_id: binding.model.clone(),
             thinking_level,
-        })
+        }))
     }
 
     pub(in crate::owner) fn start_bot_wake(self: &Arc<Self>) {
@@ -226,7 +193,11 @@ impl Owner {
                 let Some(producer) = owner.producer().await else {
                     return;
                 };
-                let result = owner.wake_bot_pass().await;
+                let result = async {
+                    owner.bot.load().await.map_err(|error| error.to_string())?;
+                    owner.wake_bot_pass().await
+                }
+                .await;
                 drop(producer);
                 match result {
                     Ok(()) => previous_error = None,
@@ -287,46 +258,51 @@ impl Owner {
             if self.runs.lock().await.busy(&worker) {
                 continue;
             }
-            let Some(boundary) = self
-                .store
-                .session(&worker)
+            let Some(run) = self
+                .durable
+                .latest_run(worker.clone())
                 .await
-                .map_err(|error| error.to_string())?
-                .latest_turn_boundary(&worker)
-                .await
-                .map_err(|_| "agent_execution_unavailable")?
+                .map_err(|e| e.to_string())?
             else {
                 continue;
             };
-            let invocation_id = boundary.invocation.invocation_id.clone();
-            let InvocationState::Ended { outcome, .. } = &boundary.state else {
-                continue;
+            let view = self
+                .durable
+                .frontier(run)
+                .await
+                .map_err(|e| e.to_string())?;
+            let result = match view.terminal {
+                Some(Terminal::Completed) => WorkerResult::Completed,
+                Some(Terminal::Failed) => WorkerResult::Failed,
+                Some(Terminal::Cancelled) => WorkerResult::Cancelled,
+                None => continue,
             };
-            let result = match outcome {
-                InvocationOutcome::Completed => WorkerResult::Completed,
-                InvocationOutcome::Failed { .. } => WorkerResult::Failed,
-                InvocationOutcome::Cancelled { .. } => WorkerResult::Cancelled,
-                // A pause or a context compaction is not a result of the work.
-                InvocationOutcome::HandoffPaused { .. }
-                | InvocationOutcome::ContextCompactFinished { .. } => continue,
-            };
-            if watch.notified.as_deref() == Some(invocation_id.as_str()) {
-                continue;
-            }
-            let bot_busy = self.runs.lock().await.busy(&bot);
-            if bot_busy || self.has_parked_invocation(&bot).await? {
+            if watch.notified == Some(run) {
                 continue;
             }
             let identity = hex::encode(Sha256::digest(
-                format!("bot-worker/{worker}/{invocation_id}").as_bytes(),
+                format!("bot-worker/{worker}/{run}").as_bytes(),
             ))[..32]
                 .to_owned();
-            let source = Invocation {
-                session_id: bot.clone(),
-                turn_id: format!("t_{identity}"),
-                run_id: format!("r_{identity}"),
-                invocation_id: format!("i_{identity}"),
+            let Some(bot_run) = self
+                .durable
+                .latest_run(bot.clone())
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
             };
+            let bot_view = self
+                .durable
+                .frontier(bot_run)
+                .await
+                .map_err(|e| e.to_string())?;
+            let source = ExecutionIdentity {
+                session_id: bot.clone(),
+                turn_id: bot_view.spec.turn_id,
+                run_id: bot_run,
+            };
+            let run_label = run.to_string();
             let title = stored.configuration.title.clone();
             // The Bot's model as it is now, not as it was when the watch was written.
             let route = match crate::model::Source::select(
@@ -355,7 +331,7 @@ impl Owner {
                     &source,
                     &route,
                     &identity,
-                    |language| worker_message(language, &worker, &title, &invocation_id, result),
+                    |language| worker_message(language, &worker, &title, &run_label, result),
                     MessageOrigin::BotWorker {
                         session_id: worker.clone(),
                     },
@@ -366,7 +342,7 @@ impl Owner {
             };
             if self.admit_notification(&admission).await? {
                 let next = Watch {
-                    notified: Some(invocation_id),
+                    notified: Some(run),
                     ..watch
                 };
                 match self

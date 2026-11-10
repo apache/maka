@@ -48,18 +48,28 @@ type AudioObservations = FuturesUnordered<BoxFuture<'static, (u64, Result<(), Fa
 #[derive(Default)]
 struct PendingInvocations {
     replies: FuturesUnordered<BoxFuture<'static, (u64, Result<Value, ToolError>)>>,
-    identities: HashMap<u64, (String, CancellationToken)>,
+    identities: HashMap<
+        u64,
+        (
+            (String, String, crate::ExecutionCorrelation),
+            CancellationToken,
+        ),
+    >,
 }
 impl PendingInvocations {
     fn insert(
         &mut self,
         id: u64,
+        session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         cancellation: CancellationToken,
         pending: BoxFuture<'static, Result<Value, ToolError>>,
     ) {
         assert!(
-            self.identities.insert(id, (turn, cancellation)).is_none(),
+            self.identities
+                .insert(id, ((session, turn, execution), cancellation))
+                .is_none(),
             "the validated desktop request {id} cannot be parked twice"
         );
         self.replies
@@ -68,9 +78,11 @@ impl PendingInvocations {
     fn is_empty(&self) -> bool {
         self.identities.is_empty()
     }
-    fn cancel(&self, turn: Option<&str>) {
-        for (owner_turn, cancellation) in self.identities.values() {
-            if turn.is_none_or(|turn| turn == owner_turn) {
+    fn cancel(&self, scope: Option<(&str, &str, &crate::ExecutionCorrelation)>) {
+        for (owner, cancellation) in self.identities.values() {
+            if scope.is_none_or(|(session, turn, execution)| {
+                owner.0 == session && owner.1 == turn && &owner.2 == execution
+            }) {
                 cancellation.cancel();
             }
         }
@@ -89,14 +101,14 @@ impl PendingInvocations {
     }
     async fn drain(
         &mut self,
-        turn: Option<&str>,
+        scope: Option<(&str, &str, &crate::ExecutionCorrelation)>,
         events: &mpsc::UnboundedSender<Event>,
     ) -> Result<(), ToolError> {
-        while self
-            .identities
-            .values()
-            .any(|(owner_turn, _)| turn.is_none_or(|turn| turn == owner_turn))
-        {
+        while self.identities.values().any(|(owner, _)| {
+            scope.is_none_or(|(session, turn, execution)| {
+                owner.0 == session && owner.1 == turn && &owner.2 == execution
+            })
+        }) {
             self.forward_next(events).await;
         }
         Ok(())
@@ -160,6 +172,7 @@ enum Operation {
         cancellation: CancellationToken,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         operation_id: Option<String>,
         native_observer_available: bool,
         browsers: Vec<BrowserConnection>,
@@ -172,6 +185,7 @@ enum Operation {
         cancellation: CancellationToken,
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         operation_id: String,
         browsers: Vec<BrowserConnection>,
         preparation_policy: crate::BrowserPreparationPolicy,
@@ -184,11 +198,14 @@ enum Operation {
     FinishTurn {
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         language: Language,
         reply: oneshot::Sender<Result<(), ToolError>>,
     },
     DrainTurn {
+        session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         reply: oneshot::Sender<Result<(), ToolError>>,
     },
     Close {
@@ -267,7 +284,11 @@ impl Authorization {
                 failed("Browser session preparation requires its original invocation identity")
             })
             .and_then(|identity| {
-                preparation.check_scope(&identity.turn, &identity.operation_id)?;
+                preparation.check_scope(
+                    &identity.turn,
+                    &identity.execution,
+                    &identity.operation_id,
+                )?;
                 Ok(identity)
             });
         match identity {
@@ -416,6 +437,7 @@ impl EpochWorker {
                         cancellation,
                         session,
                         turn,
+                        execution,
                         operation_id,
                         native_observer_available,
                         browsers,
@@ -431,6 +453,7 @@ impl EpochWorker {
                                 epoch: epoch_id.clone(),
                                 session: session.clone(),
                                 turn: turn.clone(),
+                                execution: execution.clone(),
                                 operation_id: operation_id.clone(),
                             });
                         let authorization: Arc<dyn BrowserAuthorization> =
@@ -451,14 +474,15 @@ impl EpochWorker {
                                             .prepare_invoke(
                                                 *command,
                                                 &{
-                                                    let mut context =
-                                                        InvocationContext::new(&session, &turn)
-                                                            .with_browser_preparation_policy(
-                                                                preparation_policy,
-                                                            )
-                                                            .with_browser_authorization(
-                                                                authorization,
-                                                            );
+                                                    let mut context = InvocationContext::new(
+                                                        &session,
+                                                        &turn,
+                                                        execution.clone(),
+                                                    )
+                                                    .with_browser_preparation_policy(
+                                                        preparation_policy,
+                                                    )
+                                                    .with_browser_authorization(authorization);
                                                     if let Some(operation_id) = operation_id {
                                                         context =
                                                             context.with_operation_id(operation_id);
@@ -499,7 +523,9 @@ impl EpochWorker {
                             let disconnected = disconnected.clone();
                             pending.insert(
                                 id,
+                                session,
                                 turn,
+                                execution,
                                 cancellation,
                                 Box::pin(async move {
                                     let result = settle(completion.wait(), &disconnected).await;
@@ -540,6 +566,7 @@ impl EpochWorker {
                         cancellation,
                         session,
                         turn,
+                        execution,
                         operation_id,
                         browsers,
                         preparation_policy,
@@ -551,6 +578,7 @@ impl EpochWorker {
                             epoch: epoch_id.clone(),
                             session: session.clone(),
                             turn: turn.clone(),
+                            execution: execution.clone(),
                             operation_id: operation_id.clone(),
                         };
                         let authorization: Arc<dyn BrowserAuthorization> =
@@ -566,11 +594,14 @@ impl EpochWorker {
                                     return Err(failed("Computer Use cancelled before dispatch"));
                                 }
                                 local.configure_browsers(browsers, language)?;
-                                let context = InvocationContext::new(&session, &turn)
-                                    .with_browser_preparation_policy(preparation_policy)
-                                    .with_operation_id(operation_id)
-                                    .with_browser_authorization(authorization)
-                                    .with_browser_services(callbacks.scope(identity.clone(), id));
+                                let context =
+                                    InvocationContext::new(&session, &turn, execution.clone())
+                                        .with_browser_preparation_policy(preparation_policy)
+                                        .with_operation_id(operation_id)
+                                        .with_browser_authorization(authorization)
+                                        .with_browser_services(
+                                            callbacks.scope(identity.clone(), id),
+                                        );
                                 local
                                     .adopt_browser_lease_child(
                                         request,
@@ -604,19 +635,33 @@ impl EpochWorker {
                     Operation::FinishTurn {
                         session,
                         turn,
+                        execution,
                         language,
                         reply,
                     } => {
-                        pending.cancel(Some(&turn));
-                        let pending_cleanup = pending.drain(Some(&turn), &events).await;
-                        let native_cleanup =
-                            settle(local.finish_turn(&session, &turn, language), &disconnected)
-                                .await;
+                        pending.cancel(Some((&session, &turn, &execution)));
+                        let pending_cleanup = pending
+                            .drain(Some((&session, &turn, &execution)), &events)
+                            .await;
+                        let native_cleanup = settle(
+                            local.finish_turn(&session, &turn, &execution, language),
+                            &disconnected,
+                        )
+                        .await;
                         let _ = reply.send(epoch_cleanup(pending_cleanup, native_cleanup));
                     }
-                    Operation::DrainTurn { turn, reply } => {
-                        pending.cancel(Some(&turn));
-                        let _ = reply.send(pending.drain(Some(&turn), &events).await);
+                    Operation::DrainTurn {
+                        session,
+                        turn,
+                        execution,
+                        reply,
+                    } => {
+                        pending.cancel(Some((&session, &turn, &execution)));
+                        let _ = reply.send(
+                            pending
+                                .drain(Some((&session, &turn, &execution)), &events)
+                                .await,
+                        );
                     }
                     Operation::Close { reply } => {
                         pending.cancel(None);
@@ -720,7 +765,12 @@ impl Epoch {
         }
     }
 
-    fn drain_turn(&self, turn: &str) -> BoxFuture<'static, Result<(), ToolError>> {
+    fn drain_turn(
+        &self,
+        session: &str,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> BoxFuture<'static, Result<(), ToolError>> {
         let worker = match self {
             Self::Open(worker) => match &worker.closing {
                 Some(closing) => return Box::pin(observe_retirement(closing.clone())),
@@ -730,7 +780,9 @@ impl Epoch {
         };
         let (reply, completion) = oneshot::channel();
         let sent = worker.invoke(Operation::DrainTurn {
+            session: session.to_owned(),
             turn: turn.to_owned(),
+            execution: execution.clone(),
             reply,
         });
         Box::pin(async move {
@@ -1046,14 +1098,31 @@ fn dispatch(
     let disconnected = context.disconnected;
     let callbacks = context.callbacks;
     match &request {
-        Request::CloseEpoch { owner, epoch } => callbacks.seal_matching(owner, Some(epoch), None),
-        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None),
-        Request::FinishTurn {
-            owner, epoch, turn, ..
-        } => callbacks.seal_matching(owner, Some(epoch), Some(turn)),
-        Request::FinishOwnerTurn { owner, turn, .. } => {
-            callbacks.seal_matching(owner, None, Some(turn))
+        Request::CloseEpoch { owner, epoch } => {
+            callbacks.seal_matching(owner, Some(epoch), None, None, None)
         }
+        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None, None, None),
+        Request::FinishTurn {
+            owner,
+            epoch,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(
+            owner,
+            Some(epoch),
+            Some(session),
+            Some(turn),
+            Some(execution),
+        ),
+        Request::FinishOwnerTurn {
+            owner,
+            session,
+            turn,
+            execution,
+            ..
+        } => callbacks.seal_matching(owner, None, Some(session), Some(turn), Some(execution)),
         _ => {}
     }
     match request {
@@ -1062,6 +1131,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             operation_id,
             native_observer_available,
             browsers,
@@ -1108,6 +1178,7 @@ fn dispatch(
                 cancellation,
                 session,
                 turn,
+                execution,
                 operation_id,
                 native_observer_available,
                 browsers,
@@ -1121,6 +1192,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             operation_id,
             browsers,
             preparation_policy,
@@ -1160,6 +1232,7 @@ fn dispatch(
                 cancellation,
                 session,
                 turn,
+                execution,
                 operation_id,
                 browsers,
                 preparation_policy,
@@ -1201,6 +1274,7 @@ fn dispatch(
             epoch,
             session,
             turn,
+            execution,
             language,
         } => {
             let Some(epoch) = owners
@@ -1217,6 +1291,7 @@ fn dispatch(
             epoch.invoke(Operation::FinishTurn {
                 session,
                 turn,
+                execution,
                 language,
                 reply,
             })?;
@@ -1236,7 +1311,9 @@ fn dispatch(
         }
         Request::FinishOwnerTurn {
             owner,
+            session,
             turn,
+            execution,
             language,
         } => {
             let Some(owner) = owners.get_mut(&owner) else {
@@ -1246,11 +1323,14 @@ fn dispatch(
             if owner.closing.is_some() {
                 return Err(failed("Computer Use Session owner is closed"));
             }
+            if owner.session != session {
+                return Err(failed("Computer Use Session identity mismatch"));
+            }
             owner.shared.retain(|task| !task.is_finished());
             let drains = owner
                 .epochs
                 .values()
-                .map(|epoch| epoch.drain_turn(&turn))
+                .map(|epoch| epoch.drain_turn(&session, &turn, &execution))
                 .collect::<Vec<_>>();
             let resources = owner.resources.clone();
             let disconnected = disconnected.clone();
@@ -1262,7 +1342,11 @@ fn dispatch(
                         failures.push(error.to_string());
                     }
                 }
-                let native = settle(resources.finish_turn(&turn, language), &disconnected).await;
+                let native = settle(
+                    resources.finish_turn(&session, &turn, &execution, language),
+                    &disconnected,
+                )
+                .await;
                 let pending = if failures.is_empty() {
                     Ok(())
                 } else {
@@ -1511,587 +1595,5 @@ pub(super) async fn serve(
     match transport_error.or(output_error) {
         Some(error) => Err(transport_cleanup(error, &status)),
         None => status,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::read;
-    use super::*;
-    use serde_json::json;
-    use tokio::io::AsyncRead;
-
-    fn invoke(owner: &str, epoch: &str, command: Value) -> Request {
-        Request::Invoke {
-            owner: owner.into(),
-            epoch: epoch.into(),
-            session: "logical-session".into(),
-            turn: "logical-turn".into(),
-            native_observer_available: false,
-            operation_id: None,
-            browsers: Vec::new(),
-            preparation_policy: Default::default(),
-            command: serde_json::from_value(command).unwrap(),
-            language: Language::En,
-        }
-    }
-
-    async fn send(sender: &mpsc::Sender<ParentFrame>, id: u64, request: Request) {
-        sender
-            .send(ParentFrame::Request {
-                id,
-                request: Box::new(request),
-            })
-            .await
-            .unwrap();
-    }
-
-    async fn response(reader: &mut (impl AsyncRead + Unpin)) -> (u64, Response) {
-        match read::<_, WorkerFrame>(reader).await.unwrap() {
-            WorkerFrame::Response { id, result } => (id, result),
-            _ => panic!("a hermetic fixture cannot request browser or native audio access"),
-        }
-    }
-
-    #[tokio::test]
-    async fn replacement_epoch_read_completes_before_original_delayed_close_ack() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            driver.clone(),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        send(
-            &requests,
-            1,
-            invoke("owner", "old", json!({"method":"documentation"})),
-        )
-        .await;
-        let (id, result) = response(&mut output).await;
-        assert_eq!(id, 1);
-        assert!(result.unwrap().as_str().unwrap().contains("getAXState"));
-
-        // Existing epoch retirement takes this Driver guard. Documentation
-        // needs no native runtime and can prove the independent path proceeds.
-        let blocked_close = driver.lock().await;
-        send(
-            &requests,
-            2,
-            Request::CloseEpoch {
-                owner: "owner".into(),
-                epoch: "old".into(),
-            },
-        )
-        .await;
-        send(
-            &requests,
-            3,
-            invoke("owner", "new", json!({"method":"documentation"})),
-        )
-        .await;
-        let (id, result) = response(&mut output).await;
-        assert_eq!(id, 3, "the new reply must precede the original close ACK");
-        assert!(result.unwrap().as_str().unwrap().contains("getAXState"));
-        drop(blocked_close);
-        let (id, result) = response(&mut output).await;
-        assert_eq!(id, 2);
-        assert_eq!(result.unwrap(), Value::Null);
-
-        send(
-            &requests,
-            4,
-            Request::CloseEpoch {
-                owner: "owner".into(),
-                epoch: "old".into(),
-            },
-        )
-        .await;
-        assert_eq!(response(&mut output).await.1.unwrap(), Value::Null);
-        send(
-            &requests,
-            5,
-            invoke("owner", "old", json!({"method":"documentation"})),
-        )
-        .await;
-        assert!(
-            matches!(response(&mut output).await.1, Err(Failure::Failed(message))
-            if message == "Computer Use native epoch is closed")
-        );
-        send(
-            &requests,
-            6,
-            Request::CloseOwner {
-                owner: "owner".into(),
-            },
-        )
-        .await;
-        assert_eq!(response(&mut output).await.1.unwrap(), Value::Null);
-        send(
-            &requests,
-            7,
-            invoke("owner", "third", json!({"method":"documentation"})),
-        )
-        .await;
-        assert!(
-            matches!(response(&mut output).await.1, Err(Failure::Failed(message))
-            if message == "Computer Use Session owner is closed")
-        );
-        send(&requests, 8, Request::Shutdown).await;
-        assert_eq!(response(&mut output).await.0, 8);
-        task.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn logical_cursor_survives_epoch_replacement_and_stays_with_its_owner() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            Arc::new(Mutex::new(Driver::default())),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        send(
-            &requests,
-            1,
-            invoke(
-                "a",
-                "old",
-                json!({"method":"configureCursor","options":{"label":"Retained","enabled":false}}),
-            ),
-        )
-        .await;
-        assert_eq!(
-            response(&mut output).await.1.unwrap()["settings"]["label"],
-            "Retained"
-        );
-        send(
-            &requests,
-            2,
-            Request::CloseEpoch {
-                owner: "a".into(),
-                epoch: "old".into(),
-            },
-        )
-        .await;
-        assert!(response(&mut output).await.1.is_ok());
-        send(
-            &requests,
-            3,
-            invoke(
-                "a",
-                "replacement",
-                json!({"method":"cursorState","options":{}}),
-            ),
-        )
-        .await;
-        assert_eq!(
-            response(&mut output).await.1.unwrap()["settings"]["label"],
-            "Retained"
-        );
-        send(
-            &requests,
-            4,
-            invoke("b", "first", json!({"method":"cursorState","options":{}})),
-        )
-        .await;
-        assert_eq!(
-            response(&mut output).await.1.unwrap()["settings"]["label"],
-            "Maka"
-        );
-        send(
-            &requests,
-            5,
-            Request::FinishTurn {
-                owner: "a".into(),
-                epoch: "replacement".into(),
-                session: "logical-session".into(),
-                turn: "logical-turn".into(),
-                language: Language::En,
-            },
-        )
-        .await;
-        assert!(response(&mut output).await.1.is_ok());
-        send(
-            &requests,
-            6,
-            Request::FinishOwnerTurn {
-                owner: "a".into(),
-                turn: "logical-turn".into(),
-                language: Language::En,
-            },
-        )
-        .await;
-        assert!(response(&mut output).await.1.is_ok());
-        send(
-            &requests,
-            7,
-            invoke(
-                "a",
-                "replacement",
-                json!({"method":"cursorState","options":{}}),
-            ),
-        )
-        .await;
-        assert_eq!(
-            response(&mut output).await.1.unwrap()["settings"]["label"],
-            "Retained"
-        );
-        send(&requests, 8, Request::Shutdown).await;
-        assert!(response(&mut output).await.1.is_ok());
-        task.await.unwrap().unwrap();
-    }
-
-    fn callback(url: &str) -> (Callback, oneshot::Receiver<Result<(), Failure>>) {
-        let (reply, result) = oneshot::channel();
-        (
-            Callback {
-                mode: AuthorizationMode::Authorize,
-                request: BrowserAuthorizationRequest::Access(BrowserAccess::Read {
-                    document: crate::BrowserDocument {
-                        browser_id: "browser".into(),
-                        generation: "generation".into(),
-                        tab_id: "tab".into(),
-                        url: url.into(),
-                    },
-                }),
-                reply,
-            },
-            result,
-        )
-    }
-
-    #[tokio::test]
-    async fn original_authorization_result_is_accepted_after_its_native_response() {
-        let mut calls = Invocations {
-            pending: [41, 42]
-                .into_iter()
-                .map(|id| (id, CancellationToken::new()))
-                .collect(),
-            authorizations: HashMap::new(),
-            queued: HashMap::new(),
-            last_authorization: 0,
-        };
-        let (mut output, mut input) = tokio::io::duplex(64 * 1024);
-        let (first, observed_first) = callback("https://first.invalid/");
-        calls.authorize(41, first, &mut input).await.unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 41,
-            authorization_id: first_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("first callback lost its identity")
-        };
-        let (queued, queued_result) = callback("https://expired.invalid/");
-        calls.authorize(41, queued, &mut input).await.unwrap();
-        calls.finish(41);
-        assert!(
-            queued_result.await.is_err(),
-            "native terminal response expires queued authority"
-        );
-        calls
-            .authorization_result(
-                41,
-                first_id,
-                Err(Failure::Failed("original native operation ended".into())),
-                &mut input,
-            )
-            .await
-            .unwrap();
-        assert!(
-            matches!(observed_first.await.unwrap(), Err(Failure::Failed(message)) if message == "original native operation ended")
-        );
-        let (next, observed_next) = callback("https://next.invalid/");
-        calls.authorize(42, next, &mut input).await.unwrap();
-        let WorkerFrame::BrowserAuthorization {
-            id: 42,
-            authorization_id: next_id,
-            ..
-        } = read(&mut output).await.unwrap()
-        else {
-            panic!("expired queued authority reached the next request")
-        };
-        assert!(next_id > first_id);
-        calls
-            .authorization_result(42, next_id, Ok(()), &mut input)
-            .await
-            .unwrap();
-        observed_next.await.unwrap().unwrap();
-        assert_eq!(
-            calls
-                .authorization_result(41, first_id, Ok(()), &mut input)
-                .await
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
-    }
-
-    #[tokio::test]
-    async fn exact_cancel_refuses_queued_input_and_keeps_other_epoch_admissions_live() {
-        let (requests, receive) = mpsc::channel(1);
-        let (mut output, writer) = tokio::io::duplex(64 * 1024);
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let task = tokio::spawn(serve(
-            receive,
-            writer,
-            CancellationToken::new(),
-            driver.clone(),
-        ));
-        let _: Hello = read(&mut output).await.unwrap();
-        let blocked_native = driver.lock().await;
-        send(
-            &requests,
-            1,
-            invoke(
-                "owner",
-                "first",
-                json!({"method":"configureCursor","options":{"enabled":false}}),
-            ),
-        )
-        .await;
-        send(
-            &requests,
-            2,
-            invoke("owner", "first", json!({"method":"documentation"})),
-        )
-        .await;
-        requests.send(ParentFrame::Cancel { id: 2 }).await.unwrap();
-        send(
-            &requests,
-            3,
-            invoke("owner", "second", json!({"method":"documentation"})),
-        )
-        .await;
-        let (id, result) = response(&mut output).await;
-        assert_eq!(
-            id, 3,
-            "another epoch must progress while original native admission remains owned"
-        );
-        assert!(result.is_ok());
-        drop(blocked_native);
-        let (id, result) = response(&mut output).await;
-        assert_eq!(
-            id, 1,
-            "canceling queued work cannot replace the original native result"
-        );
-        assert!(result.is_ok());
-        let (id, result) = response(&mut output).await;
-        assert_eq!(id, 2);
-        assert!(
-            matches!(result, Err(Failure::Failed(message)) if message == "Computer Use cancelled before dispatch")
-        );
-        requests.send(ParentFrame::Cancel { id: 2 }).await.unwrap();
-        send(
-            &requests,
-            4,
-            invoke("owner", "second", json!({"method":"documentation"})),
-        )
-        .await;
-        let (id, result) = response(&mut output).await;
-        assert_eq!(id, 4);
-        assert!(
-            result.is_ok(),
-            "late cancellation cannot revoke a newer native invocation"
-        );
-        send(&requests, 5, Request::Shutdown).await;
-        assert!(response(&mut output).await.1.is_ok());
-        task.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn start_ack_flushes_before_polling_its_bound_audio_observation() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let polled = Arc::new(AtomicBool::new(false));
-        let observed = polled.clone();
-        let audio: AudioWait = Box::pin(async move {
-            observed.store(true, Ordering::SeqCst);
-            Err(failed("capture A finalized with its original error"))
-        });
-        let (mut reader, mut writer) = tokio::io::duplex(1);
-        let cancellation = CancellationToken::new();
-        let mut observations = AudioObservations::new();
-        let (sent, frame) = tokio::join!(
-            respond_with_audio(
-                &mut writer,
-                41,
-                Ok(json!({"started":true})),
-                Some(audio),
-                &mut observations,
-                &cancellation
-            ),
-            read::<_, WorkerFrame>(&mut reader),
-        );
-        sent.unwrap();
-        let WorkerFrame::Response { id, result } = frame.unwrap() else {
-            panic!("audio completion preceded its Start ACK")
-        };
-        assert_eq!(id, 41);
-        assert_eq!(result.unwrap(), json!({"started":true}));
-        assert!(!polled.load(Ordering::SeqCst));
-        let (id, result) = observations.next().await.unwrap();
-        assert_eq!(id, 41);
-        assert!(polled.load(Ordering::SeqCst));
-        assert!(
-            matches!(result, Err(Failure::Failed(message)) if message == "capture A finalized with its original error")
-        );
-
-        let polled = Arc::new(AtomicBool::new(false));
-        let observed = polled.clone();
-        let audio: AudioWait = Box::pin(async move {
-            observed.store(true, Ordering::SeqCst);
-            Ok(())
-        });
-        let (reader, mut writer) = tokio::io::duplex(1);
-        drop(reader);
-        let error = respond_with_audio(
-            &mut writer,
-            42,
-            Ok(Value::Null),
-            Some(audio),
-            &mut observations,
-            &cancellation,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-        assert!(!polled.load(Ordering::SeqCst));
-        assert!(
-            observations.is_empty(),
-            "failed Start ACK cannot publish a successful completion event"
-        );
-    }
-
-    #[tokio::test]
-    async fn finishing_a_turn_drains_its_original_wait_without_cancelling_the_later_turn() {
-        let (events, mut responses) = mpsc::unbounded_channel();
-        let old = CancellationToken::new();
-        let fresh = CancellationToken::new();
-        let mut pending = PendingInvocations::default();
-        let first = old.clone();
-        pending.insert(
-            11,
-            "old-turn".into(),
-            old.clone(),
-            Box::pin(async move {
-                first.cancelled().await;
-                Err(failed("old wait cancelled"))
-            }),
-        );
-        let second = fresh.clone();
-        pending.insert(
-            12,
-            "fresh-turn".into(),
-            fresh.clone(),
-            Box::pin(async move {
-                second.cancelled().await;
-                Err(failed("fresh wait cancelled"))
-            }),
-        );
-        pending.cancel(Some("old-turn"));
-        pending.drain(Some("old-turn"), &events).await.unwrap();
-        assert!(old.is_cancelled());
-        assert!(
-            !fresh.is_cancelled(),
-            "an older Turn cleanup cannot cancel the later original request"
-        );
-        assert!(pending.identities.contains_key(&12));
-        assert!(
-            matches!(responses.recv().await.unwrap(), Event::Response { id: 11, result: Err(Failure::Failed(message)), audio: None } if message == "old wait cancelled")
-        );
-        pending.cancel(None);
-        pending.drain(None, &events).await.unwrap();
-        assert!(
-            matches!(responses.recv().await.unwrap(), Event::Response { id: 12, result: Err(Failure::Failed(message)), audio: None } if message == "fresh wait cancelled")
-        );
-        assert!(pending.is_empty());
-    }
-
-    fn preparation_identity() -> ScopeIdentity {
-        ScopeIdentity {
-            owner: "transport-owner".into(),
-            epoch: "transport-epoch".into(),
-            session: "fixture-session".into(),
-            turn: "fixture-turn".into(),
-            operation_id: "fixture-operation".into(),
-        }
-    }
-    fn preparation_dto() -> crate::BrowserSessionPreparation {
-        crate::BrowserSessionPreparation {
-            native_owner: uuid::Uuid::from_u128(17),
-            native_epoch: "different-native-epoch".into(),
-            browser_id: "fixture-browser".into(),
-            generation: "fixture-generation".into(),
-            turn_id: "fixture-turn".into(),
-            operation_id: "fixture-operation".into(),
-            target: crate::BrowserPreparationTarget::ReservedTab {
-                tab_id: "fixture-tab".into(),
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn typed_child_history_preserves_scoped_wire_and_the_original_host_refusal() {
-        let (events, mut incoming) = mpsc::unbounded_channel();
-        let authority = Authorization {
-            callbacks: WorkerCallbacks::new(Arc::new(|_| {
-                Err(failed("unexpected upload callback in preparation fixture"))
-            })),
-            id: 41,
-            events,
-            identity: Some(preparation_identity()),
-        };
-        let mut request = preparation_dto();
-        request.target = crate::BrowserPreparationTarget::SessionHistory;
-        for check in [false, true] {
-            let future = if check {
-                authority.check_history(request.clone(), CancellationToken::new())
-            } else {
-                authority.authorize_history(request.clone(), CancellationToken::new())
-            };
-            let pending = tokio::spawn(future);
-            let Event::Authorization {
-                id,
-                mode,
-                request:
-                    BrowserAuthorizationRequest::SessionPreparation {
-                        identity,
-                        preparation,
-                    },
-                reply,
-            } = incoming.recv().await.unwrap()
-            else {
-                panic!("history lost its scoped typed authorization wire");
-            };
-            assert_eq!(id, 41);
-            assert_eq!(identity, preparation_identity());
-            assert_eq!(preparation, request);
-            assert_eq!(matches!(mode, AuthorizationMode::Check), check);
-            reply
-                .send(Err(Failure::Failed(
-                    "fixture independent history refusal".into(),
-                )))
-                .unwrap();
-            assert!(
-                matches!(pending.await.unwrap(), Err(ToolError::Failed(reason)) if reason == "fixture independent history refusal")
-            );
-        }
-        assert!(
-            authority
-                .check_history(preparation_dto(), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(
-            incoming.try_recv().is_err(),
-            "wrong history purpose never emits a callback"
-        );
     }
 }

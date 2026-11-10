@@ -81,6 +81,18 @@ The sidebar recedes behind the conversations: navigation rows read in `secondary
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 
+## Menus and popovers
+
+Menus, selects, context menus and popovers share one surface and one row from `ui.tsx` (`floatingStyle`, `menuRowStyle`).
+
+- The surface sits one step above the panel (`floating`), with one `line` border and one shadow: the only edge where a line and a shadow meet. Radius 12, inset 4, so its rows (radius 8) are concentric. Rows inside it hover and take focus with `floatingRaised`.
+- A row is 32 points high with three lanes: a 16-point icon 12 points from the surface's edge, the text at 36, and a trailing lane for the check, a switch, a shortcut or a submenu chevron. Detail follows the title in `muted`, on the same line in a list to scan (completions) or on a second 12-point line where it explains a choice (sandbox levels). A shortcut is never the detail.
+- Each command has its own icon in `secondary`; no two commands in one menu share an icon. A destructive row is `danger`, icon and text, and comes last. A command that asks for more input ends with `…`.
+- The current choice is a check in the trailing lane in `accent`; menus draw no radio buttons. A two-state setting is a switch row.
+- No title and no close button: the trigger names the menu, and a press outside or Escape closes it. A list that mixes kinds (commands and skills) names each section, and keeps the name when only one kind matches. Section names and notes start on the icon's edge; separators are inset 8 and part groups by purpose. A search field is the first row, borderless, with a separator below.
+- A list of recent items keeps the latest ten, so it has no command to remove one.
+- Tooltips keep NSH's bubble (`tooltipStyle`, `richTooltipStyle` for more than a line) in the floating colors: no shadow and no inverted colors. A menu row carries no tooltip; what it would say belongs in the row.
+
 ## Settings
 
 Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx); a page adds no layout of its own.

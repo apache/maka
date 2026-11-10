@@ -5,8 +5,10 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use nsh_core::{Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind};
-use rustc_hash::FxHashMap;
+use nsh_core::{
+    Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind, desktop::DesktopCommand,
+};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{surface::Surface, view::NshView};
 
@@ -44,6 +46,8 @@ pub(crate) struct Mounter {
     pub(crate) views: Rc<Views>,
     /// The root view.
     pub(crate) root: NshView,
+    /// Rejected OS-window roots stay detached instead of becoming terminal dialogs.
+    terminal_windows: FxHashSet<NodeId>,
     /// Animates the frame changes, insertions and removals of the rest of
     /// the batch.
     pub(crate) layout_animation: Option<LayoutAnimation>,
@@ -58,6 +62,7 @@ impl Mounter {
         Mounter {
             views,
             root,
+            terminal_windows: FxHashSet::default(),
             layout_animation: None,
             rtl: false,
         }
@@ -78,6 +83,7 @@ impl Mounter {
         // with the views that mounted it.
         root.state_mut().shader = None;
         self.views.insert(ROOT_ID, root);
+        self.terminal_windows.clear();
         self.layout_animation = None;
     }
 
@@ -129,6 +135,7 @@ impl Mounter {
                     crate::input::track_states(surface, view, *states);
                 }
             }
+            MountItem::Insert { child, .. } if self.terminal_windows.contains(child) => {}
             MountItem::Insert {
                 parent,
                 child,
@@ -171,6 +178,7 @@ impl Mounter {
                 }
             }
             MountItem::Delete { id } => {
+                self.terminal_windows.remove(id);
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
                     crate::input::removing(surface, &view);
@@ -389,6 +397,7 @@ impl Mounter {
                     crate::navigation::screen_config(surface, view, config);
                 }
             }
+            MountItem::ModalConfig { id, .. } if self.terminal_windows.contains(id) => {}
             MountItem::ModalConfig { id, config } => {
                 if let Some(view) = &self.get(*id) {
                     crate::navigation::modal_config(surface, view, config);
@@ -407,6 +416,18 @@ impl Mounter {
             MountItem::ComponentProps { id, props } => {
                 if let Some(view) = &self.get(*id) {
                     crate::native::component_props(surface, view, props);
+                }
+            }
+            // Pixel terminals use desktop layout, not OS shell integration.
+            MountItem::Command {
+                id,
+                command: Command::Desktop(command),
+            } if surface.terminal_active.get().is_some() => {
+                if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
+                    self.terminal_windows.insert(*id);
+                    if let Some(view) = self.get(*id) {
+                        crate::navigation::release(surface, &view);
+                    }
                 }
             }
             MountItem::Command { id, command } => self.command(surface, *id, command),

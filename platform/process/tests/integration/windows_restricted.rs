@@ -19,7 +19,7 @@
 
 #![cfg(windows)]
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::{Command, ProcessOutcome, pipe, pty};
 use maka_sandbox::{
     filesystem::Scope,

@@ -18,8 +18,9 @@
  */
 
 use super::*;
-use futures_util::{SinkExt, StreamExt};
-use std::{future::Future, time::Duration};
+use futures_util::{FutureExt, SinkExt, StreamExt};
+use maka_process::isolated::TaskOwner;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_tungstenite::{
     WebSocketStream,
@@ -31,6 +32,103 @@ use tokio_tungstenite::{
 pub(super) const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
 pub(super) const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(30);
+#[derive(Clone)]
+pub(super) struct Observation {
+    pub binding: Arc<dyn TaskBinding>,
+    pub retired: CancellationToken,
+    raw: CancellationToken,
+    closed: CancellationToken,
+    turn_active: Arc<std::sync::atomic::AtomicBool>,
+    pub resources: Arc<maka_plugin_core::work::resources::Resources>,
+}
+impl Observation {
+    pub fn new(binding: Arc<dyn TaskBinding>, raw: CancellationToken) -> Self {
+        let retired = binding.observation_retired().child_token();
+        Self {
+            binding,
+            retired,
+            raw,
+            closed: CancellationToken::new(),
+            turn_active: Arc::default(),
+            resources: Arc::default(),
+        }
+    }
+    async fn classify(&self, stop: CancellationToken, done: CancellationToken) {
+        let mut classified = false;
+        loop {
+            tokio::select! {
+                biased;
+                () = done.cancelled() => return,
+                () = self.retired.cancelled() => return,
+                () = self.raw.cancelled(), if !classified => {
+                    classified = true;
+                    let stopped = tokio::select! {
+                        biased;
+                        () = done.cancelled() => return,
+                        () = self.retired.cancelled() => return,
+                        stopped = self.binding.stop_requested() => stopped,
+                    };
+                    match stopped {
+                        Ok(true) => stop.cancel(),
+                        Ok(false) | Err(_) => { self.retired.cancel(); return; }
+                    }
+                }
+            }
+        }
+    }
+    pub async fn closed(&self, outcome: Outcome) -> Result<(), Error> {
+        self.binding.closed(outcome).await?;
+        self.closed.cancel();
+        Ok(())
+    }
+    async fn owner_cleanup_allowed(&self, stop: &CancellationToken) -> Result<(), Error> {
+        if self.closed.is_cancelled() || stop.is_cancelled() {
+            return Ok(());
+        }
+        if !self.retired.is_cancelled() {
+            if !self.turn_active.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(());
+            }
+            match self.control_allowed(stop).await {
+                Err(Error::ObservationRetired) => {}
+                result => return result,
+            }
+        }
+        if self.binding.stop_requested().await? {
+            stop.cancel();
+            Ok(())
+        } else {
+            Err(Error::ObservationRetired)
+        }
+    }
+    pub async fn control_allowed(&self, stop: &CancellationToken) -> Result<(), Error> {
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        if self.raw.is_cancelled() && !stop.is_cancelled() {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => {},
+                () = self.retired.cancelled() => return Err(Error::ObservationRetired),
+            }
+        }
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        if self.retired.is_cancelled() {
+            return Err(Error::ObservationRetired);
+        }
+        // Only the single canonical classifier can cancel this private token.
+        if !stop.is_cancelled() {
+            return Err(Error::Unknown);
+        }
+        Ok(())
+    }
+}
+pub(super) fn command_basis(config: &NativeCommand, cwd: &str) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(&(config, cwd)).map_err(|e| Error::Invalid(e.to_string()))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
 pub(super) fn instruction_message(text: &str) -> String {
     format!("<maka_system_instructions>\n{text}\n</maka_system_instructions>")
 }
@@ -124,6 +222,9 @@ pub(super) fn validate_command(
                         | "--continue"
                         | "-c"
                         | "--settings"
+                        | "--remote-agent"
+                        | "--remote-control"
+                        | "--project"
                         | "--dangerously-skip-permissions"
                         | "--disable-slash-commands"
                 ) || (key.starts_with("-p") && !key.starts_with("--"))
@@ -259,6 +360,15 @@ pub(super) async fn command(
     Ok(resolve(config, cwd).await.require()?.command(cwd))
 }
 
+async fn foreground_codex(
+    config: &NativeCommand,
+    cwd: &str,
+) -> Result<maka_process::Command, Error> {
+    let mut command = command(config, cwd).await?;
+    command.args(["app-server", "--listen", "stdio://"]);
+    Ok(command)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one invocation owns the protocol, durable identity and Host bridge"
@@ -268,13 +378,47 @@ pub(super) async fn execute(
     config: &NativeCommand,
     cwd: &str,
     request: Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
+    output: Arc<dyn OutputSink>,
+    bridge: Arc<mcp::Bridge>,
+    steering: &mut steering::Steering,
+    owner: TaskOwner,
+) -> Result<Outcome, Error> {
+    let observation = journal.observation();
+    let stopped = CancellationToken::new();
+    let done = CancellationToken::new();
+    let monitor = observation.classify(stopped.clone(), done.clone());
+    let work = async {
+        let result = execute_observed(
+            runtime, config, cwd, request, journal, output, bridge, stopped, steering, owner,
+        )
+        .await;
+        done.cancel();
+        result
+    };
+    let ((), result) = tokio::join!(biased; monitor, work);
+    result
+}
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one private native execution retains its invocation capabilities"
+)]
+async fn execute_observed(
+    runtime: NativeRuntime,
+    config: &NativeCommand,
+    cwd: &str,
+    request: Value,
+    journal: &mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     steering: &mut steering::Steering,
+    owner: TaskOwner,
 ) -> Result<Outcome, Error> {
+    let observation = journal.observation();
+    if observation.retired.is_cancelled() {
+        return Err(Error::ObservationRetired);
+    }
     let retained = bridge.clone();
     let running = &mut *journal;
     let result = match runtime {
@@ -283,12 +427,12 @@ pub(super) async fn execute(
                 config,
                 cwd,
                 &request,
-                storage,
                 running,
                 output,
                 bridge,
                 cancellation.clone(),
                 steering,
+                owner,
             )
             .await
         }
@@ -297,56 +441,38 @@ pub(super) async fn execute(
                 config,
                 cwd,
                 &request,
-                storage,
                 running,
                 output,
                 bridge,
                 cancellation.clone(),
                 steering,
+                owner,
             )
             .await
         }
-        NativeRuntime::Codex => match codex::proxy(config, cwd, cancellation.clone()).await {
+        NativeRuntime::Codex => match foreground_codex(config, cwd).await {
             Err(error) => Err(error),
-            Ok(proxy) => {
-                pipe(
-                    proxy,
-                    Transport::WebSocket,
+            Ok(server) => {
+                task_pipe(
+                    owner,
+                    observation.clone(),
+                    server,
+                    Transport::JsonLines,
                     Some(bridge.clone()),
                     cancellation.clone(),
-                    |io| async move {
-                        codex::execute(io, &request, storage, running, output, bridge, steering)
-                            .await
+                    codex::Protocol {
+                        request: &request,
+                        journal: running,
+                        output,
+                        bridge,
+                        steering,
                     },
                 )
                 .await
             }
         },
     };
-    let closed = retained.close().await;
-    let mut result = match (result, closed) {
-        (Err(Error::CleanupUnconfirmed), _) | (_, Err(Error::CleanupUnconfirmed)) => {
-            Err(Error::CleanupUnconfirmed)
-        }
-        (_, Err(error)) => Err(error),
-        (result, Ok(())) => result,
-    };
-    result = if cancellation.is_cancelled()
-        && !matches!(
-            result,
-            Err(Error::CleanupUnconfirmed | Error::Unknown | Error::Persistence(_))
-        ) {
-        Err(Error::Cancelled)
-    } else {
-        result
-    };
-    // An uncorrelated/missing terminal stays fenced; never turn a crashed request into a replayable one.
-    if matches!(result, Ok(_) | Err(Error::Cancelled))
-        && let Err(error) = journal.ready(storage).await
-    {
-        result = Err(error);
-    }
-    retained.settled(&result);
+    retained.close_admission();
     result
 }
 
@@ -398,8 +524,7 @@ impl Wire {
             }
         }
     }
-    async fn send(&mut self, value: Value) -> Result<(), Error> {
-        let mut text = serde_json::to_string(&value).map_err(|e| Error::Invalid(e.to_string()))?;
+    async fn send_text(&mut self, mut text: String) -> Result<(), Error> {
         match self {
             Self::Lines { input, .. } => {
                 text.push('\n');
@@ -458,13 +583,24 @@ impl Wire {
                 let _ = input.shutdown().await;
                 let mut bytes = [0u8; 8192];
                 loop {
-                    if reader
-                        .read(&mut bytes)
-                        .await
-                        .map_err(|_| Error::CleanupUnconfirmed)?
-                        == 0
-                    {
-                        return Ok(());
+                    match reader.read(&mut bytes).await {
+                        Ok(0) => return Ok(()),
+                        Ok(_) => (),
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                                    | std::io::ErrorKind::ConnectionAborted
+                            ) =>
+                        {
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "Original output drain failed");
+                            return Err(Error::CleanupUnconfirmed);
+                        }
                     }
                 }
             }
@@ -474,18 +610,26 @@ impl Wire {
                 let _ = socket.get_mut().writer_mut().shutdown().await;
                 let mut bytes = [0u8; 8192];
                 loop {
-                    if socket
-                        .get_mut()
-                        .reader_mut()
-                        .read(&mut bytes)
-                        .await
-                        .map_err(|_| Error::CleanupUnconfirmed)?
-                        == 0
-                    {
-                        break;
+                    match socket.get_mut().reader_mut().read(&mut bytes).await {
+                        Ok(0) => return Ok(()),
+                        Ok(_) => (),
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                                    | std::io::ErrorKind::ConnectionAborted
+                            ) =>
+                        {
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "Original websocket drain failed");
+                            return Err(Error::CleanupUnconfirmed);
+                        }
                     }
                 }
-                Ok(())
             }
         }
     }
@@ -513,19 +657,83 @@ pub(super) struct Pipe {
     next_id: u64,
     line_bytes: usize,
     parsing: Option<BoxFuture<'static, Result<Value, Error>>>,
+    encoding: Option<BoxFuture<'static, Result<String, Error>>>,
+    pending_input: Option<BoxFuture<'static, Result<Value, Error>>>,
     events: std::collections::VecDeque<(Value, usize)>,
     pub cancellation: CancellationToken,
-    pub interrupt: Option<tokio::sync::oneshot::Sender<()>>,
+    pub retired: CancellationToken,
+    pub stop: CancellationToken,
+    observation: Option<Observation>,
     exited: CancellationToken,
     pub failed: CancellationToken,
+    watch_failed: CancellationToken,
     exit_deadline: Option<tokio::time::Instant>,
 }
 impl Pipe {
+    pub async fn prepare_input(
+        &mut self,
+        input: BoxFuture<'static, Result<Value, Error>>,
+    ) -> Result<Value, Error> {
+        if let Some(previous) = self.pending_input.as_mut() {
+            let _settled = previous.await;
+        }
+        self.pending_input = Some(input);
+        let result = self
+            .pending_input
+            .as_mut()
+            .expect("original pending input")
+            .await;
+        self.pending_input = None;
+        result
+    }
+    pub fn turn_started(&self) {
+        if let Some(observation) = &self.observation {
+            observation
+                .turn_active
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    pub fn turn_finished(&self) {
+        if let Some(observation) = &self.observation {
+            observation
+                .turn_active
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    async fn send_wire(&mut self, value: Value) -> Result<(), Error> {
+        if let Some(previous) = self.encoding.as_mut() {
+            let _settled = previous.await;
+        }
+        self.encoding = Some(Box::pin(async move {
+            tokio::task::spawn_blocking(move || serde_json::to_string(&value))
+                .await
+                .map_err(|error| {
+                    Error::Provider(format!("Native protocol encoding failed: {error}"))
+                })?
+                .map_err(|error| Error::Invalid(error.to_string()))
+        }));
+        let text = self
+            .encoding
+            .as_mut()
+            .expect("original pending encoding")
+            .await;
+        self.encoding = None;
+        self.wire.send_text(text?).await
+    }
     pub async fn send(&mut self, value: Value) -> Result<(), Error> {
+        let retired = self.retired.clone();
+        let stop = self.stop.clone();
+        let cancellation = self.cancellation.clone();
+        let exited = self.exited.clone();
+        let watch_failed = self.watch_failed.clone();
         tokio::select! {
             biased;
-            () = self.cancellation.cancelled() => Err(Error::Cancelled),
-            result = self.wire.send(value) => result,
+            () = retired.cancelled() => Err(Error::ObservationRetired),
+            () = stop.cancelled() => Err(Error::Cancelled),
+            () = cancellation.cancelled() => Err(Error::Cancelled),
+            () = watch_failed.cancelled() => Err(Error::Provider("Original child-exit observation unavailable".into())),
+            () = async { exited.cancelled().await; tokio::time::sleep(Duration::from_secs(1)).await; } => Err(Error::Provider("Original process exited before protocol send completed".into())),
+            result = self.send_wire(value) => result,
         }
     }
     pub async fn notify(&mut self, method: &str, params: Value) -> Result<(), Error> {
@@ -553,6 +761,9 @@ impl Pipe {
         self.events.pop_front().map(|(value, _)| value)
     }
     pub async fn next(&mut self) -> Result<Value, Error> {
+        if self.retired.is_cancelled() {
+            return Err(Error::ObservationRetired);
+        }
         if let Some(value) = self.pop_buffered() {
             return Ok(value);
         }
@@ -567,11 +778,15 @@ impl Pipe {
             let cancellation = self.cancellation.clone();
             let exited = self.exited.clone();
             let failed = self.failed.clone();
+            let watch_failed = self.watch_failed.clone();
+            let retired = self.retired.clone();
             tokio::select! {
                 biased;
+                () = retired.cancelled() => return Err(Error::ObservationRetired),
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
                 () = failed.cancelled() => return Err(Error::Unknown),
-                () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(Error::CleanupUnconfirmed),
+                () = watch_failed.cancelled() => return Err(Error::Unknown),
+                () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(Error::Unknown),
                 value = self.line() => return value,
                 () = exited.cancelled(), if deadline.is_none() => {},
             }
@@ -590,7 +805,24 @@ impl Pipe {
         if method == "turn/interrupt" {
             value["id"] = self.next_id.into();
         }
-        let _ = tokio::time::timeout(Duration::from_secs(1), self.wire.send(value)).await;
+        self.control_message(value).await;
+    }
+    pub async fn control_message(&mut self, value: Value) {
+        let retired = self.retired.clone();
+        let exited = self.exited.clone();
+        if let Some(observation) = &self.observation {
+            tokio::select! {
+                biased;
+                () = retired.cancelled() => return,
+                () = exited.cancelled() => return,
+                allowed = observation.control_allowed(&self.stop) => if allowed.is_err() { return; },
+            }
+        }
+        tokio::select! {
+            biased;
+            () = retired.cancelled() => {},
+            _ = tokio::time::timeout(Duration::from_secs(1), self.send_wire(value)) => {},
+        }
     }
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = self.begin(method, params).await?;
@@ -646,125 +878,476 @@ impl Pipe {
             "Native runtime requested unsupported interactive input".into(),
         ))
     }
+    async fn settle_codecs(&mut self) {
+        // Settle original CPU work even when its business observation was cancelled.
+        if let Some(encoding) = self.encoding.as_mut() {
+            let _settled = encoding.await;
+        }
+        self.encoding = None;
+        if let Some(parsing) = self.parsing.as_mut() {
+            let _settled = parsing.await;
+        }
+        self.parsing = None;
+        if let Some(input) = self.pending_input.as_mut() {
+            let _settled = input.await;
+        }
+        self.pending_input = None;
+    }
     async fn drain(&mut self) -> Result<(), Error> {
+        self.settle_codecs().await;
         self.wire.drain().await
     }
 }
 
-pub(super) async fn pipe<T, F, Fut>(
-    command: maka_process::Command,
-    transport: Transport,
-    bridge: Option<Arc<mcp::Bridge>>,
-    cancellation: CancellationToken,
-    protocol: F,
-) -> Result<T, Error>
-where
-    F: FnOnce(Pipe) -> Fut,
-    Fut: Future<Output = (Result<T, Error>, Pipe)>,
-{
-    pipe_owned(command, transport, bridge, cancellation, None, protocol).await
+pub(super) trait PipeProtocol: Send {
+    type Output: Send;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Self::Output, Error>>
+    where
+        Self: 'io;
 }
 
-#[cfg(unix)]
-pub(super) async fn interruptible_pipe<T, F, Fut>(
+pub(super) async fn pipe<P: PipeProtocol>(
     command: maka_process::Command,
     transport: Transport,
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
-    protocol: F,
-) -> Result<T, Error>
-where
-    F: FnOnce(Pipe) -> Fut,
-    Fut: Future<Output = (Result<T, Error>, Pipe)>,
-{
-    let interrupt = tokio::sync::oneshot::channel();
+    protocol: P,
+) -> Result<P::Output, Error> {
+    pipe_unowned(command, transport, bridge, cancellation, protocol).await
+}
+
+pub(super) async fn task_pipe<P: PipeProtocol>(
+    owner: TaskOwner,
+    observation: Observation,
+    command: maka_process::Command,
+    transport: Transport,
+    bridge: Option<Arc<mcp::Bridge>>,
+    cancellation: CancellationToken,
+    protocol: P,
+) -> Result<P::Output, Error> {
     pipe_owned(
         command,
         transport,
         bridge,
         cancellation,
-        Some(interrupt),
+        false,
+        (owner, observation),
         protocol,
     )
     .await
 }
 
-async fn pipe_owned<T, F, Fut>(
+#[cfg(unix)]
+pub(super) async fn task_interruptible_pipe<P: PipeProtocol>(
+    owner: TaskOwner,
+    observation: Observation,
     command: maka_process::Command,
     transport: Transport,
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
-    interrupt: Option<(
-        tokio::sync::oneshot::Sender<()>,
-        tokio::sync::oneshot::Receiver<()>,
-    )>,
-    protocol: F,
-) -> Result<T, Error>
-where
-    F: FnOnce(Pipe) -> Fut,
-    Fut: Future<Output = (Result<T, Error>, Pipe)>,
-{
-    let (interrupt_send, mut interrupt_receive) = match interrupt {
-        Some((send, receive)) => (Some(send), Some(receive)),
-        None => (None, None),
+    protocol: P,
+) -> Result<P::Output, Error> {
+    pipe_owned(
+        command,
+        transport,
+        bridge,
+        cancellation,
+        true,
+        (owner, observation),
+        protocol,
+    )
+    .await
+}
+
+async fn pipe_owned<P: PipeProtocol>(
+    command: maka_process::Command,
+    transport: Transport,
+    bridge: Option<Arc<mcp::Bridge>>,
+    cancellation: CancellationToken,
+    interruptible: bool,
+    owner: (TaskOwner, Observation),
+    protocol: P,
+) -> Result<P::Output, Error> {
+    let (owner, observation) = owner;
+    let mut ticket = observation
+        .resources
+        .reserve()
+        .map_err(|_| Error::ObservationRetired)?;
+    ticket.start();
+    let descriptor = owner.descriptor();
+    let spawned = owner.spawn_pipe(command).await;
+    let process = match spawned {
+        Ok(process) => process,
+        Err(maka_process::isolated::SpawnError::Closed(error)) => {
+            ticket.complete(Ok(()));
+            return Err(isolation_error(error));
+        }
+        Err(maka_process::isolated::SpawnError::Unconfirmed(failure)) => {
+            ticket.unconfirmed(failure.to_string(), failure);
+            return Err(Error::CleanupUnconfirmed);
+        }
     };
-    let mut process = match maka_process::pipe::spawn(command).await {
+    let retired = observation.retired.clone();
+    let watch_failed = CancellationToken::new();
+    let exit_watch = match maka_process::isolated::EvidenceWatch::open(
+        &descriptor,
+        maka_process::isolated::EvidenceInterest::ChildExited,
+    )
+    .await
+    {
+        Ok(watch) => Some(watch),
+        Err(error) => {
+            tracing::error!(%error, "Original child-exit notification unavailable");
+            watch_failed.cancel();
+            None
+        }
+    };
+    let exited = CancellationToken::new();
+    let settled = CancellationToken::new();
+    let actual_done = CancellationToken::new();
+    let exit_task = {
+        let exited = exited.clone();
+        let retired = retired.clone();
+        let actual_done = actual_done.clone();
+        let watch_failed = watch_failed.clone();
+        tokio::spawn(async move {
+            let Some(mut exit_watch) = exit_watch else {
+                return Ok::<_, String>(());
+            };
+            let observed = tokio::select! {
+                biased;
+                () = retired.cancelled() => Ok(()),
+                () = actual_done.cancelled() => Ok(()),
+                result = exit_watch.wait() => {
+                    if result.is_ok() { exited.cancel(); }
+                    result
+                }
+            };
+            if let Err(error) = observed {
+                tracing::error!(%error, "Original child-exit observation unavailable");
+                watch_failed.cancel();
+            }
+            exit_watch.close().await.map_err(|error| error.to_string())
+        })
+    };
+    let child_task = {
+        let observation = observation.clone();
+        let settled = settled.clone();
+        let cancellation = cancellation.clone();
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            let mut child = process.child;
+            let bounded = original_child_wait(
+                &mut child,
+                &observation,
+                &cancellation,
+                &settled,
+                interruptible,
+                bridge.as_ref(),
+            )
+            .await;
+            // The observation may end; the same original child and group remain owned.
+            let physical = match bounded {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    tracing::error!(%error, "Original child settlement continues after observer return");
+                    child
+                        .wait()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+            };
+            if physical.is_ok()
+                && let Err(error) = observation
+                    .binding
+                    .cleanup(OperationCleanup::Confirmed)
+                    .await
+            {
+                tracing::error!(%error, "Original task physical cleanup ACK remains pending");
+            }
+            actual_done.cancel();
+            (physical, child)
+        })
+    };
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr = process.stderr;
+        let mut buffer = [0u8; 8192];
+        let result = async {
+            loop {
+                match stderr.read(&mut buffer).await {
+                    Ok(0) => return Ok::<_, String>(()),
+                    Ok(_) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                        ) =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+        }
+        .await;
+        (result, stderr)
+    });
+    let mut opening = tokio::spawn(Wire::open(process.stdin, process.stdout, transport));
+    let ready = tokio::select! {
+        result = &mut opening => Some(result),
+        () = retired.cancelled() => None,
+        () = watch_failed.cancelled() => None,
+        () = async { exited.cancelled().await; tokio::time::sleep(Duration::from_secs(1)).await; } => None,
+    };
+    let (opened, pending_open) = match ready {
+        Some(result) => (
+            result
+                .map_err(|error| Error::Provider(error.to_string()))
+                .and_then(|result| result),
+            None,
+        ),
+        None => {
+            (
+                Err(if retired.is_cancelled() {
+                    Error::ObservationRetired
+                } else {
+                    Error::Provider("Original protocol connection unavailable after child exit or watcher failure".into())
+                }),
+                Some(opening),
+            )
+        }
+    };
+    let (result, io) = match opened {
+        Ok(wire) => {
+            let mut io = Pipe {
+                wire,
+                next_id: 0,
+                line_bytes: 0,
+                parsing: None,
+                encoding: None,
+                pending_input: None,
+                events: Default::default(),
+                cancellation: if interruptible {
+                    CancellationToken::new()
+                } else {
+                    cancellation.clone()
+                },
+                retired: retired.clone(),
+                stop: cancellation,
+                observation: Some(observation.clone()),
+                exited,
+                failed: bridge
+                    .as_ref()
+                    .map_or_else(CancellationToken::new, |bridge| bridge.failed.clone()),
+                watch_failed,
+                exit_deadline: None,
+            };
+            let result = std::panic::AssertUnwindSafe(async { protocol.run(&mut io).await })
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err(Error::Unknown));
+            (result, Some(io))
+        }
+        Err(error) => (Err(error), None),
+    };
+    settled.cancel();
+    if let Some(bridge) = &bridge {
+        bridge.close_admission();
+    }
+    let (finished, finish) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let drain = async {
+            match io {
+                Some(mut io) => {
+                    let result = io.drain().await.map_err(|error| error.to_string());
+                    (result, Some(io), None)
+                }
+                None => match pending_open {
+                    Some(opening) => match opening.await {
+                        Ok(Ok(mut wire)) => {
+                            let result = wire.drain().await.map_err(|error| error.to_string());
+                            (result, None, Some(wire))
+                        }
+                        Ok(Err(_)) | Err(_) => (Ok(()), None, None),
+                    },
+                    None => (Ok(()), None, None),
+                },
+            }
+        };
+        let host = async {
+            use maka_agent_ports::executor::RootSettlementOwner;
+            if let Some(bridge) = &bridge {
+                if let Err(error) = bridge.close().await {
+                    tracing::error!(%error, "Original bridge settlement remains pending");
+                }
+                bridge.clone().original_root_cleanup_signal().await;
+            }
+        };
+        let (child, (drained, io, wire), diagnostics, watcher, ()) =
+            tokio::join!(child_task, drain, stderr_task, exit_task, host);
+        if let Err(error) = &drained {
+            tracing::error!(%error, "Original output stream ended with an I/O error");
+        }
+        if let Ok((Err(error), _)) = &diagnostics {
+            tracing::error!(%error, "Original diagnostic stream ended with an I/O error");
+        }
+        let error = child_error(&child)
+            .or_else(|| match &diagnostics {
+                Err(error) => Some(error.to_string()),
+                _ => None,
+            })
+            .or_else(|| match &watcher {
+                Ok(Err(error)) => Some(error.clone()),
+                Err(error) => Some(error.to_string()),
+                _ => None,
+            });
+        let physical = error.map_or(Ok(()), Err);
+        if physical.is_ok() {
+            drop((child, io, wire, diagnostics, bridge));
+            ticket.complete(Ok(()));
+        } else {
+            tracing::error!(child = ?child_error(&child), ?drained, ?watcher, "Original physical resources retained");
+            ticket.unconfirmed(
+                physical
+                    .as_ref()
+                    .expect_err("original settlement failure")
+                    .clone(),
+                (child, io, wire, diagnostics, bridge),
+            );
+        }
+        let _ = finished.send(physical);
+    });
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(6), finish).await,
+        Ok(Ok(Ok(())))
+    ) {
+        tracing::warn!("Original physical pipe settlement retained beyond observer drain budget");
+    }
+    result
+}
+
+fn child_error(
+    result: &Result<(Result<(), String>, maka_process::pipe::Child), tokio::task::JoinError>,
+) -> Option<String> {
+    match result {
+        Ok((Err(error), child)) => {
+            #[cfg(unix)]
+            if child.local_resources_closed() {
+                return None;
+            }
+            #[cfg(not(unix))]
+            let _ = child;
+            Some(error.clone())
+        }
+        Err(error) => Some(error.to_string()),
+        _ => None,
+    }
+}
+
+async fn original_child_wait(
+    child: &mut maka_process::pipe::Child,
+    observation: &Observation,
+    stop: &CancellationToken,
+    settled: &CancellationToken,
+    interruptible: bool,
+    bridge: Option<&Arc<mcp::Bridge>>,
+) -> Result<(), Error> {
+    tokio::select! {
+        biased;
+        status = child.wait() => status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+        () = stop.cancelled(), if interruptible => {
+            if let Some(bridge) = bridge { bridge.close_admission(); }
+            tokio::select! {
+                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                allowed = observation.control_allowed(stop) => allowed?,
+            }
+            interrupt_original(child).await?;
+            tokio::select! {
+                biased;
+                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                () = settled.cancelled() => {},
+                () = tokio::time::sleep(INTERRUPT_TIMEOUT) => {},
+            }
+            tokio::select! {
+                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                allowed = observation.control_allowed(stop) => allowed?,
+            }
+            child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
+            tokio::time::timeout(Duration::from_secs(4), child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed)
+        }
+        () = settled.cancelled() => {
+            match tokio::time::timeout(Duration::from_millis(500), async {
+                tokio::select! {
+                    biased;
+                    status = child.wait() => status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                    () = observation.retired.cancelled() => {
+                        observation.owner_cleanup_allowed(stop).await?;
+                        child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
+                        child.wait().await.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed)
+                    }
+                }
+            }).await {
+                Ok(result) => result,
+                Err(_) => {
+                    tokio::select! {
+                        status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                        allowed = observation.owner_cleanup_allowed(stop) => allowed?,
+                    }
+                    child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
+                    tokio::time::timeout(Duration::from_secs(4), child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed)
+                }
+            }
+        }
+        () = observation.retired.cancelled() => {
+            observation.owner_cleanup_allowed(stop).await?;
+            child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
+            tokio::time::timeout(Duration::from_secs(4), child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed)
+        },
+    }
+}
+
+async fn pipe_unowned<P: PipeProtocol>(
+    command: maka_process::Command,
+    transport: Transport,
+    bridge: Option<Arc<mcp::Bridge>>,
+    cancellation: CancellationToken,
+    protocol: P,
+) -> Result<P::Output, Error> {
+    let retired = CancellationToken::new();
+    let soft_stop = cancellation.clone();
+    let spawned = maka_process::pipe::spawn(command)
+        .await
+        .map_err(process_error);
+    let mut process = match spawned {
         Ok(process) => process,
         Err(error) => {
             let closed = match &bridge {
                 Some(bridge) => bridge.close().await,
                 None => Ok(()),
             };
-            return closed.and(Err(process_error(error)));
+            return closed.and(Err(error));
         }
     };
     let exited = CancellationToken::new();
     let settle = CancellationToken::new();
     let lifecycle = async {
         let result = async {
-            loop {
-                tokio::select! {
-                    biased;
-                    status = process.child.wait() => {
-                        status.map_err(|_| Error::CleanupUnconfirmed)?;
-                        return Ok(());
-                    }
-                    request = async {
-                        match interrupt_receive.as_mut() {
-                            Some(receive) => receive.await,
-                            None => std::future::pending().await,
+            tokio::select! {
+                biased;
+                () = retired.cancelled() => Err(Error::ObservationRetired),
+                status = process.child.wait() => status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+                () = settle.cancelled() => {
+                    match tokio::time::timeout(Duration::from_millis(500), private_wait(&mut process.child, &retired)).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            if retired.is_cancelled() { return Err(Error::ObservationRetired); }
+                    process.child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
+                            tokio::time::timeout(Duration::from_secs(4), private_wait(&mut process.child, &retired)).await.map_err(|_| Error::CleanupUnconfirmed)?
                         }
-                    } => {
-                        interrupt_receive = None;
-                        if request.is_err() { continue; }
-                        if let Some(bridge) = &bridge { bridge.close_admission(); }
-                        #[cfg(unix)]
-                        let signalled = process.child.interrupt_group();
-                        #[cfg(not(unix))]
-                        let signalled: std::io::Result<bool> = Err(std::io::Error::other("native SIGINT unavailable"));
-                        if signalled.is_ok()
-                            && let Ok(Ok(_)) = tokio::time::timeout(INTERRUPT_TIMEOUT, process.child.wait()).await
-                        {
-                            return Ok(());
-                        }
-                        // Force is cleanup only: even a reaped tree cannot prove native interruption.
-                        process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
-                        tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await
-                            .map_err(|_| Error::CleanupUnconfirmed)?
-                            .map_err(|_| Error::CleanupUnconfirmed)?;
-                        return Err(Error::CleanupUnconfirmed);
-                    }
-                    () = settle.cancelled() => {
-                        match tokio::time::timeout(Duration::from_millis(500), process.child.wait()).await {
-                            Ok(status) => { status.map_err(|_| Error::CleanupUnconfirmed)?; }
-                            Err(_) => {
-                                process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
-                                tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await
-                                    .map_err(|_| Error::CleanupUnconfirmed)?
-                                    .map_err(|_| Error::CleanupUnconfirmed)?;
-                            }
-                        }
-                        return Ok(());
                     }
                 }
             }
@@ -779,21 +1362,29 @@ where
         let opened = Wire::open(process.stdin, process.stdout, transport).await;
         let (result, io) = match opened {
             Ok(wire) => {
-                let io = Pipe {
+                let mut io = Pipe {
                     wire,
                     next_id: 0,
                     line_bytes: 0,
                     parsing: None,
+                    encoding: None,
+                    pending_input: None,
                     events: Default::default(),
                     cancellation,
-                    interrupt: interrupt_send,
+                    retired: retired.clone(),
+                    stop: soft_stop.clone(),
+                    observation: None,
                     exited: exited.clone(),
                     failed: bridge
                         .as_ref()
                         .map_or_else(CancellationToken::new, |bridge| bridge.failed.clone()),
+                    watch_failed: CancellationToken::new(),
                     exit_deadline: None,
                 };
-                let (result, io) = protocol(io).await;
+                let result = std::panic::AssertUnwindSafe(async { protocol.run(&mut io).await })
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(Error::Unknown));
                 (result, Some(io))
             }
             Err(error) => (Err(error), None),
@@ -802,11 +1393,23 @@ where
             Some(bridge) => bridge.close().await,
             None => Ok(()),
         };
-        settle.cancel();
+        if !retired.is_cancelled() {
+            settle.cancel();
+        }
         if let Some(mut io) = io {
-            tokio::time::timeout(Duration::from_secs(6), io.drain())
-                .await
-                .map_err(|_| Error::CleanupUnconfirmed)??;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+            // The wire budget cannot turn an original CPU worker into detached work.
+            io.settle_codecs().await;
+            if !retired.is_cancelled() {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Error::CleanupUnconfirmed);
+                }
+                tokio::select! {
+                    biased;
+                    () = retired.cancelled() => {},
+                    result = tokio::time::timeout_at(deadline, io.wire.drain()) => result.map_err(|_| Error::CleanupUnconfirmed)??,
+                }
+            }
         }
         host?;
         result
@@ -816,6 +1419,7 @@ where
         loop {
             let read = tokio::select! {
                 biased;
+                () = retired.cancelled() => return Ok(()),
                 () = exited.cancelled() => return tokio::time::timeout(Duration::from_secs(1), async {
                     loop { if process.stderr.read(&mut bytes).await.map_err(|_| Error::CleanupUnconfirmed)? == 0 { return Ok::<_, Error>(()); } }
                 }).await.map_err(|_| Error::CleanupUnconfirmed)?,
@@ -827,9 +1431,50 @@ where
         }
     };
     let (status, result, diagnostics) = tokio::join!(lifecycle, business, stderr);
+    if matches!(&result, Err(Error::Persistence(_))) {
+        return result;
+    }
     status?;
     diagnostics?;
     result
+}
+async fn interrupt_original(child: &mut maka_process::pipe::Child) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        child
+            .interrupt_group()
+            .await
+            .map(|_| ())
+            .map_err(|_| Error::CleanupUnconfirmed)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        Err(Error::CleanupUnconfirmed)
+    }
+}
+pub(super) async fn private_wait(
+    child: &mut maka_process::pipe::Child,
+    retired: &CancellationToken,
+) -> Result<(), Error> {
+    tokio::select! {
+        biased;
+        () = retired.cancelled() => Err(Error::ObservationRetired),
+        status = child.wait() => status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
+    }
+}
+pub(super) fn isolation_error(error: maka_process::isolated::Error) -> Error {
+    match error {
+        maka_process::isolated::Error::IsolationUnavailable(message) => {
+            Error::IsolationUnavailable(message)
+        }
+        maka_process::isolated::Error::CaptureUnstable(_) => Error::Unknown,
+        maka_process::isolated::Error::CaptureUnsupported(message) => {
+            Error::IsolationUnavailable(message)
+        }
+        maka_process::isolated::Error::Cancelled => Error::Cancelled,
+        maka_process::isolated::Error::Io(error) => Error::Provider(error.to_string()),
+    }
 }
 pub(super) fn process_error(error: maka_agent_facts::tools::ToolError) -> Error {
     match error {
@@ -843,188 +1488,4 @@ pub(super) fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Err
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| Error::Invalid(format!("Native response missing {pointer}")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    async fn executable_file(path: &std::path::Path) {
-        tokio::fs::write(path, "fixture executable").await.unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .await
-                .unwrap();
-        }
-    }
-    #[tokio::test]
-    async fn native_candidates_win_before_batch_only_installation_is_reported() {
-        let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("native.exe");
-        let batch = directory.path().join("wrapper.cmd");
-        let missing = directory.path().join("missing.exe");
-        executable_file(&executable).await;
-        tokio::fs::write(&batch, "fixture batch").await.unwrap();
-        let config = NativeCommand {
-            executable: "fixture".into(),
-            args: vec![],
-            env: BTreeMap::new(),
-        };
-        let resolved = resolve_paths(
-            &config,
-            vec![missing.clone(), executable.clone()],
-            vec![batch.clone()],
-        )
-        .await
-        .require()
-        .unwrap();
-        assert_eq!(resolved.executable, executable);
-        let unsupported = resolve_paths(&config, vec![missing.clone()], vec![batch]).await;
-        assert!(
-            matches!(unsupported.require(), Err(Error::Provider(detail)) if detail == BATCH_SHIM_UNSUPPORTED)
-        );
-        assert!(matches!(
-            resolve_paths(&config, vec![missing], vec![]).await,
-            Resolution::Missing
-        ));
-    }
-    #[tokio::test]
-    async fn explicit_paths_are_not_replaced_by_names_on_the_configured_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let first = directory.path().join("first");
-        let later = directory.path().join("later");
-        tokio::fs::create_dir_all(&first).await.unwrap();
-        tokio::fs::create_dir_all(&later).await.unwrap();
-        let name = if cfg!(windows) {
-            "native.exe"
-        } else {
-            "native"
-        };
-        let configured = first.join(name);
-        let other = later.join(name);
-        executable_file(&configured).await;
-        executable_file(&other).await;
-        let config = NativeCommand {
-            executable: configured.to_str().unwrap().into(),
-            args: vec![],
-            env: BTreeMap::from([("PATH".into(), later.to_str().unwrap().into())]),
-        };
-        assert_eq!(
-            resolve(&config, directory.path().to_str().unwrap())
-                .await
-                .require()
-                .unwrap()
-                .executable,
-            configured
-        );
-        tokio::fs::remove_file(&configured).await.unwrap();
-        assert!(matches!(
-            resolve(&config, directory.path().to_str().unwrap()).await,
-            Resolution::Missing
-        ));
-    }
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn implicit_path_lookup_skips_batch_shims_and_extensionless_npm_wrappers() {
-        let directory = tempfile::tempdir().unwrap();
-        let shims = directory.path().join("shims");
-        let native = directory.path().join("native");
-        tokio::fs::create_dir_all(&shims).await.unwrap();
-        tokio::fs::create_dir_all(&native).await.unwrap();
-        for name in ["codex", "codex.cmd", "codex.bat"] {
-            executable_file(&shims.join(name)).await;
-        }
-        let executable = native.join("codex.exe");
-        executable_file(&executable).await;
-        let config = NativeCommand {
-            executable: "codex".into(),
-            args: vec![],
-            env: BTreeMap::from([(
-                "PATH".into(),
-                std::env::join_paths([&shims, &native])
-                    .unwrap()
-                    .into_string()
-                    .unwrap(),
-            )]),
-        };
-        let cwd = directory.path().to_str().unwrap();
-        assert_eq!(
-            resolve(&config, cwd).await.require().unwrap().executable,
-            executable
-        );
-        let explicit = NativeCommand {
-            executable: "codex.cmd".into(),
-            ..config.clone()
-        };
-        assert!(matches!(
-            resolve(&explicit, cwd).await,
-            Resolution::UnsupportedBatch
-        ));
-        tokio::fs::remove_file(executable).await.unwrap();
-        assert!(matches!(
-            resolve(&config, cwd).await,
-            Resolution::UnsupportedBatch
-        ));
-    }
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn batch_shims_report_actionable_diagnostics_without_shell_fallback() {
-        let directory = tempfile::tempdir().unwrap();
-        for name in ["claude.cmd", "codex.BAT", "node.exe"] {
-            let executable = directory.path().join(name);
-            tokio::fs::write(&executable, "not executable")
-                .await
-                .unwrap();
-            let config = NativeCommand {
-                executable: executable.to_str().unwrap().into(),
-                args: vec!["entrypoint.js".into()],
-                env: BTreeMap::new(),
-            };
-            let result = command(&config, directory.path().to_str().unwrap()).await;
-            if name == "node.exe" {
-                assert!(result.is_ok());
-            } else {
-                assert!(
-                    matches!(result, Err(Error::Provider(message)) if message.contains("node.exe") && message.contains(".cmd/.bat"))
-                );
-            }
-        }
-    }
-    #[test]
-    fn launch_overrides_cannot_change_permission_or_interactive_protocol() {
-        let configured = NativeCommand {
-            executable: "fixture".into(),
-            args: [
-                "-c",
-                "approval_policy=on-request",
-                "--config",
-                "model=custom",
-                "--enable",
-                "custom_feature",
-                "--disable",
-                "another_feature",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            env: BTreeMap::new(),
-        };
-        assert!(validate_command(NativeRuntime::Codex, &configured).is_ok());
-        for (runtime, args) in [
-            (NativeRuntime::Claude, vec!["--print"]),
-            (NativeRuntime::Claude, vec!["-phello"]),
-            (NativeRuntime::Claude, vec!["--permission-mode=default"]),
-            (NativeRuntime::Codex, vec!["--sandbox=read-only"]),
-            (NativeRuntime::Codex, vec!["--listen=stdio://"]),
-            (NativeRuntime::Antigravity, vec!["--mode=default"]),
-        ] {
-            let config = NativeCommand {
-                executable: "fixture".into(),
-                args: args.into_iter().map(str::to_owned).collect(),
-                env: BTreeMap::new(),
-            };
-            assert!(validate_command(runtime, &config).is_err(), "{runtime:?}");
-        }
-    }
 }

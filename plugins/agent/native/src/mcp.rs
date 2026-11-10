@@ -21,7 +21,9 @@ pub(crate) mod files;
 mod projects;
 pub(crate) use projects::{Catalog, ClientGeneration, Prepared, Projects};
 
+use crate::owner::access::RunAccess;
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
+use maka_agent_authority::permissions::Access;
 use maka_agent_facts::{
     configuration::mcp::ServerConfiguration,
     tool_call::ToolRejection,
@@ -30,7 +32,6 @@ use maka_agent_facts::{
         ToolPreparer, ToolRegistration, ToolSemantics,
     },
 };
-use maka_event_log::RootStore;
 use maka_mcp::Connection;
 use maka_tool_catalog::input::Projection;
 use serde_json::Value;
@@ -40,35 +41,75 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
+pub(crate) struct CleanupMaterial {
+    _connections: Vec<Connection>,
+    original: Vec<maka_mcp::CleanupMaterial>,
+}
+impl std::fmt::Debug for CleanupMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CleanupMaterial { original_servers: .. }")
+    }
+}
+impl CleanupMaterial {
+    /// Observe the same runtime owners; this issues neither another close nor an ACK.
+    pub async fn closed(&self) -> Result<(), String> {
+        futures_util::future::try_join_all(self.original.iter().map(|owner| owner.closed()))
+            .await
+            .map(|_| ())
+    }
+}
+#[derive(Debug)]
+pub(crate) struct StartupError {
+    pub message: String,
+    pub material: Option<CleanupMaterial>,
+}
+impl StartupError {
+    fn clean(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            material: None,
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct CloseError {
+    pub message: String,
+    pub material: CleanupMaterial,
+}
+impl std::fmt::Display for StartupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::fmt::Display for CloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for StartupError {}
+impl std::error::Error for CloseError {}
+
 #[derive(Default)]
 pub(crate) struct Servers {
     connections: Vec<Connection>,
     pub names: BTreeMap<String, Vec<String>>,
     pub registrations: Vec<ToolRegistration>,
     pub bindings: BTreeMap<String, Option<String>>,
+    pub(super) live_bindings: Vec<LiveBinding>,
 }
 impl Servers {
     pub async fn open(
         configurations: &[ServerConfiguration],
-        store: Arc<RootStore>,
         configuration: &maka_config::ConfigurationStore,
-    ) -> Result<Self, String> {
-        Self::open_cancellable(
-            configurations,
-            store,
-            configuration,
-            CancellationToken::new(),
-        )
-        .await
-        .map_err(|error| error.message)
+    ) -> Result<Self, StartupError> {
+        Self::open_cancellable(configurations, configuration, CancellationToken::new()).await
     }
     pub async fn open_cancellable(
         configurations: &[ServerConfiguration],
-        store: Arc<RootStore>,
         configuration: &maka_config::ConfigurationStore,
         cancellation: CancellationToken,
-    ) -> Result<Self, maka_mcp::StartupError> {
-        use maka_mcp::StartupError;
+    ) -> Result<Self, StartupError> {
         let mut servers = Self::default();
         if configurations.is_empty() {
             return Ok(servers);
@@ -97,13 +138,17 @@ impl Servers {
             {
                 Ok(connection) => connection,
                 Err(error) => {
+                    let mut message = format!("MCP server {}: {}", config.name, error.message);
+                    let mut original: Vec<_> = error.material.into_iter().collect();
                     if let Err(cleanup) = servers.close().await {
-                        return Err(StartupError::unconfirmed(cleanup));
+                        message.push_str(&format!("; {}", cleanup.message));
+                        original.extend(cleanup.material.original);
                     }
-                    return Err(StartupError {
-                        message: format!("MCP server {}: {}", config.name, error.message),
-                        cleanup_confirmed: error.cleanup_confirmed,
+                    let material = (!original.is_empty()).then(|| CleanupMaterial {
+                        _connections: servers.connections,
+                        original,
                     });
+                    return Err(StartupError { message, material });
                 }
             };
             // A new external protocol session is a new authority generation.
@@ -125,13 +170,10 @@ impl Servers {
                 servers
                     .bindings
                     .insert(name.clone(), Some(generation.clone()));
-                servers.registrations.push(ToolRegistration {
+                let live = LiveBinding {
                     definition,
-                    nesting: ToolNesting::Nestable,
-                    semantics: ToolSemantics::Parallel,
-                    handler: ToolHandler::Prepared(Arc::new(Binding {
+                    binding: Binding {
                         connection: connection.clone(),
-                        store: store.clone(),
                         name,
                         remote_name: tool.remote_name.clone(),
                         server: config.name.clone(),
@@ -139,26 +181,65 @@ impl Servers {
                         preapproved: config.preapproved,
                         read_only: tool.read_only,
                         input_projection,
-                    })),
-                });
+                        access: None,
+                    },
+                };
+                servers.registrations.push(live.registration(None));
+                servers.live_bindings.push(live);
             }
             servers.connections.push(connection);
         }
         Ok(servers)
     }
-    pub async fn close(&self) -> Result<(), String> {
-        let mut error = None;
+    pub async fn close(&self) -> Result<(), CloseError> {
+        let mut message = None;
+        let mut original = Vec::new();
         for connection in &self.connections {
             if let Err(cause) = connection.close().await {
-                error.get_or_insert(cause);
+                message.get_or_insert(cause.message);
+                original.push(cause.material);
             }
         }
-        error.map_or(Ok(()), Err)
+        match message {
+            Some(message) => Err(CloseError {
+                message,
+                material: CleanupMaterial {
+                    _connections: self.connections.clone(),
+                    original,
+                },
+            }),
+            None => Ok(()),
+        }
     }
 }
+#[derive(Clone)]
+pub(super) struct LiveBinding {
+    definition: maka_agent_facts::tools::ToolDefinition,
+    binding: Binding,
+}
+impl LiveBinding {
+    pub(super) fn available(&self) -> bool {
+        self.binding.connection.available()
+    }
+    pub(super) fn name(&self) -> &str {
+        &self.definition.name
+    }
+    pub(super) fn registration(&self, access: Option<Arc<RunAccess>>) -> ToolRegistration {
+        let mut binding = self.binding.clone();
+        binding.access = access;
+        ToolRegistration {
+            definition: self.definition.clone(),
+            nesting: ToolNesting::Nestable,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(binding)),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Binding {
     connection: Connection,
-    store: Arc<RootStore>,
+    access: Option<Arc<RunAccess>>,
     name: String,
     remote_name: String,
     server: String,
@@ -166,6 +247,15 @@ struct Binding {
     preapproved: bool,
     read_only: bool,
     input_projection: Projection,
+}
+pub(crate) fn require_compatible_floor(floor: &maka_sandbox::Sandbox) -> Result<(), &'static str> {
+    if matches!(floor, maka_sandbox::Sandbox::Disabled) {
+        Ok(())
+    } else {
+        Err(
+            "IsolationUnavailable: this MCP server cannot prove compatibility with the Run's sandbox floor",
+        )
+    }
 }
 fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool) -> bool {
     configuration
@@ -186,7 +276,7 @@ impl ToolPreparer for Binding {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let connection = self.connection.clone();
-        let store = self.store.clone();
+        let access = self.access.clone();
         let expected = self.name.clone();
         let remote = self.remote_name.clone();
         let server = self.server.clone();
@@ -195,58 +285,83 @@ impl ToolPreparer for Binding {
         let preapproved = self.preapproved;
         let input_projection = self.input_projection;
         Box::pin(async move {
-            let store = Arc::new(
-                store
-                    .session_for_execution(
-                        context
-                            .execution
-                            .as_deref()
-                            .ok_or(ToolRejection::Unavailable)?,
-                        &context.invocation,
-                    )
-                    .map_err(|error| ToolRejection::PreparationFailed {
-                        message: error.to_string(),
-                    })?,
-            );
+            let access = access.ok_or(ToolRejection::Unavailable)?;
+            let target = access.target_for_context(&context).await.map_err(|error| {
+                ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                }
+            })?;
             if name != expected || !connection.available() {
                 return Err(ToolRejection::Unavailable);
             }
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
-            let approval_input = (!preapproved
-                && matches!(input_projection, Projection::RequestEnvelope))
-            .then(|| input.clone());
-            let input = input_projection.decode(input)?;
-            let live = maka_agent_authority::permissions::live(&store, &context.invocation)
+            let floor = access
+                .sandbox_floor(&context.call.origin)
                 .await
                 .map_err(|error| ToolRejection::PreparationFailed {
                     message: error.to_string(),
                 })?;
+            require_compatible_floor(&floor).map_err(|message| ToolRejection::PolicyDenied {
+                message: message.into(),
+            })?;
+            let approval_input = (!preapproved).then(|| input.clone());
+            let input = input_projection.decode(input)?;
+            let live = access.live_configuration().await.map_err(|error| {
+                ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                }
+            })?;
             if !permitted(&live, &name, read_only) {
                 return Err(ToolRejection::PolicyDenied {
                     message: "MCP tool is outside the current session permissions".into(),
                 });
             }
-            Ok(PreparedEffect::new(move |cancel| {
-                Box::pin(async move {
-                    if !preapproved {
-                        crate::tools::approval::confirm(
-                            &store,
+            let approval = if !preapproved {
+                let service = format!("MCP server {server}");
+                let approval = if matches!(
+                    target,
+                    maka_agent_facts::durable::AuthorizationObligation::Tool { .. }
+                ) {
+                    access
+                        .establish_service(
                             &context,
-                            crate::tools::approval::Selection {
-                                name: &name,
-                                method: &remote,
-                                binding: &generation,
-                                service: &format!("MCP server {server}"),
-                            },
+                            &name,
+                            &remote,
+                            &generation,
+                            &service,
                             approval_input.as_ref().unwrap_or(&input),
-                            &cancel,
+                            &cancellation,
                         )
-                        .await?;
-                    }
-                    let live = maka_agent_authority::permissions::live(&store, &context.invocation)
-                        .await?;
+                        .await
+                        .map(|(_, approval)| approval)
+                } else {
+                    access
+                        .confirm_service(
+                            &context,
+                            &name,
+                            &remote,
+                            &generation,
+                            &service,
+                            approval_input.as_ref().unwrap_or(&input),
+                            &cancellation,
+                        )
+                        .await
+                }
+                .map_err(|error| ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                })?;
+                Some(approval)
+            } else {
+                None
+            };
+            let prepared = PreparedEffect::new(move |cancel| {
+                Box::pin(async move {
+                    access.target_for_context(&context).await?;
+                    require_compatible_floor(&access.sandbox_floor(&context.call.origin).await?)
+                        .map_err(|message| ToolError::Failed(message.into()))?;
+                    let live = access.live_configuration().await?;
                     if !permitted(&live, &name, read_only) {
                         return Err(ToolError::Failed(
                             "MCP permissions changed before dispatch".into(),
@@ -254,7 +369,11 @@ impl ToolPreparer for Binding {
                     }
                     connection.call(remote, input, cancel).await
                 })
-            }))
+            });
+            Ok(match approval {
+                Some(id) => prepared.requiring_approval(id),
+                None => prepared,
+            })
         })
     }
 }

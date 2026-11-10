@@ -110,7 +110,6 @@ export const conversationMessages = {
   ],
   'Send options': ['Send options', '发送选项', '傳送選項'],
   'Add to queue': ['Add to queue', '加入队列', '加入佇列'],
-  'Send after this turn': ['Send after this turn', '本轮结束后发送', '本輪結束後傳送'],
   'Use suggestion': ['Use suggestion', '使用建议', '使用建議'],
   'Right arrow to use · Esc to dismiss': [
     'Right arrow to use · Esc to dismiss',
@@ -155,19 +154,19 @@ export const conversationMessages = {
     '已收到 · 等待下一步处理',
     '已收到 · 等待下一步處理',
   ],
-  'Child conversations': ['Child conversations', '子会话', '子對話'],
-  'Close child conversations': ['Close child conversations', '关闭子会话', '關閉子對話'],
-  'No child conversations.': ['No child conversations.', '没有子会话。', '沒有子對話。'],
+  'Child conversations': ['Child conversations', '子对话', '子對話'],
+  'Close child conversations': ['Close child conversations', '关闭子对话', '關閉子對話'],
+  'No child conversations.': ['No child conversations.', '没有子对话。', '沒有子對話。'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Load more children of {name}': [
     'Load more children of {name}',
-    '加载 {name} 的更多子会话',
+    '加载 {name} 的更多子对话',
     '載入 {name} 的更多子對話',
   ],
   'Refresh children of {name}': [
     'Refresh children of {name}',
-    '刷新 {name} 的子会话',
+    '刷新 {name} 的子对话',
     '重新整理 {name} 的子對話',
   ],
   'The conversation list changed. Refresh to continue.': [
@@ -349,7 +348,7 @@ export const conversationMessages = {
     '仅允许本次原始调用，不授权后续调用。',
     '僅允許本次原始呼叫，不授權後續呼叫。',
   ],
-  'Attach files': ['Attach files', '添加附件', '新增附件'],
+  'Attach files…': ['Attach files…', '添加附件…', '新增附件…'],
   'Attachment state needs attention. Your draft is kept.': [
     'Attachment state needs attention. Your draft is kept.',
     '附件状态需要处理，草稿已保留。',
@@ -1041,6 +1040,198 @@ export const conversationMessages = {
   ],
   'Pause response': ['Pause response', '暂停', '暫停'],
   'Continue response': ['Continue response', '继续', '繼續'],
+  'Continue in a new run': ['Continue in a new run', '在新运行中继续', '在新的執行中繼續'],
+  'Record external observation': ['Record external observation', '记录外部观察', '記錄外部觀察'],
+  'Authorize replanning': ['Authorize replanning', '授权重新规划', '授權重新規劃'],
+  'Run {run} · blocker {blocker} · observation {revision}': [
+    'Run {run} · blocker {blocker} · observation {revision}',
+    '运行 {run} · 阻塞项 {blocker} · 观察版本 {revision}',
+    '執行 {run} · 阻塞項 {blocker} · 觀察版本 {revision}',
+  ],
+  'Your evidence is a human report, not a provider receipt or proof that the original operation settled.':
+    [
+      'Your evidence is a human report, not a provider receipt or proof that the original operation settled.',
+      '此证据是人工报告，不是提供方回执，也不能证明原操作及其资源清理已经完成。',
+      '此證據是人工報告，不是提供方回執，也不能證明原操作及其資源清理已經完成。',
+    ],
+  'Evidence format': ['Evidence format', '证据格式', '證據格式'],
+  Evidence: ['Evidence', '证据', '證據'],
+  'Reason for cancelling': ['Reason for cancelling', '取消原因', '取消原因'],
+  'Enter valid JSON evidence.': [
+    'Enter valid JSON evidence.',
+    '请输入有效的 JSON 证据。',
+    '請輸入有效的 JSON 證據。',
+  ],
+  'This run changed. Close this decision and review the current state.': [
+    'This run changed. Close this decision and review the current state.',
+    '此运行已变化。请关闭此决策窗口，查看当前状态后再决定。',
+    '此執行已變更。請關閉此決策視窗，查看目前狀態後再決定。',
+  ],
+  'Checking the original decision receipt. Do not submit another decision.': [
+    'Checking the original decision receipt. Do not submit another decision.',
+    '正在确认原决策的回执，请勿重复提交决策。',
+    '正在確認原決策的回執，請勿重複提交決策。',
+  ],
+  'Submitting decision…': ['Submitting decision…', '正在提交决策…', '正在提交決策…'],
+  'This run is no longer available. Refresh the conversation.': [
+    'This run is no longer available. Refresh the conversation.',
+    '此运行已不可用，请刷新会话。',
+    '此執行已無法使用，請重新整理對話。',
+  ],
+  'Host returned a different run for this decision.': [
+    'Host returned a different run for this decision.',
+    'Host 返回了其他运行的决策结果。',
+    'Host 傳回了其他執行的決策結果。',
+  ],
+  'The decision did not advance this run. Refresh before deciding again.': [
+    'The decision did not advance this run. Refresh before deciding again.',
+    '未确认此决策已记录。请刷新当前运行后再决定。',
+    '未確認此決策已記錄。請重新整理目前執行後再決定。',
+  ],
+  'External operation outcome unknown': [
+    'External operation outcome unknown',
+    '外部操作结果未知',
+    '外部操作結果未知',
+  ],
+  'Waiting for a code cell': ['Waiting for a code cell', '等待代码单元', '等待程式碼單元'],
+  'Waiting for the external task': [
+    'Waiting for the external task',
+    '等待外部任务',
+    '等待外部工作',
+  ],
+  'Waiting to retry the provider': [
+    'Waiting to retry the provider',
+    '等待重试提供方',
+    '等待重試提供方',
+  ],
+  'Waiting for the model': ['Waiting for the model', '等待模型响应', '等待模型回應'],
+  'Original tool call {call} in model attempt {attempt}': [
+    'Original tool call {call} in model attempt {attempt}',
+    '原工具调用 {call} · 模型尝试 {attempt}',
+    '原工具呼叫 {call} · 模型嘗試 {attempt}',
+  ],
+  'Model attempt {attempt}, based on step {step}': [
+    'Model attempt {attempt}, based on step {step}',
+    '模型尝试 {attempt} · 基准步骤 {step}',
+    '模型嘗試 {attempt} · 基準步驟 {step}',
+  ],
+  'Entire run': ['Entire run', '整个运行', '整個執行'],
+  'Allow replanning within the shown scope and current permissions. This does not authorize replaying the original unknown operation or waive pending cleanup.':
+    [
+      'Allow replanning within the shown scope and current permissions. This does not authorize replaying the original unknown operation or waive pending cleanup.',
+      '允许在所示范围和现有权限内重新规划。此授权不允许重发结果未知的原操作，也不免除尚待完成的资源清理。',
+      '允許在所示範圍和現有權限內重新規劃。此授權不允許重送結果未知的原操作，也不免除尚待完成的資源清理。',
+    ],
+  'Request cancellation of this run. Previously admitted operations may still finish, and cleanup must still be confirmed.':
+    [
+      'Request cancellation of this run. Previously admitted operations may still finish, and cleanup must still be confirmed.',
+      '请求取消此运行。此前已采纳的操作仍可能完成，资源清理仍需确认。',
+      '要求取消此執行。先前已採納的操作仍可能完成，資源清理仍需確認。',
+    ],
+  'This action is not offered for the current blocker.': [
+    'This action is not offered for the current blocker.',
+    '当前阻塞项不支持此操作。',
+    '目前阻塞項不支援此操作。',
+  ],
+  'No risk action is currently offered.': [
+    'No risk action is currently offered.',
+    '当前没有可用的风险处置操作。',
+    '目前沒有可用的風險處置操作。',
+  ],
+  'Observation and replanning are not offered for this blocker.': [
+    'Observation and replanning are not offered for this blocker.',
+    '此阻塞项不支持记录外部观察或授权重新规划。',
+    '此阻塞項不支援記錄外部觀察或授權重新規劃。',
+  ],
+  'Reconnect before submitting a risk decision.': [
+    'Reconnect before submitting a risk decision.',
+    '请重新连接后再提交风险决策。',
+    '請重新連線後再提交風險決策。',
+  ],
+  'Restore this conversation before submitting a risk decision.': [
+    'Restore this conversation before submitting a risk decision.',
+    '请恢复此会话后再提交风险决策。',
+    '請還原此對話後再提交風險決策。',
+  ],
+  'Run blocked': ['Run blocked', '运行受阻', '執行受阻'],
+  'Wait for this run to finish before continuing.': [
+    'Wait for this run to finish before continuing.',
+    '当前运行结束后才能继续。',
+    '目前的執行結束後才能繼續。',
+  ],
+  'Waiting for approval': ['Waiting for approval', '等待审批', '等候核准'],
+  'Waiting to retry': ['Waiting to retry', '等待重试', '等候重試'],
+  'Waiting for the original operation': [
+    'Waiting for the original operation',
+    '等待原操作',
+    '等候原操作',
+  ],
+  'Waiting for a child run': ['Waiting for a child run', '等待子运行', '等候子執行'],
+  'Waiting for a blocker': ['Waiting for a blocker', '等待阻塞解除', '等候阻礙解除'],
+  'Operation outcome unknown': ['Operation outcome unknown', '操作结果未知', '操作結果未知'],
+  'Provider tool outcome unknown': [
+    'Provider tool outcome unknown',
+    '提供方工具结果未知',
+    '提供者工具結果未知',
+  ],
+  'Original admission unknown': [
+    'Original admission unknown',
+    '原调用接纳状态未知',
+    '原呼叫接納狀態未知',
+  ],
+  'Code cell recovery unavailable': [
+    'Code cell recovery unavailable',
+    '代码单元无法恢复',
+    '程式碼單元無法復原',
+  ],
+  'Protocol recovery unavailable': [
+    'Protocol recovery unavailable',
+    '无法按此协议恢复',
+    '無法依此協定復原',
+  ],
+  'A history landmark has no source turn identity.': [
+    'A history landmark has no source turn identity.',
+    '历史导航位置缺少来源轮次身份。',
+    '歷史導覽位置缺少來源回合身分。',
+  ],
+  'Tool cleanup unconfirmed': [
+    'Tool cleanup unconfirmed',
+    '尚未确认工具清理完成',
+    '尚未確認工具清理完成',
+  ],
+  'Model cleanup unconfirmed': [
+    'Model cleanup unconfirmed',
+    '尚未确认模型清理完成',
+    '尚未確認模型清理完成',
+  ],
+  'Resource cleanup unconfirmed': [
+    'Resource cleanup unconfirmed',
+    '尚未确认资源清理完成',
+    '尚未確認資源清理完成',
+  ],
+  'Current authority unavailable': [
+    'Current authority unavailable',
+    '当前授权不可用',
+    '目前授權無法使用',
+  ],
+  'Resources unavailable': ['Resources unavailable', '资源不可用', '資源無法使用'],
+  'External output needs reconciliation': [
+    'External output needs reconciliation',
+    '外部输出需要核对',
+    '外部輸出需要核對',
+  ],
+  'External output publication unavailable': [
+    'External output publication unavailable',
+    '外部输出无法发布',
+    '外部輸出無法發佈',
+  ],
+  'External task cannot be observed': [
+    'External task cannot be observed',
+    '无法观察外部任务状态',
+    '無法觀察外部工作的狀態',
+  ],
+  'Cancel blocked run': ['Cancel blocked run', '取消受阻运行', '取消受阻的執行'],
+  'Cancelled by user': ['Cancelled by user', '用户已取消', '使用者已取消'],
   'Confirming continuation…': ['Confirming continuation…', '正在确认继续…', '正在確認繼續…'],
   'Maka is shutting down. Continue after it restarts.': [
     'Maka is shutting down. Continue after it restarts.',
@@ -1440,6 +1631,7 @@ export const conversationMessages = {
     '此請求已不在待處理清單中，請重新整理查看已記錄的結果。',
   ],
   'This session': ['This session', '本次对话', '本次對話'],
+  'This run': ['This run', '本次运行', '本次執行'],
   'This turn': msg_permissionTurn,
   'This turn cannot accept this message right now. It remains queued.': [
     'This turn cannot accept this message right now. It remains queued.',
@@ -1657,7 +1849,6 @@ export const conversationMessages = {
   '{message} {detail}': ['{message} {detail}', '{message} {detail}', '{message} {detail}'],
   Sandbox: ['Sandbox', '沙箱', '沙箱'],
   'Sandbox and approvals': ['Sandbox and approvals', '沙箱与审批', '沙箱與審批'],
-  'Close sandbox settings': ['Close sandbox settings', '关闭沙箱设置', '關閉沙箱設定'],
   'Choose a conversation to change sandbox settings.': [
     'Choose a conversation to change sandbox settings.',
     '选择对话后可更改沙箱设置。',
@@ -1689,18 +1880,21 @@ export const conversationMessages = {
     '在工作区内读写文件。',
     '在工作區內讀寫檔案。',
   ],
-  'Approval requests': ['Approval requests', '审批请求', '審批請求'],
   'Ask for approval': ['Ask for approval', '请求审批', '請求審批'],
-  'Do not ask for approval': ['Do not ask for approval', '不请求审批', '不請求審批'],
-  'Tools outside this policy are blocked when approval requests are off.': [
-    'Tools outside this policy are blocked when approval requests are off.',
-    '关闭审批请求时，超出当前策略的工具操作将被阻止。',
-    '關閉審批請求時，超出目前策略的工具操作將被阻止。',
+  'When off, anything outside the sandbox is blocked.': [
+    'When off, anything outside the sandbox is blocked.',
+    '关闭后，超出沙箱的操作直接阻止。',
+    '關閉後，超出沙箱的操作直接阻止。',
   ],
-  'Applies to this conversation. Changing either setting clears earlier approvals.': [
-    'Applies to this conversation. Changing either setting clears earlier approvals.',
-    '仅作用于当前对话。更改任一设置会清除先前的授权。',
-    '僅作用於目前對話。變更任一設定會清除先前的授權。',
+  'No sandbox; reads and writes any file.': [
+    'No sandbox; reads and writes any file.',
+    '不使用沙箱，可读写任意文件。',
+    '不使用沙箱，可讀寫任意檔案。',
+  ],
+  'Applies to this conversation; changing it clears earlier approvals.': [
+    'Applies to this conversation; changing it clears earlier approvals.',
+    '仅作用于此对话；更改会清除已有授权。',
+    '僅作用於此對話；變更會清除已有授權。',
   ],
   'Sandbox settings rejected: {reason}': [
     'Sandbox settings rejected: {reason}',

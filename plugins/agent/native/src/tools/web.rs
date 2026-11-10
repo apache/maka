@@ -20,50 +20,6 @@
 use super::*;
 use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
-pub(super) async fn capture(
-    service: &Service,
-    context: &ToolCallContext,
-    cancellation: &CancellationToken,
-) -> Result<maka_web_api::contract::Capture, ToolError> {
-    let request = service
-        .services
-        .request_with_execution(
-            Identity::Agent {
-                invocation: context.invocation.clone(),
-                operation_id: None,
-            },
-            cancellation.clone(),
-            context
-                .execution
-                .clone()
-                .ok_or_else(|| ToolError::Persistence("Execution custody unavailable".into()))?,
-        )
-        .map_err(ToolError::Failed)?;
-    let result = AssertUnwindSafe(async {
-        request
-            .call_target(
-                &service.selection.target,
-                "capture".into(),
-                serde_json::json!({}),
-                Attachments::default(),
-            )
-            .map_err(ToolError::Failed)?
-            .await
-            .map_err(ToolError::Failed)
-    })
-    .catch_unwind()
-    .await;
-    request
-        .finish()
-        .await
-        .map_err(ToolError::CleanupUnconfirmed)?;
-    let value = result.map_err(|_| ToolError::Failed("Web capture panicked".into()))??;
-    if cancellation.is_cancelled() {
-        return Err(ToolError::Failed("Web capture cancelled".into()));
-    }
-    serde_json::from_value(value)
-        .map_err(|error| ToolError::Failed(format!("Web capture invalid: {error}")))
-}
 
 pub(super) struct Binding {
     pub services: Vec<Service>,
@@ -87,19 +43,22 @@ impl RequestBinding for Binding {
             .clone();
         let workers = self.workers.clone();
         Box::pin(async move {
+            let access = service.access.clone().ok_or_else(|| {
+                ToolError::Failed("Web binding has no live Run capability".into())
+            })?;
+            access.fresh().await.map_err(ToolError::Failed)?;
             let request = service
                 .services
-                .request_with_execution(
+                .request_with_work(
                     Identity::Agent {
-                        invocation: input.invocation,
+                        execution: access.execution().clone(),
                         operation_id: None,
                     },
                     input.cancellation.clone(),
-                    input.execution.ok_or_else(|| {
-                        ToolError::Persistence("Execution custody unavailable".into())
-                    })?,
+                    access.custody().clone(),
                 )
                 .map_err(ToolError::Failed)?;
+            let request = access.track_binding_request(request).await;
             let target = service.selection.target.clone();
             let capture = workers
                 .spawn(async move {
@@ -115,10 +74,7 @@ impl RequestBinding for Binding {
                     })
                     .catch_unwind()
                     .await;
-                    request
-                        .finish()
-                        .await
-                        .map_err(ToolError::CleanupUnconfirmed)?;
+                    access.settle_binding_request(&request).await?;
                     result
                         .map_err(|_| ToolError::Failed("Web capture panicked".into()))?
                         .map_err(ToolError::Failed)

@@ -89,6 +89,11 @@ fn parse(
     last: bool,
     accept: &mut impl FnMut(Line<'_>) -> Result<(), Error>,
 ) -> Result<bool, Error> {
+    let bytes = if number == 1 {
+        bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)
+    } else {
+        bytes
+    };
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(false);
     }

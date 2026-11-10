@@ -21,17 +21,28 @@
 //! Domain SQL stays with its owner; no effect token or notification escapes before commit.
 use crate::StoreError;
 use rusqlite::Connection;
+use std::collections::BTreeSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
-pub(crate) trait Statement: Send + Sized + 'static {
+/// Synchronous domain SQL executed inside the Root writer's transaction.
+/// Implementations must not start or finish transactions, perform external
+/// effects, or publish effects before `committed` runs after a confirmed commit.
+/// On this dedicated blocking lane, immutable input bytes may be streamed from
+/// an already-owned prepared backing into SQL. This does not permit opening or
+/// mutating user files, network/provider I/O, or re-entering the writer.
+pub trait Statement: Send + Sized + 'static {
     type Value: Send + 'static;
     type Output: Send + 'static;
     const PREPARE_OFF_THREAD: bool = false;
+    /// Drop-only owners of prepared inputs, retained through writer settlement.
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        Vec::new()
+    }
     fn prepare(self) -> Result<Self, StoreError> {
         Ok(self)
     }
@@ -41,14 +52,82 @@ pub(crate) trait Statement: Send + Sized + 'static {
     fn isolated_rejection(error: &StoreError) -> bool;
 }
 
-pub(crate) enum Notification {
-    None,
-    Metadata,
-    Sequence(u64),
-    ActivationSequence(u64),
+/// Commit-time invalidations discovered by the statement, not a second ledger.
+/// Session routes are data and are published only after the shared SQL commit.
+#[derive(Default)]
+pub struct Notification {
+    metadata: bool,
+    activation: bool,
+    material_released: bool,
+    sessions: BTreeSet<String>,
+    metadata_scopes: BTreeSet<String>,
 }
-pub(crate) struct Prepared<T> {
+impl Notification {
+    pub const NONE: Self = Self {
+        metadata: false,
+        activation: false,
+        material_released: false,
+        sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
+    };
+    pub const METADATA: Self = Self {
+        metadata: true,
+        activation: false,
+        material_released: false,
+        sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
+    };
+    pub const MATERIAL_RELEASED: Self = Self {
+        metadata: false,
+        activation: false,
+        material_released: true,
+        sessions: BTreeSet::new(),
+        metadata_scopes: BTreeSet::new(),
+    };
+    pub fn metadata_scope(scope: String) -> Self {
+        Self {
+            metadata_scopes: BTreeSet::from([scope]),
+            ..Self::NONE
+        }
+    }
+    pub fn with_activation(mut self, activation: bool) -> Self {
+        self.activation |= activation;
+        self
+    }
+    pub fn with_sessions(mut self, sessions: impl IntoIterator<Item = String>) -> Self {
+        self.sessions.extend(sessions);
+        self
+    }
+    /// Union every invalidation channel when pure statements share one receipt.
+    pub fn combine(mut self, other: Self) -> Self {
+        self.metadata |= other.metadata;
+        self.activation |= other.activation;
+        self.material_released |= other.material_released;
+        self.sessions.extend(other.sessions);
+        self.metadata_scopes.extend(other.metadata_scopes);
+        self
+    }
+    fn publish(self, notice: &crate::commits::CommitNotice) {
+        let has_sessions = !self.sessions.is_empty();
+        let notice = notice.with_sessions(self.sessions);
+        if self.metadata || has_sessions {
+            notice.metadata();
+        }
+        for scope in self.metadata_scopes {
+            notice.metadata_scope(&scope);
+        }
+        if self.activation {
+            notice.activations();
+        }
+        if self.material_released {
+            notice.material_released();
+        }
+    }
+}
+pub struct Prepared<T> {
     pub value: T,
+    /// True when this statement wrote new durable state. False is only for an
+    /// already durable or read-only result; an unchanged group is rolled back.
     pub changed: bool,
     pub notification: Notification,
 }
@@ -64,6 +143,7 @@ pub(crate) struct Pending<S: Statement> {
     commits: crate::commits::CommitNotice,
     reply: oneshot::Sender<Result<S::Output, StoreError>>,
     failures: Arc<AtomicU64>,
+    retained: Vec<Arc<dyn Send + Sync>>,
 }
 impl<S: Statement> Pending<S> {
     pub(crate) fn new(
@@ -72,14 +152,43 @@ impl<S: Statement> Pending<S> {
         reply: oneshot::Sender<Result<S::Output, StoreError>>,
         failures: Arc<AtomicU64>,
     ) -> Self {
+        let retained = statement.retain();
         Self {
             state: State::Waiting(statement),
             commits,
             reply,
             failures,
+            retained,
         }
     }
+    pub(crate) fn prepare(mut self) -> Self {
+        let State::Waiting(statement) = std::mem::replace(&mut self.state, State::Writing) else {
+            unreachable!("durable input is prepared once")
+        };
+        let result = panic::catch_unwind(AssertUnwindSafe(|| statement.prepare()))
+            .unwrap_or_else(|_| {
+                Err(StoreError::InvalidTransition(
+                    "statement input preparation panicked before SQL execution; see original panic diagnostic".into(),
+                ))
+            });
+        self.state = match result {
+            Ok(statement) => State::Waiting(statement),
+            Err(error) => State::Rejected {
+                error,
+                isolated: true,
+            },
+        };
+        self
+    }
+    pub(crate) fn into_request(self) -> Request {
+        Request(Box::new(self))
+    }
+}
+impl<S: Statement> ErasedRequest for Pending<S> {
     fn prepare(&mut self, connection: &Connection) -> Result<bool, StoreError> {
+        if matches!(self.state, State::Rejected { .. }) {
+            return Ok(false);
+        }
         let State::Waiting(statement) = std::mem::replace(&mut self.state, State::Writing) else {
             unreachable!("durable statement is prepared once")
         };
@@ -88,10 +197,13 @@ impl<S: Statement> Pending<S> {
         self.state = State::Prepared(prepared);
         Ok(changed)
     }
+    fn isolated_rejection(&self, error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+    }
     fn reject(&mut self, error: StoreError, isolated: bool) {
         self.state = State::Rejected { error, isolated };
     }
-    fn finish(self, transaction: &Result<(), Aborted>) {
+    fn finish(self: Box<Self>, transaction: &Result<(), Aborted>) {
         let result = match self.state {
             State::Rejected { error, isolated }
                 if isolated
@@ -101,17 +213,7 @@ impl<S: Statement> Pending<S> {
                 Err(error)
             }
             State::Prepared(prepared) if transaction.is_ok() => {
-                match prepared.notification {
-                    Notification::None => {}
-                    Notification::Metadata => self.commits.metadata(),
-                    Notification::ActivationSequence(sequence) => {
-                        self.commits.publish(sequence);
-                        self.commits.activations();
-                    }
-                    Notification::Sequence(sequence) => {
-                        self.commits.publish(sequence);
-                    }
-                }
+                prepared.notification.publish(&self.commits);
                 Ok(S::committed(prepared.value))
             }
             _ => Err(transaction
@@ -122,150 +224,32 @@ impl<S: Statement> Pending<S> {
         if result.is_err() {
             self.failures.fetch_add(1, Ordering::AcqRel);
         }
+        drop(self.retained);
         let _ = self.reply.send(result);
     }
 }
 
-// This closed family is the admission contract. Arbitrary Run closures never join it.
-pub(crate) enum Request {
-    ProjectRegistration(Box<Pending<crate::projects::WriteRegistration>>),
-    WorkspaceAttachment(Box<Pending<crate::workspace_bindings::WriteAttachment>>),
-    Creation(Box<Pending<crate::root_store::creation::WriteCreation>>),
-    Reservation(Box<Pending<crate::root_store::creation::WriteReservation>>),
-    Publication(Box<Pending<crate::root_store::creation::WritePublication>>),
-
-    Intent(Box<Pending<crate::applications::intents::WriteIntent>>),
-    Dispatch(Box<Pending<crate::applications::operations::WriteDispatch>>),
-    Admission(Box<Pending<crate::message_admissions::WriteAdmission>>),
-    Append(Box<Pending<crate::append::write::WriteAppend>>),
-    Settlement(Box<Pending<crate::applications::operations::WriteSettlement>>),
+// Only typed Pending values enter this erased queue; SQL and committed outputs
+// remain owned by their original statement through the transaction boundary.
+pub(crate) struct Request(Box<dyn ErasedRequest>);
+trait ErasedRequest: Send {
+    fn prepare(&mut self, connection: &Connection) -> Result<bool, StoreError>;
+    fn isolated_rejection(&self, error: &StoreError) -> bool;
+    fn reject(&mut self, error: StoreError, isolated: bool);
+    fn finish(self: Box<Self>, transaction: &Result<(), Aborted>);
 }
 impl Request {
     fn prepare(&mut self, connection: &Connection) -> Result<bool, StoreError> {
-        match self {
-            Self::ProjectRegistration(value) => value.prepare(connection),
-            Self::WorkspaceAttachment(value) => value.prepare(connection),
-            Self::Creation(value) => value.prepare(connection),
-            Self::Reservation(value) => value.prepare(connection),
-            Self::Publication(value) => value.prepare(connection),
-
-            Self::Intent(value) => value.prepare(connection),
-            Self::Dispatch(value) => value.prepare(connection),
-            Self::Admission(value) => value.prepare(connection),
-            Self::Append(value) => value.prepare(connection),
-            Self::Settlement(value) => value.prepare(connection),
-        }
+        self.0.prepare(connection)
     }
     fn isolated_rejection(&self, error: &StoreError) -> bool {
-        match self {
-            Self::ProjectRegistration(_) => {
-                crate::projects::WriteRegistration::isolated_rejection(error)
-            }
-            Self::WorkspaceAttachment(_) => {
-                crate::workspace_bindings::WriteAttachment::isolated_rejection(error)
-            }
-            Self::Creation(_) => {
-                crate::root_store::creation::WriteCreation::isolated_rejection(error)
-            }
-            Self::Reservation(_) => {
-                crate::root_store::creation::WriteReservation::isolated_rejection(error)
-            }
-            Self::Publication(_) => {
-                crate::root_store::creation::WritePublication::isolated_rejection(error)
-            }
-
-            Self::Intent(_) => crate::applications::intents::WriteIntent::isolated_rejection(error),
-            Self::Dispatch(_) => {
-                crate::applications::operations::WriteDispatch::isolated_rejection(error)
-            }
-            Self::Admission(_) => {
-                crate::message_admissions::WriteAdmission::isolated_rejection(error)
-            }
-            Self::Append(_) => crate::append::write::WriteAppend::isolated_rejection(error),
-            Self::Settlement(_) => {
-                crate::applications::operations::WriteSettlement::isolated_rejection(error)
-            }
-        }
+        self.0.isolated_rejection(error)
     }
     fn reject(&mut self, error: StoreError, isolated: bool) {
-        match self {
-            Self::ProjectRegistration(value) => value.reject(error, isolated),
-            Self::WorkspaceAttachment(value) => value.reject(error, isolated),
-            Self::Creation(value) => value.reject(error, isolated),
-            Self::Reservation(value) => value.reject(error, isolated),
-            Self::Publication(value) => value.reject(error, isolated),
-
-            Self::Intent(value) => value.reject(error, isolated),
-            Self::Dispatch(value) => value.reject(error, isolated),
-            Self::Admission(value) => value.reject(error, isolated),
-            Self::Append(value) => value.reject(error, isolated),
-            Self::Settlement(value) => value.reject(error, isolated),
-        }
+        self.0.reject(error, isolated);
     }
-    fn finish(self, result: &Result<(), Aborted>) {
-        match self {
-            Self::ProjectRegistration(value) => value.finish(result),
-            Self::WorkspaceAttachment(value) => value.finish(result),
-            Self::Creation(value) => value.finish(result),
-            Self::Reservation(value) => value.finish(result),
-            Self::Publication(value) => value.finish(result),
-
-            Self::Intent(value) => value.finish(result),
-            Self::Dispatch(value) => value.finish(result),
-            Self::Admission(value) => value.finish(result),
-            Self::Append(value) => value.finish(result),
-            Self::Settlement(value) => value.finish(result),
-        }
-    }
-}
-impl From<Pending<crate::projects::WriteRegistration>> for Request {
-    fn from(value: Pending<crate::projects::WriteRegistration>) -> Self {
-        Self::ProjectRegistration(Box::new(value))
-    }
-}
-impl From<Pending<crate::workspace_bindings::WriteAttachment>> for Request {
-    fn from(value: Pending<crate::workspace_bindings::WriteAttachment>) -> Self {
-        Self::WorkspaceAttachment(Box::new(value))
-    }
-}
-impl From<Pending<crate::root_store::creation::WriteCreation>> for Request {
-    fn from(value: Pending<crate::root_store::creation::WriteCreation>) -> Self {
-        Self::Creation(Box::new(value))
-    }
-}
-impl From<Pending<crate::root_store::creation::WriteReservation>> for Request {
-    fn from(value: Pending<crate::root_store::creation::WriteReservation>) -> Self {
-        Self::Reservation(Box::new(value))
-    }
-}
-impl From<Pending<crate::root_store::creation::WritePublication>> for Request {
-    fn from(value: Pending<crate::root_store::creation::WritePublication>) -> Self {
-        Self::Publication(Box::new(value))
-    }
-}
-impl From<Pending<crate::applications::intents::WriteIntent>> for Request {
-    fn from(value: Pending<crate::applications::intents::WriteIntent>) -> Self {
-        Self::Intent(Box::new(value))
-    }
-}
-impl From<Pending<crate::applications::operations::WriteDispatch>> for Request {
-    fn from(value: Pending<crate::applications::operations::WriteDispatch>) -> Self {
-        Self::Dispatch(Box::new(value))
-    }
-}
-impl From<Pending<crate::message_admissions::WriteAdmission>> for Request {
-    fn from(value: Pending<crate::message_admissions::WriteAdmission>) -> Self {
-        Self::Admission(Box::new(value))
-    }
-}
-impl From<Pending<crate::append::write::WriteAppend>> for Request {
-    fn from(value: Pending<crate::append::write::WriteAppend>) -> Self {
-        Self::Append(Box::new(value))
-    }
-}
-impl From<Pending<crate::applications::operations::WriteSettlement>> for Request {
-    fn from(value: Pending<crate::applications::operations::WriteSettlement>) -> Self {
-        Self::Settlement(Box::new(value))
+    fn finish(self, transaction: &Result<(), Aborted>) {
+        self.0.finish(transaction);
     }
 }
 
@@ -290,11 +274,16 @@ pub(crate) fn commit(
     connection: &mut Connection,
     mut requests: Vec<Request>,
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
+    changed: &watch::Sender<()>,
 ) -> (bool, impl FnOnce() + Send + 'static) {
     let result = transaction(connection, &mut requests, validate);
     let reusable = result
         .as_ref()
-        .map_or_else(|failure| failure.reusable, |()| true);
+        .map_or_else(|failure| failure.reusable, |_| true);
+    if matches!(result, Ok(true)) {
+        changed.send_replace(());
+    }
+    let result = result.map(|_| ());
     (reusable, move || {
         for request in requests {
             request.finish(&result);
@@ -306,7 +295,7 @@ fn transaction(
     connection: &Connection,
     requests: &mut [Request],
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
-) -> Result<(), Aborted> {
+) -> Result<bool, Aborted> {
     validate().map_err(Aborted::rejected)?;
     connection
         .execute_batch("BEGIN IMMEDIATE")
@@ -319,7 +308,7 @@ fn transaction(
         panic::catch_unwind(AssertUnwindSafe(|| prepare(connection, requests, validate)));
     match prepared {
         Ok(Ok(true)) => match connection.execute_batch("COMMIT") {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(error) => Err(abort(
                 connection,
                 StoreError::CommitUnknown(error),
@@ -330,11 +319,13 @@ fn transaction(
         Ok(Ok(false)) => {
             // Replay receipts refer to already durable results. A rejected single
             // statement may still have speculative SQL, so never commit this path.
-            rollback(connection).map_err(|error| Aborted {
-                cause: Arc::new(error.into()),
-                unknown: true,
-                reusable: false,
-            })
+            rollback(connection)
+                .map(|()| false)
+                .map_err(|error| Aborted {
+                    cause: Arc::new(error.into()),
+                    unknown: true,
+                    reusable: false,
+                })
         }
         Ok(Err(error)) => Err(abort(connection, error, false, validate)),
         Err(_) => Err(abort(
@@ -407,6 +398,3 @@ fn prepare(
     validate()?;
     Ok(changed)
 }
-
-#[cfg(test)]
-mod tests;

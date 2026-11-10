@@ -17,80 +17,135 @@
  * under the License.
  */
 
+use futures_util::FutureExt;
 use rmcp::{
     RoleClient,
     service::{RxJsonRpcMessage, TxJsonRpcMessage},
     transport::Transport,
 };
+use std::{
+    fmt,
+    panic::AssertUnwindSafe,
+    sync::{Arc, OnceLock},
+};
 use tokio::sync::watch;
 
-/// Keep a cleanup receipt even when rmcp drops a transport during initialization.
-/// Dropping a future is not evidence that its HTTP worker has stopped.
+#[derive(Clone, Debug)]
+pub(crate) struct TransportError(Arc<dyn std::error::Error + Send + Sync>);
+impl TransportError {
+    fn new(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(error))
+    }
+}
+impl fmt::Display for TransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MCP transport cleanup failed")
+    }
+}
+impl std::error::Error for TransportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// The original close task owns T even after the SDK drops its observer.
+#[derive(Clone)]
+pub(crate) struct Custody(Arc<Cleanup>);
+struct Cleanup {
+    done: watch::Receiver<Option<Result<(), TransportError>>>,
+    task: OnceLock<tokio::task::JoinHandle<()>>,
+}
 pub(crate) struct Owned<T: Transport<RoleClient> + 'static> {
     transport: Option<T>,
-    done: watch::Sender<Option<Result<(), String>>>,
+    done: watch::Sender<Option<Result<(), TransportError>>>,
+    custody: Custody,
 }
-pub(crate) type Closed = watch::Receiver<Option<Result<(), String>>>;
-pub(crate) fn track<T: Transport<RoleClient> + 'static>(transport: T) -> (Owned<T>, Closed) {
+pub(crate) fn track<T: Transport<RoleClient> + 'static>(transport: T) -> (Owned<T>, Custody) {
     let (done, closed) = watch::channel(None);
+    let custody = Custody(Arc::new(Cleanup {
+        done: closed,
+        task: OnceLock::new(),
+    }));
     (
         Owned {
             transport: Some(transport),
             done,
+            custody: custody.clone(),
         },
-        closed,
+        custody,
     )
 }
-pub(crate) async fn closed(mut done: Closed) -> Result<(), String> {
-    loop {
-        if let Some(result) = done.borrow_and_update().clone() {
-            return result;
+impl Custody {
+    pub(crate) async fn closed(&self) -> Result<(), TransportError> {
+        let mut done = self.0.done.clone();
+        loop {
+            if let Some(result) = done.borrow_and_update().clone() {
+                return result;
+            }
+            done.changed().await.map_err(|_| {
+                TransportError::new(std::io::Error::other(
+                    "MCP transport cleanup owner disappeared",
+                ))
+            })?;
         }
-        done.changed()
-            .await
-            .map_err(|_| "MCP transport cleanup disappeared".to_owned())?;
+    }
+}
+impl<T: Transport<RoleClient> + 'static> Owned<T> {
+    fn start_close(&mut self) {
+        if let Some(mut transport) = self.transport.take() {
+            let done = self.done.clone();
+            let task = tokio::spawn(async move {
+                let result = match AssertUnwindSafe(transport.close()).catch_unwind().await {
+                    Ok(result) => result.map_err(TransportError::new),
+                    Err(_) => Err(TransportError::new(std::io::Error::other(
+                        "MCP transport close panicked",
+                    ))),
+                };
+                match result {
+                    Ok(()) => {
+                        drop(transport);
+                        done.send_replace(Some(Ok(())));
+                    }
+                    Err(error) => {
+                        done.send_replace(Some(Err(error)));
+                        // A failed SDK close may have consumed its internal join.
+                        // Keep the original T; never retry its now-empty handle.
+                        std::future::pending::<()>().await;
+                        drop(transport);
+                    }
+                }
+            });
+            self.custody
+                .0
+                .task
+                .set(task)
+                .expect("one original MCP transport close");
+        }
     }
 }
 impl<T: Transport<RoleClient> + 'static> Transport<RoleClient> for Owned<T> {
-    type Error = T::Error;
+    type Error = TransportError;
     fn send(
         &mut self,
         message: TxJsonRpcMessage<RoleClient>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
-        self.transport
+        let sent = self
+            .transport
             .as_mut()
             .expect("open transport")
-            .send(message)
+            .send(message);
+        async move { sent.await.map_err(TransportError::new) }
     }
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         self.transport.as_mut()?.receive().await
     }
     async fn close(&mut self) -> Result<(), Self::Error> {
-        if let Some(mut transport) = self.transport.take() {
-            let result = transport.close().await;
-            self.done.send_replace(Some(
-                result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|_| "MCP transport cleanup failed".into()),
-            ));
-            result
-        } else {
-            Ok(())
-        }
+        self.start_close();
+        self.custody.closed().await
     }
 }
 impl<T: Transport<RoleClient> + 'static> Drop for Owned<T> {
     fn drop(&mut self) {
-        if let Some(mut transport) = self.transport.take() {
-            let done = self.done.clone();
-            tokio::spawn(async move {
-                let result = transport
-                    .close()
-                    .await
-                    .map_err(|_| "MCP transport cleanup failed".into());
-                done.send_replace(Some(result));
-            });
-        }
+        self.start_close();
     }
 }

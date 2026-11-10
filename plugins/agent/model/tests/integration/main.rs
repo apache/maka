@@ -17,29 +17,7 @@
  * under the License.
  */
 
-mod adapters;
-mod concurrency;
-mod context_overflow;
 mod provider_compatible;
-mod provider_ingress;
-mod provider_responses;
-mod provider_stream;
-mod provider_tools;
-mod responses_websocket;
-mod wire_encoding;
-
-// Mutable builders exist only in fixtures; production requests carry immutable views.
-fn edit_prompt(
-    prompt: &mut maka_model::prompt::Prompt,
-    edit: impl FnOnce(&mut Vec<maka_model::prompt::Message>),
-) {
-    let mut messages = prompt
-        .memory_messages()
-        .expect("fixture memory source")
-        .to_vec();
-    edit(&mut messages);
-    *prompt = messages.into();
-}
 
 async fn http_request(socket: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
     use tokio::io::AsyncReadExt;

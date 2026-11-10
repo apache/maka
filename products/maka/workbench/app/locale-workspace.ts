@@ -37,15 +37,14 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
-  'Recent folders': ['Recent folders', '最近使用', '最近使用'],
-  'Remove this folder from recents': [
-    'Remove this folder from recents',
-    '从最近记录中移除此文件夹',
-    '從最近記錄中移除此資料夾',
-  ],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
-  'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
+  'Pin conversation': ['Pin conversation', '置顶对话', '置頂對話'],
+  Pin: ['Pin', '置顶', '置頂'],
+  Unpin: ['Unpin', '取消置顶', '取消置頂'],
+  'Rename…': ['Rename…', '重命名…', '重新命名…'],
+  'Fork…': ['Fork…', '分支…', '分支…'],
+  'Compaction prompt…': ['Compaction prompt…', '压缩提示词…', '壓縮提示詞…'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
   'View the record of {title}': [
     'View the record of {title}',
@@ -210,7 +209,7 @@ export const workspaceMessages = {
     '資料夾分頁未前進。請重新開啟資料夾。',
   ],
   'Folder · {name}': ['Folder · {name}', '文件夹 · {name}', '資料夾 · {name}'],
-  'Fork conversation': ['Fork conversation', '分叉对话', '分支對話'],
+  'Fork conversation': ['Fork conversation', '分支对话', '分支對話'],
   'Fork · {title}': ['Fork · {title}', '分支 · {title}', '分支 · {title}'],
   Fork: ['Fork', '分支', '分支'],
   'From {title}': ['From {title}', '来自 {title}', '來自 {title}'],

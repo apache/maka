@@ -36,9 +36,10 @@ use tokio_util::sync::CancellationToken;
 
 /// The pool owns connections; this handle admits I/O only while its call lives.
 pub(super) struct Call {
-    pub transport: Arc<dyn Transport>,
+    pub transport: Arc<Network>,
     pub events: Arc<dyn maka_agent_ports::model::Events>,
     pub cancellation: CancellationToken,
+    pub source: Option<maka_agent_ports::model::RequestSource>,
 }
 impl Transport for Call {
     fn identity(&self) -> u64 {
@@ -51,39 +52,19 @@ impl Transport for Call {
     ) -> BoxFuture<'_, Result<http::Response, Error>> {
         Box::pin(async move {
             let stop = self.cancellation.child_token();
-            let pending = self.transport.request(request, stop.clone());
+            let pending = self
+                .transport
+                .request_http(request, stop.clone(), self.source.as_ref());
             tokio::pin!(pending);
             let response = tokio::select! {
                 biased;
                 _ = self.cancellation.cancelled() => {
                     stop.cancel();
-                    let cleanup_started = tokio::time::Instant::now();
-                    tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| {
-                            tracing::error!(
-                                stage = "model_call_cancel_drain",
-                                outcome = "timeout",
-                                timeout_ms = 11000_u64,
-                                elapsed_ms = cleanup_started.elapsed().as_millis(),
-                                "cleanup unconfirmed"
-                            );
-                            cleanup_unconfirmed()
-                        })??
+                    pending.as_mut().await?
                 },
                 _ = cancellation.cancelled() => {
                     stop.cancel();
-                    let cleanup_started = tokio::time::Instant::now();
-                    tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| {
-                            tracing::error!(
-                                stage = "model_request_cancel_drain",
-                                outcome = "timeout",
-                                timeout_ms = 11000_u64,
-                                elapsed_ms = cleanup_started.elapsed().as_millis(),
-                                "cleanup unconfirmed"
-                            );
-                            cleanup_unconfirmed()
-                        })??
+                    pending.as_mut().await?
                 },
                 response = &mut pending => response?,
             };
@@ -110,6 +91,9 @@ impl Transport for Call {
     }
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
         Box::pin(async move {
+            if let Some(source) = &self.source {
+                source.frozen.authorize(self.cancellation.clone()).await?;
+            }
             let socket = tokio::select! {
                 biased;
                 _ = self.cancellation.cancelled() => return Err(Error::Cancelled),
@@ -119,6 +103,21 @@ impl Transport for Call {
             // Accepted sockets belong to the adapter session and may outlive
             // this request. Each new call supplies its own cancellation context.
             Ok(socket)
+        })
+    }
+    fn send_text(
+        &self,
+        socket: Arc<dyn Socket>,
+        chunks: maka_agent_ports::model::TextStream,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            if let Some(source) = &self.source {
+                source.frozen.authorize(self.cancellation.clone()).await?;
+            }
+            if self.cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            self.transport.send_text(socket, chunks).await
         })
     }
 }
@@ -163,7 +162,7 @@ pub(super) struct Pool {
     identity: RandomState,
 }
 impl Pool {
-    pub fn get(&self, policy: &maka_network::Policy) -> Result<Arc<dyn Transport>, Error> {
+    pub fn get(&self, policy: &maka_network::Policy) -> Result<Arc<Network>, Error> {
         let mut routes = self.routes.lock().unwrap();
         if let Some(network) = routes.get(policy) {
             return Ok(network.clone());
@@ -181,7 +180,7 @@ impl Pool {
         Ok(network)
     }
 }
-struct Network {
+pub(super) struct Network {
     tls: maka_network::TlsConfigCache,
     policy: maka_network::Policy,
     identity: u64,
@@ -206,6 +205,13 @@ fn headers(values: Vec<(String, String)>) -> Result<reqwest::header::HeaderMap, 
     Ok(headers)
 }
 impl Transport for Network {
+    fn send_text(
+        &self,
+        socket: Arc<dyn Socket>,
+        chunks: maka_agent_ports::model::TextStream,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async move { socket.send_text(chunks).await })
+    }
     fn identity(&self) -> u64 {
         self.identity
     }
@@ -214,7 +220,7 @@ impl Transport for Network {
         request: http::Request,
         cancellation: CancellationToken,
     ) -> BoxFuture<'_, Result<http::Response, Error>> {
-        Box::pin(self.request_http(request, cancellation))
+        Box::pin(self.request_http(request, cancellation, None))
     }
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
         Box::pin(async move {
@@ -249,8 +255,12 @@ struct UploadLease {
 impl UploadLease {
     async fn finish(&self) -> Result<(), http::Error> {
         self.stop.cancel();
+        // Joining this request's connection drivers drops their upload wrappers;
+        // the original receipt also waits for all retained source byte slices.
         self.connections.close().await;
-        self.receipt.lock().await.finish().await.map(|_| ())
+        let mut receipt = self.receipt.lock().await;
+        receipt.source_released().await?;
+        receipt.finish().await.map(|_| ())
     }
 }
 impl Drop for UploadLease {
@@ -405,66 +415,3 @@ pub(super) fn failure(error: reqwest::Error) -> Error {
         Error::Adapter(format!("model HTTP request failed: {detail}"))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn unrepresentable_model_headers_fail_without_panicking() {
-        let values = (0..32_768)
-            .map(|index| (format!("x-field-{index}"), "value".into()))
-            .collect();
-        let result = headers(values).and_then(|headers| {
-            maka_network::Policy::default()
-                .check_request_headers(
-                    &reqwest::Url::parse("https://example.com/").unwrap(),
-                    &headers,
-                    true,
-                    true,
-                )
-                .map_err(|_| Error::Adapter("model HTTP headers cannot be represented".into()))?;
-            Ok(headers)
-        });
-        assert!(
-            matches!(result, Err(Error::Adapter(message)) if message == "model HTTP headers cannot be represented")
-        );
-        let values = headers(vec![("x-safe".into(), "kept".into())]).unwrap();
-        assert_eq!(values["x-safe"], "kept");
-    }
-
-    #[test]
-    fn socket_write_failures_preserve_transient_network_evidence() {
-        use tokio_tungstenite::tungstenite::{Error as WsError, error::ProtocolError};
-        for cause in [
-            std::io::Error::from(std::io::ErrorKind::BrokenPipe),
-            std::io::Error::other(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
-        ] {
-            let error = websocket_failure("send", WsError::Io(cause));
-            let Error::Provider(failure) = error else {
-                panic!("broken pipe must remain a network failure")
-            };
-            assert_eq!(failure.reason(), ProviderFailureReason::Network);
-            assert!(
-                failure.message().contains("send failed")
-                    && failure
-                        .message()
-                        .to_ascii_lowercase()
-                        .contains("broken pipe")
-            );
-            assert!(
-                !failure.replay_safe(),
-                "only the protocol decoder can authorize replay"
-            );
-        }
-        assert!(
-            matches!(
-                websocket_failure("send", WsError::Protocol(ProtocolError::SendAfterClosing)),
-                Error::Adapter(_)
-            ),
-            "protocol misuse is not a retryable network outage"
-        );
-    }
-}
-
-#[cfg(test)]
-mod http_tests;

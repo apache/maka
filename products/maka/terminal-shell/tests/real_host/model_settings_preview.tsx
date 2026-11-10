@@ -117,7 +117,7 @@ function Preview() {
     reply: {
       receipt: {
         kind: 'recorded',
-        outcome: { kind: 'returned', value },
+        outcome: { kind: 'returned', result: { kind: 'success', value } },
         cleanup: { kind: 'confirmed' },
       },
     },

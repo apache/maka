@@ -21,13 +21,29 @@ use rusqlite::Connection as SqliteConnection;
 
 use crate::StoreError;
 
-static MIGRATIONS: &[crate::migration::Migration] = &[crate::migration::Migration {
-    version: 1,
-    description: "runtime",
-    sql: include_str!("../migrations/0001_runtime.sql"),
-}];
+/// Base Root schema; products compose this with their domain migrations.
+pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
+    crate::migration::Migration {
+        version: 1,
+        description: "runtime",
+        sql: include_str!("../migrations/0001_runtime.sql"),
+    },
+    crate::migration::Migration {
+        version: 23,
+        description: "plugin_data_live",
+        sql: include_str!("../migrations/0023_plugin_data_live.sql"),
+    },
+    crate::migration::Migration {
+        version: 36,
+        description: "deferred content release",
+        sql: include_str!("../migrations/0036_pending_content_release.sql"),
+    },
+];
 
-pub(crate) fn initialize_connection(connection: &SqliteConnection) -> Result<(), StoreError> {
+pub(crate) fn initialize_connection(
+    connection: &SqliteConnection,
+    catalog: &[crate::migration::Migration],
+) -> Result<(), StoreError> {
     let application_id: i64 =
         connection.query_row("PRAGMA application_id", rusqlite::params![], |row| {
             row.get(0)
@@ -81,19 +97,9 @@ pub(crate) fn initialize_connection(connection: &SqliteConnection) -> Result<(),
     if application_id == 0 {
         connection.execute_batch("PRAGMA application_id = 1296124754")?;
     }
-    crate::sqlite_functions::register(connection)?;
-    crate::migration::run(connection, MIGRATIONS)?;
+    crate::migration::run(connection, catalog)?;
     connection.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
     )?;
-    // Migrations create the standalone main table; derived Session reads must
-    // resolve the root's live bindings before rebuilding any execution state.
-    crate::message_sources::initialize(connection)?;
-    crate::sessions::initialize_execution(connection)?;
     Ok(())
 }
-
-#[cfg(test)]
-mod fixtures;
-#[cfg(test)]
-pub(crate) use fixtures::schema as fixture;

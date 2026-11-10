@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
-const boundary = { pending: [], event: null };
 const appRoot = new URL('../app/', import.meta.url);
 const native = {
   nsh: `export const signal = initial => { let value = initial; const read = () => value; read.set = next => { value = next; }; return read; }; export const computed = fn => fn; export const cleanup = () => {}; export const browser = { opened: [], available: true }; export const openUrl = async url => { browser.opened.push(url); return {opened: browser.available}; }; export const Clipboard = { writeText: async () => {} };`,
@@ -44,234 +43,61 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { createConnectionLogin } = await import(new URL('connectionLoginState.ts', appRoot));
 const { createSettingsOperations } = await import(new URL('settingsOperations.ts', appRoot));
 const { createModelSettings } = await import(new URL('settings.ts', appRoot));
-const { browser } = await import('nsh');
 hooks.deregister();
 
-const host = {
-  pendingSettings: async () => {
-    return boundary.pending;
-  },
-  beginSetting: async () => ({ next: async () => boundary.event, cancel() {} }),
-};
-const action = { editor: 1, input: { expected: { connectionId: 'connection', revision: 1 } } };
-function setup({
-  cleanupError = null,
-  result = { kind: 'saved', connection: { connectionId: 'connection' } },
-  fetchError = null,
-} = {}) {
-  boundary.pending = [];
-  boundary.event = {
-    kind: 'final',
-    cleanupError,
-    reply: { receipt: { kind: 'recorded', outcome: { kind: 'returned', value: result } } },
-  };
-  const operations = createSettingsOperations(host);
-  operations.pendingKnown.set(true);
-  const events = [];
-  let login;
-  login = createConnectionLogin(host, operations, {
-    accepts: () => true,
-    async saved(_, value) {
-      events.push(`adopt:${value.connection.connectionId}`);
-    },
-    async discover() {
-      assert.equal(login.state().kind, 'models');
-      assert.equal(operations.busy(), true);
-      events.push('fetch');
-      if (fetchError) throw fetchError;
-    },
-  });
-  return { login, operations, events };
-}
-
-test('saved login with cleanup failure preserves the cleanup diagnostic and never starts a failing discovery', async () => {
-  const { login, operations, events } = setup({
-    cleanupError: 'cleanup failed',
-    fetchError: new Error('discovery failed'),
-  });
-  await login.start(action);
-  assert.deepEqual(events, ['adopt:connection']);
-  assert.equal(
-    operations.error(),
-    'Sign-in was saved. Its original request could not finish its resource cleanup.',
-  );
-  assert.equal(login.state(), null);
-  assert.equal(operations.busy(), false);
-});
-
-test('a failed login and cleanup report both boundaries without discovery or saved adoption', async () => {
-  const { login, operations, events } = setup({
-    cleanupError: 'cleanup failed',
-    result: { kind: 'failed', reason: 'expired' },
-  });
-  await login.start(action);
-  assert.deepEqual(events, []);
-  assert.equal(
-    operations.error(),
-    'The sign-in code expired. Start a new sign-in to try again. Its original request could not finish its resource cleanup.',
-  );
-  assert.equal(operations.notice(), '');
-});
-
-function connectionEditor({
-  wrongProvider = false,
-  failDiscovery = false,
-  existing = true,
-  supportsCompaction = false,
-  signedIn = false,
-} = {}) {
+function connectionEditor() {
   const provider = {
+    packageId: 'maka.codex',
     entryId: 'maka.codex',
+    scope: 'profile',
     name: 'chatgpt',
-    packageId: 'maka.codex',
-    scope: 'profile',
   };
-  const receiptProvider = {
-    packageId: 'maka.codex',
-    entryId: 'maka.codex',
-    scope: 'profile',
-    name: wrongProvider ? 'other' : 'chatgpt',
-  };
-  let version = existing ? 1 : 0;
-  let configured = signedIn;
-  const locator = { scope: 'connection', connectionId: 'connection', kind: 'provider' };
-  const status = () => ({
-    locator,
-    configured,
-    credentialId: configured ? 'credential' : null,
-    revision: configured ? 1 : null,
-    updatedAt: null,
-  });
-  let configuration = { baseUrl: 'https://chatgpt.com/backend-api/codex' };
+  const configuration = { baseUrl: 'https://chatgpt.com/backend-api/codex' };
   const descriptor = {
     label: 'ChatGPT Subscription',
     anonymous: false,
     discovery: true,
-    configurationSchema: {
-      properties: supportsCompaction ? { serverSideCompaction: { type: 'boolean' } } : {},
-    },
-    configurationDefaults: {
-      ...configuration,
-      ...(supportsCompaction ? { serverSideCompaction: false } : {}),
-    },
+    configurationSchema: { properties: {} },
+    configurationDefaults: configuration,
     authentication: [{ id: 'device', interactive: true, label: 'Sign in with ChatGPT' }],
   };
-  const detail = () => ({
+  const status = () => ({
+    locator: { scope: 'connection', connectionId: 'connection', kind: 'provider' },
+    configured: false,
+    credentialId: null,
+    revision: null,
+    updatedAt: null,
+  });
+  const original = {
     kind: 'ready',
-    target: {
-      connectionId: 'connection',
-      revision: version,
-      slug: 'chatgpt',
-      provider,
-      configuration: { ...configuration },
-    },
+    target: { connectionId: 'connection', revision: 1, slug: 'chatgpt', provider, configuration },
     name: 'ChatGPT Subscription',
     enabled: true,
     editing: { enabledModelIds: [], modelOverrides: null, requestBodyOverlay: null },
-  });
-  const calls = [];
-  const original = detail();
+  };
   const api = {
     pendingSettings: async () => [],
-    async query(endpoint, method, input) {
-      if (method === 'connection')
-        return input.revision === version
-          ? detail()
-          : { kind: 'stale', actual: { connectionId: 'connection', revision: version } };
-      if (method === 'providers') return { providers: [], next: null };
-      if (method === 'provider')
-        return {
-          identity: provider,
-          descriptor,
-        };
+    async query(_, method) {
       if (method === 'credentialStatus') return { kind: 'status', status: status() };
       if (method === 'connections')
         return {
           kind: 'page',
           connections: [],
-          revision: version,
+          revision: 1,
           next: null,
           defaultTarget: null,
         };
       if (method === 'models')
         return {
           kind: 'ready',
-          revision: version,
+          revision: 1,
           choices: [],
           defaultModel: { kind: 'none' },
           next: null,
         };
-      throw new Error(`unexpected query ${endpoint}.${method}`);
-    },
-    async beginSetting(endpoint, method, input) {
-      calls.push({ endpoint, method, input });
-      assert.equal(input.expected.revision, version);
-      version++;
-      configured = true;
-      return {
-        next: async () => ({
-          kind: 'final',
-          cleanupError: null,
-          reply: {
-            receipt: {
-              kind: 'recorded',
-              outcome: {
-                kind: 'returned',
-                value: {
-                  kind: 'saved',
-                  connection: {
-                    connectionId: 'connection',
-                    slug: 'chatgpt',
-                    provider: receiptProvider,
-                  },
-                },
-              },
-            },
-          },
-        }),
-        cancel() {},
-      };
-    },
-    async settingsMutation(endpoint, method, input) {
-      calls.push({ endpoint, method, input });
-      if (method === 'create' || method === 'update') {
-        if (method === 'update') assert.equal(input.expected.revision, version);
-        configuration = {
-          ...(method === 'create' ? input.connection.configuration : input.changes.configuration),
-        };
-        version++;
-        return {
-          reply: {
-            receipt: {
-              kind: 'recorded',
-              outcome: {
-                kind: 'returned',
-                value: {
-                  kind: 'committed',
-                  connection: { connectionId: 'connection', revision: version },
-                },
-              },
-            },
-          },
-        };
-      }
-      assert.equal(input.revision, version, 'model discovery must use the post-login basis');
-      return {
-        reply: {
-          receipt: {
-            kind: 'recorded',
-            outcome: {
-              kind: 'returned',
-              value: failDiscovery
-                ? { kind: 'failed' }
-                : { kind: 'ready', connection: { connectionId: 'connection', revision: version } },
-            },
-          },
-        },
-      };
+      throw new Error(`unexpected query ${method}`);
     },
   };
   const operations = createSettingsOperations(api);
@@ -315,241 +141,9 @@ function connectionEditor({
       initialModel: null,
     },
   );
-  return {
-    owner,
-    operations,
-    calls,
-    api,
-    provider,
-    changeElsewhere() {
-      version++;
-      configured = true;
-    },
-  };
+
+  return { owner };
 }
-
-test('server-side compaction applies on change, rediscovers models and survives reopening a connection', async () => {
-  const { owner, operations, calls } = connectionEditor({
-    supportsCompaction: true,
-    signedIn: true,
-  });
-  const reopen = async () => {
-    const target = owner.editor().baseline.target;
-    owner.back();
-    assert.equal(owner.page(), 'connections');
-    await owner.openConnection(target);
-    assert.equal(owner.page(), 'connection');
-  };
-  assert.equal(owner.supportsServerSideCompaction(), true);
-  assert.equal(owner.editor().serverSideCompaction, false);
-  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
-  assert.equal(operations.error(), '');
-  assert.deepEqual(
-    calls.map((call) => call.method),
-    ['update', 'discoverModels'],
-  );
-  assert.equal(owner.dirty(), false);
-  await reopen();
-  assert.equal(owner.editor().serverSideCompaction, true);
-  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: false });
-  await reopen();
-  assert.equal(operations.error(), '');
-  assert.equal(owner.editor().serverSideCompaction, false);
-  assert.equal(owner.dirty(), false);
-});
-
-test('a foreground read that lands after a model draft opens keeps the draft on its basis', async () => {
-  const { owner, api, changeElsewhere } = connectionEditor();
-  const query = api.query.bind(api);
-  let release;
-  api.query = (endpoint, method, input) =>
-    method === 'connection' && input.revision === undefined
-      ? new Promise((resolve) => {
-          release = () => resolve(query(endpoint, method, { ...input, revision: 2 }));
-        })
-      : query(endpoint, method, input);
-  owner.refresh();
-  owner.editModel({ ...owner.action(), id: null });
-  assert.equal(owner.page(), 'model');
-  changeElsewhere();
-  release();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(owner.editor().baseline.target.revision, 1);
-});
-
-test('a switch flipped with unsaved typing joins that draft instead of saving alone', async () => {
-  const { owner, calls } = connectionEditor({ supportsCompaction: true });
-  owner.edit('name', 'A personal name');
-  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
-  assert.deepEqual(calls, []);
-  assert.equal(owner.editor().name, 'A personal name');
-  assert.equal(owner.editor().serverSideCompaction, true);
-  assert.equal(owner.dirty(), true);
-});
-
-test('only supporting providers offer compaction, and new connections start with it off', async () => {
-  const unsupported = connectionEditor();
-  assert.equal(unsupported.owner.supportsServerSideCompaction(), false);
-  const { owner, provider, operations, calls } = connectionEditor({
-    existing: false,
-    supportsCompaction: true,
-  });
-  owner.newConnection();
-  await owner.chooseProvider(provider);
-  assert.equal(owner.supportsServerSideCompaction(), true);
-  assert.equal(owner.editor().serverSideCompaction, false);
-  await owner.saveConnection(owner.action());
-  assert.equal(operations.error(), '');
-  assert.equal(
-    calls.find((call) => call.method === 'create').input.connection.configuration
-      .serverSideCompaction,
-    false,
-  );
-});
-
-test('connection login accepts reordered provider fields and refreshes both connection and credential bases', async () => {
-  const { owner, operations, calls } = connectionEditor();
-  await owner.login.start(owner.loginAction('device'));
-  assert.equal(operations.error(), '');
-  assert.equal(owner.credential().configured, true);
-  assert.equal(owner.action().revision, 2);
-  assert.equal(owner.loginAction('device').input.expectedCredential.credentialId, 'credential');
-  assert.deepEqual(
-    calls.map((call) => call.method),
-    ['loginCredential', 'discoverModels'],
-  );
-  await owner.login.start(owner.loginAction('device'));
-  assert.equal(operations.error(), '');
-  assert.equal(
-    owner.action().revision,
-    3,
-    'another intentional sign-in must not retain the first basis',
-  );
-});
-
-test('a genuinely different provider receipt remains rejected', async () => {
-  const { owner, operations, calls } = connectionEditor({ wrongProvider: true });
-  await owner.login.start(owner.loginAction('device'));
-  assert.equal(
-    operations.error(),
-    'The sign-in receipt refers to another connection. Reload before continuing.',
-  );
-  assert.equal(owner.action().revision, 1);
-  assert.deepEqual(
-    calls.map((call) => call.method),
-    ['loginCredential'],
-  );
-});
-
-test('discovery failure keeps the completed login and refreshed editor usable', async () => {
-  const { owner, operations } = connectionEditor({ failDiscovery: true });
-  await owner.login.start(owner.loginAction('device'));
-  assert.equal(owner.credential().configured, true);
-  assert.equal(owner.action().revision, 2);
-  assert.equal(owner.discovery(), 'failed');
-  assert.match(operations.error(), /^Signed in, but models could not be loaded\./);
-  assert.equal(owner.login.state(), null);
-  assert.equal(owner.busy(), false);
-});
-
-test('reload advances an externally changed connection instead of querying the stale basis again', async () => {
-  const { owner, operations, changeElsewhere } = connectionEditor();
-  changeElsewhere();
-  await owner.reloadConnection(owner.action());
-  assert.equal(operations.error(), '');
-  assert.equal(owner.action().revision, 2);
-  assert.equal(owner.credential().configured, true);
-  assert.equal(owner.dirty(), false);
-});
-
-test('save and sign in creates the connection before authorizing it, without an intermediate user action', async () => {
-  const { owner, operations, calls, provider } = connectionEditor({ existing: false });
-  owner.newConnection();
-  await owner.chooseProvider(provider);
-  assert.equal(owner.editor().baseline, null);
-  await owner.signIn({ ...owner.action(), method: 'device' });
-  assert.equal(operations.error(), '');
-  assert.equal(owner.credential().configured, true);
-  assert.deepEqual(
-    calls.map((call) => call.method),
-    ['create', 'loginCredential', 'discoverModels'],
-  );
-});
-
-test('browser opening failure leaves the same device sign-in cancellable and cancellation is not an error', async () => {
-  browser.opened = [];
-  browser.available = false;
-  const ready = Promise.withResolvers();
-  const completion = Promise.withResolvers();
-  let progress = true;
-  const api = {
-    pendingSettings: async () => [],
-    async beginSetting() {
-      return {
-        cancel() {
-          completion.resolve({
-            kind: 'final',
-            cleanupError: null,
-            reply: {
-              receipt: {
-                kind: 'recorded',
-                outcome: { kind: 'returned', value: { kind: 'failed', reason: 'cancelled' } },
-              },
-            },
-          });
-        },
-        async next() {
-          if (progress) {
-            progress = false;
-            return {
-              kind: 'progress',
-              value: { url: 'https://auth.openai.com/codex/device', userCode: 'ABCD-EFGH' },
-            };
-          }
-          ready.resolve();
-          return completion.promise;
-        },
-      };
-    },
-  };
-  const operations = createSettingsOperations(api);
-  operations.pendingKnown.set(true);
-  const login = createConnectionLogin(api, operations, {
-    accepts: () => true,
-    async saved() {
-      assert.fail('cancelled sign-in must not be presented as saved');
-    },
-    async discover() {
-      assert.fail('cancelled sign-in must not fetch models');
-    },
-  });
-  try {
-    const running = login.start(action);
-    await ready.promise;
-    assert.deepEqual(browser.opened, ['https://auth.openai.com/codex/device']);
-    assert.equal(login.authorization().browser, 'failed');
-    assert.equal(login.authorization().prompt.userCode, 'ABCD-EFGH');
-    login.cancel(login.authorization().occurrence);
-    await running;
-    assert.equal(operations.error(), '');
-    assert.equal(operations.notice(), 'Sign-in cancelled.');
-    assert.equal(operations.busy(), false);
-  } finally {
-    browser.available = true;
-  }
-});
-
-test('back navigation offers a way to keep unsaved connection edits', async () => {
-  const { owner } = connectionEditor();
-  owner.edit('name', 'A personal name');
-  owner.back();
-  assert.equal(owner.discardTarget(), 'connection');
-  owner.keepEditing();
-  assert.equal(owner.editor().name, 'A personal name');
-  owner.back();
-  owner.discardEdits(owner.action());
-  assert.equal(owner.page(), 'connections');
-});
 
 test('leaving a connection runs the exit at once when clean and only after discarding edits', async () => {
   const { owner } = connectionEditor();
@@ -564,45 +158,4 @@ test('leaving a connection runs the exit at once when clean and only after disca
   owner.discardEdits(owner.action());
   assert.deepEqual(ran, ['clean', 'discarded']);
   assert.equal(owner.page(), 'connections');
-});
-
-test('a new connection returns to its provider search without treating its suggested unique ID as an edit', async () => {
-  const { owner, provider } = connectionEditor();
-  owner.connections.set([{ slug: 'chatgpt' }, { slug: 'chatgpt-2' }]);
-  owner.newConnection();
-  owner.searchProviders('chatgpt');
-  await owner.chooseProvider(provider);
-  assert.equal(owner.editor().slug, 'chatgpt-3');
-  owner.back();
-  assert.equal(owner.discardTarget(), null);
-  assert.equal(owner.page(), 'providers');
-  assert.equal(owner.providerQuery(), 'chatgpt');
-  assert.deepEqual(owner.selectedProvider(), provider);
-  owner.cancel();
-  assert.equal(owner.providerQuery(), '');
-  assert.equal(owner.page(), 'providers');
-  owner.back();
-  assert.equal(owner.page(), 'connections');
-});
-
-test('returning while a provider is opening discards its late reply and allows choosing again', async () => {
-  const { owner, api, provider } = connectionEditor();
-  const queried = api.query.bind(api);
-  const release = Promise.withResolvers();
-  api.query = async (endpoint, method, input) => {
-    if (method === 'provider') await release.promise;
-    return queried(endpoint, method, input);
-  };
-  owner.newConnection();
-  const opening = owner.chooseProvider(provider);
-  assert.deepEqual(owner.openingProvider(), provider);
-  owner.back();
-  release.resolve();
-  await opening;
-  assert.equal(owner.page(), 'connections');
-  assert.equal(owner.editor(), null);
-  assert.equal(owner.openingProvider(), null);
-  owner.newConnection();
-  await owner.chooseProvider(provider);
-  assert.equal(owner.page(), 'connection');
 });

@@ -20,7 +20,7 @@
 //! A selected image subscription produces owned bytes, never a path or bearer.
 use crate::contract::ImageFrame;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use maka_agent_facts::tool_output::ToolSuccess;
+use maka_agent_facts::tool_output::{ImageDetail, ToolSuccess};
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::{Context, ServiceTarget};
@@ -56,13 +56,10 @@ pub(super) async fn read(
     let completion = subscription.completion().await;
     completion.cleanup.map_err(ToolError::CleanupUnconfirmed)?;
     let value = completion.result.map_err(failed)?;
-    if !matches!(
-        serde_json::from_value::<ImageFrame>(value),
-        Ok(ImageFrame::Complete)
-    ) {
+    let Ok(ImageFrame::Complete { detail }) = serde_json::from_value::<ImageFrame>(value) else {
         return Err(failed("Image producer did not complete"));
-    }
-    image.finish()
+    };
+    image.finish(detail)
 }
 
 #[derive(Default)]
@@ -114,7 +111,7 @@ impl Image {
         self.bytes.extend_from_slice(&chunk);
         Ok(())
     }
-    fn finish(self) -> Result<ToolSuccess, ToolError> {
+    fn finish(self, detail: Option<ImageDetail>) -> Result<ToolSuccess, ToolError> {
         let Some((mime, total)) = self.descriptor else {
             return Err(failed("Image producer returned no image"));
         };
@@ -124,7 +121,7 @@ impl Image {
         if maka_fs_tools::image::validate(&self.bytes)? != mime {
             return Err(failed("Image MIME does not match its content"));
         }
-        ToolSuccess::image(self.bytes, mime).map_err(failed)
+        ToolSuccess::image(self.bytes, mime, detail).map_err(failed)
     }
 }
 fn failed(error: impl std::fmt::Display) -> ToolError {

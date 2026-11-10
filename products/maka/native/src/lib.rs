@@ -21,12 +21,24 @@
 pub mod catalog;
 
 use maka_host_runtime::application::NativeRegistry;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+
+/// Complete migration catalog for the Maka product Root.
+pub fn root_migrations() -> Vec<maka_event_log::migration::Migration> {
+    [
+        maka_event_log::ROOT_MIGRATIONS,
+        maka_agent_state::MIGRATIONS,
+    ]
+    .concat()
+}
+
 pub fn provide(
     registry: &mut NativeRegistry,
     catalog: Arc<catalog::Catalog>,
+    state: maka_agent_state::Store,
+    helper: PathBuf,
 ) -> Result<(), String> {
-    maka_agent_native::provide(registry, catalog.clone())?;
+    maka_agent_native::provide(registry, catalog.clone(), state, helper)?;
     maka_acp_native::provide(registry)?;
     maka_files_native::provide(registry)?;
     maka_computer_native::provide(registry)?;

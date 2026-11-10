@@ -73,12 +73,9 @@ const PREDICATE: &str = "
     AND (?2 IS NULL OR id = ?2)
     AND (?3 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.path')=?3))
     AND (?4 IS NULL OR substr(id, 1, length(?4)) = ?4)
-    AND (?5 = 0 OR EXISTS (
-        SELECT 1 FROM interaction_pending pending
-        WHERE pending.session_id = session_control.id))
-    AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?6))
-    AND (?7 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?7))
-    AND instr(COALESCE(json_extract(configuration, '$.title'), ''), ?8) > 0";
+    AND (?5 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?5))
+    AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?6))
+    AND instr(COALESCE(json_extract(configuration, '$.title'), ''), ?7) > 0";
 
 #[derive(Clone)]
 pub(crate) struct Selection {
@@ -162,12 +159,12 @@ impl Selection {
             }
         };
         let visibility = if self.published_only {
-            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?11 AND r.ready=1 AND r.visible=1)"
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?10 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
         let parent = if self.parent.is_some() {
-            "AND json_extract(configuration, '$.parentSessionId') = ?14"
+            "AND json_extract(configuration, '$.parentSessionId') = ?13"
         } else {
             ""
         };
@@ -178,8 +175,8 @@ impl Selection {
         };
         let sql = format!(
             "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility} {parent} {roots}
-            AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?12, ?13, ?9)
-            ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?10"
+            AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?11, ?12, ?8)
+            ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?9"
         );
         let mut values = vec![
             rusqlite::types::Value::Integer(if self.filter.archived_only {
@@ -196,7 +193,6 @@ impl Selection {
             self.prefix
                 .clone()
                 .map_or(rusqlite::types::Value::Null, Into::into),
-            rusqlite::types::Value::Integer(i64::from(self.filter.pending_only)),
             self.project
                 .clone()
                 .map_or(rusqlite::types::Value::Null, Into::into),
@@ -227,59 +223,6 @@ impl Selection {
             ids.reverse();
         }
         Ok(ids)
-    }
-
-    pub(crate) fn pending_count(
-        &self,
-        connection: &rusqlite::Connection,
-    ) -> Result<u64, StoreError> {
-        let visibility = if self.published_only {
-            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?9 AND r.ready=1 AND r.visible=1)"
-        } else {
-            ""
-        };
-        let parent = if self.parent.is_some() {
-            "AND json_extract(configuration, '$.parentSessionId') = ?10"
-        } else {
-            ""
-        };
-        // Attention includes children hidden by the normal root-only sidebar;
-        // owner, scope, title and archive predicates still match the inbox.
-        let sql =
-            format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent}");
-        let mut values = vec![
-            rusqlite::types::Value::Integer(if self.filter.archived_only {
-                2
-            } else {
-                i64::from(!self.filter.include_archived)
-            }),
-            self.session
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            self.cwd
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            self.prefix
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            rusqlite::types::Value::Integer(1),
-            self.project
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            self.workspace_identity
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            self.title_query.clone().into(),
-        ];
-        if self.published_only || self.parent.is_some() {
-            values.push(i64::from(self.published_only).into());
-        }
-        if let Some(parent) = &self.parent {
-            values.push(parent.clone().into());
-        }
-        let count: i64 =
-            connection.query_row(&sql, rusqlite::params_from_iter(values), |row| row.get(0))?;
-        u64::try_from(count).map_err(|_| invalid("invalid pending session count"))
     }
 }
 
@@ -402,7 +345,6 @@ impl EventLog {
                 } else {
                     None
                 };
-                let pending_session_count = selection.pending_count(&tx)?;
                 let mut sessions = Vec::with_capacity(ids.len());
                 for id in ids {
                     sessions.push(read(&tx, &id.id)?.ok_or(StoreError::SessionNotFound)?);
@@ -410,7 +352,6 @@ impl EventLog {
                 Ok(SessionPage {
                     revision,
                     sessions,
-                    pending_session_count,
                     next_cursor,
                     previous_cursor,
                 })
@@ -450,9 +391,7 @@ impl EventLog {
                             Err(error)
                                 if matches!(
                                     error,
-                                    StoreError::Json(_)
-                                        | StoreError::InvalidTransition(_)
-                                        | StoreError::Projection(_)
+                                    StoreError::Json(_) | StoreError::InvalidTransition(_)
                                 ) =>
                             {
                                 records.push(Err(crate::sessions::UnreadableSession { id, error }));

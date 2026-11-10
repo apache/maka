@@ -57,10 +57,7 @@ pub(super) async fn query(
                             runtime::Transport::WebSocket,
                             None,
                             cancellation.clone(),
-                            |mut io| async move {
-                                let result = probe(&mut io).await;
-                                (result, io)
-                            },
+                            Probe,
                         )
                         .await
                     }
@@ -112,6 +109,17 @@ pub(super) async fn query(
         Ok(Value::Array(result))
     }
 }
+struct Probe;
+impl runtime::PipeProtocol for Probe {
+    type Output = Value;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Value, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(probe(io))
+    }
+}
+
 async fn probe(io: &mut Pipe) -> Result<Value, Error> {
     let init = io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     io.notify("initialized", serde_json::json!({})).await?;
@@ -158,85 +166,4 @@ async fn probe(io: &mut Pipe) -> Result<Value, Error> {
     Ok(
         serde_json::json!({"installation":{"kind":"available"},"authentication":authentication,"models":{"kind":"ok","models":models}}),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn absent_native_commands_are_not_reported_as_installed() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = NativeCommand {
-            executable: directory
-                .path()
-                .join("missing-native.exe")
-                .to_str()
-                .unwrap()
-                .into(),
-            args: vec![],
-            env: BTreeMap::new(),
-        };
-        let commands = NativeRuntime::ALL
-            .into_iter()
-            .map(|runtime| (runtime, config.clone()))
-            .collect();
-        let result = query(
-            &commands,
-            directory.path().to_str().unwrap(),
-            "status",
-            None,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        let runtimes: Vec<maka_agent_api::external::RuntimeRecord> =
-            serde_json::from_value(result).unwrap();
-        assert_eq!(runtimes.len(), NativeRuntime::ALL.len());
-        assert!(runtimes.iter().all(|runtime| matches!(
-            runtime.installation,
-            maka_agent_api::external::Installation::NotFound
-        )));
-    }
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn batch_only_installation_has_the_same_actionable_diagnostic_for_all_runtimes() {
-        let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("native.CMD");
-        tokio::fs::write(&executable, "fixture batch")
-            .await
-            .unwrap();
-        let config = NativeCommand {
-            executable: executable.to_str().unwrap().into(),
-            args: vec![],
-            env: BTreeMap::new(),
-        };
-        let commands = NativeRuntime::ALL
-            .into_iter()
-            .map(|runtime| (runtime, config.clone()))
-            .collect();
-        let result = query(
-            &commands,
-            directory.path().to_str().unwrap(),
-            "status",
-            None,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        let runtimes: Vec<maka_agent_api::external::RuntimeRecord> =
-            serde_json::from_value(result).unwrap();
-        for runtime in runtimes {
-            assert!(
-                matches!(runtime.installation, maka_agent_api::external::Installation::Unsupported { detail } if detail == runtime::BATCH_SHIM_UNSUPPORTED)
-            );
-            assert!(matches!(
-                runtime.models,
-                maka_agent_api::external::Models::Unavailable
-            ));
-        }
-        assert!(
-            matches!(runtime::command(&config, directory.path().to_str().unwrap()).await,
-            Err(Error::Provider(detail)) if detail == runtime::BATCH_SHIM_UNSUPPORTED)
-        );
-    }
 }

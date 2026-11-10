@@ -23,6 +23,7 @@ pub mod access;
 pub mod catalog;
 pub mod claude;
 pub mod codex;
+pub mod exact;
 mod jsonl;
 pub mod opencode;
 pub mod source;
@@ -30,3 +31,8 @@ mod synthetic;
 mod transcript;
 
 pub use transcript::{Error, Fingerprint, Transcript};
+
+pub use exact::{
+    ExactContent, ExactMedia, ExactMessage, ExactPart, ExactRecord, ExactSink, ExactTranscript,
+    MediaBody, MediaSink,
+};

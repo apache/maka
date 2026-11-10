@@ -30,7 +30,9 @@ pub(super) fn project(
     record.validate().map_err(ProjectionError::Invalid)?;
     let make = |id, content| Message {
         id,
-        turn_id: event.invocation.turn_id.clone(),
+        run_id: event.execution.run_id,
+        model: None,
+        turn_id: event.execution.turn_id.clone(),
         ts: record.timestamp.unwrap_or(ts),
         content,
     };
@@ -70,11 +72,11 @@ pub(super) fn project(
             input,
         } => {
             return Ok(vec![make(
-                import::tool_call_id(&event.invocation.session_id, call_id),
+                import::tool_call_id(&event.execution.session_id, call_id),
                 Content::ToolCall {
                     tool_name: name.clone(),
                     args: input.clone().unwrap_or_else(|| json!({})),
-                    step_id: None,
+                    anchor_message_id: None,
                     provider_options: None,
                     provider_executed: None,
                     metadata: ToolMetadata::Imported {
@@ -89,7 +91,7 @@ pub(super) fn project(
             is_error,
         } => Content::ToolResult {
             settlement: None,
-            tool_use_id: import::tool_call_id(&event.invocation.session_id, call_id),
+            tool_use_id: import::tool_call_id(&event.execution.session_id, call_id),
             is_error: *is_error,
             content: ToolContent::Json {
                 value: output.clone(),

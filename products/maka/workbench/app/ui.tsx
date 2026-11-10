@@ -35,10 +35,29 @@ import {
 import { appearance } from './appearance';
 import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
+/** NSH's tooltip bubble in Maka's colors: one line, or `richTooltipStyle` for more. */
+export const tooltipStyle = () => ({
+  borderRadius: 6,
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+});
+export const richTooltipStyle = () => ({
+  borderRadius: 8,
+  padding: 10,
+  gap: 8,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+});
+export const tooltipTextStyle = () => ({ fontSize: 12, lineHeight: 16, color: C.text });
+
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
-    <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
-      <Text class="text-xs text-popover-foreground">{text()}</Text>
+    <Tooltip disabled={!text()} style={tooltipStyle()}>
+      <Text style={tooltipTextStyle()}>{text()}</Text>
     </Tooltip>
   );
 }
@@ -60,6 +79,8 @@ const DARK = {
   removed: '#382528',
   /** Behind a dialog. */
   scrim: '#00000099',
+  /** Under what floats: menus and popovers. */
+  shadow: '#00000073',
 };
 const LIGHT: typeof DARK = {
   background: '#ffffff',
@@ -77,6 +98,7 @@ const LIGHT: typeof DARK = {
   added: '#e3f3e7',
   removed: '#fbe8e9',
   scrim: '#00000040',
+  shadow: '#0000001f',
 };
 /** The default palette's colors in one appearance. */
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
@@ -96,13 +118,16 @@ const paletteColor = (key: string, dark: boolean): string | undefined => {
 type Tone = keyof typeof DARK;
 // The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
 // below the content `panel` in both appearances, and what rests on the panel
-// (`card`, then `cardRaised`) steps up from it. The dark panel is `surface`, so
+// (`card`, then `cardRaised`) steps up from it. What floats (`floating`, its
+// rows' hover `floatingRaised`) sits one step above the panel. The dark panel is `surface`, so
 // there each step is one token higher; terminals keep the light steps.
 const REGIONS = {
   chrome: ['surface', 'background'],
   panel: ['background', 'surface'],
   card: ['surface', 'raised'],
   cardRaised: ['raised', 'line'],
+  floating: ['background', 'raised'],
+  floatingRaised: ['raised', 'line'],
 } satisfies Record<string, [Tone, Tone]>;
 /** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
 export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
@@ -194,6 +219,47 @@ export const quietFocusStyle = () =>
         outlineOffset: -2,
       };
 export const quietHoverStyle = () => ({ backgroundColor: C.card });
+/** The surface every menu, select, context menu and popover shares. Its inset
+ * keeps its rows' radius (8) concentric with its own (12). */
+export const floatingStyle = () => ({
+  padding: 4,
+  minHeight: 0,
+  maxWidth: Math.max(0, windowSize().width - 16),
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+  borderRadius: 12,
+  ...(platform.idiom === 'terminal' ? {} : { boxShadow: `0 8px 24px ${C.shadow}` }),
+});
+/** A menu row: a 16-point icon lane at 12 points from the surface's edge, the
+ * text lane at 36, and a trailing lane for the check, shortcut or chevron. */
+export const menuRowStyle = () => ({
+  minHeight: 32,
+  paddingHorizontal: 8,
+  paddingVertical: 8,
+  borderRadius: 8,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
+  gap: 8,
+});
+/** Hover and keyboard focus look alike in a menu: one row is current. */
+export const menuRowHoverStyle = () => ({ backgroundColor: C.floatingRaised });
+export const menuDetailTextStyle = { fontSize: 12, lineHeight: 16 };
+export const menuLabelStyle = () => ({
+  ...menuDetailTextStyle,
+  fontWeight: '500' as const,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingTop: 8,
+  paddingBottom: 4,
+});
+export const menuSeparatorStyle = () => ({
+  height: 1,
+  backgroundColor: C.line,
+  marginVertical: 4,
+  marginHorizontal: 8,
+});
 export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
