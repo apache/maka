@@ -26,7 +26,8 @@ use std::{
 use nsh_engine::{App, Bundle, EngineConfig};
 use nsh_platform_macos::TerminalSurface;
 use nsh_terminal::{
-    DevicePixels, KeyDownEvent, KeyUpEvent, Keystroke, NativeSurface, PlatformInput, size,
+    DevicePixels, KeyDownEvent, KeyUpEvent, Keystroke, MouseMoveEvent, NativeSurface,
+    PlatformInput, size,
 };
 
 const APP: &str = r#"
@@ -84,6 +85,55 @@ fn clipboard(surface: &TerminalSurface, expected: &str) {
     pump_until(surface, || {
         surface.take_clipboard_write().as_deref() == Some(expected)
     });
+}
+
+pub(super) fn scrolling_dismisses_hover_tooltip() {
+    let source = r#"
+import { Clipboard, Scroll, Text, View, keymap, mount } from "nsh";
+import { Button, Tooltip } from "nsh/base";
+function App() {
+  let scroll;
+  keymap.bind("f7", () => scroll.scrollTo({y: 16, animated: false}), {when: "always"});
+  return <Scroll ref={ref => scroll = ref} style={{height: 180}}>
+    <View style={{height: 40, flexShrink: 0}} />
+    <Button accessibilityLabel="Tool row" style={{height: 100, flexShrink: 0}} tooltip={
+      <Tooltip delay={300} onOpen={() => Clipboard.writeText("tip shown")}
+        onClose={() => Clipboard.writeText("tip dismissed")}><Text>Tool details</Text></Tooltip>
+    }><Text>Tool row</Text></Button>
+    <View style={{height: 240, flexShrink: 0}} />
+  </Scroll>;
+}
+mount(App);
+"#;
+    let code = nsh_bundler::compile_module("TooltipScroll.tsx", source, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| panic!("tooltip lifecycle must not require drawing a frame")),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    pump_until(&surface, || surface.pressable_bounds("Tool row").len() == 1);
+    let row = surface.pressable_bounds("Tool row")[0];
+    let mut hover = MouseMoveEvent::default();
+    hover.position = row.center();
+    surface
+        .dispatch_input(PlatformInput::MouseMove(hover))
+        .unwrap();
+    clipboard(&surface, "tip shown");
+
+    key(&surface, "f7");
+    pump_until(&surface, || {
+        surface.pressable_bounds("Tool row")[0].top() < row.top()
+    });
+    let moved = surface.pressable_bounds("Tool row")[0];
+    assert!(moved.bottom() > row.center().y);
+    clipboard(&surface, "tip dismissed");
+    clipboard(&surface, "tip shown");
+    surface.shutdown();
 }
 
 pub(super) fn focus_admission() {
