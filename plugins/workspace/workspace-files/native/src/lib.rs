@@ -24,7 +24,7 @@ use maka_agent_api::contract::{Workspace, WorkspaceAccess};
 use maka_agent_api::session::ResolvedConfiguration;
 use maka_agent_authority::computer::{NativeCallAccess, NativeCallContext};
 use maka_agent_facts::{
-    model::prompt_source::source::{self as pull, ChargedBuffer, SourceBudget, TextSource, json},
+    model::prompt_source::source::{self as pull, ChargedBuffer, SourceBudget, TextSource},
     tools::{ToolError, ToolExecutor},
 };
 use maka_event_log::RootStore;
@@ -325,15 +325,14 @@ async fn execute(
                     .imported_tool_result(&address, budget.clone(), cancellation)
                     .await
                     .map_err(failed)?;
-                let maka_agent_state::session_history::tool_result_source::ToolResultSource::Returned {
-                    body, ..
-                } = selected.result else {
+                let maka_agent_state::session_history::tool_result_source::ToolResultSource::Returned(returned) =
+                    selected.result else {
                     return Err(failed("Imported part lacks its original ToolReturn"));
                 };
-                let projection = json::field(&body, &["projection"], budget.clone())
-                    .await
-                    .map_err(failed)?
-                    .ok_or_else(|| failed("Original archived tool projection is missing"))?;
+                let projection = returned.fields(budget.clone()).await.map_err(failed)?
+                    .projection(budget.clone()).await.map_err(failed)?
+                    .ok_or_else(|| failed("Original archived tool projection is missing"))?
+                    .into_json(budget.clone()).await.map_err(failed)?;
                 let (name, length) =
                     imported_tool_name(selected.name, budget.clone(), cancellation).await?;
                 let name = std::str::from_utf8(&name.as_ref()[..length]).map_err(failed)?;
@@ -343,7 +342,7 @@ async fn execute(
                         .map_err(failed)?;
                 }
                 let page = maka_agent_facts::read::projection_page(
-                    projection.source,
+                    projection,
                     name,
                     &request,
                     read_page_budget(),

@@ -26,7 +26,10 @@ use serde_json::Value;
 pub use maka_plugin_core::operation::OperationReply;
 
 mod acceptance;
-pub use acceptance::{AcceptedToolResult, CellFinalEvidence, ReturnedToolResult};
+pub use acceptance::{
+    AcceptedToolResult, CellFinalEvidence, OperationProjection, ReturnedToolResult,
+    StoredOperationReturn, StoredToolResult,
+};
 pub mod audio;
 mod durable;
 mod mcp;

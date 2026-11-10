@@ -1227,18 +1227,6 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         })
         .await;
     desktop.artifact("script-tools");
-    // Folding a running turn is the user's choice, and finishing keeps the latest one.
-    desktop.press("Turn work details").await;
-    desktop
-        .until("the running turn did not fold", || {
-            desktop
-                .controls("Toggle tool GetGoal")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
     answer
         .thinking("Checking the log\n\nLook for the next step.")
         .await;
@@ -1254,6 +1242,16 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     assert!(tool.bottom() <= thinking.top());
     desktop.artifact("streaming-thinking-order");
     answer.delta("The goal is unchanged.").await;
+    desktop
+        .until("turn work stayed open while the answer streamed", || {
+            (desktop.controls("Toggle tool GetGoal").is_empty()
+                && desktop.controls("Thinking · Checking the log").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("streaming-answer-folded-work");
+    desktop.press("Turn work details").await;
+    desktop.control("Toggle tool GetGoal").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;
     let session = sessions

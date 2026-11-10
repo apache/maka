@@ -29,29 +29,25 @@ pub(super) fn tool_id(run: RunId, tool: &ToolKey) -> String {
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))
 }
 
-pub(super) fn settlement(
-    reply: &maka_plugin_core::operation::OperationReply,
+pub(super) fn recorded_settlement(
+    reply: &maka_agent_facts::operation::RecordedOperationReply,
 ) -> Option<ToolSettlement> {
-    use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
     Some(match &reply.receipt {
         Receipt::Recorded {
             outcome: OperationOutcome::Unresolved,
             ..
         } => return None,
         Receipt::Recorded {
-            outcome:
-                OperationOutcome::Returned {
-                    result: OperationResult::Success { .. },
-                },
+            outcome: OperationOutcome::Returned { result },
             ..
-        } => ToolSettlement::Returned,
-        Receipt::Recorded {
-            outcome:
-                OperationOutcome::Returned {
-                    result: OperationResult::Failure { .. },
-                },
-            ..
-        } => ToolSettlement::Failed,
+        } => {
+            if result.is_error() {
+                ToolSettlement::Failed
+            } else {
+                ToolSettlement::Returned
+            }
+        }
         Receipt::Recorded {
             outcome: OperationOutcome::NotExecuted { .. },
             ..
@@ -124,7 +120,7 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
         | Fact::ToolPreventedBeforeHostAdmission { tool, .. } => DeliveryFact::ToolRejected {
             tool_use_id: tool_id(run, tool),
         },
-        Fact::OperationObserved { tool, reply } => match settlement(reply) {
+        Fact::OperationObserved { tool, reply } => match recorded_settlement(reply) {
             Some(settlement) => DeliveryFact::ToolSettled {
                 tool_use_id: tool_id(run, tool),
                 settlement,

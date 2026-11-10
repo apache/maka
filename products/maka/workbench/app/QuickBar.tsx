@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { Canvas, Path2D } from 'nsh';
-import { C } from './ui';
+import { Canvas, Path2D, Text, type JSX } from 'nsh';
+import { Button } from 'nsh/base';
+import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
 export const QUICK_BAR_SLOT = 40;
@@ -32,6 +33,56 @@ export const quickBarStyle = {
   paddingLeft: 16,
   paddingRight: 12,
 } as const;
+
+export const quickRowStyle = {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 10,
+  paddingVertical: 10,
+  paddingHorizontal: 16,
+} as const;
+
+/** A launcher row; without an icon its title lines up with the input's text. */
+export function QuickRow(props: {
+  label: string;
+  title: string;
+  hint?: string;
+  icon?: JSX.Element;
+  selected: boolean;
+  onPress(): void;
+}) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      selected={props.selected}
+      onPress={props.onPress}
+      style={props.icon ? quickRowStyle : { ...quickRowStyle, paddingLeft: 42 }}
+      selectedStyle={{ backgroundColor: C.raised }}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
+    >
+      {props.icon}
+      <Text
+        style={{
+          ...bodyTextStyle,
+          flex: 1,
+          minWidth: 0,
+          fontWeight: '500',
+          color: C.text,
+          numberOfLines: 1,
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {props.title}
+      </Text>
+      <If when={props.hint !== undefined}>
+        <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>
+          {props.hint}
+        </Text>
+      </If>
+    </Button>
+  );
+}
 
 export const quickInputStyle = () =>
   ({

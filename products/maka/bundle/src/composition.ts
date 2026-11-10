@@ -37,6 +37,7 @@ export const packageNames = [
   'workbench',
   'conversations',
   'composer',
+  'calculator',
   'host-logs',
   'recovery-gateway',
   'host-deployment-manager',
@@ -65,6 +66,7 @@ export const instanceNames = [
   'workbench-ui',
   'conversations-ui',
   'composer-ui',
+  'calculator-ui',
   'settings-ui',
   'workspace-files-ui',
 ] as const;
@@ -138,6 +140,7 @@ const defaultUi = {
     },
   },
   'composer-ui': { package: 'composer', views: {} },
+  'calculator-ui': { package: 'calculator', views: {} },
   'settings-ui': { package: 'settings', views: {} },
   'workspace-files-ui': { package: 'workspace-files', views: {} },
 } as const;

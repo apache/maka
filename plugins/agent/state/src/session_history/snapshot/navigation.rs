@@ -218,7 +218,11 @@ impl Statement for Write {
                 grams,
             } => {
                 owned_document(c, &self.snapshot, document)?;
-                c.execute("INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body,grams) VALUES(?,?,?,?,?,?) ON CONFLICT(document,field_ordinal,ordinal) DO UPDATE SET start=excluded.start,body=excluded.body,grams=excluded.grams",params![document,bind_u64(field)?,bind_u64(ordinal)?,bind_u64(start)?,body,grams])?;
+                let id: i64 = c.query_row("INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body) VALUES(?,?,?,?,?) ON CONFLICT(document,field_ordinal,ordinal) DO UPDATE SET start=excluded.start,body=excluded.body RETURNING id",params![document,bind_u64(field)?,bind_u64(ordinal)?,bind_u64(start)?,body],|r|r.get(0))?;
+                c.execute(
+                    "INSERT OR REPLACE INTO agent_history_snapshot_nav_terms(rowid,grams) VALUES(?,?)",
+                    params![id, grams],
+                )?;
                 document
             }
             Edit::FieldEnd {

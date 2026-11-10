@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_api::session::StoredSessionConfiguration;
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -136,8 +137,11 @@ impl Fixture {
             .unwrap_or_else(|e| panic!("{method}: {e}"))
     }
     async fn create(&self, title: &str) -> String {
+        self.create_scheduled(title, json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000})).await
+    }
+    async fn create_scheduled(&self, title: &str, schedule: Value) -> String {
         let config = self.owner().session(&self.bot).await.unwrap().configuration;
-        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":format!("Check authorized sources for {title}"),"schedule":{"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000},"effect":{"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
+        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":format!("Check authorized sources for {title}"),"schedule":schedule,"effect":{"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
         result["taskId"].as_str().unwrap().to_owned()
     }
@@ -251,6 +255,34 @@ impl Fixture {
         self.rig.stop_serving = CancellationToken::new();
         attach(&mut self.rig, &self.boot).await.unwrap();
     }
+    async fn change_source(&mut self, update: fn(&mut StoredSessionConfiguration)) {
+        self.close().await;
+        self.rig.captured.lock().unwrap().take();
+        self.rig.client = None;
+        self.rig.host = None;
+        self.rig.store = None;
+        let store = root(self.rig.directory.path(), false).await.unwrap();
+        let session = store
+            .get_session::<StoredSessionConfiguration>(&self.bot)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .update_session_metadata(
+                &self.bot,
+                session.revision,
+                move |config: &mut StoredSessionConfiguration| {
+                    update(config);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        store.shutdown().await.unwrap();
+        drop(store);
+        self.rig.stop_serving = CancellationToken::new();
+        attach(&mut self.rig, &self.boot).await.unwrap();
+    }
     async fn reopen(&mut self) {
         self.close().await;
         self.rig.captured.lock().unwrap().take();
@@ -344,6 +376,7 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
 async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
+    f.setting("toolDiscovery", json!(true)).await;
     let task = f.create("Continuity").await;
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
@@ -363,6 +396,7 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
             "sleep",
             "ScheduledTask",
             "Bash",
+            "tool_search",
             "SessionCreate",
         ]
         .contains(n)
@@ -456,6 +490,8 @@ async fn discovery_recovery_rechecks_notification_authority() {
         ("bot", true),
         ("scheduledTasks", true),
         ("recall", false),
+        ("permissions", true),
+        ("boundary_revision", true),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut f = Fixture::new(&listener).await;
@@ -483,7 +519,19 @@ async fn discovery_recovery_rechecks_notification_authority() {
         let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
         assert_eq!(pending.entries.len(), 1);
         let report = pending.entries[0].request.clone();
-        f.setting(setting, json!(false)).await;
+        match setting {
+            "permissions" => {
+                f.change_source(|config| {
+                    config.permissions = crate::owner::discovery::permissions()
+                })
+                .await
+            }
+            "boundary_revision" => {
+                f.change_source(|config| config.boundary_revision += 1)
+                    .await
+            }
+            _ => f.setting(setting, json!(false)).await,
+        }
         assert_eq!(
             f.owner()
                 .durable
@@ -535,6 +583,25 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
     let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
     assert_eq!(pending.entries.len(), 1);
     let report = pending.entries[0].request.clone();
+    // Later user work in the worker Session must not change the investigation's
+    // captured Run or keep its original report from settling after restart.
+    let bytes = f
+        .owner()
+        .durable
+        .queue()
+        .content(f.bot.clone(), report.id.clone(), report.source.clone())
+        .await
+        .unwrap();
+    let source: maka_agent_facts::message::RootSourceMessage =
+        serde_json::from_slice(&bytes).unwrap();
+    let Some(maka_agent_facts::message::MessageOrigin::BotWorker {
+        session_id: worker_id,
+    }) = source.message.origin
+    else {
+        panic!("missing original worker");
+    };
+    f.query("send", json!({"sessionId":worker_id,"message":"A later independent turn", "backend":f.model,"delivery":"queue"})).await;
+    let (_later_worker, _) = next(&listener).await;
     f.reopen().await;
     let busy = f
         .owner()
@@ -1325,6 +1392,67 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     )
     .await;
     assert_eq!(f.settled(id, 1).await["task"]["runs"][0]["outcome"], "ok");
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_one_shot_timer_runs_without_a_manual_trigger() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f
+        .create_scheduled(
+            "One check",
+            json!({"kind":"once","runAt":maka_agent_authority::now()+2_000}),
+        )
+        .await;
+    let (mut socket, _) = next(&listener).await;
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Timed investigation"}),
+    )
+    .await;
+    let done = f.settled(&task, 1).await;
+    assert_eq!(done["task"]["status"], "completed");
+    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
+    assert_eq!(f.outbox().await, json!([]));
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_restart_settles_an_interrupted_original_run_without_replay() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Interrupted investigation").await;
+    f.change(&task, "trigger_now").await;
+    let (_socket, _) = next(&listener).await;
+    let worker = f
+        .owner()
+        .scheduler
+        .investigation
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap();
+    f.reopen().await;
+    let original = f
+        .owner()
+        .durable
+        .latest_run(worker.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    f.query("stop", json!({"sessionId":worker,"runId":original}))
+        .await;
+    let done = f.settled(&task, 1).await;
+    assert_eq!(done["task"]["runs"][0]["outcome"], "failed");
+    assert_eq!(done["task"]["runs"][0]["sessionId"], worker);
+    assert_eq!(done["task"]["runs"][0]["runId"], json!(original));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
     f.close().await;
 }
 

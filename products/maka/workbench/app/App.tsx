@@ -370,6 +370,7 @@ function App(
     >
       <If when={ownTitleBar}>
         <QuickLauncher
+          runtime={runtime}
           openBot={openBot}
           vacate={vacate}
           open={openAssistant}

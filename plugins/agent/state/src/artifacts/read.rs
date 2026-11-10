@@ -75,7 +75,7 @@ pub(super) fn lookup(
             if scope.through == 0 || scope.through > from_sql_integer(high_water)? {
                 return Err(invalid("artifact read cut exceeds canonical Run"));
             }
-            let row:Option<(String,String,i64,i64)>=c.query_row("SELECT a.record_json,b.source_digest,b.source_bytes,a.content_id FROM agent_artifact_run_bindings b JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact JOIN agent_facts f ON f.id=b.fact AND f.run=b.run AND f.revision=b.revision JOIN contents x ON x.id=a.content_id JOIN agent_content_pins p ON p.run=b.run AND p.content_id=x.id WHERE b.run=? AND b.session=? AND b.artifact=? AND b.revision<=? AND a.owner=? ORDER BY b.revision,b.fact LIMIT 1",params![scope.run.to_string(),scope.session,id,to_sql_integer(scope.through)?,owner],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+            let row:Option<(String,String,i64,i64)>=c.query_row("SELECT a.record_json,b.source_digest,b.source_bytes,a.content_id FROM agent_artifact_run_bindings b JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact JOIN agent_facts f ON f.id=b.fact AND f.run=b.run AND f.revision=b.revision JOIN contents x ON x.id=a.content_id JOIN agent_run_content p ON p.run=b.run AND p.content_id=x.id WHERE b.run=? AND b.session=? AND b.artifact=? AND b.revision<=? AND a.owner=? ORDER BY b.revision,b.fact LIMIT 1",params![scope.run.to_string(),scope.session,id,to_sql_integer(scope.through)?,owner],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
             let Some((body, digest, bytes, raw_content_id)) = row else {
                 return Ok(None);
             };
@@ -84,7 +84,7 @@ pub(super) fn lookup(
                 digest,
                 bytes: from_sql_integer(bytes)?,
             };
-            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_content_pins p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?)",params![scope.run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|r|r.get(0))?;
+            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?)",params![scope.run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|r|r.get(0))?;
             if !retained {
                 return Err(invalid(
                     "artifact source evidence is not retained by its original Run",

@@ -80,16 +80,21 @@ struct OriginalBatch {
     local: Option<super::LocalCompletion>,
 }
 impl OriginalBatch {
-    fn operation(key: &ToolKey, reply: OperationReply, at: UnixMillis) -> Self {
+    async fn operation(
+        key: &ToolKey,
+        reply: OperationReply,
+        at: UnixMillis,
+    ) -> Result<Self, RunError> {
+        let (stored, content) = maka_agent_state::operation::prepare_reply(reply.clone()).await?;
         let observed = Change::new(
             Fact::OperationObserved {
                 tool: key.clone(),
-                reply: reply.clone(),
+                reply: stored,
             },
             at,
         );
         let fact = observed.id;
-        Self {
+        Ok(Self {
             changes: vec![
                 Change::new(
                     Fact::ToolOriginalBound {
@@ -100,13 +105,13 @@ impl OriginalBatch {
                 ),
                 observed,
             ],
-            contents: vec![],
+            contents: content.into_iter().collect(),
             artifacts: vec![],
             fact,
             observation: Some(reply),
             attempted: std::sync::atomic::AtomicBool::new(false),
             local: None,
-        }
+        })
     }
 
     async fn publish(
@@ -742,7 +747,8 @@ impl OriginalEffects {
                     &material.key,
                     reply.clone(),
                     UnixMillis(now().try_into().expect("Unix milliseconds")),
-                );
+                )
+                .await?;
                 material.batch = Some(batch);
                 material.acknowledged = false;
                 material.observation = Some(reply.clone());
@@ -875,7 +881,7 @@ async fn prepare_result(
         Err(
             ToolError::OperationUnknown { observation, .. }
             | ToolError::OperationCleanupUnconfirmed { observation, .. },
-        ) => return Ok(OriginalBatch::operation(key, *observation, at)),
+        ) => return OriginalBatch::operation(key, *observation, at).await,
         Err(
             error @ (ToolError::OutcomeUnknown(_)
             | ToolError::CleanupUnconfirmed(_)
@@ -887,6 +893,26 @@ async fn prepare_result(
         ),
     };
     prepare_local_result(execution, key, result, settlement).await
+}
+
+#[cfg(test)]
+pub(super) async fn publish_return_for_test(
+    state: &maka_agent_state::Store,
+    access: &RunAccess,
+    key: &ToolKey,
+    result: ToolSuccess,
+    original_evidence: Option<ContentBlob>,
+) -> Result<Fact, RunError> {
+    let mut batch = prepare_local_result(
+        access.execution(),
+        key,
+        result,
+        maka_agent_facts::tool_call::ToolSettlement::Returned,
+    )
+    .await?;
+    batch.contents.extend(original_evidence);
+    batch.publish(state, access).await?;
+    Ok(batch.changes.pop().expect("published return").fact)
 }
 
 async fn prepare_local_result(
@@ -901,7 +927,7 @@ async fn prepare_local_result(
     // The original worker retains its physical leases across this CPU work.
     let (changes, contents, artifacts, fact, observation) =
         tokio::task::spawn_blocking(move || {
-            let normalized = result
+            let mut normalized = result
                 .into_durable(
                     &format!("{}:{}:{}", execution.run_id, key.attempt, key.call),
                     SystemTime::now(),
@@ -922,23 +948,52 @@ async fn prepare_local_result(
                     }
                 })
                 .collect();
-            let original = match &normalized.output {
-                ToolOutput::Operation(reply) => Some(reply.as_ref().clone()),
+            let cell_observation = match &mut normalized.output {
+                ToolOutput::Cell(reply) => match &reply.state {
+                    maka_agent_facts::cells::CellReplyState::Completed { result }
+                    | maka_agent_facts::cells::CellReplyState::Interrupted { report: result } => {
+                        reply.observation = serde_json::Value::Null;
+                        Some(result.clone())
+                    }
+                    _ => None,
+                },
                 _ => None,
+            };
+            use maka_agent_facts::tool_output::{
+                OperationProjection, StoredOperationReturn, StoredToolResult,
+            };
+            let (body, observation, stored, content) = match normalized.output {
+                ToolOutput::Operation(reply) => {
+                    let (stored, content) =
+                        maka_agent_state::operation::record_reply((*reply).clone())?;
+                    let body = StoredToolResult::Operation(Box::new(StoredOperationReturn {
+                        operation: stored.clone(),
+                        projection: OperationProjection::record(&reply, normalized.projection)
+                            .map_err(RunError::Json)?,
+                        is_error: normalized.is_error,
+                        loaded_tools: normalized.loaded_tools,
+                    }));
+                    (body, Some(*reply), Some(stored), content)
+                }
+                output => (
+                    StoredToolResult::Inline(ReturnedToolResult {
+                        output,
+                        projection: normalized.projection,
+                        is_error: normalized.is_error,
+                        loaded_tools: normalized.loaded_tools,
+                    }),
+                    None,
+                    None,
+                    None,
+                ),
             };
             let blob = ContentBlob::json(&ToolReturn {
                 schema_version: SCHEMA_VERSION,
                 artifacts,
-                body: ReturnedToolResult {
-                    output: normalized.output,
-                    projection: normalized.projection,
-                    is_error: normalized.is_error,
-                    loaded_tools: normalized.loaded_tools,
-                },
+                body,
             })?;
-            let observation = original.clone();
             let mut changes = vec![];
-            if let Some(reply) = original {
+            if let Some(reply) = stored {
                 changes.push(Change::new(
                     Fact::ToolOriginalBound {
                         tool: key.clone(),
@@ -969,12 +1024,14 @@ async fn prepare_local_result(
                         result: blob.reference().clone(),
                         is_error: normalized.is_error,
                         settlement,
+                        cell_observation,
                     },
                     at,
                 ));
             }
             let fact = changes.last().expect("original return evidence").id;
-            Ok::<_, RunError>((changes, vec![blob], normalized.artifacts, fact, observation))
+            let contents = std::iter::once(blob).chain(content).collect();
+            Ok::<_, RunError>((changes, contents, normalized.artifacts, fact, observation))
         })
         .await
         .map_err(|error| RunError::Internal(error.to_string()))??;

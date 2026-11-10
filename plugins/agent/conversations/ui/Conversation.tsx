@@ -163,13 +163,7 @@ import {
   createMessagePrediction,
   predictionTrigger,
 } from '../../../../products/maka/workbench/app/messagePrediction';
-import {
-  canFoldTurn,
-  foldsByDefault,
-  TurnPanel,
-  TurnSummary,
-  turnOutcome,
-} from '../../../../products/maka/workbench/app/TurnPanel';
+import { TurnPanel, TurnSummary } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
@@ -182,6 +176,8 @@ import {
   sameProcessRows,
   orderProcessRows,
   stableRowId,
+  turnOutcome,
+  turnWorkFold,
 } from '../../../../products/maka/workbench/app/processGroups';
 import type {
   ProcessActivity,
@@ -422,6 +418,7 @@ export function Conversation(props: ConversationProps) {
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
+  const lastCompletedTurn = signal<string | null>(null);
   const backend = signal<BackendIdentity>(null);
   const interactions = signal<AgentPendingInteractions>({
     revision: -1,
@@ -604,6 +601,12 @@ export function Conversation(props: ConversationProps) {
         left.kind === right.kind && left.detail === right.detail && left.rowId === right.rowId,
     },
   );
+  const answerTurn = computed(() => {
+    if (!atHistoryTail() || reading() !== 'chat' || botView() !== 'ordinary') return null;
+    // A successful end can arrive before history marks the final answer.
+    if (runId() === null) return lastCompletedTurn();
+    return run() === 'running' ? runTurn() : null;
+  });
   let previousGroups: ProcessEntry[] = [];
   const projection = computed(() => {
     // Current model previews have their own attempt/part order; only durable
@@ -613,6 +616,7 @@ export function Conversation(props: ConversationProps) {
       rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
       activeTurnId: runId() === null ? null : runTurn(),
+      answerTurnId: answerTurn(),
       previous: previousGroups,
     });
     previousGroups = next.entries;
@@ -644,8 +648,11 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => (canOpenWorker() ? openWorker : undefined),
   );
-  const turnExpanded = (turn: TurnPresentation) =>
-    !canFoldTurn(turn) || (turnState(turn.turnKey).expanded() ?? !foldsByDefault(turn));
+  const workFold = (turn: TurnPresentation) => turnWorkFold(turn, platform.idiom === 'terminal');
+  const turnExpanded = (turn: TurnPresentation) => {
+    const fold = workFold(turn);
+    return fold === 'unavailable' || (turnState(turn.turnKey).expanded() ?? fold === 'open');
+  };
   // Showing something in a folded turn opens it; an open turn keeps folding by default.
   const unfoldTurn = (turn: TurnPresentation) => {
     if (!turnExpanded(turn)) turnState(turn.turnKey).expanded.set(true);
@@ -741,17 +748,19 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
-      // On the desktop a turn's summary leads it from its first step, so finishing
-      // changes only its text and fold; the terminal adds it once the turn ends.
+      // The terminal needs a summary as soon as there is folded work to reopen.
+      const outcome = turn && turnOutcome(turn);
+      const streamingFold =
+        turn && turn.answerOutputIds.length > 0 && outcome === null && workFold(turn) === 'closed';
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || turnOutcome(turn) === 'completed'))) &&
+            (platform.idiom !== 'terminal' || outcome === 'completed' || streamingFold))) &&
         !summaries.has(turn.turnKey) &&
-        (platform.idiom !== 'terminal' || turnOutcome(turn) !== null)
+        (platform.idiom !== 'terminal' || outcome !== null || streamingFold)
       ) {
         summaries.add(turn.turnKey);
         result.push({
@@ -771,7 +780,13 @@ export function Conversation(props: ConversationProps) {
         // A message the Host wrote on the user's behalf (a worker finishing, a task
         // result) is not something the user said. It stays in Trajectory.
         if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
-        if (entry.processTurnKey && turn && !turnExpanded(turn)) continue;
+        if (
+          entry.processTurnKey &&
+          turn &&
+          !turnExpanded(turn) &&
+          !turn.answerOutputIds.includes(entry.rowId)
+        )
+          continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
@@ -1178,6 +1193,7 @@ export function Conversation(props: ConversationProps) {
         publishOverlay();
       }
       const completedTurn = observed.lastCompletedTurnId;
+      lastCompletedTurn.set(completedTurn);
       const trigger = predictionTrigger({
         completedTurnId: completedTurn,
         activeTurnId: observed.run?.turnId ?? null,
@@ -1331,6 +1347,7 @@ export function Conversation(props: ConversationProps) {
         case 'opened':
           if (event.sequence > runThrough) {
             predictionTriggerTurn = null;
+            lastCompletedTurn.set(null);
             messagePrediction.source(null, 'live');
             run.set('admitted');
             runId.set(event.runId);
@@ -1358,7 +1375,9 @@ export function Conversation(props: ConversationProps) {
             rows().find((row) => row.position?.kind === 'live' && row.turnId === event.turnId),
           );
           if (event.sequence > runThrough && event.runId === runId()) {
-            predictionTriggerTurn = fact.failed ? null : event.turnId;
+            const completedTurn = fact.failed ? null : event.turnId;
+            predictionTriggerTurn = completedTurn;
+            lastCompletedTurn.set(completedTurn);
             run.set('loading');
             runId.set(null);
             runBackend.set(null);
@@ -1918,6 +1937,7 @@ export function Conversation(props: ConversationProps) {
     if (terminal(value)) {
       run.set(value.state.kind === 'failed' ? 'failed' : 'idle');
       if (runId() === value.runId) {
+        lastCompletedTurn.set(value.state.kind === 'completed' ? value.turnId : null);
         runId.set(null);
         runBackend.set(null);
         runTurn.set(null);
@@ -3226,7 +3246,7 @@ export function Conversation(props: ConversationProps) {
                 groups={groups}
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
-                canFold={() => canFoldTurn(turn())}
+                canFold={() => workFold(turn()) !== 'unavailable'}
                 images={{
                   sessionId,
                   through: () => latestKnown,

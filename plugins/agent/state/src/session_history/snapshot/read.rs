@@ -20,7 +20,7 @@ use super::*;
 use serde::de::DeserializeOwned;
 
 pub(super) fn authorize(c: &Connection, snapshot: &Snapshot) -> Result<(), StoreError> {
-    let row:Option<(String,String,i64)>=c.query_row("SELECT owner,session,manifest_content_id FROM agent_history_snapshots WHERE snapshot=?",[snapshot.authority_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let row:Option<(String,String,i64)>=c.prepare_cached("SELECT owner,session,manifest_content_id FROM agent_history_snapshots WHERE snapshot=?")?.query_row([snapshot.authority_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let (owner, session, content) =
         row.ok_or_else(|| invalid("snapshot registration unavailable"))?;
     if capture::reference(c, content)? != snapshot.authority_manifest {
@@ -116,7 +116,7 @@ fn authorize_adopted(
     run: RunId,
 ) -> Result<(), StoreError> {
     let content = content_id(c, manifest)?;
-    let accepted:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot AND s.manifest_content_id=?1 JOIN agent_run_specs r ON r.run=a.run JOIN agent_content_pins p ON p.run=r.run AND p.content_id=?1 WHERE a.run=?2 AND a.snapshot=?3 AND r.owner=?4 AND r.session=?5)",params![content,run.to_string(),id.to_string(),serde_json::to_string(owner)?,session],|r|r.get(0))?;
+    let accepted:bool=c.prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot AND s.manifest_content_id=?1 JOIN agent_run_specs r ON r.run=a.run JOIN agent_history_snapshot_pins p ON p.snapshot=s.snapshot AND p.content_id=s.manifest_content_id WHERE a.run=?2 AND a.snapshot=?3 AND r.owner=?4 AND r.session=?5)")?.query_row(params![content,run.to_string(),id.to_string(),serde_json::to_string(owner)?,session],|r|r.get(0))?;
     if !accepted {
         return Err(invalid(
             "snapshot is not adopted by this original target Run",
@@ -141,7 +141,7 @@ impl Query for Open {
                 ));
             }
         };
-        let raw:String=c.query_row("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_content_pins p ON p.run=a.run AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND length(b.payload)=?",params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+        let raw:String=c.prepare_cached("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_history_snapshot_pins p ON p.snapshot=s.snapshot AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND length(b.payload)=?")?.query_row(params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
         let id = super::super::sql::identity(raw)?;
         Ok((id, reference))
     }

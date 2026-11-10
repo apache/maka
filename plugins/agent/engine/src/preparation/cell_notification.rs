@@ -22,7 +22,7 @@ use crate::RunError;
 use maka_agent_facts::{
     capability::ContentBlock,
     cells::{
-        CELL_NOTIFICATION_SCHEMA_VERSION, CellId, CellInterruption, CellNotification,
+        CELL_NOTIFICATION_SCHEMA_VERSION, CellChild, CellId, CellInterruption, CellNotification,
         CellNotificationBody, CellObservation, CellOutput, CellOwner,
     },
     durable::ContentRef,
@@ -190,6 +190,32 @@ struct CellReport {
     dependencies: Vec<ContentRef>,
 }
 
+pub(super) async fn restore_child_replies(
+    source: &NotificationSource<'_>,
+    scope: &ArtifactScope,
+    cell: CellId,
+    children: &mut std::collections::BTreeMap<uuid::Uuid, CellChild>,
+    mut available: usize,
+    cancellation: &CancellationToken,
+) -> Result<Vec<ContentRef>, RunError> {
+    use maka_agent_facts::operation::{restore_result, result_reference};
+    let mut references = Vec::new();
+    for reply in children
+        .values_mut()
+        .filter_map(|child| child.reply.as_mut())
+    {
+        if let Some(reference) = result_reference(reply).cloned() {
+            available = available
+                .checked_sub(receipt_bytes(&reference)?)
+                .ok_or_else(|| invalid("Cell observation exceeds preparation staging limit"))?;
+            let result = read_scoped(source, scope, cell, &reference, cancellation).await?;
+            restore_result(reply, result).map_err(invalid)?;
+            references.push(reference);
+        }
+    }
+    Ok(references)
+}
+
 async fn read_final(
     source: &NotificationSource<'_>,
     scope: &ArtifactScope,
@@ -222,19 +248,35 @@ async fn read_final(
             })
         }
         CellFinalEvidence::Interrupted { report } => {
-            let interruption: CellInterruption =
+            let mut interruption: CellInterruption =
                 read(source, scope, cell, report, remaining, cancellation).await?;
             if interruption.cell != cell {
                 return Err(invalid(
                     "Cell interruption evidence belongs to another Cell",
                 ));
             }
+            let mut dependencies = vec![report.clone()];
+            let replies = restore_child_replies(
+                source,
+                scope,
+                cell,
+                &mut interruption.children,
+                *remaining,
+                cancellation,
+            )
+            .await?;
+            for reference in replies {
+                // The report already charged its stored body; add the restored
+                // bytes that will accompany it in the model observation.
+                *remaining -= receipt_bytes(&reference)?;
+                dependencies.push(reference);
+            }
             Ok(CellReport {
                 report: json!({"cell":interruption.cell,"state":"interrupted","diagnostic":interruption.diagnostic,"children":interruption.children}),
                 output: interruption
                     .prior_output
                     .map_or_else(Vec::new, |output| output.content),
-                dependencies: vec![report.clone()],
+                dependencies,
             })
         }
     }
@@ -324,6 +366,21 @@ async fn read<T: DeserializeOwned + Send + 'static>(
     *remaining = remaining
         .checked_sub(bytes)
         .ok_or_else(|| invalid("Cell observation exceeds preparation staging limit"))?;
+    read_scoped(source, scope, cell, reference, cancellation).await
+}
+
+fn receipt_bytes(reference: &ContentRef) -> Result<usize, RunError> {
+    usize::try_from(reference.bytes).map_err(|_| invalid("Cell receipt size overflows"))
+}
+
+async fn read_scoped<T: DeserializeOwned + Send + 'static>(
+    source: &NotificationSource<'_>,
+    scope: &ArtifactScope,
+    cell: CellId,
+    reference: &ContentRef,
+    cancellation: &CancellationToken,
+) -> Result<T, RunError> {
+    check(cancellation)?;
     let token = cancellation.clone();
     let decode = move |reader: &mut dyn std::io::Read| -> Result<T, RunError> {
         check(&token)?;
@@ -335,7 +392,9 @@ async fn read<T: DeserializeOwned + Send + 'static>(
                 .cells()
                 .content(&scope.session, cell, reference.clone())
                 .await?;
-            decode(&mut std::io::Cursor::new(bytes))
+            tokio::task::spawn_blocking(move || decode(&mut std::io::Cursor::new(bytes)))
+                .await
+                .map_err(|error| invalid(error.to_string()))?
         }
         NotificationSource::Snapshot(snapshot) => {
             snapshot

@@ -32,8 +32,7 @@ use maka_sandbox::{
     filesystem::{Access, Rule},
 };
 use maka_tools::{
-    CellAdmission, CellObservation, CellPersistence, CodeCells, CodeExecutor, ToolCatalog,
-    ToolDefinition,
+    CellAdmission, CellObservation, CodeCells, CodeExecutor, ToolCatalog, ToolDefinition,
 };
 use serde_json::{Value, json};
 use std::{io::Read, path::PathBuf, sync::Arc, time::Duration};

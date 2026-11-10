@@ -123,6 +123,8 @@ struct FrozenInput {
     operation: ModelOperation,
     language: maka_agent_facts::language::Language,
     prompt: ContentRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
@@ -179,7 +181,11 @@ impl FrozenCellKnowledge {
 }
 impl FrozenInput {
     fn content_refs(&self) -> Vec<ContentRef> {
-        let mut refs = vec![self.prompt.clone()];
+        let mut refs = if self.prompt_chunks.is_empty() {
+            vec![self.prompt.clone()]
+        } else {
+            self.prompt_chunks.clone()
+        };
         for notice in &self.notifications {
             for reference in &notice.dependencies {
                 if !refs.contains(reference) {
@@ -626,7 +632,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (payload, layout, cleanup) = snapshot.into_parts();
+            let (prompt_content, chunks, layout, cleanup) = snapshot.into_parts();
             let cleanup_evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -641,7 +647,8 @@ impl DriverModel {
                 route_identity: request.route_identity.clone(),
                 operation: request.request.operation,
                 language: request.request.language,
-                prompt: payload.reference().clone(),
+                prompt: prompt_content,
+                prompt_chunks: chunks.iter().map(|chunk| chunk.reference().clone()).collect(),
                 layout,
                 covered_prefix,
                 normalization: request.request.prompt.normalization().cloned(),
@@ -763,12 +770,12 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
-                        payload,
                         recovery_contract,
                         capture,
                         provenance,
                         projection,
                     ];
+                    contents.extend(chunks);
                     contents.extend(steering_contents);
                     contents
                 },
@@ -1248,6 +1255,7 @@ impl DriverModel {
             reader.content_source(),
             run,
             &frozen.prompt,
+            &frozen.prompt_chunks,
             &frozen.layout,
             &self.cancellation,
         )
@@ -2067,8 +2075,16 @@ impl DriverModel {
         use maka_agent_facts::tool_output::AcceptedToolResult;
         use maka_model::prompt::ToolOutput;
         use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+        let evidence = match evidence {
+            AcceptedToolResult::ObservedOperation { reply } => AcceptedToolResult::Operation {
+                reply: reader.operation_reply(view.run, &reply).await?,
+                result: None,
+            },
+            evidence => evidence,
+        };
         Ok(match evidence {
             AcceptedToolResult::Local { result }
+            | AcceptedToolResult::Host { result }
             | AcceptedToolResult::Operation {
                 result: Some(result),
                 ..
@@ -2104,6 +2120,9 @@ impl DriverModel {
                     ));
                 }
             },
+            AcceptedToolResult::ObservedOperation { .. } => {
+                unreachable!("resolved operation evidence")
+            }
             AcceptedToolResult::RecoveredCell { cell, evidence } => {
                 let (message, _dependencies) = preparation::project_cell_final(
                     reader.notification_source(),
@@ -2199,11 +2218,20 @@ impl DriverModel {
         language: maka_agent_facts::language::Language,
     ) -> Result<maka_model::prompt::ToolOutput, RunError> {
         let returned: maka_agent_facts::artifact::ToolReturn<
-            maka_agent_facts::tool_output::ReturnedToolResult,
+            maka_agent_facts::tool_output::StoredToolResult,
         > = reader.decode(view.run, result).await?;
         returned
             .validate()
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
+        use maka_agent_facts::tool_output::StoredToolResult;
+        let body = match returned.body {
+            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Operation(body) => {
+                let reply = reader.operation_reply(view.run, &body.operation).await?;
+                body.resolve(reply)
+                    .map_err(|reason| RunError::InvalidInput(reason.into()))?
+            }
+        };
         preparation::project_returned_tool_from(
             reader.media_source(
                 maka_agent_state::artifacts::ArtifactScope {
@@ -2214,7 +2242,7 @@ impl DriverModel {
                 }
                 .into(),
             ),
-            &returned.body,
+            &body,
             language,
             vision,
             &self.resources,

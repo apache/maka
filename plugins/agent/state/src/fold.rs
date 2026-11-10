@@ -23,12 +23,11 @@ use std::collections::BTreeMap;
 use maka_agent_facts::{
     durable::*,
     model::{ModelPart, ModelToolCall, ModelUsage, retry_transport::RetryTransportPhase},
+    operation::{RecordedOutcome as OperationOutcome, RecordedReceipt as Receipt},
     tools::ToolSemantics,
 };
 use maka_event_log::StoreError;
-use maka_plugin_core::operation::{
-    OperationCleanup, OperationOutcome, OperationResult, Receipt, RecoveryRef,
-};
+use maka_plugin_core::operation::{OperationCleanup, RecoveryRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1299,6 +1298,7 @@ impl RunView {
                 settlement,
                 result,
                 is_error,
+                ..
             } => {
                 let current = self.tool(tool)?;
                 require(
@@ -1373,10 +1373,10 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Success { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if !result.is_error()
                                 )
                         }
                         AcceptedResult::Failed => {
@@ -1393,10 +1393,10 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Failure { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if result.is_error()
                                 )
                         }
                         AcceptedResult::Rejected => {
@@ -2195,7 +2195,8 @@ fn resolves_blocker(
     }
 }
 
-fn known(outcome: &OperationOutcome) -> bool {
+fn known<R>(outcome: &maka_plugin_core::operation::OperationOutcome<R>) -> bool {
+    use maka_plugin_core::operation::OperationOutcome;
     matches!(
         outcome,
         OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
@@ -2218,10 +2219,26 @@ fn join_receipt(previous: Option<&Receipt>, incoming: &Receipt) -> Result<Receip
                 cleanup: new_cleanup,
             },
         ) => {
-            if known(old) && known(new) && old != new {
-                return Err(StoreError::EventConflict);
+            if known(old) && known(new) {
+                let equal = match (old, new) {
+                    (
+                        OperationOutcome::Returned { result: a },
+                        OperationOutcome::Returned { result: b },
+                    ) => a.same_result(b)?,
+                    (a, b) => a == b,
+                };
+                if !equal {
+                    return Err(StoreError::EventConflict);
+                }
             }
-            let outcome = if known(old)
+            let keep_known = known(old)
+                && !matches!(
+                    new,
+                    OperationOutcome::Returned {
+                        result: maka_agent_facts::operation::RecordedOperationResult::Referenced { .. },
+                    }
+                );
+            let outcome = if keep_known
                 || matches!(new, OperationOutcome::Unresolved)
                 || matches!(
                     (old, new),
@@ -2296,7 +2313,8 @@ pub(crate) fn tool_pending(tool: &Tool) -> bool {
     tool.accepted.is_none() || original_effect_unknown(tool) || cleanup || unknown_admission
 }
 
-fn receipt_blocks_effects(receipt: &Receipt) -> bool {
+fn receipt_blocks_effects<R>(receipt: &maka_plugin_core::operation::Receipt<R>) -> bool {
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
     match receipt {
         Receipt::NotRecorded | Receipt::Unavailable { .. } => true,
         Receipt::Recorded { outcome, cleanup } => {

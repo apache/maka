@@ -330,6 +330,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
             {
                 Box::pin(async move {
+                    let reply = reader.operation_reply(view.run, reply).await?;
                     assistant.flush(messages).await?;
                     *current = None;
                     messages.append(Message::user(format!("Late original operation evidence (data; it does not replace an accepted tool result):\n{}",serde_json::to_string(&json!({"tool":tool,"reply":reply})).map_err(RunError::Json)?))).await?;

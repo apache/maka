@@ -18,6 +18,7 @@
  */
 
 //! Stable logical execution facts. No persisted value is a live execution grant.
+use crate::operation::RecordedOperationReply;
 use crate::{
     composition::RequestComposition,
     execution::{CollaborationMode, ModelBinding},
@@ -25,7 +26,7 @@ use crate::{
     language::Language,
     model::{ModelPart, ModelUsage},
 };
-use maka_plugin_core::operation::{OperationReply, RecoveryRef};
+use maka_plugin_core::operation::RecoveryRef;
 use maka_sandbox::workspace::PermissionBasis;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -540,6 +541,8 @@ pub enum Fact {
         settlement: crate::tool_call::ToolSettlement,
         result: ContentRef,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_observation: Option<ContentRef>,
     },
     ToolResultAccepted {
         tool: ToolKey,
@@ -549,7 +552,7 @@ pub enum Fact {
     /// Original late facts never rewrite consumed context or a provider outcome.
     OperationObserved {
         tool: ToolKey,
-        reply: OperationReply,
+        reply: RecordedOperationReply,
     },
     StopRequested {
         diagnostic: String,
@@ -704,8 +707,17 @@ impl Fact {
                 }));
                 refs
             }
+            Self::LocalToolReturned {
+                result,
+                cell_observation,
+                ..
+            } => std::iter::once(result)
+                .chain(cell_observation.iter())
+                .collect(),
+            Self::OperationObserved { reply, .. } => crate::operation::result_reference(reply)
+                .into_iter()
+                .collect(),
             Self::ToolResultAccepted { result, .. }
-            | Self::LocalToolReturned { result, .. }
             | Self::HostToolResultRecorded { result, .. } => {
                 vec![result]
             }
