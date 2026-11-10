@@ -605,32 +605,7 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
                 stop.clone(),
             )
             .await?;
-        let exported = captured.export(tempfile::tempfile()?).await?;
-        let destination = tempfile::tempdir()?;
-        let base = destination.path();
-        let root = RootOwner::create(
-            &base.join("root"),
-            &RootNamespaces {
-                ownership: base.join("owners"),
-                control: base.join("control"),
-            },
-        )?;
-        let migrations = [
-            maka_event_log::ROOT_MIGRATIONS,
-            maka_agent_state::MIGRATIONS,
-        ]
-        .concat();
-        let root = RootStore::open(Arc::new(root), &migrations).await?;
-        let writer = root.data_writer()?;
-        let imported = Store::new(writer.clone(), DriverDomain::new(writer)?)?
-            .session_history(owner, "destination".into())
-            .import_snapshot(
-                Uuid::new_v4(),
-                exported.history,
-                exported.file,
-                stop.clone(),
-            )
-            .await?;
+        let (_destination, root, imported) = transfer_snapshot(&captured, owner, &stop).await?;
         let reader = ToolResultReader::snapshot(&imported, run, &stop);
         let resources = driver.owner.services.model_preparation_resources();
         let work = resources.acquire_work().await?;
@@ -671,6 +646,408 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
     assert!(
         matches!(&result, Ok(Ok(Ok(())))),
         "operation history regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+async fn transfer_snapshot(
+    captured: &maka_agent_state::session_history::snapshot::Snapshot,
+    owner: RunOwner,
+    stop: &CancellationToken,
+) -> TestResult<(
+    tempfile::TempDir,
+    RootStore,
+    maka_agent_state::session_history::snapshot::Snapshot,
+)> {
+    let exported = captured.export(tempfile::tempfile()?).await?;
+    let destination = tempfile::tempdir()?;
+    let base = destination.path();
+    let owner_root = RootOwner::create(
+        &base.join("root"),
+        &RootNamespaces {
+            ownership: base.join("owners"),
+            control: base.join("control"),
+        },
+    )?;
+    let migrations = [
+        maka_event_log::ROOT_MIGRATIONS,
+        maka_agent_state::MIGRATIONS,
+    ]
+    .concat();
+    let root = RootStore::open(Arc::new(owner_root), &migrations).await?;
+    let writer = root.data_writer()?;
+    let imported = Store::new(writer.clone(), DriverDomain::new(writer)?)?
+        .session_history(owner, "destination".into())
+        .import_snapshot(
+            Uuid::new_v4(),
+            exported.history,
+            exported.file,
+            stop.clone(),
+        )
+        .await?;
+    Ok((destination, root, imported))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_cell_child_receipt_survives_snapshot_transfer() {
+    use maka_agent_facts::{
+        cells::{CellInterruption, CellReply, CellReplyState},
+        model::prompt_source::source::json as stream,
+        operation::inline_reply,
+        tool_output::DurableToolProjection,
+    };
+    use maka_agent_state::{
+        recall::Field,
+        session_history::{
+            navigation::SourceFind,
+            source_tree::SourceTree,
+            tool_result_source::{ToolProjectionSource, ToolResultReader, ToolResultSource},
+        },
+    };
+    use maka_plugin_core::operation::{
+        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (parent, _) = rig
+            .tool(attempt, "exec", "script", json!({"code":"1"}))
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let view = driver.state.frontier(run).await?;
+        let owner = view.spec.owner.clone();
+        let link = AgentStepLink {
+            run,
+            step: view.attempts[&attempt].step,
+            attempt,
+        };
+        let cell = CellId::for_agent(link, &parent.call);
+        let source = ContentBlob::new(b"fixture Cell program".to_vec());
+        let owner_cell = CellOwner::Agent {
+            link,
+            call: parent.call.clone(),
+        };
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&view).into(),
+                vec![Change {
+                    id: cell.started_fact_id(),
+                    at: at(),
+                    fact: Fact::Cell {
+                        event: CellEvent::Started {
+                            cell,
+                            owner: owner_cell,
+                            source: source.reference().clone(),
+                        },
+                    },
+                }],
+                vec![source],
+            )
+            .await?;
+        let operation = Uuid::new_v4();
+        let input = ContentBlob::json(&json!({"query":"fixture"}))?;
+        let digest = format!("sha256-{}", "b".repeat(64));
+        let payload = format!("shared child evidence {}", "x".repeat(64 * 1024));
+        let reply = OperationReply {
+            reference: RecoveryRef {
+                source: maka_plugin_core::deployment::DeploymentRef {
+                    state_domain: "a".repeat(64),
+                    deployment: owner.deployment,
+                    revision: 1,
+                },
+                namespace: owner.namespace.clone(),
+                export: "history".into(),
+                method: "query".into(),
+                operation,
+                fingerprint: digest.clone(),
+                contract: RecoveryContract {
+                    name: "history".into(),
+                    version: 1,
+                    transport: maka_plugin_core::contract::Transport::Local,
+                    digest,
+                },
+                recovery: RecoveryProtocol::JournalV1,
+            },
+            receipt: Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success {
+                        value: json!(&payload),
+                    },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        };
+        let prepared = crate::owner::driver_cells::prepare_child_return(
+            ToolSuccess::projected(
+                ToolOutput::Operation(Box::new(reply.clone())),
+                DurableToolProjection::Json {
+                    value: json!(&payload),
+                },
+            ),
+            driver.access.execution(),
+            cell,
+            operation,
+        )?;
+        let mut legacy = inline_reply(reply.clone());
+        let Receipt::Recorded { cleanup, .. } = &mut legacy.receipt else {
+            unreachable!()
+        };
+        *cleanup = OperationCleanup::Unconfirmed;
+        let observation = prepared.observed.ok_or("missing compact observation")?;
+        let receipt_ref = maka_agent_facts::operation::result_reference(&observation)
+            .ok_or("missing payload reference")?
+            .clone();
+        let material = prepared.material.ok_or("missing payload material")?;
+        assert_eq!(receipt_ref, *material.reference());
+        let result = prepared.blob.reference().clone();
+        let returned = CellEvent::ChildResultRecorded {
+            cell,
+            operation,
+            result: result.clone(),
+            is_error: prepared.is_error,
+        };
+        rig.append(
+            vec![
+                CellEvent::VmBound {
+                    cell,
+                    binding: CellVmBinding {
+                        runtime: "fixture".into(),
+                        version: 1,
+                        descriptor: input.reference().clone(),
+                    },
+                },
+                CellEvent::ChildPrepared {
+                    cell,
+                    operation,
+                    name: "Recall".into(),
+                    semantics: ToolSemantics::Parallel,
+                    input: input.reference().clone(),
+                    resources: vec![],
+                },
+                CellEvent::ChildAdmitted { cell, operation },
+                CellEvent::ChildBound {
+                    cell,
+                    operation,
+                    reference: reply.reference.clone(),
+                },
+                CellEvent::ChildObserved {
+                    cell,
+                    operation,
+                    reply: legacy,
+                },
+                CellEvent::ChildObserved {
+                    cell,
+                    operation,
+                    reply: observation.clone(),
+                },
+                returned.clone(),
+            ]
+            .into_iter()
+            .map(|event| Fact::Cell { event })
+            .collect(),
+            vec![input, prepared.blob, material],
+        )
+        .await?;
+        let bytes = driver.state.content(run, result.clone()).await?;
+        assert!(!String::from_utf8(bytes)?.contains("shared child evidence"));
+        let cells = driver.state.cells();
+        let child = cells
+            .read(&session, cell)
+            .await?
+            .unwrap()
+            .children
+            .remove(&operation)
+            .unwrap();
+        assert_eq!(child.reply.as_ref(), Some(&observation));
+        assert_eq!(
+            cells
+                .operation_reply(&session, cell, child.reply.unwrap())
+                .await?,
+            reply
+        );
+
+        let canonical = cells.read(&session, cell).await?.unwrap();
+        let history = driver.state.session_history(owner.clone(), session.clone());
+        let stop = CancellationToken::new();
+        let through = history.capture().await?.through_sequence;
+        let resources =
+            maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
+                staging_bytes: payload.len() * 3,
+                ..Default::default()
+            })?;
+        let (knowledge, dependencies) = maka_agent_engine::preparation::project_cell_knowledge(
+            maka_agent_engine::preparation::NotificationSource::Live(&driver.state),
+            &maka_agent_state::artifacts::ArtifactScope {
+                owner: owner.clone(),
+                session,
+                run,
+                through,
+            },
+            cell,
+            through,
+            &canonical.children,
+            maka_agent_facts::language::Language::En,
+            false,
+            &resources,
+            &stop,
+        )
+        .await?;
+        assert!(serde_json::to_string(&knowledge)?.contains(&payload));
+        assert!(dependencies.contains(&receipt_ref));
+        let mut report = CellInterruption {
+            cell,
+            diagnostic: "fixture interruption".into(),
+            children: canonical.children,
+            prior_output: None,
+        };
+        let report_blob = ContentBlob::json(&report)?;
+        let report_ref = report_blob.reference().clone();
+        rig.append(
+            vec![Fact::Cell {
+                event: CellEvent::Interrupted {
+                    cell,
+                    report: report_ref.clone(),
+                },
+            }],
+            vec![report_blob],
+        )
+        .await?;
+        report.children.get_mut(&operation).unwrap().reply = Some(inline_reply(reply));
+        let interrupted = CellObservation::Interrupted {
+            cell_id: cell,
+            report: serde_json::to_value(report)?,
+        };
+        let parent_return = super::super::effects::publish_return_for_test(
+            &driver.state,
+            &driver.access,
+            &parent,
+            ToolSuccess::projected(
+                ToolOutput::Cell(Box::new(CellReply {
+                    cell,
+                    state: CellReplyState::Interrupted { report: report_ref },
+                    observation: serde_json::to_value(interrupted)?,
+                })),
+                DurableToolProjection::Text {
+                    text: "fixture interruption".into(),
+                },
+            )
+            .reporting_error(true),
+            None,
+        )
+        .await?;
+        let Fact::LocalToolReturned {
+            result: parent_result,
+            ..
+        } = &parent_return
+        else {
+            return Err("missing parent result".into());
+        };
+        assert!(
+            !String::from_utf8(driver.state.content(run, parent_result.clone()).await?)?
+                .contains("shared child evidence")
+        );
+
+        let captured = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let (_destination, root, snapshot) = transfer_snapshot(&captured, owner, &stop).await?;
+        let work = driver
+            .owner
+            .services
+            .model_preparation_resources()
+            .acquire_work()
+            .await?;
+        let budget = work.budget();
+        let reader = ToolResultReader::snapshot(&snapshot, run, &stop);
+        let ToolResultSource::Returned(source) = reader
+            .result(&Fact::Cell { event: returned }, &result, budget.clone())
+            .await?
+        else {
+            return Err("missing child return".into());
+        };
+        let Some(ToolProjectionSource::Json(projection)) = source
+            .fields(budget.clone())
+            .await?
+            .projection(budget.clone())
+            .await?
+        else {
+            return Err("missing child projection".into());
+        };
+        let projection =
+            stream::inspect(&projection.value(budget.clone()).await?, budget.clone()).await?;
+        assert!(stream::text_eq(&projection.text()?, &payload, budget.clone()).await?);
+        let parent = reader
+            .result(&parent_return, parent_result, budget.clone())
+            .await?
+            .value(budget.clone())
+            .await?;
+        let operation = operation.to_string();
+        let restored = stream::field(
+            &parent,
+            &[
+                "observation",
+                "report",
+                "children",
+                &operation,
+                "reply",
+                "receipt",
+                "outcome",
+                "result",
+                "value",
+            ],
+            budget.clone(),
+        )
+        .await?
+        .ok_or("missing original interruption payload")?;
+        assert!(stream::text_eq(&restored.text()?, &payload, budget).await?);
+        let tree = SourceTree::snapshot(&snapshot).await?;
+        let found = tree
+            .find_page(
+                SourceFind {
+                    after: None,
+                    query: "shared child evidence".into(),
+                    case_sensitive: true,
+                    whole_word: false,
+                    include_internal: true,
+                },
+                stop,
+            )
+            .await?;
+        assert_eq!(
+            found
+                .matches
+                .iter()
+                .filter(|entry| entry.field == Field::Receipt)
+                .count(),
+            2
+        );
+        assert!(
+            found
+                .matches
+                .iter()
+                .any(|entry| entry.field == Field::Result)
+        );
+        root.shutdown().await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "Cell child history regression: {result:?}"
     );
     assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
 }

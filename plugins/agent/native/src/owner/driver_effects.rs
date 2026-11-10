@@ -950,7 +950,8 @@ async fn prepare_local_result(
                 .collect();
             let cell_observation = match &mut normalized.output {
                 ToolOutput::Cell(reply) => match &reply.state {
-                    maka_agent_facts::cells::CellReplyState::Completed { result } => {
+                    maka_agent_facts::cells::CellReplyState::Completed { result }
+                    | maka_agent_facts::cells::CellReplyState::Interrupted { report: result } => {
                         reply.observation = serde_json::Value::Null;
                         Some(result.clone())
                     }

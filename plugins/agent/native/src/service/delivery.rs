@@ -29,29 +29,8 @@ pub(super) fn tool_id(run: RunId, tool: &ToolKey) -> String {
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))
 }
 
-pub(super) fn settlement(
-    reply: &maka_plugin_core::operation::OperationReply,
-) -> Option<ToolSettlement> {
-    settlement_with(reply, |result| {
-        matches!(
-            result,
-            maka_plugin_core::operation::OperationResult::Failure { .. }
-        )
-    })
-}
-
 pub(super) fn recorded_settlement(
     reply: &maka_agent_facts::operation::RecordedOperationReply,
-) -> Option<ToolSettlement> {
-    settlement_with(
-        reply,
-        maka_agent_facts::operation::RecordedOperationResult::is_error,
-    )
-}
-
-fn settlement_with<R>(
-    reply: &maka_plugin_core::operation::OperationReply<R>,
-    is_error: impl FnOnce(&R) -> bool,
 ) -> Option<ToolSettlement> {
     use maka_plugin_core::operation::{OperationOutcome, Receipt};
     Some(match &reply.receipt {
@@ -63,7 +42,7 @@ fn settlement_with<R>(
             outcome: OperationOutcome::Returned { result },
             ..
         } => {
-            if is_error(result) {
+            if result.is_error() {
                 ToolSettlement::Failed
             } else {
                 ToolSettlement::Returned

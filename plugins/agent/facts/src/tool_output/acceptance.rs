@@ -165,14 +165,11 @@ impl OperationProjection {
         }
         Ok(Self::Inline { projection })
     }
-}
-
-impl StoredOperationReturn {
     pub fn resolve(
         self,
-        reply: maka_plugin_core::operation::OperationReply,
-    ) -> Result<ReturnedToolResult, &'static str> {
-        let projection = match self.projection {
+        reply: &maka_plugin_core::operation::OperationReply,
+    ) -> Result<DurableToolProjection, &'static str> {
+        Ok(match self {
             OperationProjection::Result => {
                 let Receipt::Recorded {
                     outcome:
@@ -189,11 +186,20 @@ impl StoredOperationReturn {
                 }
             }
             OperationProjection::Receipt => DurableToolProjection::Json {
-                value: serde_json::to_value(&reply)
+                value: serde_json::to_value(reply)
                     .map_err(|_| "original operation receipt is not JSON")?,
             },
             OperationProjection::Inline { projection } => projection,
-        };
+        })
+    }
+}
+
+impl StoredOperationReturn {
+    pub fn resolve(
+        self,
+        reply: maka_plugin_core::operation::OperationReply,
+    ) -> Result<ReturnedToolResult, &'static str> {
+        let projection = self.projection.resolve(&reply)?;
         Ok(ReturnedToolResult {
             output: ToolOutput::Operation(Box::new(reply)),
             projection,
