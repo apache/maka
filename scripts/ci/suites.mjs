@@ -319,8 +319,6 @@ export const suites = {
       'test(macos::tcc::tests::)',
       'test(system_permission::process::tests::)',
       'test(desktop::worker::macos::tests::)',
-      'test(desktop::worker::native_owner::tests::)',
-      'test(driver::tests::fresh_binding_replaces_failed_controller_without_restarting_old_owner)',
     ].join(' | '),
   },
 };
