@@ -150,7 +150,7 @@ pub(crate) fn with_owned_content<T>(
     consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let mut statement = c.prepare_cached("SELECT c.payload FROM agent_content_pins p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?")?;
+    let mut statement = c.prepare_cached("SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?")?;
     let mut rows = statement.query(params![
         run.to_string(),
         reference.digest,

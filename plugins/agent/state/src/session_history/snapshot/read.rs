@@ -116,7 +116,7 @@ fn authorize_adopted(
     run: RunId,
 ) -> Result<(), StoreError> {
     let content = content_id(c, manifest)?;
-    let accepted:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot AND s.manifest_content_id=?1 JOIN agent_run_specs r ON r.run=a.run JOIN agent_content_pins p ON p.run=r.run AND p.content_id=?1 WHERE a.run=?2 AND a.snapshot=?3 AND r.owner=?4 AND r.session=?5)",params![content,run.to_string(),id.to_string(),serde_json::to_string(owner)?,session],|r|r.get(0))?;
+    let accepted:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot AND s.manifest_content_id=?1 JOIN agent_run_specs r ON r.run=a.run JOIN agent_run_content p ON p.run=r.run AND p.content_id=?1 WHERE a.run=?2 AND a.snapshot=?3 AND r.owner=?4 AND r.session=?5)",params![content,run.to_string(),id.to_string(),serde_json::to_string(owner)?,session],|r|r.get(0))?;
     if !accepted {
         return Err(invalid(
             "snapshot is not adopted by this original target Run",
@@ -141,7 +141,7 @@ impl Query for Open {
                 ));
             }
         };
-        let raw:String=c.query_row("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_content_pins p ON p.run=a.run AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND length(b.payload)=?",params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+        let raw:String=c.query_row("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_run_content p ON p.run=a.run AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND length(b.payload)=?",params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
         let id = super::super::sql::identity(raw)?;
         Ok((id, reference))
     }
