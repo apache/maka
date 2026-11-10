@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { projectProcessGroups } from '../app/processGroups.ts';
+import { projectProcessGroups, stableRowId, turnWorkFold } from '../app/processGroups.ts';
 import { historyTurnKey } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
@@ -93,6 +93,45 @@ test('a turn has work to fold only beside its final answer', () => {
     true,
     'a recovered failure folds away',
   );
+});
+
+test('work folds on the first streamed answer and reopens if the turn does more work', () => {
+  const request = row('request', 'Summarize', 1, { role: 'user' });
+  const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
+  const answer = row('answer', 'Here', 3);
+  const preview = { ...answer, position: undefined, startSequence: 3, order: undefined };
+  const project = (rows, options = {}) =>
+    projectProcessGroups({
+      rows: [request, ...rows],
+      toolActivity: [],
+      activeTurnId: 'run',
+      answerTurnId: 'run',
+      ...options,
+    }).turns.get('run');
+  const chat = (turn) => turnWorkFold(turn, false);
+
+  assert.equal(chat(project([thought, { ...preview, text: '' }])), 'open');
+  assert.equal(chat(project([preview])), 'unavailable', 'a direct reply has no work to fold');
+  for (const body of [preview, answer]) {
+    const turn = project([thought, body]);
+    assert.equal(chat(turn), 'closed');
+    assert.deepEqual(turn.answerOutputIds, [stableRowId(body)], 'keep the streamed answer visible');
+    assert.equal(turnWorkFold(turn, true), 'closed', 'terminal Chat folds too');
+  }
+
+  const resumed = project([thought, answer], {
+    toolActivity: [{ toolUseId: 'read', turnId: 'run', startSequence: 4 }],
+  });
+  assert.equal(chat(resumed), 'open');
+  assert.equal(chat(project([thought, answer], { answerTurnId: null })), 'open');
+  const timing = { startedAt: 1, finished: { outcome: 'completed', at: 5 } };
+  const catchingUp = project([{ ...thought, timing }, answer], { activeTurnId: null });
+  assert.equal(chat(catchingUp), 'closed');
+  assert.deepEqual(catchingUp.answerOutputIds, [stableRowId(answer)]);
+  const final = row('final', 'Done', 5, { finalOutput: true });
+  const completed = project([thought, answer, final]);
+  assert.equal(chat(completed), 'closed');
+  assert.deepEqual(completed.answerOutputIds, [], 'the earlier text now belongs to the work');
 });
 
 test('recovered snapshot failures mark only their source-aware turn as having work', () => {
