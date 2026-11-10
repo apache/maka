@@ -167,6 +167,8 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
   const saving = delayed(owner.pending);
   const disabled = () => saving() || owner.snapshot() === null;
   const asking = () => owner.snapshot()?.permissions.requestPermissions === true;
+  // A new draft inherits the Host's setting until the user picks one.
+  const inherited = () => owner.snapshot()?.permissions.requestPermissions === null;
   const changeOpen = (next: boolean) => {
     if (!owner.pending()) open.set(next);
   };
@@ -282,7 +284,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
               selected={asking()}
               accessibilityLabel={tr('{label}: {state}', {
                 label: tr('Ask for approval'),
-                state: asking() ? tr('On') : tr('Off'),
+                state: inherited() ? tr('Default') : asking() ? tr('On') : tr('Off'),
               })}
               onPress={inputAction(owner.select, {
                 snapshot: owner.snapshot()!,
@@ -300,7 +302,12 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                   {tr('When off, anything outside the sandbox is blocked.')}
                 </Text>
               </View>
-              <ChoiceIndicator kind="switch" checked={asking()} disabled={disabled()} />
+              <If
+                when={inherited()}
+                else={<ChoiceIndicator kind="switch" checked={asking()} disabled={disabled()} />}
+              >
+                <Text style={{ ...menuDetailTextStyle, color: C.muted }}>{tr('Default')}</Text>
+              </If>
             </Button>
             <Text style={noteStyle()}>
               {tr('Applies to this conversation; changing it clears earlier approvals.')}

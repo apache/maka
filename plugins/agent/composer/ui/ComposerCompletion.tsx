@@ -1022,7 +1022,7 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
                   <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', gap: 8 }}>
                     <Text
                       style={[
-                        { ...captionTextStyle, color: C.text, flexShrink: 1 },
+                        { ...captionTextStyle, color: C.text, flexShrink: 0, maxWidth: '70%' },
                         { numberOfLines: 1 },
                       ]}
                     >
@@ -1031,7 +1031,7 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
                     <If when={row().detail}>
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.muted, flexShrink: 10, minWidth: 0 },
+                          { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
                           { numberOfLines: 1 },
                         ]}
                       >
