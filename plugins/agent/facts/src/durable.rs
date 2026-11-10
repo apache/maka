@@ -540,6 +540,8 @@ pub enum Fact {
         settlement: crate::tool_call::ToolSettlement,
         result: ContentRef,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_observation: Option<ContentRef>,
     },
     ToolResultAccepted {
         tool: ToolKey,
@@ -704,8 +706,14 @@ impl Fact {
                 }));
                 refs
             }
+            Self::LocalToolReturned {
+                result,
+                cell_observation,
+                ..
+            } => std::iter::once(result)
+                .chain(cell_observation.iter())
+                .collect(),
             Self::ToolResultAccepted { result, .. }
-            | Self::LocalToolReturned { result, .. }
             | Self::HostToolResultRecorded { result, .. } => {
                 vec![result]
             }

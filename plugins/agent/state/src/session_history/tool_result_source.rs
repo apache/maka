@@ -58,6 +58,7 @@ pub enum ToolResultSource {
     Returned {
         envelope: JsonSource,
         body: JsonSource,
+        reader: Option<ToolResultReader>,
     },
     External {
         body: JsonSource,
@@ -78,7 +79,45 @@ impl ToolResultSource {
     }
     pub async fn value(self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
         match self {
-            Self::Returned { body, .. } | Self::External { body } => {
+            Self::Returned { body, reader, .. } => {
+                let value = required(&body, &["output", "value"], &budget).await?.source;
+                let Some(reader) = reader else {
+                    return Ok(value);
+                };
+                let format = required(&body, &["output", "format"], &budget)
+                    .await?
+                    .text()?;
+                if !json::text_eq(&format, "cell", budget.clone()).await?
+                    || json::field(&value, &["observation"], budget.clone())
+                        .await?
+                        .is_some()
+                {
+                    return Ok(value);
+                }
+                let state = required(&value, &["state"], &budget).await?.source;
+                let kind = required(&state, &["kind"], &budget).await?.text()?;
+                if !json::text_eq(&kind, "completed", budget.clone()).await? {
+                    return Err(invalid("Cell result has no original observation"));
+                }
+                let reference =
+                    reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
+                let observation = reader.source(&reference).await?;
+                let end = value
+                    .bytes()
+                    .len()
+                    .and_then(|size| size.checked_sub(1))
+                    .ok_or_else(|| invalid("Cell reply has no bounded object bytes"))?;
+                let parts = [
+                    value.bytes().slice(0..end)?,
+                    SourceBytes::Inline((&b",\"observation\":"[..]).into()),
+                    observation.bytes().clone(),
+                    SourceBytes::Inline((&b"}"[..]).into()),
+                ];
+                Ok(JsonSource::new(SourceBytes::Source(Arc::new(
+                    ReplyBytes::new(parts.into())?,
+                ))))
+            }
+            Self::External { body } => {
                 Ok(required(&body, &["output", "value"], &budget).await?.source)
             }
             Self::Direct(source) => Ok(source),
@@ -273,7 +312,9 @@ impl ToolResultReader {
             let diagnostic = fields.next().flatten();
             let evidence = fields.next().flatten();
             let kind = kind.text()?;
-            if json::text_eq(&kind, "local", budget.clone()).await? {
+            if json::text_eq(&kind, "local", budget.clone()).await?
+                || json::text_eq(&kind, "host", budget.clone()).await?
+            {
                 let reference = reference_value(present(result)?, &budget).await?;
                 source = self.source(&reference).await?;
                 returned = true;
@@ -317,7 +358,12 @@ impl ToolResultReader {
             }
         }
         if returned {
-            return Self::returned(source, budget).await;
+            let body = Self::returned_body(&source, budget).await?;
+            return Ok(ToolResultSource::Returned {
+                envelope: source,
+                body,
+                reader: Some(self.clone()),
+            });
         }
         Ok(ToolResultSource::Direct(source))
     }
@@ -328,7 +374,11 @@ impl ToolResultReader {
         budget: Arc<dyn SourceBudget>,
     ) -> io::Result<ToolResultSource> {
         let body = Self::returned_body(&envelope, budget).await?;
-        Ok(ToolResultSource::Returned { envelope, body })
+        Ok(ToolResultSource::Returned {
+            envelope,
+            body,
+            reader: None,
+        })
     }
     async fn returned_body(
         envelope: &JsonSource,
@@ -424,6 +474,88 @@ async fn reference_value(
     };
     reference.validate().map_err(invalid)?;
     Ok(reference)
+}
+struct ReplyBytes {
+    parts: Vec<SourceBytes>,
+    len: u64,
+}
+impl ReplyBytes {
+    fn new(parts: Vec<SourceBytes>) -> io::Result<Self> {
+        let len = parts
+            .iter()
+            .try_fold(0u64, |len, part| len.checked_add(part.len()?))
+            .ok_or_else(|| invalid("Cell reply length is unknown or overflows"))?;
+        Ok(Self { parts, len })
+    }
+}
+impl ByteSource for ReplyBytes {
+    fn len(&self) -> Option<u64> {
+        Some(self.len)
+    }
+    fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+        Box::new(ReplyCursor {
+            parts: self.parts.clone().into_iter(),
+            budget,
+            active: None,
+        })
+    }
+    fn slice(&self, range: Range<u64>) -> io::Result<Arc<dyn ByteSource>> {
+        if range.start > range.end || range.end > self.len {
+            return Err(invalid("Cell reply range exceeds original"));
+        }
+        let mut parts = Vec::new();
+        let mut start = 0;
+        for part in &self.parts {
+            let end = start + part.len().expect("known reply component length");
+            let lower = range.start.max(start);
+            let upper = range.end.min(end);
+            if lower < upper {
+                parts.push(part.slice(lower - start..upper - start)?);
+            }
+            start = end;
+        }
+        Ok(Arc::new(Self {
+            parts,
+            len: range.end - range.start,
+        }))
+    }
+}
+struct ReplyCursor {
+    parts: std::vec::IntoIter<SourceBytes>,
+    budget: Arc<dyn SourceBudget>,
+    active: Option<Box<dyn ByteCursor>>,
+}
+impl ByteCursor for ReplyCursor {
+    fn read_chunk(&mut self, mut buffer: ChargedBuffer) -> pull::ReadSource<'_> {
+        Box::pin(async move {
+            loop {
+                let cursor = match &mut self.active {
+                    Some(cursor) => cursor,
+                    None => match self.parts.next() {
+                        Some(part) => self.active.insert(part.open(self.budget.clone())),
+                        None => {
+                            return Ok(pull::SourceRead {
+                                buffer,
+                                bytes_read: 0,
+                                eof: true,
+                            });
+                        }
+                    },
+                };
+                let mut read = cursor.read_chunk(buffer).await?;
+                if read.eof {
+                    self.active = None;
+                } else if read.bytes_read == 0 {
+                    return Err(invalid("Cell reply component made no progress"));
+                }
+                if read.bytes_read != 0 {
+                    read.eof = self.active.is_none() && self.parts.len() == 0;
+                    return Ok(read);
+                }
+                buffer = read.buffer;
+            }
+        })
+    }
 }
 #[derive(Clone)]
 struct ScopedByteSource {

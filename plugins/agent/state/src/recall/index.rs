@@ -324,6 +324,39 @@ fn project(
                     message.body = serde_json::to_string(&output)?
                 }
                 AcceptedToolResult::Rejected { diagnostic } => message.body = diagnostic,
+                AcceptedToolResult::Host { result } => {
+                    let returned: ToolReturn<ReturnedToolResult> =
+                        serde_json::from_slice(&exact(c, fact.run, &result)?)?;
+                    returned.validate().map_err(invalid)?;
+                    let maka_agent_facts::tool_output::ToolOutput::Operation(reply) =
+                        returned.body.output
+                    else {
+                        return Err(invalid(
+                            "host tool result has no original operation receipt",
+                        ));
+                    };
+                    returned
+                        .body
+                        .projection
+                        .validate(&spec.session_id)
+                        .map_err(invalid)?;
+                    field(
+                        &mut message,
+                        Field::Result,
+                        &serde_json::to_string(&reply)?,
+                        false,
+                    );
+                    field(
+                        &mut message,
+                        Field::Result,
+                        &projection(returned.body.projection),
+                        false,
+                    );
+                    message.references.push(result);
+                    message
+                        .references
+                        .extend(returned.artifacts.into_iter().map(|a| a.payload));
+                }
                 AcceptedToolResult::Operation { reply, result } => {
                     field(
                         &mut message,

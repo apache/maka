@@ -114,6 +114,7 @@ pub(in crate::owner) async fn prepare_completed(
         preparation::ContentSource::Live { history, cut },
         run,
         &frozen.prompt,
+        &frozen.prompt_chunks,
         &frozen.layout,
         cancellation,
     )

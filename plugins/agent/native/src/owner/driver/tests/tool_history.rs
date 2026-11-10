@@ -378,6 +378,97 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_cell_tool_result_reads_the_original_observation() {
+    use maka_agent_facts::{
+        cells::{CellReply, CellReplyState},
+        model::prompt_source::source::json as stream,
+        tool_output::{DurableToolProjection, ReturnedToolResult},
+    };
+    use maka_agent_state::session_history::tool_result_source::ToolResultReader;
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig
+            .tool(attempt, "exec", "script", json!({"code":"1"}))
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let view = driver.state.frontier(run).await?;
+        let history = driver
+            .state
+            .session_history(view.spec.owner.clone(), session);
+        let resources = driver.owner.services.model_preparation_resources();
+        let cell = CellId::for_agent(
+            AgentStepLink {
+                run,
+                step: view.attempts[&attempt].step,
+                attempt,
+            },
+            &tool.call,
+        );
+        let observation = ContentBlob::json(&CellObservation::Completed {
+            cell_id: cell,
+            content: vec![],
+            result: json!({"answer":"original evidence"}),
+        })?;
+        let returned = ContentBlob::json(&ToolReturn {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![],
+            body: ReturnedToolResult {
+                output: ToolOutput::Cell(Box::new(CellReply {
+                    cell,
+                    state: CellReplyState::Completed {
+                        result: observation.reference().clone(),
+                    },
+                    observation: Value::Null,
+                })),
+                projection: DurableToolProjection::Text {
+                    text: "Done".into(),
+                },
+                is_error: false,
+                loaded_tools: Default::default(),
+            },
+        })?;
+        let reference = returned.reference().clone();
+        let fact = Fact::LocalToolReturned {
+            tool,
+            settlement: ToolSettlement::Returned,
+            result: reference.clone(),
+            is_error: false,
+            cell_observation: Some(observation.reference().clone()),
+        };
+        rig.append(vec![fact.clone()], vec![observation, returned])
+            .await?;
+        let stop = CancellationToken::new();
+        let cut = history.capture().await?;
+        let reader = ToolResultReader::live(&history, &cut, run, &stop);
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let value = reader
+            .result(&fact, &reference, budget.clone())
+            .await?
+            .value(budget.clone())
+            .await?;
+        let answer = stream::field(&value, &["observation", "result", "answer"], budget.clone())
+            .await?
+            .ok_or("missing original observation")?;
+        assert!(stream::text_eq(&answer.text()?, "original evidence", budget).await?);
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "Cell history regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_progress_and_failed_result_keep_the_original_call() {
     use maka_agent_facts::executor::{Output, Selection, Settings};
     let mut rig = Rig::new().unwrap();

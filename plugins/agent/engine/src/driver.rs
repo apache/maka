@@ -1888,6 +1888,10 @@ fn accepted_content(
             is_error: result.is_error,
             provider_options: result.provider_options.clone(),
         }
+    } else if let Some(returned) = &tool.host_returned {
+        AcceptedToolResult::Host {
+            result: returned.result.clone(),
+        }
     } else if let (
         Some(reference),
         Some(
@@ -1903,10 +1907,7 @@ fn accepted_content(
                 reference: reference.clone(),
                 receipt: receipt.clone(),
             },
-            result: tool
-                .host_returned
-                .as_ref()
-                .map(|returned| returned.result.clone()),
+            result: None,
         }
     } else if matches!(outcome, AcceptedResult::Rejected) {
         let mut diagnostic = tool

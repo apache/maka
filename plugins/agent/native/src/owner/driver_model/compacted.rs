@@ -212,10 +212,10 @@ impl DriverModel {
                 let calibration=self.calibration(view,&capture,&model,Some(&checkpoint)).await?;
                 let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),model.main_output_limit,ModelPurpose::Main,calibration)?;
                 let snapshot=preparation::snapshot_prompt(self.preparation_io()?,self.resources.clone(),&prepared.request.prompt,&self.cancellation).await?;
-                let (payload,layout,cleanup)=snapshot.into_parts();
+                let (prompt,layout_chunks,layout,cleanup)=snapshot.into_parts();
                 let evidence=self.cleanup.clone();
                 self.workers.spawn(async move{if let Err(error)=cleanup.await{evidence.observe(&error);}});
-                frozen.prompt=payload.reference().clone();frozen.layout=layout;frozen.covered_prefix=None;
+                frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
                 frozen.instructions=prepared.request.prompt.instructions().map(str::to_owned);
                 frozen.normalization=prepared.request.prompt.normalization().cloned();frozen.wire=FrozenWire::capture(&prepared.request.prompt)?;
                 let body=ContentBlob::json(&frozen)?;
@@ -230,7 +230,9 @@ impl DriverModel {
                 request.step=StepId::new();request.summary_repair_of=None;
                 request.compaction_recovery=Some(request.compaction_recovery.or(summary_request.compaction_recovery).unwrap_or(summary));
                 request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.max_output_tokens=prepared.request.max_output_tokens;
-                Ok(vec![payload,body,recovery,projection,provenance])
+                let mut contents=vec![body,recovery,projection,provenance];
+                contents.extend(layout_chunks);
+                Ok(contents)
             }.await;
             let contents=match prompt.close().await{Ok(())=>result,Err(close)=>Err(match result{Ok(_)=>self.cleanup.preparation_failed(close),Err(error)=>preparation::preparation_cleanup_error(error,close)})}?;
             Ok(PreparedStep{request,contents,notifications:vec![],steering:None})

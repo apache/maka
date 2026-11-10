@@ -305,16 +305,20 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (payload, layout, cleanup) = snapshot.into_parts();
+            let (prompt, chunks, layout, cleanup) = snapshot.into_parts();
             let evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
                     evidence.observe(&error);
                 }
             });
-            frozen.prompt = payload.reference().clone();
+            frozen.prompt = prompt;
+            frozen.prompt_chunks = chunks
+                .iter()
+                .map(|chunk| chunk.reference().clone())
+                .collect();
             frozen.layout = layout;
-            contents.push(payload);
+            contents.extend(chunks);
             let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
             current_context(&mut provenance, &model, settings.operation)?;
             let fields = provenance

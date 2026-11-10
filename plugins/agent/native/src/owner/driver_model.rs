@@ -116,6 +116,8 @@ struct FrozenInput {
     operation: ModelOperation,
     language: maka_agent_facts::language::Language,
     prompt: ContentRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
@@ -172,7 +174,11 @@ impl FrozenCellKnowledge {
 }
 impl FrozenInput {
     fn content_refs(&self) -> Vec<ContentRef> {
-        let mut refs = vec![self.prompt.clone()];
+        let mut refs = if self.prompt_chunks.is_empty() {
+            vec![self.prompt.clone()]
+        } else {
+            self.prompt_chunks.clone()
+        };
         for notice in &self.notifications {
             for reference in &notice.dependencies {
                 if !refs.contains(reference) {
@@ -619,7 +625,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (payload, layout, cleanup) = snapshot.into_parts();
+            let (prompt_content, chunks, layout, cleanup) = snapshot.into_parts();
             let cleanup_evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -634,7 +640,8 @@ impl DriverModel {
                 route_identity: request.route_identity.clone(),
                 operation: request.request.operation,
                 language: request.request.language,
-                prompt: payload.reference().clone(),
+                prompt: prompt_content,
+                prompt_chunks: chunks.iter().map(|chunk| chunk.reference().clone()).collect(),
                 layout,
                 covered_prefix,
                 normalization: request.request.prompt.normalization().cloned(),
@@ -756,12 +763,12 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
-                        payload,
                         recovery_contract,
                         capture,
                         provenance,
                         projection,
                     ];
+                    contents.extend(chunks);
                     contents.extend(steering_contents);
                     contents
                 },
@@ -1239,6 +1246,7 @@ impl DriverModel {
             reader.content_source(),
             run,
             &frozen.prompt,
+            &frozen.prompt_chunks,
             &frozen.layout,
             &self.cancellation,
         )
@@ -2055,6 +2063,7 @@ impl DriverModel {
         use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
         Ok(match evidence {
             AcceptedToolResult::Local { result }
+            | AcceptedToolResult::Host { result }
             | AcceptedToolResult::Operation {
                 result: Some(result),
                 ..

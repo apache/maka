@@ -43,6 +43,9 @@ pub enum AcceptedToolResult {
     Local {
         result: crate::durable::ContentRef,
     },
+    Host {
+        result: crate::durable::ContentRef,
+    },
     Operation {
         reply: maka_plugin_core::operation::OperationReply,
         result: Option<crate::durable::ContentRef>,

@@ -901,7 +901,7 @@ async fn prepare_local_result(
     // The original worker retains its physical leases across this CPU work.
     let (changes, contents, artifacts, fact, observation) =
         tokio::task::spawn_blocking(move || {
-            let normalized = result
+            let mut normalized = result
                 .into_durable(
                     &format!("{}:{}:{}", execution.run_id, key.attempt, key.call),
                     SystemTime::now(),
@@ -924,6 +924,16 @@ async fn prepare_local_result(
                 .collect();
             let original = match &normalized.output {
                 ToolOutput::Operation(reply) => Some(reply.as_ref().clone()),
+                _ => None,
+            };
+            let cell_observation = match &mut normalized.output {
+                ToolOutput::Cell(reply) => match &reply.state {
+                    maka_agent_facts::cells::CellReplyState::Completed { result } => {
+                        reply.observation = serde_json::Value::Null;
+                        Some(result.clone())
+                    }
+                    _ => None,
+                },
                 _ => None,
             };
             let blob = ContentBlob::json(&ToolReturn {
@@ -969,6 +979,7 @@ async fn prepare_local_result(
                         result: blob.reference().clone(),
                         is_error: normalized.is_error,
                         settlement,
+                        cell_observation,
                     },
                     at,
                 ));

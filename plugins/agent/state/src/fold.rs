@@ -1299,6 +1299,7 @@ impl RunView {
                 settlement,
                 result,
                 is_error,
+                ..
             } => {
                 let current = self.tool(tool)?;
                 require(
