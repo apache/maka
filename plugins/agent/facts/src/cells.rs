@@ -473,14 +473,19 @@ impl CellView {
                 .values()
                 .all(CellChild::physical_cleanup_confirmed)
     }
+    pub fn has_unsettled_effects(&self) -> bool {
+        !self.physical_cleanup_confirmed()
+            || self.children.values().any(|child| !child.known())
+            || self.blocks_effect_admission()
+    }
     pub fn blocks_session_retirement(&self, terminal: Option<&crate::durable::Terminal>) -> bool {
         if matches!(self.owner, CellOwner::Agent { .. })
-            && matches!(terminal, Some(crate::durable::Terminal::Cancelled))
+            && matches!(
+                terminal,
+                Some(crate::durable::Terminal::Cancelled | crate::durable::Terminal::Failed)
+            )
         {
-            // Cancellation abandons private publication and model delivery, never original effects.
-            matches!(self.status, CellStatus::Running)
-                || self.children.values().any(|child| !child.known())
-                || self.blocks_effect_admission()
+            self.has_unsettled_effects()
         } else {
             self.pending()
         }

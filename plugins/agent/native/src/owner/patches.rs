@@ -74,7 +74,7 @@ fn identity(execution: &Execution) -> ExecutionIdentity {
 fn ended(state: &ExecutionState) -> bool {
     matches!(
         state,
-        ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
+        ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled
     )
 }
 fn descriptor(record: Artifact, base: &str) -> WorkspacePatch {

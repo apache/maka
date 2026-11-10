@@ -17,12 +17,6 @@
  * under the License.
  */
 
-import {
-  RiskDecisionDialog,
-  riskActionLabels,
-  sameRiskOffer,
-  type RiskReview,
-} from './RiskDecisionDialog';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
@@ -40,13 +34,10 @@ import {
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import type { StagedFile } from 'maka/host';
 import type {
-  AgentAdjudicateRisk,
   AgentContinuationRejection,
   AgentContinuationResult,
   AgentExecution,
-  AgentExecutionResult,
   AgentSendResult,
-  AgentRunBlocker,
   RunId,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -63,7 +54,7 @@ import {
 } from 'nsh';
 import type { ListRef, ScrollRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform, Scroll, windowSize } from 'nsh';
+import { keymap, platform, Scroll } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -270,7 +261,6 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   continuationPending(): boolean;
-  riskPending(): boolean;
   /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
   botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
@@ -340,7 +330,9 @@ function receiptMessage(reply: any): UiText {
         ? uiMessage('Stopped before delivery. Your message is kept.')
         : value.reason === 'model_unavailable'
           ? uiMessage('The selected model is unavailable. Try again or choose another model.')
-          : uiMessage('Send rejected: {reason}', { reason: value.reason })
+          : value.reason === 'original_operation_unsettled'
+            ? uiMessage('Maka could not confirm the previous operation. Your message is kept.')
+            : uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
   return uiMessage('This action could not be completed.');
@@ -403,8 +395,6 @@ export function Conversation(props: ConversationProps) {
   const compacting = signal<AgentCompactionProgress | null>(null);
   const execution = signal<AgentExecution | null>(null);
   const continuing = signal(false);
-  const adjudicating = signal(false);
-  const riskReview = signal<RiskReview | null>(null);
   const confirmingContinuation = () => continuing() || props.continuationPending();
   const executionRevision = signal(0);
   const stoppingRun = signal<RunId | null>(null);
@@ -561,7 +551,7 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      if (run() === 'waiting_for_user' || run() === 'waiting' || run() === 'blocked')
+      if (run() === 'waiting_for_user' || run() === 'waiting')
         return { kind: 'waiting', detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
@@ -1961,7 +1951,6 @@ export function Conversation(props: ConversationProps) {
         case 'admitted':
         case 'running':
         case 'waiting':
-        case 'blocked':
           run.set(value.state.kind);
           break;
       }
@@ -2072,79 +2061,6 @@ export function Conversation(props: ConversationProps) {
         });
     }
   };
-  const riskReviewCurrent = (review: RiskReview) => {
-    const current = execution();
-    return (
-      alive &&
-      current?.state.kind === 'blocked' &&
-      current.sessionId === review.source.sessionId &&
-      current.runId === review.source.runId &&
-      current.highWater === review.source.highWater &&
-      current.state.blockers.some(
-        (blocker) =>
-          blocker.id === review.blockerId &&
-          blocker.offeredActions.some((offer) => sameRiskOffer(offer, review.offer)),
-      )
-    );
-  };
-  const riskUnavailable = () =>
-    !connected()
-      ? uiMessage('Reconnect before submitting a risk decision.')
-      : archived()
-        ? uiMessage('Restore this conversation before submitting a risk decision.')
-        : undefined;
-  const openRiskReview = (review: RiskReview) => {
-    if (!props.visible() || adjudicating() || props.riskPending() || riskReview() !== null) return;
-    const unavailable = riskUnavailable();
-    if (unavailable) {
-      notice.set(unavailable);
-      return;
-    }
-    if (!riskReviewCurrent(review)) {
-      notice.set(uiMessage('This run changed. Close this decision and review the current state.'));
-      return;
-    }
-    riskReview.set(review);
-  };
-  const adjudicateRisk = async (input: AgentAdjudicateRisk) => {
-    if (!alive || adjudicating() || props.riskPending())
-      throw new UiError('Checking the original decision receipt. Do not submit another decision.');
-    const unavailable = riskUnavailable();
-    if (unavailable) throw new UiError(unavailable.key);
-    const source = execution();
-    if (
-      input.sessionId !== sessionId ||
-      source?.state.kind !== 'blocked' ||
-      source.runId !== input.runId ||
-      source.highWater !== input.expectedHighWater ||
-      !source.state.blockers.some((blocker) => blocker.id === input.blockerId)
-    )
-      throw new UiError('This run changed. Close this decision and review the current state.');
-    const blocker = source.state.blockers.find((blocker) => blocker.id === input.blockerId)!;
-    if (!blocker.offeredActions.some((offer) => offer.kind === input.decision.kind))
-      throw new UiError('This action is not offered for the current blocker.');
-    adjudicating.set(true);
-    try {
-      const result: AgentExecutionResult = await props.control('adjudicateRisk', input);
-      if (result.kind !== 'found')
-        throw new UiError('This run is no longer available. Refresh the conversation.');
-      if (result.execution.sessionId !== sessionId || result.execution.runId !== input.runId)
-        throw new UiError('Host returned a different run for this decision.');
-      if (result.execution.highWater <= input.expectedHighWater)
-        throw new UiError('The decision did not advance this run. Refresh before deciding again.');
-      if (!alive) return;
-      batch(() => acceptExecution(result.execution));
-      // A failed refresh does not turn an already-recorded decision into failure.
-      await observe().catch(report);
-    } finally {
-      if (alive)
-        batch(() => {
-          adjudicating.set(false);
-          executionRevision.set(executionRevision() + 1);
-        });
-    }
-  };
-
   const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
@@ -2737,8 +2653,6 @@ export function Conversation(props: ConversationProps) {
     continuation,
     continuing: confirmingContinuation,
     continueRun,
-    adjudicating: () => adjudicating() || props.riskPending(),
-    adjudicateRisk,
     metrics: () => metricText(metrics()),
     contextUsage: () => {
       const value = metrics();
@@ -3115,32 +3029,39 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
-  const blockedExecution = computed(() => {
-    const source = execution();
-    return source?.state.kind === 'blocked' ? { source, blockers: source.state.blockers } : null;
+  const recoveryFailure = computed(() => {
+    const state = execution()?.state;
+    return state?.kind === 'failed' ? state.reason : null;
   });
+  const failureLabels: Record<NonNullable<ReturnType<typeof recoveryFailure>>['kind'], MessageKey> =
+    {
+      current_authority_unavailable: 'Current authority unavailable',
+      external_effect_unknown: 'External operation outcome unknown',
+      operation_unknown: 'Operation outcome unknown',
+      provider_effect_unknown: 'Provider tool outcome unknown',
+      original_admission_unknown: 'Operation outcome unknown',
+      code_cell_recovery_unavailable: 'Code cell recovery unavailable',
+      unsupported_protocol: 'Maka could not resume this run.',
+      cleanup_unconfirmed: 'Resource cleanup unconfirmed',
+      tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
+      model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
+      resources_unavailable: 'Resources unavailable',
+      external_task_unobservable: 'External task cannot be observed',
+      external_publication_item: 'External output needs reconciliation',
+      external_publication_unavailable: 'External output publication unavailable',
+    };
+  const authorityUnavailable = () => {
+    const state = execution()?.state;
+    return state?.kind === 'waiting' && state.authorityUnavailable;
+  };
   const waitingExecution = computed(() => {
     const source = execution();
     return source?.state.kind === 'waiting'
-      ? [...new Set(source.state.waits.map((wait) => wait.kind))]
+      ? [...new Set(source.state.waits.map((wait) => wait.kind))].filter(
+          (kind) => kind !== 'blocker',
+        )
       : [];
   });
-  const blockerLabels: Record<AgentRunBlocker['reason']['kind'], MessageKey> = {
-    current_authority_unavailable: 'Current authority unavailable',
-    external_effect_unknown: 'External operation outcome unknown',
-    operation_unknown: 'Operation outcome unknown',
-    provider_effect_unknown: 'Provider tool outcome unknown',
-    original_admission_unknown: 'Original admission unknown',
-    code_cell_recovery_unavailable: 'Code cell recovery unavailable',
-    unsupported_protocol: 'Protocol recovery unavailable',
-    cleanup_unconfirmed: 'Resource cleanup unconfirmed',
-    tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
-    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
-    resources_unavailable: 'Resources unavailable',
-    external_task_unobservable: 'External task cannot be observed',
-    external_publication_item: 'External output needs reconciliation',
-    external_publication_unavailable: 'External output publication unavailable',
-  };
   const waitLabels: Record<
     Extract<AgentExecution['state'], { kind: 'waiting' }>['waits'][number]['kind'],
     MessageKey
@@ -3153,7 +3074,7 @@ export function Conversation(props: ConversationProps) {
     retry: 'Waiting to retry',
     operation: 'Waiting for the original operation',
     child: 'Waiting for a child run',
-    blocker: 'Waiting for a blocker',
+    blocker: 'Waiting for access to be restored',
   };
   let botReadThrough = 0;
   effect(() => {
@@ -3544,75 +3465,21 @@ export function Conversation(props: ConversationProps) {
           )
         }
       />
-      <If when={riskReview()}>
-        {(review) => (
-          <RiskDecisionDialog
-            review={review()}
-            current={() => riskReviewCurrent(review())}
-            unavailable={riskUnavailable}
-            pending={() => adjudicating() || props.riskPending()}
-            submit={adjudicateRisk}
-            close={() => riskReview.set(null)}
-          />
+      <If when={recoveryFailure()}>
+        {(reason) => (
+          <View style={{ ...readingColumn, paddingVertical: 8 }}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {tr(failureLabels[reason().kind])}
+            </Text>
+          </View>
         )}
       </If>
-      <If when={blockedExecution()}>
-        {(blocked) => (
-          <Scroll style={{ maxHeight: Math.max(160, windowSize().height / 3), flexShrink: 1 }}>
-            <View style={{ ...readingColumn, gap: 12, paddingVertical: 12 }}>
-              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Run blocked')}</Text>
-              <Each of={blocked().blockers} key={(blocker) => blocker.id}>
-                {(blocker) => (
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ ...captionTextStyle, color: C.muted }}>
-                      {tr(blockerLabels[blocker().reason.kind])}
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                      <Each of={blocker().offeredActions} key={(offer) => offer.kind}>
-                        {(offer) => (
-                          <Button
-                            disabled={
-                              !connected() || adjudicating() || props.riskPending() || archived()
-                            }
-                            onPress={inputAction(openRiskReview, {
-                              source: blocked().source,
-                              blockerId: blocker().id,
-                              offer: offer(),
-                            })}
-                            style={controlStyle}
-                            hoverStyle={{ backgroundColor: C.surface }}
-                            focusStyle={{ backgroundColor: C.raised }}
-                          >
-                            <Text style={{ ...captionTextStyle, color: C.accent }}>
-                              {tr(riskActionLabels[offer().kind])}…
-                            </Text>
-                          </Button>
-                        )}
-                      </Each>
-                    </View>
-                    <If when={blocker().offeredActions.length === 0}>
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
-                        {tr('No risk action is currently offered.')}
-                      </Text>
-                    </If>
-                    <If
-                      when={
-                        blocker().offeredActions.length > 0 &&
-                        !blocker().offeredActions.some(
-                          (offer) => offer.kind !== 'cancel_blocked_run',
-                        )
-                      }
-                    >
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
-                        {tr('Observation and replanning are not offered for this blocker.')}
-                      </Text>
-                    </If>
-                  </View>
-                )}
-              </Each>
-            </View>
-          </Scroll>
-        )}
+      <If when={authorityUnavailable()}>
+        <View style={{ ...readingColumn, paddingVertical: 8 }}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('Waiting for access to be restored')}
+          </Text>
+        </View>
       </If>
       <Each of={waitingExecution()} key={(kind) => kind}>
         {(kind) => (

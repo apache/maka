@@ -102,10 +102,7 @@ impl DriverModel {
         driver: &super::super::driver::NativeDriver,
     ) -> Result<PreparedStep, RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRecipe;
-        let attempt = view
-            .attempts
-            .get(&summary)
-            .ok_or_else(|| RunError::InvalidInput("adopted Summary attempt is absent".into()))?;
+        let attempt = self.state.model_attempt(view.run, summary).await?;
         let reader = self.history_reader(view.run).await?;
         let summary_request = reader.request(view.run, attempt.step).await?;
         let baseline = view.baseline.as_ref().ok_or_else(|| {
@@ -130,7 +127,7 @@ impl DriverModel {
             current_request
         } else {
             let main = match summary_request.compaction_recovery {
-                Some(id) => view.attempts.get(&id).map(|attempt| attempt.step),
+                Some(id) => Some(self.state.model_attempt(view.run, id).await?.step),
                 None => {
                     self.state
                         .compaction_fallback(view.run, attempt.step)
