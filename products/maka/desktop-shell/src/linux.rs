@@ -32,7 +32,7 @@ use maka_workbench::{
 use nsh_engine::{EngineConfig, JsonValue};
 use nsh_platform_linux::{AppOptions, AppView, gtk4 as gtk, on_tray_lost, tray_registered};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
@@ -108,11 +108,12 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
         });
         let follow_detach = closing.clone();
         let quit = Rc::new(Quit {
+            residency: Cell::new(Residency::Running),
             placement,
             view: view.clone(),
             detach: closing.clone(),
         });
-        restore_when_tray_lost(window.downgrade());
+        restore_when_tray_lost(&window, &quit);
         let closing = quit.clone();
         window.connect_close_request(move |window| closing.close_request(window));
         install_shortcuts(app, &window, &quit);
@@ -138,16 +139,28 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Residency {
+    Running,
+    TrayLost,
+    Quitting,
+}
+
 /// Ends the application: closing only hides the window while a tray can
 /// bring it back.
 struct Quit {
+    residency: Cell<Residency>,
     placement: Placement,
     view: Rc<AppView>,
     detach: Detach,
 }
 impl Quit {
     fn close_request(&self, window: &gtk::ApplicationWindow) -> glib::Propagation {
+        if self.residency.get() == Residency::Quitting {
+            return glib::Propagation::Stop;
+        }
         if tray_registered() {
+            self.residency.set(Residency::Running);
             self.placement.save(window);
             self.view.main_close_request()
         } else {
@@ -157,7 +170,7 @@ impl Quit {
     }
 
     fn run(&self, window: &gtk::ApplicationWindow) {
-        if self.detach.0.borrow().quitting {
+        if self.residency.replace(Residency::Quitting) == Residency::Quitting {
             return;
         }
         let app = window
@@ -180,15 +193,35 @@ impl Quit {
     }
 }
 
-/// Without its icon a hidden window could not come back.
-fn restore_when_tray_lost(window: glib::WeakRef<gtk::ApplicationWindow>) {
-    on_tray_lost(move || {
-        if let Some(window) = window.upgrade()
-            && !window.is_visible()
-        {
-            window.present();
+// A tray can disappear before the engine's deferred hide reaches GTK.
+fn restore_when_tray_lost(window: &gtk::ApplicationWindow, quit: &Rc<Quit>) {
+    let owner = Rc::downgrade(quit);
+    window.connect_visible_notify(move |window| {
+        if let Some(quit) = owner.upgrade() {
+            restore_if_unreachable(window, &quit);
         }
     });
+    let window = window.downgrade();
+    let owner = Rc::downgrade(quit);
+    on_tray_lost(move || {
+        if let (Some(window), Some(quit)) = (window.upgrade(), owner.upgrade())
+            && quit.residency.get() != Residency::Quitting
+        {
+            quit.residency.set(Residency::TrayLost);
+            restore_if_unreachable(&window, &quit);
+        }
+    });
+}
+
+fn restore_if_unreachable(window: &gtk::ApplicationWindow, quit: &Quit) {
+    if quit.residency.get() != Residency::TrayLost {
+        return;
+    }
+    if tray_registered() {
+        quit.residency.set(Residency::Running);
+    } else if !window.is_visible() {
+        window.present();
+    }
 }
 
 fn carry_out(
@@ -658,11 +691,12 @@ mod tests {
                 done: watch::Sender::new(false),
             })));
             let quit = Rc::new(Quit {
+                residency: Cell::new(Residency::Running),
                 placement: Placement::new(&directory),
                 view,
                 detach,
             });
-            restore_when_tray_lost(window.downgrade());
+            restore_when_tray_lost(&window, &quit);
             let closing = quit.clone();
             window.connect_close_request(move |window| closing.close_request(window));
             install_shortcuts(&app, &window, &quit);
@@ -762,6 +796,10 @@ mod tests {
             assert!(
                 desktop.window.is_visible(),
                 "a deferred hide stranded main after tray loss"
+            );
+            assert!(
+                desktop.window.is_mapped(),
+                "recovery must map main, not only set its visible flag"
             );
             assert!(!desktop.quit.detach.0.borrow().quitting);
         }
@@ -941,8 +979,18 @@ mod tests {
             "losing an accepted watcher must restore reachability"
         );
 
-        // Reload with no watcher: its initial vanished notification must reveal main.
-        desktop.window.set_visible(false);
+        // Reload hidden with no watcher before its loss callback is dispatched.
+        let (watcher, mut registrations) = Watcher::new();
+        receive(&mut registrations).return_value(None);
+        until(tray_registered);
+        desktop.window.close();
+        assert_eq!(
+            receive(&mut observed),
+            serde_json::json!({"kind":"hidden","count":2})
+        );
+        until(|| !desktop.window.is_visible());
+        watcher.release_name();
+        assert!(!desktop.window.is_visible());
         desktop.quit.view.load_with_config(config);
         assert_eq!(
             receive(&mut observed),
