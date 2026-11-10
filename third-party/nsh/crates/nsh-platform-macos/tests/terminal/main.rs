@@ -52,6 +52,10 @@ fn main() -> std::process::ExitCode {
             cases::subtree_reachability,
         ),
         (
+            "scrolling_dismisses_hover_tooltip",
+            cases::scrolling_dismisses_hover_tooltip,
+        ),
+        (
             "box_none_input_takes_keyboard_focus_and_typing",
             cases::box_none_input_focus,
         ),
