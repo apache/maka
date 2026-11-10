@@ -414,7 +414,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &["create", "models", "send", "work"]
         } else {
-            &["create", "history", "source", "search", "list", "execution"]
+            &["create", "history", "source", "search", "list", "execution", "metadata"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -3356,3 +3356,5 @@ mod replay_origin_regressions {
 }
 
 mod tool_history;
+
+mod permission_boundary;

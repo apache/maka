@@ -1101,7 +1101,7 @@ impl Owner {
             serde_json::from_value(record.metadata.configuration.clone())
                 .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
         let policy_changed = input.permissions.as_ref().is_some_and(|change| {
-            change.settings != configuration.permissions || change.revoke_grants
+            change.settings.access != configuration.permissions.access || change.revoke_grants
         });
         let guard = if policy_changed {
             let busy = self.runs.state().await.busy(&input.session_id)

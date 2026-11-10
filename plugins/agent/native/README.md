@@ -175,3 +175,5 @@ compaction produces a text summary. Host freezes a single protocol operation; th
 `NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
 JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
 estimate; baseline reads derive producer/model facts from that original request.
+
+Disabling new requests preserves existing valid grants. Changing base access or explicitly revoking grants advances the permission boundary.
