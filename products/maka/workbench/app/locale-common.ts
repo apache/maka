@@ -34,6 +34,12 @@ export const commonMessages = {
     '放弃尚未确认的 {method}',
     '放棄尚未確認的 {method}',
   ],
+  'Another app is using Alt+Space': [
+    'Another app is using Alt+Space',
+    '其他应用正在使用 Alt+Space',
+    '其他應用程式正在使用 Alt+Space',
+  ],
+  'Ask Maka': ['Ask Maka', '询问 Maka', '詢問 Maka'],
   'Connection interrupted. Reconnect to continue; your draft is kept.': [
     'Connection interrupted. Reconnect to continue; your draft is kept.',
     '连接已中断，重新连接后可继续。草稿已保留。',
@@ -49,6 +55,15 @@ export const commonMessages = {
     '暂时无法读取会话列表，请尝试重新连接。',
     '暫時無法讀取對話清單，請嘗試重新連線。',
   ],
+  'Draft in Maka Bot': ['Draft in Maka Bot', '写入 Maka Bot 草稿', '寫入 Maka Bot 草稿'],
+  'Maka Bot could not be opened': [
+    'Maka Bot could not be opened',
+    '无法打开 Maka Bot',
+    '無法開啟 Maka Bot',
+  ],
+  'Open Maka': ['Open Maka', '打开 Maka', '打開 Maka'],
+  'Open Maka Bot': ['Open Maka Bot', '打开 Maka Bot', '打開 Maka Bot'],
+  'Quit Maka': ['Quit Maka', '退出 Maka', '結束 Maka'],
   'The action outcome is unknown. Check the current state before trying again.': [
     'The action outcome is unknown. Check the current state before trying again.',
     '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',

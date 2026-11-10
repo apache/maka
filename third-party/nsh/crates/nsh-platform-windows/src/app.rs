@@ -2,8 +2,6 @@
 //! app ([`run_app`]: one `AppView` in a top-level window and the message
 //! loop).
 
-pub(crate) mod resident;
-
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -398,19 +396,6 @@ impl AppView {
         }
     }
 
-    /// Requests an ordinary window close, including the resident close admission gate.
-    pub fn request_close(&self) {
-        use windows::Win32::{
-            Foundation::{LPARAM, WPARAM},
-            UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
-        };
-        // SAFETY: posting to this view's window does not access its UI from the caller.
-        if let Err(error) = unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }
-        {
-            log::error!("cannot close the window: {error}");
-        }
-    }
-
     /// The channel with the apps this view runs (`nsh/host`;
     /// [`AppOptions::host`]): set their launch parameters
     /// ([`nsh_engine::HostChannel::set_params`], read when an app starts),
@@ -634,29 +619,9 @@ pub fn with_running_view(f: impl FnOnce(&AppView) + Send + 'static) {
     }
 }
 
-/// Requests application exit, including when a resident application has no window.
+/// Quits the standalone app, past the window's `closeOnPress`.
 pub fn quit_app() {
-    let Some(ui) = *RUNNING_UI.lock().unwrap() else {
-        return;
-    };
-    ui.invoke(|| {
-        if resident::running() {
-            resident::quit();
-        } else {
-            with_running_view(|view| {
-                use windows::Win32::{
-                    Foundation::{LPARAM, WPARAM},
-                    UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
-                };
-                // SAFETY: this runs on the owning UI thread and only posts a close request.
-                if let Err(error) =
-                    unsafe { PostMessageW(Some(view.hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0)) }
-                {
-                    log::error!("cannot close the Windows app: {error}");
-                }
-            });
-        }
-    });
+    with_running_view(|view| crate::chrome::quit(&view.surface));
 }
 
 fn run(

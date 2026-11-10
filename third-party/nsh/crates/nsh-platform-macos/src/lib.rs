@@ -56,7 +56,6 @@ mod shader;
 mod sight;
 // Shared with iOS.
 use nsh_platform_apple::{audio, notifications, speech};
-mod status_menu;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -87,10 +86,9 @@ pub use crate::app::set_root;
 pub use crate::{
     app::{
         AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, run_app_with_config,
-        run_resident_app_with_config, set_components, set_ui_sets, with_running_view,
+        set_components, set_ui_sets, with_running_view,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
-    status_menu::{StatusMenu, StatusMenuOptions},
     text::CoreTextEngine,
 };

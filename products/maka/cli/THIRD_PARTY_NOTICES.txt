@@ -1946,7 +1946,6 @@ jiff-static@0.2.38 (Unlicense OR MIT); authors declared by package: Andrew Galla
 jiff-tzdb-platform@0.1.3 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff-tzdb@0.1.9 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff@0.2.38 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-ksni@0.3.7 (Unlicense); authors declared by package: iovxw <iovxw@outlook.com>
 memchr@2.8.3 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>, bluss
 meval@0.2.0 (Unlicense/MIT); authors declared by package: Norbert Pozar <bertapozar@gmail.com>
 same-file@1.0.6 (Unlicense/MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
@@ -1967,7 +1966,6 @@ https://crates.io/api/v1/crates/jiff-static/0.2.38/download :: UNLICENSE
 https://crates.io/api/v1/crates/jiff-tzdb-platform/0.1.3/download :: UNLICENSE
 https://crates.io/api/v1/crates/jiff-tzdb/0.1.9/download :: UNLICENSE
 https://crates.io/api/v1/crates/jiff/0.2.38/download :: UNLICENSE
-https://crates.io/api/v1/crates/ksni/0.3.7/download :: UNLICENSE
 https://crates.io/api/v1/crates/memchr/2.8.3/download :: UNLICENSE
 https://crates.io/api/v1/crates/meval/0.2.0/download :: UNLICENSE
 https://crates.io/api/v1/crates/same-file/1.0.6/download :: UNLICENSE

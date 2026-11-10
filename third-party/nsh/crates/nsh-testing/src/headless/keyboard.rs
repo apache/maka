@@ -48,6 +48,19 @@ impl Headless {
         self.done()
     }
 
+    /// Whether the app's keymap claims `keys` where the focus is now: the
+    /// platform consumes the key and the app hears `onKeyCommand`. Else the
+    /// key goes on to the focused input or the page, as the platform gives
+    /// it.
+    pub fn claims_key(&self, keys: &str) -> Result<bool, String> {
+        let stroke = Keystroke::parse(keys, self.environment.os).map_err(|e| e.to_string())?;
+        let editing = self.screen.focused().is_some();
+        Ok(self
+            .screen
+            .keymap()
+            .is_some_and(|keymap| keymap.find(stroke, editing, false).consumed()))
+    }
+
     /// The step `keyboard.press(<keys>)`: presses `keys`, a keystroke as
     /// `nsh/keymap` names it (`"mod+k"`, `"shift+tab"`, `"escape"`; `mod` is
     /// the app's platform's command key). A binding of the app's keymap

@@ -72,4 +72,5 @@ pub use crate::{
     image::AssetBase,
     links::set_exec_args,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
+    tray::{on_tray_lost, tray_registered},
 };
