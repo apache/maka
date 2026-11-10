@@ -83,8 +83,10 @@ pub(crate) fn initialize_connection(connection: &SqliteConnection) -> Result<(),
     }
     crate::sqlite_functions::register(connection)?;
     crate::migration::run(connection, MIGRATIONS)?;
+    // Every commit rewrites the same hot pages; checkpointing every 10,000 pages
+    // (about 40 MiB of WAL) copies each back once instead of every 1,000 pages.
     connection.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA wal_autocheckpoint = 10000;",
     )?;
     // Migrations create the standalone main table; derived Session reads must
     // resolve the root's live bindings before rebuilding any execution state.
