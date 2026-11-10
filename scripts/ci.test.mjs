@@ -549,12 +549,12 @@ test('CI setup installs release tools and stages V8 archives via GitHub API with
   }
 });
 
-test('Linux keeps native Computer Use without the retired desktop engine', () => {
+test('Linux keeps Computer Use and the display-backed NSH desktop regressions', () => {
   const worker = full().workers.find((worker) => worker.id === 'native-ubuntu');
-  assert.equal(suites['linux-desktop'], undefined);
-  assert.deepEqual(worker.suites, ['native']);
-  assert.equal(worker.dependencies, 'computer-use');
-  assert.equal(worker.javascript, false);
+  assert.deepEqual(suites['linux-desktop'].packages, ['maka-desktop-shell']);
+  assert.deepEqual(worker.suites, ['native', 'linux-desktop']);
+  assert.equal(worker.dependencies, 'headless');
+  assert.equal(worker.javascript, true);
 });
 
 test('Linux platform and embedded icon inputs reach the display-backed desktop consumer', () => {
