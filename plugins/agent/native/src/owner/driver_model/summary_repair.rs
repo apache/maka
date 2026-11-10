@@ -144,18 +144,81 @@ impl DriverModel {
         {
             return Err(unsupported("summary-source-adapter-changed"));
         }
-        let mut prompt = self
+        let original_prompt = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
-        let result: Result<PreparedStep, RunError> = async {
-            let native_compaction =
-                !repair && model.provider.capabilities.native_compaction == Some(true);
-            let context = model.context.as_ref();
+        let native_compaction =
+            !repair && model.provider.capabilities.native_compaction == Some(true);
+        let context = model.context.as_ref();
+        let operation = if native_compaction {
+            ModelOperation::CodexCompaction
+        } else {
+            frozen.operation
+        };
+        // Coverage names the original Main, not the filtered Summary directory.
+        let projected = async {
             if native_compaction && context.and_then(|value| value.codex.as_ref()).is_none() {
                 return Err(unsupported("native-summary-provenance"));
             }
             if !repair {
-                frozen.covered_prefix = Some(CoveredPrefix::capture(&prompt).await?);
+                frozen.covered_prefix = Some(CoveredPrefix::capture(&original_prompt).await?);
+            }
+            let settings = PromptSettings {
+                operation,
+                codex: context.and_then(|value| value.codex.as_ref()),
+                language: frozen.language,
+                provider: &model.provider,
+                options: request.composition.provider_options.as_ref()
+                    .ok_or_else(|| unsupported("frozen-summary-options"))?,
+                context_window: context.and_then(|value| value.model_context_window),
+                tool_choice: frozen.tool_choice,
+            };
+            let source = original_prompt.recipes()
+                .ok_or_else(|| unsupported("frozen-summary-recipes"))?;
+            let mut builder = preparation::PromptBuilder::new(
+                self.preparation_io()?, self.resources.clone(), &self.cancellation,
+            ).await?;
+            let built = async {
+                let mut cursor = source.open(0);
+                while let Some(recipe) = cursor.next().await? {
+                    if frozen.instructions.is_some() && matches!(recipe,
+                        maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. })
+                    {
+                        continue;
+                    }
+                    if let Some(recipe) = ReplayTarget::new(&model, operation).recipe(recipe).await? {
+                        builder.append_recipe(&recipe).await?;
+                    }
+                }
+                Ok::<(), RunError>(())
+            }.await;
+            if let Err(error) = built {
+                return Err(match builder.close().await {
+                    Ok(()) => error,
+                    Err(close) => preparation::preparation_cleanup_error(error, close),
+                });
+            }
+            preparation::prepare_prompt(
+                builder, &settings, &self.cancellation,
+                frozen.instructions.clone().map(Arc::new), ModelPurpose::Main, None,
+            ).await
+        }.await;
+        let mut prompt = match (original_prompt.close().await, projected) {
+            (Ok(()), Ok(prompt)) => prompt,
+            (Ok(()), Err(error)) => return Err(error),
+            (Err(close), Err(error)) => {
+                return Err(preparation::preparation_cleanup_error(error, close));
+            }
+            (Err(close), Ok(prompt)) => {
+                let error = self.cleanup.preparation_failed(close);
+                return Err(match prompt.close().await {
+                    Ok(()) => error,
+                    Err(close) => preparation::preparation_cleanup_error(error, close),
+                });
+            }
+        };
+        let result: Result<PreparedStep, RunError> = async {
+            if !repair {
                 let instruction = if native_compaction {
                     None
                 } else {
@@ -176,11 +239,7 @@ impl DriverModel {
                     .await?;
             }
             let settings = PromptSettings {
-                operation: if native_compaction {
-                    ModelOperation::CodexCompaction
-                } else {
-                    frozen.operation
-                },
+                operation,
                 codex: context.and_then(|value| value.codex.as_ref()),
                 language: frozen.language,
                 provider: &model.provider,
@@ -239,44 +298,40 @@ impl DriverModel {
                 None,
             )?;
             let mut contents = Vec::new();
-            if !repair {
-                let snapshot = preparation::snapshot_prompt(
-                    self.preparation_io()?,
-                    self.resources.clone(),
-                    &prepared.request.prompt,
-                    &self.cancellation,
-                )
-                .await?;
-                let (payload, layout, cleanup) = snapshot.into_parts();
-                let evidence = self.cleanup.clone();
-                self.workers.spawn(async move {
-                    if let Err(error) = cleanup.await {
-                        evidence.observe(&error);
-                    }
-                });
-                frozen.prompt = payload.reference().clone();
-                frozen.layout = layout;
-                contents.push(payload);
-                let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
-                let fields = provenance
-                    .as_object_mut()
-                    .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
-                fields.insert("inputDigest".into(), json!(prepared.input_digest));
-                fields.insert("routeIdentity".into(), json!(prepared.route_identity));
-                fields.insert("breakdown".into(), json!(prepared.context_breakdown));
-                fields.insert(
-                    "estimatedInputTokens".into(),
-                    json!(prepared.estimated_input_tokens),
-                );
-                let mut request_context = model.context.clone();
-                if let Some(context) = request_context.as_mut() {
-                    context.operation = settings.operation;
+            let snapshot = preparation::snapshot_prompt(
+                self.preparation_io()?,
+                self.resources.clone(),
+                &prepared.request.prompt,
+                &self.cancellation,
+            )
+            .await?;
+            let (payload, layout, cleanup) = snapshot.into_parts();
+            let evidence = self.cleanup.clone();
+            self.workers.spawn(async move {
+                if let Err(error) = cleanup.await {
+                    evidence.observe(&error);
                 }
-                fields.insert("modelContext".into(), json!(request_context));
-                let provenance = ContentBlob::json(&provenance)?;
-                request.provenance = provenance.reference().clone();
-                contents.push(provenance);
-                request.composition.max_output_tokens = prepared.request.max_output_tokens;
+            });
+            frozen.prompt = payload.reference().clone();
+            frozen.layout = layout;
+            contents.push(payload);
+            let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
+            current_context(&mut provenance, &model, settings.operation)?;
+            let fields = provenance
+                .as_object_mut()
+                .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
+            fields.insert("inputDigest".into(), json!(prepared.input_digest));
+            fields.insert("routeIdentity".into(), json!(prepared.route_identity));
+            fields.insert("breakdown".into(), json!(prepared.context_breakdown));
+            fields.insert(
+                "estimatedInputTokens".into(),
+                json!(prepared.estimated_input_tokens),
+            );
+            let provenance = ContentBlob::json(&provenance)?;
+            request.provenance = provenance.reference().clone();
+            contents.push(provenance);
+            request.composition.max_output_tokens = prepared.request.max_output_tokens;
+            if !repair {
                 request.adjudications.clear();
                 request.compaction_recovery = Some(attempt);
             }

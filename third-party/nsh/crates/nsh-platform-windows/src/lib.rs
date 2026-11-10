@@ -70,8 +70,6 @@ mod window;
 mod window_close;
 mod window_state;
 
-pub use app::resident::{TrayOptions, run_resident_app};
-
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
     App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root,

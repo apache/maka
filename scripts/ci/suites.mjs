@@ -69,7 +69,6 @@ const distributionInputs = [
 ];
 const embeddedInputs = [
   'products/maka/cli/tests/support/external_codex_cli.mjs',
-  'products/maka/cli/icons/maka.png',
   'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
@@ -232,12 +231,6 @@ export const suites = {
       '--test',
       'terminal_native',
     ],
-  },
-  'linux-desktop': {
-    workspace: 'root',
-    packages: ['maka-desktop-shell'],
-    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
-    extraInputs: embeddedInputs,
   },
   'macos-desktop': {
     workspace: 'root',
@@ -416,11 +409,11 @@ export const workers = [
               'desktop',
               'pixels',
             ]
-          : ['native', 'linux-desktop'],
+          : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
-    dependencies: os === 'ubuntu' ? 'headless' : '',
-    javascript: true,
+    dependencies: os === 'ubuntu' ? 'computer-use' : '',
+    javascript: os === 'windows' || os === 'macos',
     compile: true,
   })),
 ];

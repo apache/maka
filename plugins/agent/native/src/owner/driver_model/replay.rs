@@ -202,7 +202,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         flush_assistant(messages, assistant).await?;
                         *current = Some(*attempt);
                     }
-                    let projected = if matches!(
+                    if matches!(
                         part,
                         maka_agent_facts::model::ModelPart::Text {
                             text_kind: maka_agent_facts::model::TextKind::Thinking,
@@ -217,18 +217,23 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         let request = reader.request(view.run, *step).await?;
                         let evidence: maka_agent_facts::context::RequestContextEvidence =
                             reader.decode(view.run, &request.provenance).await?;
-                        target.part(
-                            part,
-                            &request.accounting.model_id,
-                            evidence
-                                .model_context
-                                .as_ref()
-                                .and_then(|context| context.codex.as_ref()),
-                        )?
-                    } else {
-                        preparation::assistant_part(part)?
-                    };
-                    if let Some(part) = projected {
+                        let codex = evidence
+                            .model_context
+                            .as_ref()
+                            .and_then(|context| context.codex.as_ref());
+                        if let Some(part) =
+                            target.part(part, &request.accounting.model_id, codex)?
+                        {
+                            flush_assistant(messages, assistant).await?;
+                            super::append_observed(
+                                messages,
+                                Message::Assistant { content: vec![part], provider_options: None },
+                                maka_agent_facts::model::prompt_source::source::ReplayOrigin::observed(
+                                    &request.accounting.model_id, codex,
+                                ),
+                            ).await?;
+                        }
+                    } else if let Some(part) = preparation::assistant_part(part)? {
                         assistant.push(part);
                     }
                     Ok(())

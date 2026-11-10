@@ -54,6 +54,26 @@ fn location(bytes: &SourceBytes) -> io::Result<Range<u64>> {
     Err(invalid())
 }
 impl Store {
+    async fn replay_origin(&self, origin: ReplayOrigin) -> io::Result<u64> {
+        let mut record = Record::default();
+        record[0] = 0x5245504c4159;
+        record[1..1 + REPLAY_ORIGIN_WORDS].copy_from_slice(&origin.encode());
+        self.write(record)
+            .await?
+            .checked_add(1)
+            .ok_or_else(overflow)
+    }
+    async fn read_replay_origin(&self, node: u64) -> io::Result<ReplayOrigin> {
+        let record = self.read(node.checked_sub(1).ok_or_else(invalid)?).await?;
+        if record[0] != 0x5245504c4159 {
+            return Err(invalid());
+        }
+        ReplayOrigin::decode(
+            record[1..1 + REPLAY_ORIGIN_WORDS]
+                .try_into()
+                .map_err(|_| invalid())?,
+        )
+    }
     async fn leaf(&self, bytes: &SourceBytes, encoding: u64) -> io::Result<u64> {
         let range = location(bytes)?;
         let mut r = Record::default();
@@ -257,9 +277,13 @@ async fn index_assistant(
         r[0] = if f.is(0, "text", budget).await? { 3 } else { 4 };
         r[1] = store.text_node(f.text(1)?).await?;
         r[2] = store.json_node(f.json(2)).await?;
+        if r[0] == 4 {
+            r[12] = store.replay_origin(ReplayOrigin::Unattested).await?;
+        }
     } else if f.is(0, "codex-compaction", budget).await? {
         r[0] = 5;
         r[1] = store.json_node(f.json(3)).await?;
+        r[12] = store.replay_origin(ReplayOrigin::Unattested).await?;
     } else if f.is(0, "tool-call", budget).await? {
         r[0] = 6;
         r[1] = store.text_node(f.text(4)?).await?;
@@ -548,12 +572,22 @@ impl Decode for AssistantRecipe {
                     text: store.read_text(r[1]).await?,
                     provider_options: store.read_json(r[2]).await?,
                 },
-                4 => Self::Reasoning {
-                    text: store.read_text(r[1]).await?,
-                    provider_options: store.read_json(r[2]).await?,
-                },
+                4 => {
+                    let origin = store.read_replay_origin(r[12]).await?;
+                    Self::Reasoning {
+                        text: store.read_text(r[1]).await?,
+                        provider_options: store
+                            .read_json(r[2])
+                            .await?
+                            .map(|value| value.with_replay_origin(origin)),
+                    }
+                }
                 5 => Self::CodexCompaction {
-                    item: store.read_json(r[1]).await?.ok_or_else(invalid)?,
+                    item: store
+                        .read_json(r[1])
+                        .await?
+                        .ok_or_else(invalid)?
+                        .with_replay_origin(store.read_replay_origin(r[12]).await?),
                 },
                 6 => Self::ToolCall {
                     tool_call_id: store.read_text(r[1]).await?,
@@ -646,6 +680,18 @@ pub(super) async fn preserve_decisions(
                 let part = cursor.next().await?.ok_or_else(invalid)?;
                 let mut r = store.get(list, index).await?.ok_or_else(invalid)?;
                 match part {
+                    AssistantRecipe::Reasoning {
+                        provider_options, ..
+                    } => {
+                        let origin = provider_options
+                            .as_ref()
+                            .map(JsonSource::replay_origin)
+                            .unwrap_or(ReplayOrigin::Unattested);
+                        r[12] = store.replay_origin(origin).await?;
+                    }
+                    AssistantRecipe::CodexCompaction { item } => {
+                        r[12] = store.replay_origin(item.replay_origin()).await?;
+                    }
                     AssistantRecipe::ToolCall { kind, .. } => {
                         r[5] = u64::from(kind == ToolCallKind::Custom);
                     }

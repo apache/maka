@@ -191,8 +191,8 @@ impl DriverModel {
             let start=covered.tail_start(&original).await?;
             let directory=original.recipes().ok_or_else(||unsupported("pending-main-directory"))?;
             let mut provenance:Value=reader.decode(view.run,&request.provenance).await?;
-            let context:maka_agent_facts::context::RequestContextEvidence=serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
-            let settings=PromptSettings{operation:frozen.operation,codex:context.model_context.as_ref().and_then(|context|context.codex.as_ref()),language:frozen.language,provider:&model.provider,options:request.composition.provider_options.as_ref().ok_or_else(||unsupported("frozen-main-options"))?,context_window:context.model_context.as_ref().and_then(|context|context.model_context_window),tool_choice:frozen.tool_choice};
+            let context = current_context(&mut provenance, &model, frozen.operation)?;
+            let settings=PromptSettings{operation:frozen.operation,codex:context.as_ref().and_then(|context|context.codex.as_ref()),language:frozen.language,provider:&model.provider,options:request.composition.provider_options.as_ref().ok_or_else(||unsupported("frozen-main-options"))?,context_window:context.as_ref().and_then(|context|context.model_context_window),tool_choice:frozen.tool_choice};
             let definitions:Vec<_>=bound.definitions.into_iter().map(Arc::new).collect();
             let mut builder=preparation::PromptBuilder::new(self.preparation_io()?,self.resources.clone(),&self.cancellation).await?;
             let built=async{
@@ -202,7 +202,7 @@ impl DriverModel {
                 }
                 self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),&mut builder).await?;
                 let mut tail=directory.open(start);
-                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
+                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..}){if let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}}
                 Ok::<(),RunError>(())
             }.await;
             if let Err(error)=built{return Err(match builder.close().await{Ok(())=>error,Err(close)=>preparation::preparation_cleanup_error(error,close)});}
@@ -316,14 +316,20 @@ impl DriverModel {
                         "native Codex checkpoint requires compatible ChatGPT state or re-compaction".into(),
                     ));
                 }
-                messages
-                    .append(Message::Assistant {
+                append_observed(
+                    messages,
+                    Message::Assistant {
                         content: vec![AssistantPart::CodexCompaction {
                             item: native.item.item().clone(),
                         }],
                         provider_options: None,
-                    })
-                    .await?;
+                    },
+                    maka_agent_facts::model::prompt_source::source::ReplayOrigin::observed(
+                        &request.accounting.model_id,
+                        Some(&native.producer),
+                    ),
+                )
+                .await?;
             }
         }
         Ok(capture)

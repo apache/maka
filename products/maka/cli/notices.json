@@ -533,7 +533,6 @@
     "cargo:keccak@0.2.2 registry+https://github.com/rust-lang/crates.io-index": "667d5229985aff4c7aa73fd17bb37b9150e662cc1e38f17a5cf0a2f70435a6d0",
     "cargo:keyring-core@1.0.1 registry+https://github.com/rust-lang/crates.io-index": "c6f49db79fff1bbfcd792aed837a77ecb6c20bda6c24222eab880e9d23abe040",
     "cargo:keyring@4.2.0 registry+https://github.com/rust-lang/crates.io-index": "915a1477ac57504cd2250a6208e066bbabbd09882f1b0beef2cbd8d9b4715bbb",
-    "cargo:ksni@0.3.7 registry+https://github.com/rust-lang/crates.io-index": "152f88809144311a01507f32f874823377e34ee99643446f49064e3283088237",
     "cargo:kstring@2.0.5 registry+https://github.com/rust-lang/crates.io-index": "0ad428e3ff048b19b31cc72d0a4ea154af31ae932ab37a1b2393037a40be702f",
     "cargo:kurbo@0.13.1 registry+https://github.com/rust-lang/crates.io-index": "ec58e333328f88ef2577b4e03eab710ae6799d01ba4cf750da6111afd8539f5b",
     "cargo:lazy_static@1.5.1 registry+https://github.com/rust-lang/crates.io-index": "f8f4cb8397573abb132b1fac4c921de863b532ce43d61fbde400c01a7c6b1446",
@@ -1249,5 +1248,5 @@
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
     "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
   },
-  "sha256": "c58d3da351e1ab77b29ca069bcf736067865f95bafd8b410ad8025b9f015ac8c"
+  "sha256": "89be5c2a2c59e92a70a0726c3f96f3df3a4f841769a5f941e5adad3f89426db4"
 }

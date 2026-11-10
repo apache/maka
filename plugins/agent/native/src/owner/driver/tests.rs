@@ -2667,3 +2667,266 @@ async fn direct_only_tool_in_a_real_cell_reports_calling_mode_without_dispatch()
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
+
+mod replay_origin_regressions {
+    use super::*;
+    use crate::owner::driver_model::{ReplayTarget, append_observed, current_context};
+    use maka_agent_engine::{ModelSource, PreparedModel, preparation};
+    use maka_agent_facts::{
+        context::{
+            CodexCompatibility, CodexRequestProvenance, ModelOperation, ModelRequestContext,
+        },
+        model::prompt_source::source::{
+            AssistantRecipe, MessageRecipe, ReplayOrigin, json as source_json,
+        },
+    };
+    use maka_model::prompt::{AssistantPart, Message, Prompt};
+
+    async fn model(rig: &Rig, name: &str, hash: Option<&str>) -> TestResult<PreparedModel> {
+        let NativeBackend::Model { model, .. } = &rig.driver.as_ref().unwrap().backend else {
+            return Err("expected Native model fixture".into());
+        };
+        let mut prepared = model.source.capture().await?;
+        prepared.provider.model = name.into();
+        prepared.provider.kind = maka_model::ProviderKind::OpenaiResponses;
+        prepared.provider.adapter = Some("codex-responses".into());
+        prepared.options = json!({"openai":{"store":false}});
+        prepared.context = Some(ModelRequestContext {
+            operation: ModelOperation::Inference,
+            provider_id: "chatgpt".into(),
+            codex: Some(CodexRequestProvenance {
+                connection_id: format!("connection-{name}"),
+                account_id: Some(format!("account-{name}")),
+                compatibility: hash.map(|hash| CodexCompatibility {
+                    comp_hash: hash.into(),
+                    fetched_at: 1,
+                }),
+            }),
+            context_window: Some(128_000),
+            model_context_window: Some(128_000),
+            declared_window: Some(108_800),
+        });
+        Ok(prepared)
+    }
+
+    async fn builder(rig: &Rig) -> TestResult<preparation::PromptBuilder> {
+        let driver = rig.driver.as_ref().unwrap();
+        Ok(preparation::PromptBuilder::new(
+            preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
+            driver.owner.services.model_preparation_resources(),
+            &driver.cancellation,
+        )
+        .await?)
+    }
+
+    async fn finish(
+        rig: &Rig,
+        builder: preparation::PromptBuilder,
+        model: &PreparedModel,
+        operation: ModelOperation,
+    ) -> TestResult<maka_agent_engine::prepared_prompt::PreparedPrompt> {
+        let settings = preparation::PromptSettings {
+            operation,
+            codex: model
+                .context
+                .as_ref()
+                .and_then(|value| value.codex.as_ref()),
+            language: Language::En,
+            provider: &model.provider,
+            options: &model.options,
+            context_window: Some(128_000),
+            tool_choice: maka_model::ToolChoiceMode::Auto,
+        };
+        Ok(preparation::prepare_prompt(
+            builder,
+            &settings,
+            &rig.driver.as_ref().unwrap().cancellation,
+            None,
+            ModelPurpose::Main,
+            None,
+        )
+        .await?)
+    }
+
+    // Uses the same canonical append/decode path as snapshot_prompt, with a shifted outer directory.
+    async fn recapture(
+        rig: &Rig,
+        model: &PreparedModel,
+        source: &Prompt,
+        operation: ModelOperation,
+    ) -> TestResult<maka_agent_engine::prepared_prompt::PreparedPrompt> {
+        let mut builder = builder(rig).await?;
+        let result = async {
+            builder.append(Message::user("replan boundary")).await?;
+            let mut cursor = source
+                .recipes()
+                .ok_or_else(|| RunError::Internal("source recipes missing".into()))?
+                .open(0);
+            while let Some(recipe) = cursor.next().await? {
+                if let Some(recipe) = ReplayTarget::new(model, operation).recipe(recipe).await? {
+                    builder.append_recipe(&recipe).await?;
+                }
+            }
+            Ok::<(), RunError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            builder.close().await?;
+            return Err(error.into());
+        }
+        finish(rig, builder, model, operation).await
+    }
+
+    async fn parts(prompt: &Prompt) -> TestResult<Vec<AssistantRecipe>> {
+        let mut parts = Vec::new();
+        let mut messages = prompt.recipes().ok_or("recipes missing")?.open(0);
+        while let Some(message) = messages.next().await? {
+            if let MessageRecipe::Assistant { content, .. } = message {
+                let mut cursor = content.open(0);
+                while let Some(part) = cursor.next().await? {
+                    parts.push(part);
+                }
+            }
+        }
+        Ok(parts)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_replan_does_not_fill_a_producers_missing_hash() {
+        let mut rig = Rig::new().expect("owned fixture");
+        let result =
+            AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+                let session = rig.start().await?;
+                rig.assemble(&session).await?;
+                let original = model(&rig, "model-a", None).await?;
+                let middle = model(&rig, "model-a", Some("3000")).await?;
+                let target = model(&rig, "model-b", Some("3000")).await?;
+                let mut source = builder(&rig).await?;
+                for (text, producer) in [("unhashed", &original), ("compatible", &target)] {
+                    append_observed(&mut source, Message::Assistant {
+                    content: vec![AssistantPart::Reasoning {
+                        text: text.into(),
+                        provider_options: Some(json!({"openai":{
+                            "itemId":text,"reasoningEncryptedContent":format!("opaque-{text}")
+                        }})),
+                    }],
+                    provider_options: None,
+                }, ReplayOrigin::observed(&producer.provider.model,
+                    producer.context.as_ref().and_then(|value| value.codex.as_ref()))).await?;
+                }
+                let source = finish(&rig, source, &original, ModelOperation::Inference).await?;
+                let middle_prompt =
+                    recapture(&rig, &middle, &source.model(), ModelOperation::Inference).await?;
+                let final_prompt = recapture(
+                    &rig,
+                    &target,
+                    &middle_prompt.model(),
+                    ModelOperation::Inference,
+                )
+                .await?;
+                {
+                    let output = parts(&final_prompt.model()).await?;
+                    assert_eq!(
+                        output.len(),
+                        1,
+                        "replan's enclosing certificate admitted an older unhashed item"
+                    );
+                    let AssistantRecipe::Reasoning {
+                        provider_options: Some(options),
+                        ..
+                    } = &output[0]
+                    else {
+                        return Err("compatible reasoning disappeared".into());
+                    };
+                    let resources = rig
+                        .driver
+                        .as_ref()
+                        .unwrap()
+                        .owner
+                        .services
+                        .model_preparation_resources();
+                    let work = resources.acquire_work().await?;
+                    let value = source_json::field(
+                        options,
+                        &["openai", "reasoningEncryptedContent"],
+                        work.budget(),
+                    )
+                    .await?
+                    .ok_or("opaque reasoning missing")?;
+                    assert!(
+                        source_json::text_eq(&value.text()?, "opaque-compatible", work.budget())
+                            .await?
+                    );
+                }
+                final_prompt.close().await?;
+                middle_prompt.close().await?;
+                source.close().await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            }))
+            .catch_unwind()
+            .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(&result, Ok(Ok(Ok(())))),
+            "origin replan regression failed: {result:?}"
+        );
+        assert!(cleanup.is_empty(), "origin fixture did not settle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adopted_main_records_current_context_and_rechecks_each_tail_origin() {
+        let mut rig = Rig::new().expect("owned fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let old = model(&rig, "model-a", Some("3000")).await?;
+            let mut current = model(&rig, "model-a", Some("4000")).await?;
+            let mut provenance = json!({"modelContext":old.context});
+            current.context = current_context(&mut provenance, &current, ModelOperation::Inference)?;
+            let recorded: Option<ModelRequestContext> =
+                serde_json::from_value(provenance["modelContext"].clone())?;
+            let recorded = recorded.ok_or("current context absent")?;
+            assert_eq!(recorded.codex.as_ref().and_then(|value| value.compatibility.as_ref())
+                .map(|value| value.comp_hash.as_str()), Some("4000"));
+            assert_eq!(recorded.operation, ModelOperation::Inference);
+            let mut source = builder(&rig).await?;
+            append_observed(&mut source, Message::Assistant {
+                content: vec![AssistantPart::CodexCompaction {
+                    item: json!({"type":"compaction","id":"converted","encrypted_content":"opaque-4000"}),
+                }], provider_options: None,
+            }, ReplayOrigin::observed("model-a", current.context.as_ref()
+                .and_then(|value| value.codex.as_ref()))).await?;
+            append_observed(&mut source, Message::Assistant {
+                content: vec![AssistantPart::Reasoning {
+                    text: "old tail".into(),
+                    provider_options: Some(json!({"openai":{
+                        "itemId":"old-tail","reasoningEncryptedContent":"opaque-3000"
+                    }})),
+                }], provider_options: None,
+            }, ReplayOrigin::observed("model-a", old.context.as_ref()
+                .and_then(|value| value.codex.as_ref()))).await?;
+            let source = finish(&rig, source, &old, ModelOperation::Inference).await?;
+            let adopted = recapture(&rig, &current, &source.model(), ModelOperation::Inference).await?;
+            {
+                let output = parts(&adopted.model()).await?;
+                assert_eq!(output.len(), 1, "adopted Main retained a tail certified only by its old hash");
+                assert!(matches!(output[0], AssistantRecipe::CodexCompaction { .. }));
+            }
+            let compatible = model(&rig, "model-b", Some("4000")).await?;
+            let via_b = recapture(&rig, &compatible, &adopted.model(), ModelOperation::Inference).await?;
+            let changed = model(&rig, "model-b", Some("5000")).await?;
+            assert!(recapture(&rig, &changed, &via_b.model(), ModelOperation::CodexCompaction)
+                .await.is_err(), "replay through B relabelled A's native checkpoint as same-model B");
+            via_b.close().await?;
+            adopted.close().await?;
+            source.close().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })).catch_unwind().await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(&result, Ok(Ok(Ok(())))),
+            "compaction origin regression failed: {result:?}"
+        );
+        assert!(cleanup.is_empty(), "compaction fixture did not settle");
+    }
+}

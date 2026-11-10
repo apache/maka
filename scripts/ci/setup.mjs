@@ -57,7 +57,6 @@ const tools =
           'termina',
           'nsh',
           'linux-nsh',
-          'native-ubuntu',
           'native-windows',
           'native-macos',
         ].includes(role)
@@ -347,8 +346,6 @@ async function main(action) {
       'libxtst-dev',
       'libxext-dev',
       'libxcb1-dev',
-      'libxrandr-dev',
-      'libxfixes-dev',
       'libxkbcommon-dev',
       'libxkbcommon-x11-dev',
       'libwayland-dev',

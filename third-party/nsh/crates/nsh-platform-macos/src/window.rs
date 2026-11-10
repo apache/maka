@@ -1743,6 +1743,8 @@ fn main_close_press(surface: &Surface, reason: CloseReason) -> bool {
         });
     });
     if !sent.get() {
+        // No app to decide against closing: `closeOnPress` is the app's say.
+        held.pending_close.set(Some((serial, true)));
         // Out of windowShouldClose: before the close's own callbacks run.
         DispatchQueue::main().exec_async(move || complete_close(key, serial));
     } else if close {

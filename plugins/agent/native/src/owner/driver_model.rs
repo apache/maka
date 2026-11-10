@@ -52,7 +52,7 @@ mod original;
 mod recovered;
 mod replay;
 mod replay_admission;
-use replay_admission::ReplayTarget;
+pub(super) use replay_admission::{ReplayTarget, append_observed, current_context};
 mod summary_repair;
 mod tool_projection;
 use compacted::CoveredPrefix;
@@ -1253,12 +1253,6 @@ impl DriverModel {
     ) -> Result<(), RunError> {
         let prompt = self.restore_frozen(reader, run, request, frozen).await?;
         let result = async {
-            let context: maka_agent_facts::context::RequestContextEvidence =
-                reader.decode(run, &request.provenance).await?;
-            let producer = context
-                .model_context
-                .as_ref()
-                .and_then(|context| context.codex.as_ref());
             let source = prompt
                 .recipes()
                 .ok_or_else(|| unsupported("frozen-recipe-source"))?;
@@ -1268,10 +1262,7 @@ impl DriverModel {
                     recipe,
                     maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
                 ) {
-                    if let Some(recipe) = target
-                        .recipe(recipe, &request.accounting.model_id, producer)
-                        .await?
-                    {
+                    if let Some(recipe) = target.recipe(recipe).await? {
                         messages.append_recipe(&recipe).await?;
                     }
                 }

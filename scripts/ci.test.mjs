@@ -481,36 +481,10 @@ test('CI setup installs release tools and stages V8 archives via GitHub API with
   }
 });
 
-test('Linux desktop source and the embedded icon reach the display-backed native consumer', () => {
-  const pkg = {
-    name: 'maka-desktop-shell',
-    id: 'desktop-shell',
-    source: null,
-    manifest_path: join(root, 'products/maka/desktop-shell/Cargo.toml'),
-  };
-  const metadata = {
-    root: {
-      packages: [pkg],
-      workspace_members: [pkg.id],
-      resolve: { nodes: [{ id: pkg.id, deps: [] }] },
-    },
-  };
-  for (const path of [
-    'products/maka/desktop-shell/src/linux.rs',
-    'products/maka/cli/icons/maka.png',
-  ]) {
-    const plan = createPlan({
-      root,
-      changes: [path],
-      metadata,
-      revision: 'head',
-      baseline: 'base',
-    });
-    assert.equal(plan.full, false);
-    assert.ok(plan.suites['linux-desktop']);
-    const worker = plan.workers.find((worker) => worker.id === 'native-ubuntu');
-    assert.ok(worker.suites.includes('linux-desktop'));
-    assert.equal(worker.dependencies, 'headless');
-    assert.equal(worker.javascript, true);
-  }
+test('Linux keeps native Computer Use without the retired desktop engine', () => {
+  const worker = full().workers.find((worker) => worker.id === 'native-ubuntu');
+  assert.equal(suites['linux-desktop'], undefined);
+  assert.deepEqual(worker.suites, ['native']);
+  assert.equal(worker.dependencies, 'computer-use');
+  assert.equal(worker.javascript, false);
 });

@@ -26,7 +26,7 @@ use maka_model::{ProviderKind, prompt::AssistantPart};
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
-pub(super) struct ReplayTarget<'a> {
+pub(in crate::owner) struct ReplayTarget<'a> {
     pub model: &'a str,
     pub codex: Option<&'a CodexRequestProvenance>,
     provider: &'a ProviderKind,
@@ -72,6 +72,10 @@ impl<'a> ReplayTarget<'a> {
         if (self.codex.is_none() && source.is_none()) || self.encrypted_allowed(model, source) {
             return Reasoning::Original;
         }
+        self.incompatible()
+    }
+
+    fn incompatible(self) -> Reasoning {
         match self.provider {
             ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
                 Reasoning::Plaintext
@@ -113,14 +117,8 @@ impl<'a> ReplayTarget<'a> {
         Ok(projected)
     }
 
-    /// Newly prepared requests re-admit adjudicated bases; exact attempt recovery
-    /// continues to restore its original bytes without this projection.
-    pub async fn recipe(
-        self,
-        recipe: MessageRecipe,
-        model: &str,
-        source: Option<&CodexRequestProvenance>,
-    ) -> Result<Option<MessageRecipe>, RunError> {
+    /// New requests use each opaque leaf's producer, never the enclosing request's certificate.
+    pub async fn recipe(self, recipe: MessageRecipe) -> Result<Option<MessageRecipe>, RunError> {
         let MessageRecipe::Assistant {
             content,
             provider_options,
@@ -128,18 +126,15 @@ impl<'a> ReplayTarget<'a> {
         else {
             return Ok(Some(recipe));
         };
-        let mode = self.reasoning(model, source);
-        let encrypted = self.encrypted_allowed(model, source);
-        if matches!(mode, Reasoning::Original) && encrypted {
-            return Ok(Some(MessageRecipe::Assistant {
-                content,
-                provider_options,
-            }));
-        }
+        let admission = RecipeAdmission {
+            target: ReplayOrigin::observed(self.model, self.codex),
+            operation: self.operation,
+            incompatible: self.incompatible(),
+        };
         let mut len = 0usize;
         let mut cursor = content.open(0);
         while let Some(part) = cursor.next().await? {
-            if admitted_recipe(part, mode, encrypted)?.is_some() {
+            if admitted_recipe(part, admission)?.is_some() {
                 len = len
                     .checked_add(1)
                     .ok_or_else(|| RunError::InvalidInput("assistant directory overflow".into()))?;
@@ -148,55 +143,103 @@ impl<'a> ReplayTarget<'a> {
         Ok((len > 0).then(|| MessageRecipe::Assistant {
             content: Arc::new(AdmittedParts {
                 content,
-                mode,
-                encrypted,
+                admission,
                 len,
             }),
             provider_options,
         }))
     }
 }
+
+#[derive(Clone, Copy)]
+struct RecipeAdmission {
+    target: ReplayOrigin,
+    operation: ModelOperation,
+    incompatible: Reasoning,
+}
+impl RecipeAdmission {
+    fn decide(self, origin: ReplayOrigin) -> (Reasoning, bool) {
+        use CodexReplayOrigin::{Absent, Hashed};
+        let encrypted = match (origin, self.target) {
+            (
+                ReplayOrigin::Observed {
+                    model: old,
+                    codex: source,
+                },
+                ReplayOrigin::Observed {
+                    model: new,
+                    codex: target,
+                },
+            ) if source != Absent && target != Absent => codex_replay_allowed(
+                old == new,
+                match (source, target) {
+                    (Hashed(old), Hashed(new)) => Some(old == new),
+                    _ => None,
+                },
+                self.operation,
+            ),
+            _ => false,
+        };
+        let non_codex = matches!(
+            origin,
+            ReplayOrigin::Unattested | ReplayOrigin::Observed { codex: Absent, .. }
+        ) && matches!(self.target, ReplayOrigin::Observed { codex: Absent, .. });
+        (
+            if encrypted || non_codex {
+                Reasoning::Original
+            } else {
+                self.incompatible
+            },
+            encrypted,
+        )
+    }
+}
 fn admitted_recipe(
     part: AssistantRecipe,
-    mode: Reasoning,
-    encrypted: bool,
+    admission: RecipeAdmission,
 ) -> std::io::Result<Option<AssistantRecipe>> {
     Ok(match part {
-        AssistantRecipe::CodexCompaction { .. } if !encrypted => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "native Codex checkpoint requires compatible ChatGPT state or re-compaction",
-            ));
+        AssistantRecipe::CodexCompaction { item } => {
+            if !admission.decide(item.replay_origin()).1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "native Codex checkpoint requires compatible ChatGPT state or re-compaction",
+                ));
+            }
+            Some(AssistantRecipe::CodexCompaction { item })
         }
         AssistantRecipe::Reasoning {
             text,
             provider_options,
-        } => match mode {
-            Reasoning::Original => Some(AssistantRecipe::Reasoning {
-                text,
-                provider_options,
-            }),
-            Reasoning::Plaintext => Some(AssistantRecipe::Reasoning {
-                text,
-                provider_options: None,
-            }),
-            Reasoning::Omit => None,
-        },
+        } => {
+            let origin = provider_options
+                .as_ref()
+                .map(JsonSource::replay_origin)
+                .unwrap_or(ReplayOrigin::Unattested);
+            match admission.decide(origin).0 {
+                Reasoning::Original => Some(AssistantRecipe::Reasoning {
+                    text,
+                    provider_options,
+                }),
+                Reasoning::Plaintext => Some(AssistantRecipe::Reasoning {
+                    text,
+                    provider_options: None,
+                }),
+                Reasoning::Omit => None,
+            }
+        }
         part => Some(part),
     })
 }
 
-// Frozen directories can be arbitrarily long; count and stream without collecting them.
 struct AdmittedParts {
     content: Arc<dyn RecipeSource<AssistantRecipe>>,
-    mode: Reasoning,
-    encrypted: bool,
+    admission: RecipeAdmission,
     len: usize,
 }
 struct AdmittedCursor {
     source: Box<dyn RecipeCursor<AssistantRecipe>>,
-    mode: Reasoning,
-    encrypted: bool,
+    admission: RecipeAdmission,
     skip: usize,
 }
 impl RecipeSource<AssistantRecipe> for AdmittedParts {
@@ -206,8 +249,7 @@ impl RecipeSource<AssistantRecipe> for AdmittedParts {
     fn open(&self, start: usize) -> Box<dyn RecipeCursor<AssistantRecipe>> {
         Box::new(AdmittedCursor {
             source: self.content.open(0),
-            mode: self.mode,
-            encrypted: self.encrypted,
+            admission: self.admission,
             skip: start,
         })
     }
@@ -216,7 +258,7 @@ impl RecipeCursor<AssistantRecipe> for AdmittedCursor {
     fn next(&mut self) -> NextRecipe<'_, AssistantRecipe> {
         Box::pin(async move {
             while let Some(part) = self.source.next().await? {
-                if let Some(part) = admitted_recipe(part, self.mode, self.encrypted)? {
+                if let Some(part) = admitted_recipe(part, self.admission)? {
                     if self.skip > 0 {
                         self.skip -= 1;
                     } else {
@@ -227,6 +269,91 @@ impl RecipeCursor<AssistantRecipe> for AdmittedCursor {
             Ok(None)
         })
     }
+}
+
+/// Only canonical producing requests/checkpoints may introduce an observed origin.
+pub(in crate::owner) async fn append_observed(
+    messages: &mut preparation::PromptBuilder,
+    message: maka_model::prompt::Message,
+    origin: ReplayOrigin,
+) -> Result<(), RunError> {
+    let prompt = maka_model::prompt::Prompt::from_messages(vec![message]);
+    let source = prompt
+        .recipes()
+        .ok_or_else(|| RunError::Internal("generated recipe absent".into()))?;
+    let mut cursor = source.open(0);
+    while let Some(recipe) = cursor.next().await? {
+        let recipe = match recipe {
+            MessageRecipe::Assistant {
+                content,
+                provider_options,
+            } => MessageRecipe::Assistant {
+                content: Arc::new(OriginParts { content, origin }),
+                provider_options,
+            },
+            recipe => recipe,
+        };
+        messages.append_recipe(&recipe).await?;
+    }
+    Ok(())
+}
+struct OriginParts {
+    content: Arc<dyn RecipeSource<AssistantRecipe>>,
+    origin: ReplayOrigin,
+}
+struct OriginCursor {
+    source: Box<dyn RecipeCursor<AssistantRecipe>>,
+    origin: ReplayOrigin,
+}
+impl RecipeSource<AssistantRecipe> for OriginParts {
+    fn len(&self) -> usize {
+        self.content.len()
+    }
+    fn open(&self, start: usize) -> Box<dyn RecipeCursor<AssistantRecipe>> {
+        Box::new(OriginCursor {
+            source: self.content.open(start),
+            origin: self.origin,
+        })
+    }
+}
+impl RecipeCursor<AssistantRecipe> for OriginCursor {
+    fn next(&mut self) -> NextRecipe<'_, AssistantRecipe> {
+        Box::pin(async move {
+            Ok(self.source.next().await?.map(|part| match part {
+                AssistantRecipe::Reasoning {
+                    text,
+                    provider_options,
+                } => AssistantRecipe::Reasoning {
+                    text,
+                    provider_options: provider_options
+                        .map(|value| value.with_replay_origin(self.origin)),
+                },
+                AssistantRecipe::CodexCompaction { item } => AssistantRecipe::CodexCompaction {
+                    item: item.with_replay_origin(self.origin),
+                },
+                part => part,
+            }))
+        })
+    }
+}
+
+pub(in crate::owner) fn current_context(
+    provenance: &mut serde_json::Value,
+    model: &PreparedModel,
+    operation: ModelOperation,
+) -> Result<Option<maka_agent_facts::context::ModelRequestContext>, RunError> {
+    let mut context = model.context.clone();
+    if let Some(value) = context.as_mut() {
+        value.operation = operation;
+    }
+    provenance
+        .as_object_mut()
+        .ok_or_else(|| RunError::InvalidInput("frozen model provenance is not an object".into()))?
+        .insert(
+            "modelContext".into(),
+            serde_json::to_value(&context).map_err(RunError::Json)?,
+        );
+    Ok(context)
 }
 
 #[cfg(test)]
@@ -363,7 +490,8 @@ mod tests {
         let recipe = || MessageRecipe::Assistant {
             content: Arc::new(generated::GeneratedRecipes::new(vec![
                 AssistantRecipe::CodexCompaction {
-                    item: generated::json(&item),
+                    item: generated::json(&item)
+                        .with_replay_origin(ReplayOrigin::observed("model-a", Some(&source))),
                 },
             ])),
             provider_options: None,
@@ -392,13 +520,7 @@ mod tests {
                 provider: &provider,
                 operation,
             };
-            assert_eq!(
-                target
-                    .recipe(recipe(), "model-a", Some(&source))
-                    .await
-                    .is_ok(),
-                expected
-            );
+            assert_eq!(target.recipe(recipe()).await.is_ok(), expected);
         }
     }
 }

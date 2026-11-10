@@ -342,7 +342,7 @@ impl Builder {
         let byte_len = self.store.arena.with_writer(|w| Ok(w.position())).await?;
         self.store.arena.seal().await?;
         let layout = Layout {
-            version: 1,
+            version: 2,
             message_count: self.count,
             index_offset: table.offset,
             byte_len,
@@ -366,7 +366,7 @@ pub(crate) async fn restore(
     resources: ModelPreparationResources,
     layout: Layout,
 ) -> io::Result<Prompt> {
-    if layout.version != 1
+    if layout.version != 2
         || layout
             .index_offset
             .checked_add(
