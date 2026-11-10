@@ -19,6 +19,9 @@
 
 import type {
   AgentDelivery,
+  RunId,
+  StepId,
+  ModelAttemptId,
   AgentObservation,
   AgentPreviewPage,
 } from '../../../../packages/plugin-sdk/src/index.js';
@@ -29,15 +32,28 @@ type Cut = Extract<AgentPreviewPage, { kind: 'cut' }>;
 type Body = { text: string; bytes: number };
 
 export type LivePart = {
-  invocationId: string;
-  stepId: string;
+  runId: RunId;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   partId: string;
   messageId: string;
   field: 'thinking' | 'body';
   startSequence: number;
 };
-type LiveRow = Row & { invocationId: string; stepId: string; closedAt: number | null };
-type Seat = { invocationId: string; startSequence: number; closedAt: number | null };
+type LiveRow = Row & {
+  messageId: string;
+  runId: RunId;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
+  closedAt: number | null;
+};
+type Seat = {
+  runId: RunId;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
+  startSequence: number;
+  closedAt: number | null;
+};
 type Overlay = {
   rows: LiveRow[];
   tools: ToolActivity[];
@@ -55,8 +71,8 @@ class PreviewAssembly {
   private retiredTools = new Set<string>();
   private closedSteps = new Set<string>();
 
-  commit(invocationId: string, stepId: string, messageId?: string) {
-    const step = `${invocationId}/${stepId}`;
+  commit(runId: RunId, stepId: StepId, attemptId: ModelAttemptId, messageId?: string) {
+    const step = `${runId}/${stepId}/${attemptId}`;
     if (messageId === undefined) {
       this.closedSteps.add(step);
       if (this.identity.endsWith(`/${step}`)) this.bodies.clear();
@@ -68,8 +84,8 @@ class PreviewAssembly {
     }
   }
 
-  retireTool(invocationId: string, stepId: string, toolUseId: string) {
-    this.retiredTools.add(`${invocationId}/${stepId}/${toolUseId}`);
+  retireTool(runId: RunId, stepId: StepId, attemptId: ModelAttemptId, toolUseId: string) {
+    this.retiredTools.add(`${runId}/${stepId}/${attemptId}/${toolUseId}`);
   }
 
   page(
@@ -90,25 +106,26 @@ class PreviewAssembly {
         tools,
       };
     }
-    const identity = `${page.hostEpoch}/${page.invocationId}/${page.stepId}`;
+    const identity = `${page.hostEpoch}/${page.runId}/${page.stepId}/${page.attemptId}`;
     if (identity !== this.identity) {
       this.identity = identity;
       this.stepOrder += 1;
       this.revision = -1;
       this.bodies.clear();
-      const step = `${page.invocationId}/${page.stepId}/`;
+      const step = `${page.runId}/${page.stepId}/${page.attemptId}/`;
       this.committed = new Set([...this.committed].filter((key) => key.startsWith(step)));
       this.retiredTools = new Set([...this.retiredTools].filter((key) => key.startsWith(step)));
       this.closedSteps = new Set([...this.closedSteps].filter((key) => `${key}/` === step));
     }
     if (
-      this.closedSteps.has(`${page.invocationId}/${page.stepId}`) ||
+      this.closedSteps.has(`${page.runId}/${page.stepId}/${page.attemptId}`) ||
       page.revision < this.revision
     )
       return { rows, tools };
     this.revision = page.revision;
     for (const part of page.parts) {
-      if (this.committed.has(`${page.invocationId}/${page.stepId}/${part.messageId}`)) continue;
+      if (this.committed.has(`${page.runId}/${page.stepId}/${page.attemptId}/${part.messageId}`))
+        continue;
       const field =
         part.field.kind === 'text'
           ? part.field.textKind === 'thinking'
@@ -118,7 +135,9 @@ class PreviewAssembly {
       if (canonical.has(`${part.messageId}/${field}`)) continue;
       if (
         part.field.kind === 'tool_input' &&
-        this.retiredTools.has(`${page.invocationId}/${page.stepId}/${part.field.toolUseId}`)
+        this.retiredTools.has(
+          `${page.runId}/${page.stepId}/${page.attemptId}/${part.field.toolUseId}`,
+        )
       )
         continue;
       const key = `${part.messageId}/${field}`;
@@ -141,8 +160,9 @@ class PreviewAssembly {
         messageId: part.messageId,
         field,
         role: field === 'thinking' ? 'thinking' : 'assistant',
-        invocationId: page.invocationId,
+        runId: page.runId,
         stepId: page.stepId,
+        attemptId: page.attemptId,
         turnId: page.turnId,
         timestamp: part.startedAt,
         startSequence:
@@ -150,7 +170,7 @@ class PreviewAssembly {
         text: body.text,
         totalBytes: part.totalBytes,
         prefix: true,
-        modelPart: { stepId: page.stepId, ordinal: part.ordinal },
+        modelPart: { stepId: page.stepId, attemptId: page.attemptId, ordinal: part.ordinal },
         preview: { stepOrder: this.stepOrder, ordinal: part.ordinal, revision: page.revision },
         closedAt: null,
       };
@@ -167,14 +187,15 @@ class PreviewAssembly {
     tools: ToolActivity[],
   ) {
     const previous = tools.find(
-      (tool) => tool.invocationId === page.invocationId && tool.toolUseId === field.toolUseId,
+      (tool) => tool.runId === page.runId && tool.toolUseId === field.toolUseId,
     );
     // A complete/dispatched canonical call owns its display after admission.
     if (previous?.inputReady || previous?.phase === 'running') return tools;
     const next: ToolActivity = {
-      invocationId: page.invocationId,
+      runId: page.runId,
       turnId: page.turnId,
       stepId: page.stepId,
+      attemptId: page.attemptId,
       toolUseId: field.toolUseId,
       name: field.name,
       source: field.providerExecuted ? 'provider' : 'native',
@@ -198,7 +219,7 @@ export class TranscriptOverlay {
   private canonical: ReadonlyMap<string, Row> = new Map();
   private tailThrough: number | null = 0;
   private observedThrough = 0;
-  private activeInvocation: string | null | undefined;
+  private activeRun: RunId | null | undefined;
 
   snapshot(): Overlay {
     const starts = new Set<number>();
@@ -221,7 +242,7 @@ export class TranscriptOverlay {
     this.tailThrough = tailThrough === null ? null : Math.max(this.tailThrough ?? 0, tailThrough);
     for (const row of this.rows)
       if (canonical.has(`${row.messageId}/${row.field}`))
-        this.assembly.commit(row.invocationId, row.stepId, row.messageId);
+        this.assembly.commit(row.runId, row.stepId, row.attemptId, row.messageId);
     this.retireCovered(coveredFrom, windowStart);
   }
 
@@ -229,34 +250,31 @@ export class TranscriptOverlay {
     if (observed.through < this.observedThrough) return;
     this.observedThrough = observed.through;
     const run = observed.run;
-    this.activeInvocation = run?.invocationId ?? null;
+    this.activeRun = run?.runId ?? null;
     // Reconnect starts after this snapshot: terminal facts while offline are not replayed.
     const openMessages = new Set(observed.parts.map((part) => part.messageId));
     this.close(
       observed.through,
-      (row) =>
-        row.invocationId !== this.activeInvocation ||
-        (!row.preview && !openMessages.has(row.messageId)),
+      (row) => row.runId !== this.activeRun || (!row.preview && !openMessages.has(row.messageId)),
     );
     for (const [messageId, seat] of this.seats)
-      if (
-        seat.closedAt === null &&
-        (seat.invocationId !== this.activeInvocation || !openMessages.has(messageId))
-      )
+      if (seat.closedAt === null && (seat.runId !== this.activeRun || !openMessages.has(messageId)))
         this.seats.set(messageId, { ...seat, closedAt: observed.through });
     if (run)
       for (const part of observed.parts)
-        if (part.stepId === part.messageId && !this.seats.has(part.messageId))
+        if (!this.seats.has(part.messageId))
           this.seats.set(part.messageId, {
-            invocationId: run.invocationId,
+            runId: run.runId,
+            stepId: part.stepId,
+            attemptId: part.attemptId,
             startSequence: part.startSequence,
             closedAt: null,
           });
-    this.tools = this.tools.filter((tool) => tool.invocationId === this.activeInvocation);
+    this.tools = this.tools.filter((tool) => tool.runId === this.activeRun);
     this.parts = run
       ? observed.parts.map((part) => ({
           ...part,
-          invocationId: run.invocationId,
+          runId: run.runId,
           field: part.textKind === 'thinking' ? 'thinking' : 'body',
         }))
       : [];
@@ -265,18 +283,21 @@ export class TranscriptOverlay {
 
   page(page: AgentPreviewPage) {
     if (page.kind === 'cut') {
-      if (this.activeInvocation !== undefined && page.invocationId !== this.activeInvocation)
-        return;
+      if (this.activeRun !== undefined && page.runId !== this.activeRun) return;
       this.close(
         page.dependsOn,
         (row) =>
           Boolean(row.preview) &&
-          (row.invocationId !== page.invocationId || row.stepId !== page.stepId),
+          (row.runId !== page.runId ||
+            row.stepId !== page.stepId ||
+            row.attemptId !== page.attemptId),
       );
       this.tools = this.tools.filter(
         (tool) =>
           tool.previewOrder === undefined ||
-          (tool.invocationId === page.invocationId && tool.stepId === page.stepId),
+          (tool.runId === page.runId &&
+            tool.stepId === page.stepId &&
+            tool.attemptId === page.attemptId),
       );
       this.retireCovered();
     }
@@ -286,10 +307,10 @@ export class TranscriptOverlay {
   }
 
   event(event: AgentDelivery) {
-    const { fact, invocationId, sequence } = event;
+    const { fact, runId, sequence } = event;
     if (
-      this.activeInvocation !== undefined &&
-      invocationId !== this.activeInvocation &&
+      this.activeRun !== undefined &&
+      runId !== this.activeRun &&
       (fact.kind !== 'opened' || sequence <= this.observedThrough)
     )
       return;
@@ -297,21 +318,26 @@ export class TranscriptOverlay {
     switch (fact.kind) {
       case 'opened':
         if (sequence >= this.observedThrough) {
-          this.activeInvocation = invocationId;
-          this.close(sequence, (row) => row.invocationId !== invocationId);
-          this.closeSeats(sequence, (_, seat) => seat.invocationId !== invocationId);
-          this.tools = this.tools.filter((tool) => tool.invocationId === invocationId);
+          this.activeRun = runId;
+          this.close(sequence, (row) => row.runId !== runId);
+          this.closeSeats(sequence, (_, seat) => seat.runId !== runId);
+          this.tools = this.tools.filter((tool) => tool.runId === runId);
         }
         break;
       case 'executor_message_started':
-        this.seats.set(fact.messageId, { invocationId, startSequence: sequence, closedAt: null });
+        this.seats.set(fact.messageId, {
+          runId,
+          stepId: fact.stepId,
+          attemptId: fact.attemptId,
+          startSequence: sequence,
+          closedAt: null,
+        });
         this.parts = [
-          ...this.parts.filter(
-            (part) => part.invocationId !== invocationId || part.messageId !== fact.messageId,
-          ),
+          ...this.parts.filter((part) => part.runId !== runId || part.messageId !== fact.messageId),
           ...(['body', 'thinking'] as const).map((field) => ({
-            invocationId,
-            stepId: fact.messageId,
+            runId,
+            stepId: fact.stepId,
+            attemptId: fact.attemptId,
             partId: field === 'body' ? 'text' : 'thinking',
             messageId: fact.messageId,
             field,
@@ -323,8 +349,9 @@ export class TranscriptOverlay {
         if (!fact.text) break;
         const part = this.parts.find(
           (part) =>
-            part.invocationId === invocationId &&
+            part.runId === runId &&
             part.stepId === fact.stepId &&
+            part.attemptId === fact.attemptId &&
             part.partId === fact.partId,
         );
         if (!part || this.canonical.has(`${part.messageId}/${part.field}`)) break;
@@ -347,49 +374,60 @@ export class TranscriptOverlay {
         break;
       }
       case 'part_committed':
-        this.assembly.commit(invocationId, fact.stepId, fact.messageId);
+        this.assembly.commit(runId, fact.stepId, fact.attemptId, fact.messageId);
         this.parts = this.parts.filter(
           (part) =>
-            part.invocationId !== invocationId ||
+            part.runId !== runId ||
             part.stepId !== fact.stepId ||
+            part.attemptId !== fact.attemptId ||
             part.messageId !== fact.messageId,
         );
         this.close(
           sequence,
           (row) =>
-            row.invocationId === invocationId &&
+            row.runId === runId &&
             row.stepId === fact.stepId &&
+            row.attemptId === fact.attemptId &&
             row.messageId === fact.messageId,
         );
         this.closeSeats(
           sequence,
-          (messageId, seat) => seat.invocationId === invocationId && messageId === fact.messageId,
+          (messageId, seat) =>
+            seat.runId === runId &&
+            seat.stepId === fact.stepId &&
+            seat.attemptId === fact.attemptId &&
+            messageId === fact.messageId,
         );
         break;
       case 'tool_input_ready':
-        this.assembly.retireTool(invocationId, fact.stepId, fact.toolUseId);
+        this.assembly.retireTool(runId, fact.stepId, fact.attemptId, fact.toolUseId);
         break;
       case 'step_ended':
-        this.assembly.commit(invocationId, fact.stepId);
+        this.assembly.commit(runId, fact.stepId, fact.attemptId);
         this.close(
           sequence,
-          (row) => row.invocationId === invocationId && row.stepId === fact.stepId,
+          (row) =>
+            row.runId === runId && row.stepId === fact.stepId && row.attemptId === fact.attemptId,
         );
         this.closeSeats(
           sequence,
-          (messageId, seat) =>
-            seat.invocationId === invocationId &&
-            (fact.stepId === invocationId || messageId === fact.stepId),
+          (_, seat) =>
+            seat.runId === runId &&
+            seat.stepId === fact.stepId &&
+            seat.attemptId === fact.attemptId,
         );
         this.parts = this.parts.filter(
-          (part) => part.invocationId !== invocationId || part.stepId !== fact.stepId,
+          (part) =>
+            part.runId !== runId ||
+            part.stepId !== fact.stepId ||
+            part.attemptId !== fact.attemptId,
         );
         break;
       case 'ended':
-        if (sequence >= this.observedThrough) this.activeInvocation = null;
-        this.close(sequence, (row) => row.invocationId === invocationId);
-        this.closeSeats(sequence, (_, seat) => seat.invocationId === invocationId);
-        this.parts = this.parts.filter((part) => part.invocationId !== invocationId);
+        if (sequence >= this.observedThrough) this.activeRun = null;
+        this.close(sequence, (row) => row.runId === runId);
+        this.closeSeats(sequence, (_, seat) => seat.runId === runId);
+        this.parts = this.parts.filter((part) => part.runId !== runId);
         break;
     }
     this.observedThrough = Math.max(this.observedThrough, sequence);

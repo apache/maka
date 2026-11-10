@@ -31,156 +31,142 @@ use maka_plugin_core::operation::RecoveryRef;
 use tokio::io::AsyncReadExt;
 
 pub(super) struct CheckpointAdmission {
-    _workspace: runs::Checkpoint,
-    _session: runs::Ordered,
-    _goal: runs::Ordered,
-    _wake: WakeAfterCheckpoint,
+    _ordered: Arc<runs::Ordered>,
+    _goal: Arc<runs::Ordered>,
+    quiescence: maka_agent_state::SessionQuiescenceGuard,
+    physical: Option<Arc<maka_event_log::root_store::WorkspaceFence>>,
 }
-
-struct WakeAfterCheckpoint(std::sync::Weak<Owner>);
-
-impl Drop for WakeAfterCheckpoint {
-    fn drop(&mut self) {
-        if let Some(owner) = self.0.upgrade() {
-            owner.wake_after_checkpoint();
-        }
-    }
-}
-
 impl Owner {
-    fn wake_after_checkpoint(self: &Arc<Self>) {
-        if self.stop.is_cancelled() || self.workers.is_closed() {
-            return;
-        }
-        self.goals.execution_changed();
-        if tokio::runtime::Handle::try_current().is_ok() {
-            let owner = self.clone();
-            self.workers.spawn(async move {
-                if owner.stop.is_cancelled() {
-                    return;
-                }
-                owner.schedule().await;
-                let _ = owner.schedule_activations(now()).await;
-            });
-        }
-    }
-
     pub(super) async fn checkpoint_admission(
         self: &Arc<Self>,
         id: &str,
-        extra_path: Option<&std::path::Path>,
-    ) -> Result<(CheckpointAdmission, SessionRecord<ResolvedConfiguration>), String> {
-        let goal = self
-            .goals
-            .admissions
-            .try_ordered(id)
-            .map_err(|_| "agent_checkpoint_busy")?;
-        let ordered = self
-            .runs
-            .try_ordered(id)
-            .map_err(|_| "agent_checkpoint_busy")?;
-        let session = self.session(id).await?;
-        let mut paths = vec![std::path::PathBuf::from(
-            &session.configuration.workspace.path,
-        )];
-        if let Some(extra) = extra_path {
-            let extra = extra.to_path_buf();
-            if !paths.contains(&extra) {
-                paths.push(extra);
-            }
-        }
-        let workspace = self.runs.checkpoint(id, paths.clone())?;
-        let admission = CheckpointAdmission {
-            _workspace: workspace,
-            _session: ordered,
-            _goal: goal,
-            _wake: WakeAfterCheckpoint(Arc::downgrade(self)),
-        };
-        let mut active = {
+        capture_workspace: bool,
+    ) -> Result<
+        (
+            Arc<CheckpointAdmission>,
+            SessionRecord<ResolvedConfiguration>,
+        ),
+        String,
+    > {
+        let goal = Arc::new(
+            self.goals
+                .admissions
+                .try_ordered(id)
+                .map_err(|_| "agent_checkpoint_busy")?,
+        );
+        let ordered = Arc::new(
+            self.runs
+                .try_ordered(id)
+                .map_err(|_| "agent_checkpoint_busy")?,
+        );
+        {
             let runs = self.runs.state().await;
             if runs.closing
                 || self.stop.is_cancelled()
-                || runs.controls.contains_key(id)
-                || runs.preparing.contains_key(id)
-                || runs.retained_cleanup.contains(id)
+                || runs.busy(id)
                 || self.mcp_projects.has_any_client(id)
             {
                 return Err("agent_checkpoint_busy".into());
             }
-            runs.controls
-                .keys()
-                .chain(runs.preparing.keys())
-                .chain(runs.retained_cleanup.iter())
-                .cloned()
-                .chain(self.runs.ordered_sessions())
-                .chain(self.goals.admissions.ordered_sessions())
-                .chain(self.mcp_projects.client_sessions())
-                .filter(|active| active != id)
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        if self.has_parked_invocation(id).await?
-            || !self
-                .store
-                .session(id)
-                .await
-                .map_err(|_| "agent_store_unavailable")?
-                .message_queue(id)
-                .await
-                .map_err(|_| "agent_store_unavailable")?
-                .entries
-                .is_empty()
-        {
+        }
+        let session = self.session(id).await?;
+        let quiescence = self
+            .durable
+            .quiescence_guard(self.run_owner(), id.to_owned())
+            .map_err(failure)?;
+        if !quiescence.observe().await.map_err(failure)?.is_quiescent() {
             return Err("agent_checkpoint_busy".into());
         }
-        let mut after = None;
-        loop {
-            let pending = self
-                .store
-                .pending_message_sessions(&self.prefix, after.as_deref())
-                .await
-                .map_err(|_| "agent_store_unavailable")?;
-            if pending.is_empty() {
-                break;
-            }
-            after = pending.last().cloned();
-            active.extend(pending.into_iter().filter(|active| active != id));
-        }
-        active.extend(
-            self.store
-                .ready_native_approval_sessions()
-                .await
-                .map_err(|_| "agent_store_unavailable")?
-                .into_iter()
-                .filter(|active| self.owns(active) && active != id),
-        );
-        active.extend(
-            self.store
-                .due_model_retry_sessions(i64::MAX as u64)
-                .await
-                .map_err(|_| "agent_store_unavailable")?
-                .into_iter()
-                .filter(|active| self.owns(active) && active != id),
-        );
-        for active in active {
-            if self.runs.checkpointed(&active) {
-                continue;
-            }
-            let Some(other) = self
-                .store
-                .get_session::<StoredSessionConfiguration>(&active)
-                .await
-                .map_err(|_| "agent_store_unavailable")?
-            else {
-                continue;
-            };
-            let other = resolve_session(other)?;
-            let other_path = std::path::Path::new(&other.configuration.workspace.path);
-            if paths.iter().any(|path| runs::overlaps(path, other_path)) {
-                return Err("agent_checkpoint_busy".into());
-            }
-        }
-        Ok((admission, session))
+        let physical = if capture_workspace {
+            let directory = workspace::open_workspace(
+                &self.workspace_roots,
+                &session.configuration.workspace,
+                &self.managed_worktrees,
+            )
+            .await?;
+            let workspace = self.store.workspace(directory).await.map_err(failure)?;
+            Some(Arc::new(
+                self.store
+                    .fence_workspace(&workspace)
+                    .await
+                    .map_err(failure)?,
+            ))
+        } else {
+            None
+        };
+        Ok((
+            Arc::new(CheckpointAdmission {
+                _ordered: ordered,
+                _goal: goal,
+                quiescence,
+                physical,
+            }),
+            session,
+        ))
     }
+
+    async fn checkpoint_file(&self, id: &str) -> Result<std::fs::File, String> {
+        self.history_checkpoints()
+            .request_file(id)
+            .await
+            .map_err(failure)
+    }
+
+    fn checkpoint_state(&self) -> Result<maka_agent_state::Store, String> {
+        self.durable
+            .with_data_writer(self.store.data_writer().map_err(failure)?)
+            .map_err(failure)
+    }
+    async fn checkpoint_inventory(&self, id: &str) -> Result<HistoryCheckpointInventory, String> {
+        let session = self.session(id).await?;
+        let children = self
+            .canonical_catalog()?
+            .page(
+                maka_event_log::sessions::CatalogScope::Owned {
+                    id_prefix: self.prefix.clone(),
+                    selection: maka_event_log::sessions::CatalogSelection::Children(id.to_owned()),
+                    title_query: String::new(),
+                },
+                None,
+                maka_agent_state::session_catalog::Position::Start,
+                maka_agent_state::session_catalog::Filter {
+                    base: maka_event_log::sessions::CatalogFilter {
+                        roots_only: false,
+                        archived_only: false,
+                        include_archived: true,
+                    },
+                    needs_you_only: false,
+                },
+                1,
+            )
+            .await
+            .map_err(failure)?;
+        if !children.sessions.is_empty() {
+            return Err("agent_checkpoint_multiple_sessions_require_separate_sources".into());
+        }
+        let subtree_digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&("maka.agent.checkpoint-membership.v1", self.run_owner(), id))
+                .map_err(|error| error.to_string())?,
+        ));
+        Ok(HistoryCheckpointInventory {
+            root_session_id: id.to_owned(),
+            subtree_digest,
+            sessions: vec![HistoryCheckpointSession {
+                id: id.to_owned(),
+                revision: session.revision,
+            }],
+        })
+    }
+}
+
+fn snapshot_id(
+    operation: &RecoveryRef,
+) -> Result<maka_agent_facts::history_snapshot::SnapshotId, String> {
+    let digest = Sha256::digest(serde_json::to_vec(operation).map_err(|error| error.to_string())?);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    maka_agent_facts::history_snapshot::SnapshotId::try_from(Uuid::from_bytes(bytes))
+        .map_err(|error| error.to_string())
 }
 
 impl Owner {
@@ -204,17 +190,7 @@ impl Owner {
         self.resource_work(scope, move |owner, _| {
             Box::pin(async move {
                 owner.require_session(&input.session_id).await?;
-                owner
-                    .store
-                    .preview_bundle(&input.session_id)
-                    .await
-                    .map(inventory)
-                    .map_err(|error| match error {
-                        maka_event_log::bundle::BundleError::Store(error) => failure(error),
-                        maka_event_log::bundle::BundleError::CandidateSetStale => {
-                            "agent_history_checkpoint_changed".into()
-                        }
-                    })
+                owner.checkpoint_inventory(&input.session_id).await
             })
         })
         .await
@@ -258,25 +234,20 @@ impl Owner {
                     .workspace()
                     .cloned()
                     .map(workspace_snapshot);
-                let storage::Manifest {
-                    inventory: members,
-                    bundle,
-                    ..
-                } = checkout.manifest;
-                let expected = bundle.clone();
+                let expected = checkout.manifest.history.object.clone();
+                let history = checkpoint_snapshot(checkout.manifest.history);
                 emit(
                     &context,
                     &owner,
                     &scope,
                     HistoryCheckpointFrame::Checkpoint {
                         head: head(checkout.head),
-                        inventory: inventory(members),
-                        bundle: object(bundle),
+                        history,
                         workspace,
                     },
                 )
                 .await?;
-                let mut file = tokio::fs::File::from_std(checkout.bundle);
+                let mut file = tokio::fs::File::from_std(checkout.snapshot);
                 let mut buffer = [0; 32 * 1024];
                 let mut offset = 0u64;
                 use sha2::Digest;
@@ -380,18 +351,11 @@ fn head(value: storage::Head) -> HistoryCheckpointHead {
         manifest: object(value.manifest),
     }
 }
-fn inventory(value: maka_event_log::bundle::Inventory) -> HistoryCheckpointInventory {
-    HistoryCheckpointInventory {
-        root_session_id: value.root_session_id,
-        subtree_digest: value.subtree_digest,
-        sessions: value
-            .sessions
-            .into_iter()
-            .map(|s| HistoryCheckpointSession {
-                id: s.id,
-                revision: s.revision,
-            })
-            .collect(),
+fn checkpoint_snapshot(value: storage::HistorySnapshot) -> HistoryCheckpointSnapshot {
+    HistoryCheckpointSnapshot {
+        object: object(value.object),
+        inventory: value.inventory,
+        cut: value.cut,
     }
 }
 fn publication(value: storage::Publication) -> CheckpointPublication {
@@ -420,7 +384,7 @@ fn failure(error: StoreError) -> String {
         sql_code = crate::diagnostics::store_sql_code(&error),
         "History checkpoint operation failed"
     );
-    match error {
+    match error.underlying() {
         StoreError::SessionBusy => "agent_history_checkpoint_busy",
         StoreError::SessionNotFound | StoreError::SessionRetired => "agent_session_unavailable",
         StoreError::ConnectionClosed => "agent_work_closed",

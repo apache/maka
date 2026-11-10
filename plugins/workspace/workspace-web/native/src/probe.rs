@@ -20,6 +20,7 @@
 //! HEAD, one GET fallback, and no body reads or redirects.
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::{call, http};
+use maka_plugin_core::http::Method;
 use maka_web_api::probe::{Endpoint, Input, Readiness};
 use std::{sync::Arc, time::Instant};
 
@@ -36,9 +37,9 @@ pub async fn probe(
         biased;
         _ = scope.cancellation.cancelled() => Err(http::Error::Failed("cancelled".into())),
         result = async {
-            let status = request(&client, &scope, &target, http::Method::Head).await?;
+            let status = request(&client, &scope, &target, Method::Head).await?;
             if matches!(status, 405 | 501) {
-                request(&client, &scope, &target, http::Method::Get).await
+                request(&client, &scope, &target, Method::Get).await
             } else {
                 Ok(status)
             }
@@ -80,7 +81,7 @@ async fn request(
     client: &Arc<dyn http::Client>,
     scope: &call::Scope,
     target: &str,
-    method: http::Method,
+    method: Method,
 ) -> Result<u16, http::Error> {
     let response = client
         .request(

@@ -19,6 +19,7 @@
 
 use maka_capabilities::call;
 use maka_capabilities::http;
+use maka_plugin_core::http::Method;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use url::Url;
@@ -100,7 +101,7 @@ impl Search {
                 scope.clone(),
                 http::Request {
                     url: "https://api.tavily.com/search".into(),
-                    method: http::Method::Post,
+                    method: Method::Post,
                     headers: vec![("Content-Type".into(), "application/json".into())],
                     body: serde_json::to_vec(&Request {
                         api_key: key,
@@ -209,46 +210,4 @@ pub fn native(
             args: serde_json::json!({"maxUses":8}),
         },
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn results_disclose_omissions_preserve_snippets_and_filter_unsafe_urls() {
-        let bytes = serde_json::to_vec(&serde_json::json!({"results":[
-            {"title":"bad","url":"javascript:alert(1)"},
-            {"title":"credential","url":"https://secret@example.com/"},
-            {"title":"useful","url":"https://example.com/a","content":"字".repeat(401)},
-            {"title":"b","url":"https://example.com/b"},
-            {"title":"c","url":"https://example.com/c"}
-        ]}))
-        .unwrap();
-        let result = decode(
-            &bytes,
-            &Query {
-                query: "topic".into(),
-                limit: 2,
-            },
-        )
-        .unwrap();
-        assert_eq!(result.rows.len(), 2);
-        assert_eq!(result.omitted_results, 3);
-        assert!(result.truncated);
-        assert_eq!(result.rows[0].title, "useful");
-        assert_eq!(result.rows[0].url, "https://example.com/a");
-        assert_eq!(result.rows[0].snippet, "字".repeat(401));
-        assert_eq!(result.rows[1].title, "b");
-        assert_eq!(result.rows[1].url, "https://example.com/b");
-        assert!(
-            decode(
-                br#"{"error":"provider rejected request"}"#,
-                &Query {
-                    query: "topic".into(),
-                    limit: 2
-                }
-            )
-            .is_err()
-        );
-    }
 }

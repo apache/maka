@@ -50,3 +50,14 @@ url = "2.5.8"
 
 [dev-dependencies]
 tempfile.workspace = true
+rusqlite.workspace = true
+maka-agent-native.workspace = true
+maka-agent-engine.workspace = true
+maka-agent-state.workspace = true
+maka-config.workspace = true
+maka-providers.workspace = true
+maka-packages.workspace = true
+maka-host-js.workspace = true
+maka-skills-api.workspace = true
+maka-skills-native.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

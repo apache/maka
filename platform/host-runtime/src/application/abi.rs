@@ -43,6 +43,17 @@ pub struct HostObservation {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
 pub enum HostRequest {
+    StateRead {
+        key: String,
+    },
+    StateScan {
+        query: maka_plugin_core::storage::Scan,
+    },
+    /// Seal a pure write description; only the Host-JS callback bridge consumes it.
+    CompleteState {
+        mutations: Vec<maka_plugin_core::storage::Mutation>,
+        value: Value,
+    },
     Emit {
         value: Value,
     },
@@ -60,7 +71,12 @@ pub enum HostRequest {
         input: Value,
         #[serde(rename = "operationId")]
         operation_id: uuid::Uuid,
+        recovery: Value,
         attachments: BTreeMap<String, String>,
+    },
+    LookupIntent {
+        #[serde(rename = "operationId")]
+        operation_id: uuid::Uuid,
     },
     Recover {
         reference: maka_plugin_core::operation::RecoveryRef,

@@ -43,12 +43,10 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(host: Ports, scope: Scope, command: Command, handle: Handle, files: bool) -> Self {
+    pub fn new(host: Ports, _scope: Scope, _command: Command, handle: Handle, files: bool) -> Self {
         let (binding, _) = watch::channel(handle.io);
         let owner = Arc::new(Owner {
             host,
-            scope,
-            command,
             binding,
             state: Mutex::new(OwnerState {
                 id: handle.id,
@@ -96,8 +94,6 @@ struct OwnerState {
 }
 pub(crate) struct Owner {
     host: Ports,
-    scope: Scope,
-    command: Command,
     state: Mutex<OwnerState>,
     binding: watch::Sender<Arc<dyn Process>>,
 }
@@ -125,24 +121,10 @@ impl ConnectTo<sdk::Client> for HostTransport {
                 Some(state.id.clone())
             }
         };
-        if let Some(previous) = previous {
-            // SDK fallback requests a fresh transport when initialization differs.
-            // Settle the probe process before creating the v1 process through Host.
-            self.owner
-                .host
-                .processes
-                .close(previous)
-                .await
-                .map_err(sdk_error)?;
-            let handle = self
-                .owner
-                .host
-                .processes
-                .spawn(self.owner.scope.clone(), self.owner.command.clone())
-                .await
-                .map_err(sdk_error)?;
-            self.owner.state.lock().unwrap().id = handle.id;
-            self.owner.binding.send_replace(handle.io);
+        if previous.is_some() {
+            return Err(sdk_error(
+                "ACP initialization cannot replace the original task transport",
+            ));
         }
         let reader = Reader {
             binding: self.owner.binding.subscribe(),

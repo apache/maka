@@ -136,7 +136,7 @@ struct Tab {
     navigation_admission: Option<origin::NavigationAdmission>,
     extension_claim: Option<cua_driver_core::browser::ExtensionPhysicalClaim>,
     extension_wire: Option<cua_driver_core::browser::ExtensionWireContext>,
-    extension_host_operation: Option<cua_driver_core::browser::ExtensionHostOperation>,
+    extension_host_operation: Option<extension::BoundHostOperation>,
     // Actual acknowledged provenance/order, never a metadata-derived grant.
     extension_acquisition: Option<extension::Acquisition>,
     fixed_presentation: Option<extension::FixedPresentationScope>,
@@ -152,6 +152,7 @@ struct Tab {
     cursor_host: std::sync::Arc<tokio::sync::Mutex<Host>>,
     cursor_spec: Option<std::sync::Arc<std::sync::Mutex<crate::cursor::Spec>>>,
     last_turn: String,
+    last_execution: crate::ExecutionCorrelation,
     dialogs: Option<dialogs::Controller>,
     downloads: Option<downloads::Controller>,
     filechoosers: Option<filechooser::Store>,
@@ -688,6 +689,7 @@ impl Browsers {
         &self,
         identity: &TabIdentity,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         cancellation: &CancellationToken,
     ) -> Result<(), ToolError> {
         let provider = self
@@ -706,7 +708,7 @@ impl Browsers {
             .await
             .lock()
             .await
-            .use_tab(identity, self.owner, turn)
+            .use_tab(identity, self.owner, turn, execution)
     }
 
     pub(crate) fn target_label(&self, id: &str) -> Option<&str> {
@@ -773,8 +775,9 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         if let Command::BrowserRelease { browser_id } = &command {
-            return self.release_browser(browser_id, turn).await;
+            return self.release_browser(browser_id, turn, execution).await;
         }
         let call = BrowserCall::new(invocation, cancellation, language);
         if matches!(
@@ -837,9 +840,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.page_assets_list(call).await
                 })
                 .await
@@ -854,9 +858,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).expect("checked browser tab");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.page_assets_bundle(options, call).await
                 })
                 .await
@@ -1070,9 +1075,10 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     tab.ensure_clipboard_bridge(turn, call).await?;
@@ -1121,19 +1127,20 @@ impl Browsers {
                 Box::pin(async move {
                     // Check actual acquisition history before use_tab can update
                     // the logical lease's recorded turn.
-                    self.check_download_tab_lease(&handle, invocation.turn())
+                    self.check_download_tab_lease(&handle, invocation.turn(), invocation.execution_correlation())
                         .await?;
                     let identity = self
                         .targets
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
                         .expect("checked browser handle");
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize_download_path(invocation, cancellation, language)
                         .await?;
                     self.host()
@@ -1157,7 +1164,7 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
@@ -1165,6 +1172,7 @@ impl Browsers {
                     match target {
                         BrowserMediaTarget::Locator { locator } => {
                             tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                             tab.authorize(None, invocation, cancellation, language)
                                 .await?;
                             tab.verify(BrowserCall::new(invocation, cancellation, language))
@@ -1201,9 +1209,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     let document = tab.document();
@@ -1220,9 +1229,10 @@ impl Browsers {
                 }
                 let identity = self.targets.get(&handle)
                     .ok_or_else(|| failed("stale_tab: bind it again"))?.identity()?;
-                self.use_tab(&identity, turn, cancellation).await?;
+                self.use_tab(&identity, turn, execution, cancellation).await?;
                 let tab = self.targets.get_mut(&handle).expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                 let mut budget = Some(ReadBudget { remaining:options.budget()? });
                 tab.authorize_with_budget(None,invocation,cancellation,language,
                     extension::ClaimIntent::Implicit,&mut budget).await?;
@@ -1243,9 +1253,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     let mut budget = Some(ReadBudget::new(&options)?);
                     tab.authorize_with_budget(
                         None,
@@ -1292,9 +1303,10 @@ impl Browsers {
                         .get(handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.authorize(None, invocation, cancellation, language)
                         .await?;
                     if let Some(controller) = &tab.dialogs {
@@ -1330,9 +1342,10 @@ impl Browsers {
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation).await?;
                     let tab = self.targets.get_mut(&handle).unwrap();
                     tab.last_turn = turn.to_owned();
+                    tab.last_execution = execution.clone();
                     tab.refresh_info(call).await?;
                     if let Some(extension) = &tab.info.extension {
                         Ok(extension::tab_info(extension))
@@ -1542,6 +1555,7 @@ impl Browsers {
                 .await;
         }
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let (generation, _) = provider.inventory().await?;
         let identity = BrowserIdentity::of(&provider, &generation)?;
         check_input(cancellation)?;
@@ -1560,13 +1574,17 @@ impl Browsers {
             Ok(value) => match value["targetId"].as_str() {
                 Some(id) => id.to_owned(),
                 None => {
-                    host.creation_unknown(identity, self.owner, turn, provider, generation);
+                    host.creation_unknown(
+                        identity, self.owner, turn, execution, provider, generation,
+                    );
                     return Err(unknown("browser did not return a target ID"));
                 }
             },
             Err(error) => {
                 if matches!(error, ToolError::OutcomeUnknown(_)) {
-                    host.creation_unknown(identity, self.owner, turn, provider, generation);
+                    host.creation_unknown(
+                        identity, self.owner, turn, execution, provider, generation,
+                    );
                 }
                 return Err(error);
             }
@@ -1575,6 +1593,7 @@ impl Browsers {
             identity.tab(&id),
             self.owner,
             turn,
+            execution,
             provider.clone(),
             generation.clone(),
         )?;
@@ -1643,6 +1662,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let TabSource {
             provider,
             generation,
@@ -1652,7 +1672,8 @@ impl Browsers {
             .await?;
         let identity = BrowserIdentity::of(&provider, &generation)?.tab(&info.id);
         let api_profile = provider.api_profile();
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         if self
             .clipboards
             .get(provider.id())
@@ -1687,6 +1708,7 @@ impl Browsers {
             tab.generation = generation;
             tab.info = info;
             tab.last_turn = turn.to_owned();
+            tab.last_execution = execution.clone();
         } else {
             let cursor_host = self.host().await;
             self.targets.insert(
@@ -1716,6 +1738,7 @@ impl Browsers {
                     cursor_host,
                     cursor_spec: self.cursor_spec.clone(),
                     last_turn: turn.to_owned(),
+                    last_execution: execution.clone(),
                     dialogs: None,
                     downloads: None,
                     filechoosers: None,
@@ -1772,6 +1795,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let tab = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
                 Language::En => "stale_tab: bind it again",
@@ -1780,9 +1804,11 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
+        tab.last_execution = execution.clone();
         let prior_frame = tab.frame.clone();
         if !matches!(kind, ObservationKind::Screenshot) {
             tab.refs.clear();
@@ -1830,6 +1856,7 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
         let closing = matches!(&action, Action::Close);
         let tab = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
@@ -1839,10 +1866,12 @@ impl Browsers {
             })
         })?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, turn, cancellation).await?;
+        self.use_tab(&identity, turn, execution, cancellation)
+            .await?;
         let host = self.host().await;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
+        tab.last_execution = execution.clone();
         if !closing || tab.provider.extension().is_some() {
             let target = match &action {
                 Action::Navigate { url } => Some(url.as_str()),
@@ -1904,7 +1933,7 @@ impl Browsers {
             {
                 let mut host = host.lock().await;
                 check_input(cancellation)?;
-                host.begin_close(&identity, self.owner, turn)?;
+                host.begin_close(&identity, self.owner, turn, execution)?;
             }
             tab.refs.clear();
             if let Some(admission) = extension_close {
@@ -1940,33 +1969,32 @@ impl Browsers {
     pub(crate) async fn finish_turn(
         &mut self,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         cursor: &crate::cursor::Spec,
         language: Language,
     ) -> Result<(), ToolError> {
-        self.host()
-            .await
-            .lock()
-            .await
-            .check_owned_inputs(self.owner, Some(turn), None)?;
-        self.drain_extension_controls(Some(turn), None).await?;
-        for tab in self.targets.values().filter(|tab| {
-            tab.last_turn == turn
-                || tab
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|bridge| bridge.turn() == turn)
-        }) {
+        self.host().await.lock().await.check_owned_inputs(
+            self.owner,
+            Some(turn),
+            Some(execution),
+            None,
+        )?;
+        self.drain_extension_controls(Some(turn), Some(execution), None)
+            .await?;
+        for tab in self
+            .targets
+            .values()
+            .filter(|tab| tab.last_turn == turn && &tab.last_execution == execution)
+        {
             tab.begin_disconnect();
         }
         let mut failures = Vec::new();
         let mut unsettled = std::collections::HashSet::new();
         for (handle, tab) in &mut self.targets {
-            if tab.last_turn != turn {
-                if tab
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|bridge| bridge.turn() == turn)
-                    && let Err(error) = tab.cleanup_clipboard().await
+            if (tab.last_turn != turn || &tab.last_execution != execution) {
+                if tab.clipboard.as_ref().is_some_and(|bridge| {
+                    bridge.turn() == turn && bridge.execution_correlation() == execution
+                }) && let Err(error) = tab.cleanup_clipboard().await
                 {
                     failures.push(error.to_string());
                     unsettled.insert(handle.clone());
@@ -1992,14 +2020,21 @@ impl Browsers {
             tab.frame = None;
             tab.previous = None;
         }
-        extension::drain_extension_cleanup(&self.host().await, self.owner, Some(turn), None, None)
-            .await?;
+        extension::drain_extension_cleanup(
+            &self.host().await,
+            self.owner,
+            Some(turn),
+            Some(execution),
+            None,
+            None,
+        )
+        .await?;
         let finished = self
             .host()
             .await
             .lock()
             .await
-            .finish(self.owner, Some(turn))
+            .finish(self.owner, Some(turn), Some(execution))
             .await;
         let finished: std::collections::HashSet<_> = match finished {
             Ok(finished) => finished.into_iter().collect(),
@@ -2015,8 +2050,7 @@ impl Browsers {
                     .is_ok_and(|identity| !finished.contains(&identity))
         });
         if failures.is_empty() {
-            self.retire_handoff_resources(None).await?;
-            self.release_handoff_user().await
+            Ok(())
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
         }
@@ -2026,12 +2060,13 @@ impl Browsers {
         &mut self,
         cursor: &crate::cursor::Spec,
     ) -> Result<(), ToolError> {
-        self.host()
-            .await
-            .lock()
-            .await
-            .check_owned_inputs(self.owner, None, Some(self.epoch))?;
-        self.drain_extension_controls(None, Some(self.epoch))
+        self.host().await.lock().await.check_owned_inputs(
+            self.owner,
+            None,
+            None,
+            Some(self.epoch),
+        )?;
+        self.drain_extension_controls(None, None, Some(self.epoch))
             .await?;
         for tab in self.targets.values() {
             tab.begin_disconnect();
@@ -2066,17 +2101,17 @@ impl Browsers {
             .await
             .lock()
             .await
-            .check_owned_inputs(self.owner, None, None)?;
-        self.drain_extension_controls(None, None).await?;
+            .check_owned_inputs(self.owner, None, None, None)?;
+        self.drain_extension_controls(None, None, None).await?;
         let mut failures = Vec::new();
         if let Err(error) = self.retire_epoch(cursor).await {
             failures.push(error.to_string());
         }
         let host = self.host().await;
-        extension::drain_extension_cleanup(&host, self.owner, None, None, None).await?;
+        extension::drain_extension_cleanup(&host, self.owner, None, None, None, None).await?;
         let mut host = host.lock().await;
         let cursor_result = host.finalize_cursors(self.owner, cursor).await;
-        let tabs_result = host.finish(self.owner, None).await;
+        let tabs_result = host.finish(self.owner, None, None).await;
         if let Err(error) = cursor_result {
             failures.push(error.to_string());
         }
@@ -2124,16 +2159,24 @@ impl Tab {
             .clone()
             .ok_or_else(|| failed("Browser clipboard requires Host effect custody"))?;
         self.verify(call).await?;
-        if self
-            .clipboard
-            .as_ref()
-            .is_some_and(|bridge| !bridge.is_open())
-        {
+        if self.clipboard.as_ref().is_some_and(|bridge| {
+            !bridge.is_open()
+                || bridge.turn() != turn
+                || bridge.execution_correlation() != call.invocation.execution_correlation()
+        }) {
             self.cleanup_clipboard().await?;
         }
         if self.clipboard.is_none() {
             let store = self.clipboard_store.clone();
-            clipboard_bridge::Bridge::install(self, store, authorization, host, turn).await?;
+            clipboard_bridge::Bridge::install(
+                self,
+                store,
+                authorization,
+                host,
+                turn,
+                call.invocation.execution_correlation(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2410,7 +2453,10 @@ impl Tab {
         self.clipboard_authorization = services.attachment;
         self.dialog_host = services.effects;
         self.attachment_settlement = services.settlement;
-        if let Some(bridge) = &self.clipboard {
+        if let Some(bridge) = &self.clipboard
+            && bridge.turn() == invocation.turn()
+            && bridge.execution_correlation() == invocation.execution_correlation()
+        {
             bridge.update(
                 self.clipboard_authorization.clone(),
                 self.dialog_host.clone(),
@@ -3355,1717 +3401,5 @@ fn check_input(cancellation: &tokio_util::sync::CancellationToken) -> Result<(),
         Err(failed("Computer Use cancelled before input dispatch"))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::TcpListener;
-    use tokio_util::sync::CancellationToken;
-
-    struct Decision {
-        allow: bool,
-        accesses: Arc<Mutex<Vec<crate::BrowserAccess>>>,
-    }
-    impl crate::BrowserAuthorization for Decision {
-        fn authorize(
-            &self,
-            access: crate::BrowserAccess,
-            _: CancellationToken,
-        ) -> crate::AuthorizationFuture {
-            self.accesses.lock().unwrap().push(access);
-            let allow = self.allow;
-            Box::pin(async move {
-                if allow {
-                    Ok(())
-                } else {
-                    Err(failed("fixture denied site access"))
-                }
-            })
-        }
-        fn check(
-            &self,
-            access: crate::BrowserAccess,
-            cancellation: CancellationToken,
-        ) -> crate::AuthorizationFuture {
-            self.authorize(access, cancellation)
-        }
-    }
-
-    fn decision_context(
-        allow: bool,
-    ) -> (
-        crate::InvocationContext<'static>,
-        Arc<Mutex<Vec<crate::BrowserAccess>>>,
-    ) {
-        let accesses = Arc::new(Mutex::new(Vec::new()));
-        (
-            crate::InvocationContext::new("fixture", "turn").with_browser_authorization(Arc::new(
-                Decision {
-                    allow,
-                    accesses: accesses.clone(),
-                },
-            )),
-            accesses,
-        )
-    }
-
-    async fn serve_inventory(listener: &TcpListener, tabs: &[Value]) -> Vec<String> {
-        let address = listener.local_addr().unwrap();
-        let mut paths = Vec::new();
-        for expected in ["/json/version", "/json/list"] {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut stream = BufReader::new(stream);
-            let mut line = String::new();
-            stream.read_line(&mut line).await.unwrap();
-            let path = line.split_whitespace().nth(1).unwrap().to_owned();
-            assert_eq!(path, expected);
-            paths.push(path);
-            loop {
-                line.clear();
-                stream.read_line(&mut line).await.unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                assert!(!line.is_empty(), "incomplete fixture request");
-            }
-            let body = if expected == "/json/version" {
-                json!({"webSocketDebuggerUrl": format!("ws://{address}/devtools/browser/fixture")})
-            } else {
-                json!(tabs)
-            }
-            .to_string();
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-        }
-        paths
-    }
-
-    #[tokio::test]
-    async fn download_path_rechecks_actual_target_url_after_host_consent() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let before = [json!({
-                "id":"page", "title":"Before", "url":"https://source.example/",
-                "type":"page"
-            })];
-            let after = [json!({
-                "id":"page", "title":"After", "url":"https://replacement.example/",
-                "type":"page"
-            })];
-            let mut paths = serve_inventory(&listener, &before).await;
-            paths.extend(serve_inventory(&listener, &before).await);
-            paths.extend(serve_inventory(&listener, &after).await);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(30), listener.accept())
-                    .await
-                    .is_err(),
-                "replacement URL must be rejected before any page connection"
-            );
-            paths
-        });
-        let mut browsers = Browsers::default();
-        browsers
-            .configure(
-                vec![BrowserConnection {
-                    id: "fixture".into(),
-                    endpoint: format!("http://{address}"),
-                }],
-                Language::En,
-            )
-            .unwrap();
-        let (context, accesses) = decision_context(true);
-        let cancellation = CancellationToken::new();
-        let bound = browsers
-            .invoke(
-                Command::BrowserTab {
-                    browser_id: "fixture".into(),
-                    reference: BrowserTabReference::Existing("page".into()),
-                },
-                &context,
-                &crate::cursor::Spec::default(),
-                &cancellation,
-                Language::En,
-            )
-            .await
-            .unwrap();
-        let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap() else {
-            unreachable!()
-        };
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            browsers
-                .targets
-                .get_mut(&handle)
-                .unwrap()
-                .authorize_download_path(&context, &cancellation, Language::En),
-        )
-        .await
-        .expect("finite replacement metadata preflight");
-        assert!(matches!(result, Err(ToolError::Failed(message))
-            if message == "download source URL or target changed during path authorization; retry the lookup"));
-        {
-            let accesses = accesses.lock().unwrap();
-            assert!(
-                matches!(accesses.as_slice(), [
-                crate::BrowserAccess::Metadata { document: metadata },
-                crate::BrowserAccess::Read { document: source },
-            ] if metadata.url == "https://source.example/"
-                && source == metadata),
-                "only the original source was admitted: {accesses:?}"
-            );
-            assert!(
-                accesses
-                    .iter()
-                    .all(|access| access.document().url != "https://replacement.example/"),
-                "the replacement must not borrow the original source's consent"
-            );
-        }
-        assert_eq!(server.await.unwrap().len(), 6);
-    }
-
-    async fn metadata_reply(
-        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-        expected: &str,
-        result: Value,
-    ) -> Value {
-        use futures_util::{SinkExt, StreamExt};
-        let request: Value =
-            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(request["method"], expected);
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                json!({"id":request["id"],"result":result})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        request
-    }
-
-    fn source_frame(loader: &str) -> Value {
-        json!({"frameTree":{"frame":{
-            "id":"main", "loaderId":loader, "url":"https://source.example/",
-        }}})
-    }
-
-    #[tokio::test]
-    async fn host_authorization_revalidates_the_current_url_after_consent() {
-        use futures_util::StreamExt;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (context, accesses) = decision_context(true);
-        let approved = accesses.clone();
-        let server = tokio::spawn(async move {
-            let before = [json!({
-                "id":"page", "title":"Before", "url":"https://source.example/", "type":"page",
-                "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
-            })];
-            let after = [json!({
-                "id":"page", "title":"After", "url":"https://replacement.example/", "type":"page",
-                "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
-            })];
-            let mut paths = Vec::new();
-            for _ in 0..4 {
-                paths.extend(serve_inventory(&listener, &before).await);
-            }
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            assert!(
-                matches!(
-                    approved.lock().unwrap().as_slice(),
-                    [crate::BrowserAccess::Metadata { .. }]
-                ),
-                "only metadata transport is admitted before the source snapshot"
-            );
-            metadata_reply(&mut socket, "Page.getFrameTree", source_frame("source")).await;
-            // This inventory starts only after the actual Navigate approval.
-            paths.extend(serve_inventory(&listener, &after).await);
-            assert!(matches!(
-                approved.lock().unwrap().as_slice(),
-                [
-                    crate::BrowserAccess::Metadata { .. },
-                    crate::BrowserAccess::Navigate { .. },
-                ]
-            ));
-            if let Ok(Some(Ok(message))) =
-                tokio::time::timeout(Duration::from_millis(100), socket.next()).await
-            {
-                assert!(
-                    message.is_close(),
-                    "replacement received a page command after consent: {message:?}"
-                );
-            }
-            paths
-        });
-        let mut browsers = Browsers::default();
-        browsers
-            .configure(
-                vec![BrowserConnection {
-                    id: "fixture".into(),
-                    endpoint: format!("http://{address}"),
-                }],
-                Language::En,
-            )
-            .unwrap();
-        let cursor = crate::cursor::Spec::default();
-        let cancellation = CancellationToken::new();
-        let bound = browsers
-            .invoke(
-                Command::BrowserTab {
-                    browser_id: "fixture".into(),
-                    reference: BrowserTabReference::Existing("page".into()),
-                },
-                &context,
-                &cursor,
-                &cancellation,
-                Language::En,
-            )
-            .await
-            .unwrap();
-        let result = browsers
-            .invoke(
-                Command::Action {
-                    handle: serde_json::from_value(bound["handle"].clone()).unwrap(),
-                    action: Action::Navigate {
-                        url: "https://destination.example/path".into(),
-                    },
-                },
-                &context,
-                &cursor,
-                &cancellation,
-                Language::En,
-            )
-            .await;
-        assert!(matches!(result, Err(ToolError::Failed(message))
-            if message == "document changed during browser authorization; retry the operation"));
-        {
-            let accesses = accesses.lock().unwrap();
-            assert!(
-                matches!(accesses.as_slice(), [
-                crate::BrowserAccess::Metadata { document: metadata },
-                crate::BrowserAccess::Navigate { document: source, url },
-            ] if source == metadata && source.url == "https://source.example/"
-                && url == "https://destination.example/path"),
-                "replacement content must not receive the source's navigation consent: {accesses:?}"
-            );
-        }
-        assert_eq!(server.await.unwrap().len(), 10);
-    }
-
-    #[tokio::test]
-    async fn navigation_binds_its_source_across_consent_and_rechecks_before_dispatch() {
-        use futures_util::StreamExt;
-        for replacement in [None, Some("during-consent"), Some("before-dispatch")] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let (context, accesses) = decision_context(true);
-            let approved = accesses.clone();
-            let server = tokio::spawn(async move {
-                let tab = [json!({
-                    "id":"page", "title":"Same URL", "url":"https://source.example/", "type":"page",
-                    "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
-                })];
-                let mut paths = Vec::new();
-                for _ in 0..4 {
-                    paths.extend(serve_inventory(&listener, &tab).await);
-                }
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                assert!(matches!(
-                    approved.lock().unwrap().as_slice(),
-                    [crate::BrowserAccess::Metadata { .. }]
-                ));
-                let mut methods = Vec::new();
-                metadata_reply(&mut socket, "Page.getFrameTree", source_frame("source")).await;
-                methods.push("Page.getFrameTree");
-                paths.extend(serve_inventory(&listener, &tab).await);
-                assert!(
-                    matches!(
-                        approved.lock().unwrap().as_slice(),
-                        [
-                            crate::BrowserAccess::Metadata { .. },
-                            crate::BrowserAccess::Navigate { .. },
-                        ]
-                    ),
-                    "source metadata must never require content consent"
-                );
-                metadata_reply(
-                    &mut socket,
-                    "Page.getFrameTree",
-                    source_frame(if replacement == Some("during-consent") {
-                        "replacement"
-                    } else {
-                        "source"
-                    }),
-                )
-                .await;
-                methods.push("Page.getFrameTree");
-                if replacement != Some("during-consent") {
-                    metadata_reply(
-                        &mut socket,
-                        "Page.getFrameTree",
-                        source_frame(if replacement == Some("before-dispatch") {
-                            "replacement"
-                        } else {
-                            "source"
-                        }),
-                    )
-                    .await;
-                    methods.push("Page.getFrameTree");
-                    if replacement.is_none() {
-                        let request =
-                            metadata_reply(&mut socket, "Page.navigate", json!({"frameId":"main"}))
-                                .await;
-                        assert_eq!(request["params"]["url"], "https://destination.example/path");
-                        methods.push("Page.navigate");
-                    }
-                }
-                if let Ok(Some(Ok(message))) =
-                    tokio::time::timeout(Duration::from_millis(100), socket.next()).await
-                {
-                    assert!(
-                        message.is_close(),
-                        "navigation or a content command escaped the source fence: {message:?}"
-                    );
-                }
-                (paths, methods)
-            });
-            let mut browsers = Browsers::default();
-            browsers
-                .configure(
-                    vec![BrowserConnection {
-                        id: "fixture".into(),
-                        endpoint: format!("http://{address}"),
-                    }],
-                    Language::En,
-                )
-                .unwrap();
-            let cursor = crate::cursor::Spec::default();
-            let cancellation = CancellationToken::new();
-            let bound = browsers
-                .invoke(
-                    Command::BrowserTab {
-                        browser_id: "fixture".into(),
-                        reference: BrowserTabReference::Existing("page".into()),
-                    },
-                    &context,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                )
-                .await
-                .unwrap();
-            let result = browsers
-                .invoke(
-                    Command::Action {
-                        handle: serde_json::from_value(bound["handle"].clone()).unwrap(),
-                        action: Action::Navigate {
-                            url: "https://destination.example/path".into(),
-                        },
-                    },
-                    &context,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                )
-                .await;
-            if replacement.is_some() {
-                assert!(matches!(result, Err(ToolError::Failed(message))
-                    if message == "document changed before navigation dispatch; retry the operation"));
-            } else {
-                assert!(result.is_ok(), "{result:?}");
-            }
-            let (paths, methods) = server.await.unwrap();
-            assert_eq!(paths.len(), 10);
-            assert_eq!(
-                methods.len(),
-                match replacement {
-                    None => 4,
-                    Some("during-consent") => 2,
-                    Some("before-dispatch") => 3,
-                    _ => unreachable!(),
-                }
-            );
-            assert!(
-                !accesses.lock().unwrap().iter().any(|access| matches!(
-                    access,
-                    crate::BrowserAccess::Read { .. } | crate::BrowserAccess::ReadDocument { .. }
-                )),
-                "navigation must not authorize reading the source or replacement content"
-            );
-        }
-    }
-
-    async fn inventory_provider(
-        id: &str,
-        rounds: usize,
-        tabs: Vec<Value>,
-    ) -> (
-        BrowserConnection,
-        String,
-        tokio::task::JoinHandle<Vec<String>>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let connection = BrowserConnection {
-            id: id.into(),
-            endpoint: format!("http://{address}"),
-        };
-        let generation = format!("ws://{address}/devtools/browser/fixture");
-        let server = tokio::spawn(async move {
-            let mut paths = Vec::new();
-            for _ in 0..rounds {
-                paths.extend(serve_inventory(&listener, &tabs).await);
-            }
-            paths
-        });
-        (connection, generation, server)
-    }
-
-    async fn quarantine_inventory(
-        browsers: &Browsers,
-        provider: &BrowserConnection,
-        generation: &str,
-    ) {
-        browsers.host().await.lock().await.creation_unknown(
-            BrowserIdentity::new(provider, generation).unwrap(),
-            browsers.owner,
-            "original-turn",
-            provider.clone(),
-            generation.into(),
-        );
-    }
-
-    #[tokio::test]
-    async fn healthy_browser_discovery_keeps_other_provider_uncertainty() {
-        // Discovery must not enumerate the developer's real browser profiles.
-        const CHILD: &str = "MAKA_TEST_BROWSER_DISCOVERY_HOME";
-        const TEST: &str =
-            "browser::tests::healthy_browser_discovery_keeps_other_provider_uncertainty";
-        if std::env::var(CHILD).as_deref() != Ok(TEST) {
-            let directory = tempfile::tempdir().unwrap();
-            let home = directory.path().canonicalize().unwrap();
-            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", TEST, "--nocapture"])
-                .env(CHILD, TEST)
-                .envs(
-                    [
-                        "HOME",
-                        "USERPROFILE",
-                        "LOCALAPPDATA",
-                        "APPDATA",
-                        "XDG_CONFIG_HOME",
-                        "XDG_RUNTIME_DIR",
-                    ]
-                    .map(|key| (key, &home)),
-                )
-                .output()
-                .await
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success() && stdout.contains("test result: ok. 1 passed;"),
-                "{stdout}{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        for unhealthy_first in [true, false] {
-            let (healthy, _, healthy_server) = inventory_provider("actual-cdp", 3, vec![]).await;
-            let (unhealthy, generation, unhealthy_server) =
-                inventory_provider("unconfirmed-cdp", 2, vec![]).await;
-            let mut browsers = Browsers::default();
-            let connections = if unhealthy_first {
-                vec![unhealthy.clone(), healthy]
-            } else {
-                vec![healthy, unhealthy.clone()]
-            };
-            browsers.configure(connections, Language::En).unwrap();
-            quarantine_inventory(&browsers, &unhealthy, &generation).await;
-            let context = crate::InvocationContext::new("fixture", "selection-turn");
-            let cursor = crate::cursor::Spec::default();
-            let cancellation = CancellationToken::new();
-            let listed = browsers
-                .invoke(
-                    Command::ListBrowsers {
-                        options: InventoryOptions::default(),
-                    },
-                    &context,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                )
-                .await
-                .unwrap();
-            let actual = listed
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|browser| browser["id"] == "actual-cdp")
-                .unwrap();
-            assert!(actual.get("tabs").is_none());
-            assert!(
-                !listed
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|browser| browser["id"] == "unconfirmed-cdp")
-            );
-            let (state, errors) = browsers.state().await;
-            assert!(state.iter().any(|browser| browser["id"] == "actual-cdp"));
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.starts_with("unconfirmed-cdp: tool cleanup unconfirmed:"))
-            );
-            let selected = browsers
-                .invoke(
-                    Command::GetBrowser {
-                        options: BrowserOptions {
-                            id: Some("actual-cdp".into()),
-                            url: None,
-                            extension_instance_id: None,
-                        },
-                    },
-                    &context,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                )
-                .await
-                .unwrap();
-            assert_eq!(selected, listed[0]);
-            assert_eq!(selected["type"], "cdp");
-            assert!(browsers.targets.is_empty());
-            assert_eq!(
-                browsers.host().await.lock().await.uncertain_creations.len(),
-                1
-            );
-            assert_eq!(healthy_server.await.unwrap().len(), 6);
-            assert_eq!(unhealthy_server.await.unwrap().len(), 4);
-        }
-    }
-
-    #[tokio::test]
-    async fn exact_browser_ids_and_extension_instances_never_probe_a_fallback() {
-        for (id, instance, exact_present, uncertain) in [
-            ("opencli", None, true, false),
-            ("opencli", None, true, true),
-            ("maka:missing-instance", None, false, false),
-            ("opencli", Some("fixed-instance"), false, false),
-        ] {
-            let unrelated = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut connections = vec![BrowserConnection {
-                id: "unrelated-cdp".into(),
-                endpoint: format!("http://{}", unrelated.local_addr().unwrap()),
-            }];
-            let exact = if exact_present {
-                let (provider, generation, server) = inventory_provider(id, 1, vec![]).await;
-                connections.push(provider.clone());
-                Some((provider, generation, server))
-            } else {
-                None
-            };
-            let mut browsers = Browsers::default();
-            browsers.configure(connections, Language::En).unwrap();
-            if uncertain {
-                let (provider, generation, _) = exact.as_ref().unwrap();
-                quarantine_inventory(&browsers, provider, generation).await;
-            }
-            let result = browsers
-                .invoke(
-                    Command::GetBrowser {
-                        options: BrowserOptions {
-                            id: Some(id.into()),
-                            url: None,
-                            extension_instance_id: instance.map(str::to_owned),
-                        },
-                    },
-                    &crate::InvocationContext::new("fixture", "selection-turn"),
-                    &crate::cursor::Spec::default(),
-                    &CancellationToken::new(),
-                    Language::En,
-                )
-                .await;
-            if uncertain {
-                assert!(matches!(result, Err(ToolError::CleanupUnconfirmed(_))));
-                assert_eq!(
-                    browsers.host().await.lock().await.uncertain_creations.len(),
-                    1
-                );
-            } else if exact_present {
-                assert_eq!(result.unwrap()["id"], id);
-            } else {
-                assert!(matches!(result, Err(ToolError::Failed(message))
-                    if message.starts_with("browser_unavailable:")));
-            }
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), unrelated.accept())
-                    .await
-                    .is_err()
-            );
-            assert!(browsers.targets.is_empty());
-            if let Some((_, _, server)) = exact {
-                assert_eq!(server.await.unwrap().len(), 2);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn lazy_cdp_connection_obeys_read_deadline_and_cancellation_and_closes_its_socket() {
-        for cancel_at_handshake in [false, true] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let cancellation = CancellationToken::new();
-            let cancelled = cancellation.clone();
-            let server = tokio::spawn(async move {
-                let tabs = [
-                    json!({"id":"page","title":"Fixture","url":"https://example.com/","type":"page","webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page")}),
-                ];
-                serve_inventory(&listener, &tabs).await;
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut stream = BufReader::new(stream);
-                let mut line = String::new();
-                stream.read_line(&mut line).await.unwrap();
-                assert!(line.starts_with("GET /devtools/page/page "));
-                loop {
-                    line.clear();
-                    assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-                if cancel_at_handshake {
-                    cancelled.cancel();
-                }
-                // Never upgrade: deadline/cancellation must drop the actual
-                // connecting socket, without dispatching a CDP request.
-                let mut bytes = [0; 1];
-                assert_eq!(stream.read(&mut bytes).await.unwrap(), 0);
-            });
-            let mut browsers = Browsers::default();
-            browsers
-                .configure(
-                    vec![BrowserConnection {
-                        id: "fixture".into(),
-                        endpoint: format!("http://{address}"),
-                    }],
-                    Language::En,
-                )
-                .unwrap();
-            let cursor = crate::cursor::Spec::default();
-            let bound = browsers
-                .invoke(
-                    Command::BrowserTab {
-                        browser_id: "fixture".into(),
-                        reference: BrowserTabReference::Existing("page".into()),
-                    },
-                    &decision_context(true).0,
-                    &cursor,
-                    &cancellation,
-                    Language::En,
-                )
-                .await
-                .unwrap();
-            let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap()
-            else {
-                panic!("binding must return a tab handle");
-            };
-            let tab = browsers.targets.get_mut(&handle).unwrap();
-            assert!(tab.connection.is_none(), "binding must remain lazy");
-            let mut budget = Some(
-                ReadBudget::new(&BrowserReadOptions {
-                    timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
-                })
-                .unwrap(),
-            );
-            // This is the same bounded connect used by metadata preparation;
-            // inventory and consent have their own behavior tests.
-            let result = tokio::time::timeout(
-                Duration::from_secs(2),
-                read_step(&mut budget, &cancellation, tab.connect_metadata()),
-            )
-            .await
-            .expect("the connecting socket escaped its read deadline or cancellation");
-            let expected = if cancel_at_handshake {
-                "Browser read cancelled"
-            } else {
-                "Playwright selector deadline exceeded"
-            };
-            assert!(
-                matches!(&result, Err(ToolError::Failed(message)) if message == expected),
-                "{result:?}"
-            );
-            assert!(
-                tab.connection.is_none(),
-                "a failed handshake cannot retain a socket"
-            );
-            tokio::time::timeout(Duration::from_secs(1), server)
-                .await
-                .expect("the fixture must see the handshake socket close")
-                .unwrap();
-            browsers.close(&cursor).await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn failed_page_setup_can_be_retried_on_the_same_metadata_connection() {
-        use futures_util::{SinkExt, StreamExt};
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let websocket = format!("ws://{address}/devtools/page/page");
-        let tabs = [json!({
-            "id":"page", "title":"Fixture", "url":"https://source.example/", "type":"page",
-            "webSocketDebuggerUrl":websocket,
-        })];
-        let (release, released) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(async move {
-            serve_inventory(&listener, &tabs).await;
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            metadata_reply(&mut socket, "Page.enable", json!({})).await;
-            let request: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
-            assert_eq!(request["method"], "Target.setAutoAttach");
-            for event in [
-                json!({"method":"Target.attachedToTarget","params":{
-                    "sessionId":"child-session", "targetInfo":{"type":"iframe","targetId":"child-target"}
-                }}),
-                json!({"method":"Page.javascriptDialogOpening","params":{
-                    "type":"alert", "message":"retained setup dialog", "url":"https://source.example/"
-                }}),
-                json!({"id":request["id"],"error":{"code":-32000,"message":"fixture Target.setAutoAttach failure"}}),
-            ] {
-                socket
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        event.to_string().into(),
-                    ))
-                    .await
-                    .unwrap();
-            }
-
-            serve_inventory(&listener, &tabs).await;
-            let request: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
-            assert_eq!(request["method"], "Page.handleJavaScriptDialog");
-            assert_eq!(request["params"]["accept"], true);
-            for event in [
-                json!({"method":"Page.javascriptDialogClosed","params":{}}),
-                json!({"id":request["id"],"result":{}}),
-            ] {
-                socket
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        event.to_string().into(),
-                    ))
-                    .await
-                    .unwrap();
-            }
-
-            serve_inventory(&listener, &tabs).await;
-            metadata_reply(&mut socket, "Page.enable", json!({})).await;
-            metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
-            let child = metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
-            assert_eq!(child["sessionId"], "child-session");
-            let child = metadata_reply(&mut socket, "Page.enable", json!({})).await;
-            assert_eq!(child["sessionId"], "child-session");
-            metadata_reply(
-                &mut socket,
-                "Page.getFrameTree",
-                source_frame("retry-loader"),
-            )
-            .await;
-            let child = metadata_reply(&mut socket, "Page.getFrameTree", json!({"frameTree":{"frame":{
-                "id":"iframe", "loaderId":"iframe-loader", "parentId":"main", "url":"https://frame.example/"
-            }}})).await;
-            assert_eq!(child["sessionId"], "child-session");
-            let owner = metadata_reply(
-                &mut socket,
-                "DOM.getFrameOwner",
-                json!({"backendNodeId":42}),
-            )
-            .await;
-            assert_eq!(owner["params"]["frameId"], "iframe");
-            let _ = released.await;
-        });
-        let mut browsers = Browsers::default();
-        let provider = BrowserConnection {
-            id: "fixture".into(),
-            endpoint: format!("http://{address}"),
-        };
-        let context = decision_context(true).0;
-        let cancellation = CancellationToken::new();
-        let bound = browsers
-            .bind(
-                TabSource {
-                    provider: provider.into(),
-                    generation: format!("ws://{address}/devtools/browser/fixture"),
-                    info: TabInfo {
-                        id: "page".into(),
-                        title: "Fixture".into(),
-                        url: "https://source.example/".into(),
-                        kind: "page".into(),
-                        websocket: Some(websocket),
-                        extension: None,
-                    },
-                },
-                InitialState::Deferred,
-                &context,
-                &cancellation,
-                Language::En,
-            )
-            .await
-            .unwrap();
-        let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap() else {
-            panic!("fixture must bind a tab");
-        };
-        let tab = browsers.targets.get_mut(&handle).unwrap();
-        let failed = tokio::time::timeout(
-            Duration::from_secs(5),
-            tab.verify(BrowserCall::new(&context, &cancellation, Language::En)),
-        )
-        .await
-        .expect("the actual partial setup failure must be observable");
-        assert!(matches!(failed, Err(ToolError::Failed(message))
-            if message.contains("fixture Target.setAutoAttach failure")));
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let dialog = tab.active_dialog().await.expect("the one-time dialog event must remain visible");
-            assert_eq!(dialog.message, "retained setup dialog");
-            assert!(matches!(
-                tab.verify(BrowserCall::new(&context, &cancellation, Language::En)).await,
-                Err(ToolError::Failed(message)) if message.contains("JavaScript dialog is active")
-            ));
-            assert_eq!(tab.active_dialog().await.unwrap().metadata.id, dialog.metadata.id);
-            tab.handle_dialog(&dialog.metadata.id, DialogAction::Dismiss, None, &context, &cancellation)
-                .await
-                .unwrap();
-            assert!(tab.active_dialog().await.is_none());
-            tab.verify(BrowserCall::new(&context, &cancellation, Language::En))
-                .await
-                .unwrap();
-            assert_eq!(serde_json::to_value(tab.frames().await.unwrap()).unwrap(), json!([
-                {"id":"main","loader":"retry-loader","session":null,"parent":null},
-                {"id":"iframe","loader":"iframe-loader","session":"child-session","parent":"main"}
-            ]));
-            tab.disconnect().await.unwrap();
-        })
-        .await
-        .expect("explicit retry must reuse and finish the original metadata connection");
-        release.send(()).unwrap();
-        server.await.unwrap();
-        browsers
-            .close(&crate::cursor::Spec::default())
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn unconfirmed_temporary_tab_close_keeps_ownership_without_replaying() {
-        use futures_util::{SinkExt, StreamExt};
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let provider = BrowserConnection {
-            id: "fixture".into(),
-            endpoint: format!("http://{address}"),
-        };
-        let generation = format!("ws://{address}/devtools/browser/fixture");
-        let identity = BrowserIdentity::new(&provider, &generation)
-            .unwrap()
-            .tab("owned");
-        let server = tokio::spawn(async move {
-            let tabs =
-                [json!({"id":"owned","title":"Owned fixture","url":"about:blank","type":"page"})];
-            serve_inventory(&listener, &tabs).await;
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            let request: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
-            assert_eq!(request["method"], "Target.closeTarget");
-            assert_eq!(request["params"], json!({"targetId":"owned"}));
-            socket
-                .send(tokio_tungstenite::tungstenite::Message::Text(
-                    json!({"id":request["id"],"result":{"success":true}})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
-            // A close acknowledgement is not proof that the target disappeared.
-            serve_inventory(&listener, &tabs).await;
-            serve_inventory(&listener, &tabs).await;
-            request
-        });
-        let owner = uuid::Uuid::new_v4();
-        let other = uuid::Uuid::new_v4();
-        let mut host = Host::default();
-        host.created(identity.clone(), owner, "turn", provider, generation)
-            .unwrap();
-        let first = host.finish(owner, Some("turn")).await;
-        assert!(
-            matches!(first, Err(ToolError::CleanupUnconfirmed(message)) if message == "the temporary tab is still present after its close request")
-        );
-        assert!(!host.visible(&identity, other));
-        assert!(
-            matches!(host.use_tab(&identity, owner, "later"), Err(ToolError::CleanupUnconfirmed(message)) if message == "the tab's previous close has not settled")
-        );
-        let second = host.finish(owner, Some("turn")).await;
-        assert!(
-            matches!(second, Err(ToolError::CleanupUnconfirmed(message)) if message == "a previous tab close has not settled; close was not replayed")
-        );
-        assert_eq!(server.await.unwrap()["method"], "Target.closeTarget");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "requires MAKA_CUA_TEST_CHROME; starts an isolated temporary headless profile"]
-    async fn independent_sessions_hide_owned_temporary_tabs_and_cleanup_only_the_matching_turn() {
-        use std::process::Stdio;
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
-
-        async fn call(
-            session: &mut crate::Session,
-            owner: &str,
-            turn: &str,
-            command: Value,
-        ) -> Result<Value, ToolError> {
-            session
-                .invoke(
-                    serde_json::from_value(command).unwrap(),
-                    &crate::InvocationContext::new(owner, turn),
-                    &CancellationToken::new(),
-                    Language::En,
-                )
-                .await
-        }
-
-        async fn cursor_count(page: &mut Cdp) -> u64 {
-            page.request("Runtime.evaluate", json!({
-                "expression":"Array.from(document.querySelectorAll('[popover][aria-hidden=true]')).filter(host => host.isConnected && host.matches(':popover-open') && host.style.display !== 'none').length",
-                "returnByValue":true,
-            })).await.unwrap()["result"]["value"].as_u64().unwrap()
-        }
-
-        async fn cursor_metadata(page: &mut Cdp) -> Value {
-            let tree = page.request("Page.getFrameTree", json!({})).await.unwrap();
-            let world = page
-                .request(
-                    "Page.createIsolatedWorld",
-                    json!({
-                        "frameId":tree["frameTree"]["frame"]["id"],
-                        "worldName":"maka-cua-cursor",
-                        "grantUniveralAccess":false,
-                    }),
-                )
-                .await
-                .unwrap();
-            let observed = page.request("Runtime.evaluate", json!({
-                "contextId":world["executionContextId"],
-                "expression":"Object.fromEntries(Array.from(globalThis.__makaCursorRegistry ?? [], ([id, entry]) => [id, {ownerEpoch:entry.ownerEpoch,retired:entry.retired === true,connected:entry.host.isConnected,point:entry.point}]))",
-                "returnByValue":true,
-            })).await.unwrap();
-            assert!(observed.get("exceptionDetails").is_none(), "{observed}");
-            observed["result"]["value"].clone()
-        }
-
-        async fn bind_cursor(
-            session: &mut crate::Session,
-            actor: &str,
-            provider: &str,
-            tab: &str,
-            point: [u32; 2],
-        ) -> (String, Value) {
-            let settings = call(
-                session,
-                actor,
-                "cursor",
-                json!({"method":"configureCursor","options":{"enabled":true,"reducedMotion":true}}),
-            )
-            .await
-            .unwrap();
-            let bound = call(session, actor, "cursor", json!({"method":"browserTab","browserId":provider,"reference":{"kind":"existing","id":tab}})).await.unwrap();
-            call(session, actor, "cursor", json!({"method":"observe","handle":bound["handle"],"kind":"both","options":{"emit":false}})).await.unwrap();
-            let moved = call(session, actor, "cursor", json!({"method":"action","handle":bound["handle"],"action":{"kind":"moveCursor","target":point}})).await.unwrap();
-            assert_eq!(moved["visible"], true);
-            assert_eq!(
-                moved["requestedPosition"][0].as_f64(),
-                Some(f64::from(point[0]))
-            );
-            assert_eq!(
-                moved["requestedPosition"][1].as_f64(),
-                Some(f64::from(point[1]))
-            );
-            (
-                settings["settings"]["id"].as_str().unwrap().to_owned(),
-                bound["handle"].clone(),
-            )
-        }
-
-        async fn cursor_state(session: &mut crate::Session, actor: &str, point: [u32; 2]) {
-            let state = call(
-                session,
-                actor,
-                "cursor",
-                json!({"method":"cursorState","options":{}}),
-            )
-            .await
-            .unwrap();
-            assert!(
-                state["browsers"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tab| tab["state"]["visible"] == true
-                        && tab["state"]["requestedPosition"][0].as_f64()
-                            == Some(f64::from(point[0]))
-                        && tab["state"]["requestedPosition"][1].as_f64()
-                            == Some(f64::from(point[1]))),
-                "{state}"
-            );
-        }
-
-        let executable = std::env::var("MAKA_CUA_TEST_CHROME").unwrap();
-        let profile = tempfile::tempdir().unwrap();
-        let mut chrome = tokio::process::Command::new(executable)
-            .args([
-                "--headless=new",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--remote-debugging-port=0",
-                "--disable-gpu",
-                "--password-store=basic",
-            ])
-            .arg(format!("--user-data-dir={}", profile.path().display()))
-            .arg("about:blank")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let mut lines = BufReader::new(chrome.stderr.take().unwrap()).lines();
-        let endpoint = tokio::time::timeout(Duration::from_secs(20), async {
-            while let Some(line) = lines.next_line().await.unwrap() {
-                if let Some(url) = line.strip_prefix("DevTools listening on ") {
-                    return reqwest::Url::parse(url).unwrap().port().unwrap();
-                }
-            }
-            panic!("isolated Chrome did not expose a test endpoint");
-        })
-        .await
-        .unwrap();
-        let logging =
-            tokio::spawn(async move { while lines.next_line().await.ok().flatten().is_some() {} });
-        let driver = Arc::new(Mutex::new(crate::Driver::default()));
-        let owner = crate::SessionOwner::new(driver.clone());
-        let mut a = owner.new_epoch().unwrap();
-        let mut b = crate::Session::new(driver.clone());
-        for (session, id, hostname) in [
-            (&mut a, "owner", "127.0.0.1"),
-            (&mut b, "observer", "localhost"),
-        ] {
-            session
-                .configure(
-                    maka_capabilities::computer::Desktop::Local,
-                    vec![BrowserConnection {
-                        id: id.into(),
-                        endpoint: format!("http://{hostname}:{endpoint}"),
-                    }],
-                    Language::En,
-                )
-                .unwrap();
-        }
-        let user_tabs = call(
-            &mut b,
-            "b",
-            "first",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(user_tabs.as_array().unwrap().len(), 1);
-        let user_id = user_tabs[0]["id"].as_str().unwrap().to_owned();
-        let created = call(
-            &mut a,
-            "a",
-            "first",
-            json!({"method":"browserTab","browserId":"owner","reference":{"kind":"new"}}),
-        )
-        .await
-        .unwrap();
-        assert!(created.get("state").is_none());
-        let target = created["id"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("owner:")
-            .unwrap()
-            .to_owned();
-        let foreign = call(
-            &mut b,
-            "b",
-            "first",
-            json!({"method":"getTab","reference":target,"options":{"browser":"observer"}}),
-        )
-        .await;
-        assert!(
-            matches!(foreign, Err(ToolError::Failed(message)) if message == "tab_owned_by_another_session")
-        );
-        let hidden = call(
-            &mut b,
-            "b",
-            "first",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(hidden, user_tabs);
-        a.close_native().await.unwrap();
-        let still_hidden = call(
-            &mut b,
-            "b",
-            "first",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            still_hidden, user_tabs,
-            "retirement must not close or expose the owner's tab"
-        );
-        a = owner.new_epoch().unwrap();
-        a.configure(
-            maka_capabilities::computer::Desktop::Local,
-            vec![BrowserConnection {
-                id: "owner".into(),
-                endpoint: format!("http://127.0.0.1:{endpoint}"),
-            }],
-            Language::En,
-        )
-        .unwrap();
-        let old_handle = call(
-            &mut a,
-            "a",
-            "first",
-            json!({"method":"tabMetadata","handle":created["handle"]}),
-        )
-        .await;
-        assert!(
-            matches!(old_handle, Err(ToolError::Failed(message)) if message == "stale_tab: bind it again"),
-            "a new epoch must not inherit the retired cache's handle"
-        );
-        let owned = call(
-            &mut a,
-            "a",
-            "first",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(owned.as_array().unwrap().len(), 2);
-        assert!(
-            owned
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["id"] == created["id"]),
-            "the logical owner must retain its physical tab across epochs"
-        );
-        let foreign = call(
-            &mut b,
-            "b",
-            "first",
-            json!({"method":"getTab","reference":target,"options":{"browser":"observer"}}),
-        )
-        .await;
-        assert!(
-            matches!(foreign, Err(ToolError::Failed(message)) if message == "tab_owned_by_another_session")
-        );
-        call(
-            &mut a,
-            "a",
-            "first",
-            json!({"method":"getTab","reference":target,"options":{"browser":"owner"}}),
-        )
-        .await
-        .unwrap();
-        let later = call(
-            &mut a,
-            "a",
-            "later",
-            json!({"method":"createBrowserTab","browserId":"owner","url":"about:blank","options":{}}),
-        )
-        .await
-        .unwrap();
-        a.finish_turn("a", "first", Language::En).await.unwrap();
-        let remaining = call(
-            &mut a,
-            "a",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(remaining.as_array().unwrap().len(), 2);
-        assert!(
-            remaining
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["id"] == later["id"])
-        );
-        assert!(
-            !remaining
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["id"] == created["id"])
-        );
-
-        // The convenience helper first owns a fresh blank tab. Refusing its
-        // destination must leave that blank owned until canonical turn cleanup.
-        let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let destination_url = format!("http://{}/denied", destination.local_addr().unwrap());
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = requests.clone();
-        let destination_server = tokio::spawn(async move {
-            let mut stopped = stopped;
-            loop {
-                tokio::select! {
-                    _ = &mut stopped => break,
-                    accepted = destination.accept() => {
-                        let (stream,_) = accepted.unwrap();
-                        let mut stream = BufReader::new(stream);
-                        let mut line = String::new();
-                        let read = tokio::time::timeout(Duration::from_secs(2),async {
-                            loop {
-                                line.clear();
-                                if stream.read_line(&mut line).await? == 0 || line == "\r\n" {break;}
-                            }
-                            Ok::<(),std::io::Error>(())
-                        }).await;
-                        if !matches!(read,Ok(Ok(()))) {continue;}
-                        counted.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                        let body = "<!doctype html><title>Owned fixture</title><input id='fixture'>";
-                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    }
-                }
-            }
-        });
-        let accesses = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for (url, host) in [
-            (destination_url.clone(), false),
-            (destination_url.clone(), true),
-            ("ftp://example.com/unsupported".into(), true),
-            (String::new(), true),
-        ] {
-            let mut context = crate::InvocationContext::new("a", "denied");
-            if host {
-                context = context.with_browser_authorization(Arc::new(Decision {
-                    allow: false,
-                    accesses: accesses.clone(),
-                }));
-            }
-            let denied = a.invoke(serde_json::from_value(json!({"method":"createBrowserTab","browserId":"owner","url":url,"options":{}})).unwrap(),&context,&CancellationToken::new(),Language::En).await;
-            assert!(
-                matches!(denied, Err(ToolError::Failed(_))),
-                "denied or invalid destination unexpectedly succeeded"
-            );
-        }
-        assert_eq!(
-            accesses.lock().unwrap().len(),
-            1,
-            "invalid URLs reached the Host origin callback"
-        );
-        let owned_blanks = call(
-            &mut a,
-            "a",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(owned_blanks.as_array().unwrap().len(), 6);
-        assert!(
-            owned_blanks
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|tab| tab["url"] == "about:blank")
-        );
-        let still_hidden = call(
-            &mut b,
-            "b",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(still_hidden, user_tabs);
-        assert_eq!(
-            requests.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "a refused destination received network traffic"
-        );
-        a.finish_turn("a", "denied", Language::En).await.unwrap();
-        let after_denial_cleanup = call(
-            &mut a,
-            "a",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(after_denial_cleanup.as_array().unwrap().len(), 2);
-
-        // Prepare an ordinary page directly as trusted test-fixture setup. The
-        // public Session can list/bind its metadata without site authority, but
-        // cannot read the page or send input to it.
-        let provider = BrowserConnection {
-            id: "fixture-setup".into(),
-            endpoint: format!("http://127.0.0.1:{endpoint}"),
-        };
-        let (generation, _) = inventory(&provider).await.unwrap();
-        let fixture_browser = Cdp::connect(&generation, &provider).await.unwrap();
-        let fixture_page = fixture_browser
-            .request(
-                "Target.createTarget",
-                json!({"url":destination_url,"background":true}),
-            )
-            .await
-            .unwrap()["targetId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let (_, tabs) = inventory(&provider).await.unwrap();
-                if tabs
-                    .iter()
-                    .any(|tab| tab.id == fixture_page && tab.url == destination_url)
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        let read = call(
-            &mut b,
-            "b",
-            "later",
-            json!({"method":"getTab","reference":fixture_page,"options":{"browser":"observer"}}),
-        )
-        .await;
-        assert!(
-            matches!(read,Err(ToolError::Failed(message)) if message == "Browser site access requires Host authorization")
-        );
-        let metadata_bound = call(&mut b,"b","later",json!({"method":"browserTab","browserId":"observer","reference":{"kind":"existing","id":fixture_page}})).await.unwrap();
-        let metadata = call(
-            &mut b,
-            "b",
-            "later",
-            json!({"method":"tabMetadata","handle":metadata_bound["handle"]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(metadata["url"], destination_url);
-        let input = call(&mut b,"b","later",json!({"method":"action","handle":metadata_bound["handle"],"action":{"kind":"typeText","text":"must not be entered"}})).await;
-        assert!(
-            matches!(input,Err(ToolError::Failed(message)) if message == "Browser site access requires Host authorization")
-        );
-        fixture_browser
-            .request("Target.closeTarget", json!({"targetId":fixture_page}))
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let (_, tabs) = inventory(&provider).await.unwrap();
-                if !tabs.iter().any(|tab| tab.id == fixture_page) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        let _ = stop.send(());
-        destination_server.await.unwrap();
-        let user_target = user_id.strip_prefix("observer:").unwrap();
-        let (_, physical) = inventory(&provider).await.unwrap();
-        let user = physical.iter().find(|tab| tab.id == user_target).unwrap();
-        let mut cursor_page = Cdp::connect(user.websocket.as_ref().unwrap(), &provider)
-            .await
-            .unwrap();
-        let (old_cursor, old_user_handle) =
-            bind_cursor(&mut a, "a", "owner", user_target, [15, 20]).await;
-        let mut newer = owner.new_epoch().unwrap();
-        newer
-            .configure(
-                maka_capabilities::computer::Desktop::Local,
-                vec![BrowserConnection {
-                    id: "owner".into(),
-                    endpoint: format!("http://127.0.0.1:{endpoint}"),
-                }],
-                Language::En,
-            )
-            .unwrap();
-        let disabled = call(
-            &mut newer,
-            "a",
-            "cursor",
-            json!({"method":"configureCursor","options":{"enabled":false}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(disabled["settings"]["id"], old_cursor);
-        assert_eq!(disabled["settings"]["enabled"], false);
-        call(&mut a, "a", "cursor", json!({"method":"action","handle":old_user_handle,"action":{"kind":"moveCursor","target":[65,70]}})).await.unwrap();
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            0,
-            "a new epoch's disabled configuration must survive an old render before the new epoch binds the tab"
-        );
-        let (new_cursor, _) = bind_cursor(&mut newer, "a", "owner", user_target, [25, 30]).await;
-        assert_eq!(
-            new_cursor, old_cursor,
-            "epochs share one logical cursor identity"
-        );
-        let (foreign_cursor, _) = bind_cursor(&mut b, "b", "observer", user_target, [45, 50]).await;
-        assert_ne!(foreign_cursor, old_cursor);
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "one marker per logical owner"
-        );
-        call(&mut a, "a", "cursor", json!({"method":"action","handle":old_user_handle,"action":{"kind":"moveCursor","target":[65,70]}})).await.unwrap();
-        cursor_state(&mut newer, "a", [25, 30]).await;
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "a late old-epoch render must not reclaim the newer marker"
-        );
-        newer.close_native().await.unwrap();
-        call(&mut a, "a", "cursor", json!({"method":"action","handle":old_user_handle,"action":{"kind":"moveCursor","target":[75,80]}})).await.unwrap();
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            1,
-            "an old late render must not resurrect a removed newer epoch"
-        );
-        let metadata = cursor_metadata(&mut cursor_page).await;
-        assert_eq!(metadata[old_cursor.as_str()]["retired"], true, "{metadata}");
-        assert_eq!(
-            metadata[old_cursor.as_str()]["connected"],
-            false,
-            "{metadata}"
-        );
-
-        let mut newest = owner.new_epoch().unwrap();
-        newest
-            .configure(
-                maka_capabilities::computer::Desktop::Local,
-                vec![
-                    BrowserConnection {
-                        id: "owner".into(),
-                        endpoint: format!("http://127.0.0.1:{endpoint}"),
-                    },
-                    BrowserConnection {
-                        id: "unused-offline".into(),
-                        endpoint: "http://127.0.0.1:9".into(),
-                    },
-                ],
-                Language::En,
-            )
-            .unwrap();
-        let (latest_cursor, latest_user_handle) =
-            bind_cursor(&mut newest, "a", "owner", user_target, [35, 40]).await;
-        assert_eq!(latest_cursor, old_cursor);
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "a newer epoch reuses the retired logical marker"
-        );
-        newest
-            .finish_turn("a", "cursor", Language::En)
-            .await
-            .unwrap();
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            1,
-            "ordinary turn cleanup hides the current cursor"
-        );
-        let metadata = cursor_metadata(&mut cursor_page).await;
-        assert_eq!(
-            metadata[old_cursor.as_str()]["retired"],
-            false,
-            "ordinary turn cleanup must permit the next turn in the same epoch: {metadata}"
-        );
-        assert_eq!(
-            metadata[old_cursor.as_str()]["connected"],
-            false,
-            "{metadata}"
-        );
-        call(&mut newest, "a", "cursor-next", json!({"method":"observe","handle":latest_user_handle,"kind":"both","options":{"emit":false}})).await.unwrap();
-        call(&mut newest, "a", "cursor-next", json!({"method":"action","handle":latest_user_handle,"action":{"kind":"moveCursor","target":[35,40]}})).await.unwrap();
-        cursor_state(&mut newest, "a", [35, 40]).await;
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "the next turn restores its cursor without a VM reset"
-        );
-        a.finish_turn("a", "cursor", Language::En).await.unwrap();
-        cursor_state(&mut newest, "a", [35, 40]).await;
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "old turn cleanup must not remove the newest cursor"
-        );
-        a.close_native().await.unwrap();
-        cursor_state(&mut newest, "a", [35, 40]).await;
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            2,
-            "old extension cleanup must not remove the newest cursor"
-        );
-        newest.close_native().await.unwrap();
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            1,
-            "all A epochs settled; only the other owner is visible"
-        );
-        let metadata = cursor_metadata(&mut cursor_page).await;
-        assert_eq!(metadata[old_cursor.as_str()]["retired"], true, "{metadata}");
-        assert_eq!(
-            metadata[old_cursor.as_str()]["connected"],
-            false,
-            "{metadata}"
-        );
-        assert!(
-            metadata.get(foreign_cursor.as_str()).is_some(),
-            "{metadata}"
-        );
-        let before_final = call(
-            &mut b,
-            "b",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            before_final, user_tabs,
-            "retiring the final epoch must preserve ownership until owner close"
-        );
-        let retained = later["id"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("owner:")
-            .unwrap();
-        let (_, physical) = inventory(&provider).await.unwrap();
-        assert!(
-            physical.iter().any(|tab| tab.id == retained),
-            "epoch retirement must leave the owned physical tab open"
-        );
-        owner.close().await.unwrap();
-        let metadata = cursor_metadata(&mut cursor_page).await;
-        assert!(
-            metadata.get(old_cursor.as_str()).is_none(),
-            "logical owner finalization must release the renderer metadata: {metadata}"
-        );
-        assert!(
-            metadata.get(foreign_cursor.as_str()).is_some(),
-            "other owner metadata must remain: {metadata}"
-        );
-        cursor_state(&mut b, "b", [45, 50]).await;
-        assert_eq!(
-            cursor_count(&mut cursor_page).await,
-            1,
-            "logical owner cleanup preserves another owner's marker"
-        );
-        let (_, physical) = inventory(&provider).await.unwrap();
-        assert!(
-            !physical.iter().any(|tab| tab.id == retained),
-            "logical owner close must actually close its temporary tab"
-        );
-        assert!(
-            physical
-                .iter()
-                .any(|tab| tab.id == user_id.strip_prefix("observer:").unwrap()),
-            "logical cleanup must preserve the fixture's original user tab"
-        );
-        let preserved = call(
-            &mut b,
-            "b",
-            "later",
-            json!({"method":"listTabs","options":{}}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(preserved.as_array().unwrap().len(), 1);
-        assert_eq!(preserved[0]["id"], user_id);
-        b.close().await.unwrap();
-        assert_eq!(cursor_count(&mut cursor_page).await, 0);
-        assert!(
-            cursor_metadata(&mut cursor_page)
-                .await
-                .as_object()
-                .unwrap()
-                .is_empty(),
-            "both logical owners released their renderer metadata"
-        );
-        driver.lock().await.close().await.unwrap();
-        chrome.kill().await.unwrap();
-        let _ = chrome.wait().await;
-        logging.abort();
-    }
-}
-
-#[cfg(test)]
-mod title_string_tests {
-    use super::*;
-
-    #[test]
-    fn direct_inventory_parses_raw_title_before_any_generic_value() {
-        let bytes = br#"[{"id":"page","title":"\ud800 title \udc00 \\ud800","url":"https://fixture.test/","type":"page"}]"#;
-        let tabs: Vec<TabInfo> = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(tabs[0].title.json(), r#""\ud800 title \udc00 \\ud800""#);
-        let provider = Provider::Cdp(BrowserConnection {
-            id: "direct".into(),
-            endpoint: "http://127.0.0.1".into(),
-        });
-        let metadata = tab_info(&provider, &tabs[0]);
-        assert_eq!(metadata["titleJson"], r#""\ud800 title \udc00 \\ud800""#);
-        assert!(metadata.get("title").is_none());
-        assert_eq!(metadata["id"], "direct:page");
-        for invalid in [
-            br#"[{"id":"page","title":null,"url":"https://fixture.test/","type":"page"}]"#
-                .as_slice(),
-            br#"[{"id":"page","title":"ok","url":"https://fixture.test/"}]"#.as_slice(),
-        ] {
-            assert!(serde_json::from_slice::<Vec<TabInfo>>(invalid).is_err());
-        }
     }
 }

@@ -221,7 +221,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   <Text>Attach</Text>
                 </Button>
                 <Button
-                  accessibilityLabel={session.invocation() ? 'Queue message' : 'Send message'}
+                  accessibilityLabel={session.run() ? 'Queue message' : 'Send message'}
                   disabled={sendDisabled()}
                   onPress={inputAction(session.sendRendered, {
                     owner: session.sessionId,
@@ -231,13 +231,13 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                     quotes: session.quotes(),
                   })}
                 >
-                  <Text>{session.invocation() ? 'Queue message' : 'Send message'}</Text>
+                  <Text>{session.run() ? 'Queue message' : 'Send message'}</Text>
                 </Button>
-                <If when={session.invocation() !== null}>
+                <If when={session.run() !== null}>
                   <Button
                     accessibilityLabel="Stop response"
                     disabled={session.stopping()}
-                    onPress={inputAction(session.stop, session.invocation())}
+                    onPress={inputAction(session.stop, session.run())}
                   >
                     <Text>Stop</Text>
                   </Button>

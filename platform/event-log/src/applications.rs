@@ -261,7 +261,7 @@ impl EventLog {
                 } else {
                     tx.execute("INSERT INTO application_packages VALUES (?, ?)", params![&reference.id, &reference.revision])?;
                     for (path, payload) in package.files() {
-                        let digest=maka_agent_facts::artifact::content_digest(payload);
+                        let digest={ use sha2::Digest; format!("sha256:{}",hex::encode(sha2::Sha256::digest(payload))) };
                         let content=crate::content::put(&tx,&digest,payload)?;
                         tx.execute("INSERT INTO application_package_files VALUES (?, ?, ?, ?)", params![&reference.id, &reference.revision, path, content])?;
                     }
@@ -549,6 +549,3 @@ fn read_package(connection: &Connection, reference: &PackageRef) -> Result<Packa
     let files = read_package_files(connection, reference)?;
     build_checked_package(files, reference)
 }
-
-#[cfg(test)]
-mod tests;

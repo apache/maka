@@ -17,14 +17,17 @@
  * under the License.
  */
 
+use super::driver::PreparedTool;
 use super::*;
 use maka_agent_facts::{
     tool_call::ToolRejection,
     tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
     tools::*,
 };
+use maka_agent_state::{Change, ContentBlob, Head};
 use maka_assistant::todo::{Document, Item, Repository, Status};
-use maka_capabilities::storage::{Namespace, StoreError};
+use maka_event_log::writeback::{Prepared, Statement};
+use maka_plugin_core::storage::{Data, Mutation, Namespace, StoreError};
 use sha2::{Digest, Sha256};
 use std::sync::{OnceLock, Weak};
 
@@ -90,6 +93,27 @@ impl ToolPreparer for Todo {
         context: ToolCallContext,
         cancellation: CancellationToken,
     ) -> PreparationFuture {
+        let prepared = self.prepare_native(
+            name,
+            input,
+            context,
+            cancellation,
+            None,
+            ToolSemantics::Parallel,
+        );
+        Box::pin(async move { Ok(prepared.await?.effect) })
+    }
+}
+impl Todo {
+    pub(super) fn prepare_native(
+        &self,
+        name: String,
+        input: Value,
+        context: ToolCallContext,
+        cancellation: CancellationToken,
+        access: Option<Arc<RunAccess>>,
+        semantics: ToolSemantics,
+    ) -> futures_util::future::BoxFuture<'static, Result<PreparedTool, ToolRejection>> {
         let owner = self.owner.get().and_then(Weak::upgrade);
         Box::pin(async move {
             if cancellation.is_cancelled() {
@@ -119,13 +143,67 @@ impl ToolPreparer for Todo {
             let expected = owner
                 .todo
                 .repository
-                .read(&context.invocation.session_id)
+                .read(&context.execution.session_id)
                 .await
                 .map_err(|error| ToolRejection::PreparationFailed {
                     message: error.to_string(),
                 })?
                 .revision;
-            Ok(PreparedEffect::new(move |cancellation| {
+            if let Some(access) = access.as_ref().filter(|_| replacement.is_some()) {
+                access.check_context(&context).await.map_err(|error| {
+                    ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    }
+                })?;
+            }
+            let todo = replacement
+                .as_ref()
+                .map(|document| -> Result<Replacement, ToolRejection> {
+                    let access =
+                        access
+                            .as_ref()
+                            .ok_or_else(|| ToolRejection::PreparationFailed {
+                                message: "Checklist replacement requires Native atomic publication"
+                                    .into(),
+                            })?;
+                    let writer = access
+                        .data_writer()
+                        .map_err(|message| ToolRejection::PreparationFailed { message })?;
+                    let state =
+                        owner
+                            .durable
+                            .with_data_writer(writer.clone())
+                            .map_err(|error| ToolRejection::PreparationFailed {
+                                message: error.to_string(),
+                            })?;
+                    let mutation = Mutation {
+                        key: format!("session/{}", context.execution.session_id),
+                        expected_revision: expected,
+                        data: Data::Present(serde_json::to_value(document).map_err(|error| {
+                            ToolRejection::PreparationFailed {
+                                message: error.to_string(),
+                            }
+                        })?),
+                    };
+                    let business = TodoStatement {
+                        inner: owner
+                            .todo
+                            .storage
+                            .prepare_statement(vec![mutation], &writer)
+                            .map_err(|error| ToolRejection::PreparationFailed {
+                                message: error.to_string(),
+                            })?,
+                        changed: owner.todo.repository.changed.clone(),
+                    };
+                    Ok(Replacement::new(
+                        state,
+                        access.claim().clone(),
+                        writer,
+                        business,
+                    ))
+                })
+                .transpose()?;
+            let effect = PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
                     if cancellation.is_cancelled() {
                         return Err(failed("Checklist call cancelled"));
@@ -140,17 +218,9 @@ impl ToolPreparer for Todo {
                             .check_todo_invocation(&context)
                             .await
                             .map_err(failed)?;
-                        let session = &context.invocation.session_id;
+                        let session = &context.execution.session_id;
                         let document = match replacement {
-                            Some(document) => {
-                                captured
-                                    .todo
-                                    .repository
-                                    .replace(session, expected, &document)
-                                    .await
-                                    .map_err(storage_error)?;
-                                document
-                            }
+                            Some(document) => document,
                             None => {
                                 captured
                                     .todo
@@ -171,33 +241,170 @@ impl ToolPreparer for Todo {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            }))
+            });
+            Ok(PreparedTool {
+                effect,
+                local: todo.map(super::driver::LocalCompletion::Todo),
+                semantics,
+            })
         })
+    }
+}
+
+pub(super) const REVISION_CONFLICT: &str = "checklist_revision_conflict";
+
+pub(super) struct Replacement {
+    // Captures one prepared pure CAS statement; publication never invokes the tool again.
+    publish: Box<
+        dyn Fn(
+                Change,
+                Vec<ContentBlob>,
+            ) -> futures_util::future::BoxFuture<
+                'static,
+                Result<maka_agent_state::Commit, maka_event_log::StoreError>,
+            > + std::marker::Send
+            + Sync,
+    >,
+}
+impl Replacement {
+    fn new<S: Statement + Clone + Sync>(
+        state: maka_agent_state::Store,
+        claim: maka_agent_state::DriverClaim,
+        writer: maka_event_log::root_store::DataWriter,
+        business: S,
+    ) -> Self {
+        Self {
+            publish: Box::new(move |original, contents| {
+                let state = state.clone();
+                let claim = claim.clone();
+                let writer = writer.clone();
+                let business = business.clone();
+                Box::pin(async move {
+                    loop {
+                        let view = state.frontier(claim.run()).await?;
+                        match state
+                            .append_local_with(
+                                &claim,
+                                Head::from(&view),
+                                original.clone(),
+                                contents.clone(),
+                                Vec::new(),
+                                business.clone(),
+                                &writer,
+                            )
+                            .await
+                        {
+                            Err(error)
+                                if matches!(
+                                    statement_cause(&error),
+                                    maka_event_log::StoreError::RevisionConflict { .. }
+                                ) =>
+                            {
+                                continue;
+                            }
+                            result => return result,
+                        }
+                    }
+                })
+            }),
+        }
+    }
+    pub(super) async fn publish(
+        &self,
+        original: &Change,
+        contents: &[ContentBlob],
+    ) -> Result<maka_agent_state::Commit, maka_event_log::StoreError> {
+        (self.publish)(original.clone(), contents.to_vec()).await
+    }
+}
+
+#[derive(Clone)]
+struct TodoStatement<S> {
+    inner: S,
+    changed: tokio::sync::watch::Sender<()>,
+}
+impl<S: Statement> Statement for TodoStatement<S> {
+    type Value = (S::Value, tokio::sync::watch::Sender<()>);
+    type Output = S::Output;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.inner.retain()
+    }
+    fn prepare(self) -> Result<Self, maka_event_log::StoreError> {
+        Ok(Self {
+            inner: self.inner.prepare()?,
+            changed: self.changed,
+        })
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, maka_event_log::StoreError> {
+        let value = self
+            .inner
+            .execute(connection)
+            .map_err(|error| match error {
+                error @ maka_event_log::StoreError::RevisionConflict { .. } => {
+                    maka_event_log::StoreError::StatementRejected {
+                        diagnostic: REVISION_CONFLICT.into(),
+                        cause: Arc::new(error),
+                    }
+                }
+                error => error,
+            })?;
+        Ok(Prepared {
+            value: (value.value, self.changed),
+            changed: value.changed,
+            notification: value.notification,
+        })
+    }
+    fn committed((value, changed): Self::Value) -> Self::Output {
+        let output = S::committed(value);
+        changed.send_replace(());
+        output
+    }
+    fn isolated_rejection(error: &maka_event_log::StoreError) -> bool {
+        match error {
+            maka_event_log::StoreError::StatementRejected { diagnostic, cause }
+                if diagnostic == REVISION_CONFLICT =>
+            {
+                S::isolated_rejection(cause)
+            }
+            error => S::isolated_rejection(error),
+        }
+    }
+}
+pub(super) fn business_failure(error: &maka_event_log::StoreError) -> bool {
+    matches!(statement_cause(error), maka_event_log::StoreError::StatementRejected { diagnostic, .. } if diagnostic == REVISION_CONFLICT)
+}
+fn statement_cause(error: &maka_event_log::StoreError) -> &maka_event_log::StoreError {
+    match error {
+        maka_event_log::StoreError::Shared(cause) => statement_cause(cause),
+        error => error,
     }
 }
 impl Owner {
     async fn check_todo_invocation(&self, context: &ToolCallContext) -> Result<(), String> {
-        if !self.settings.todo || self.session(&context.invocation.session_id).await?.archived {
+        if !self.settings.todo || self.session(&context.execution.session_id).await?.archived {
             return Err("checklist_unavailable".into());
         }
-        let boundary = self
-            .store
-            .session(&context.invocation.session_id)
+        self.tool_store(context)?;
+        let execution = &context.execution;
+        let view = self
+            .durable
+            .frontier(execution.run_id)
             .await
-            .map_err(|error| error.to_string())?
-            .invocation_boundary(
-                &context.invocation.session_id,
-                &context.invocation.invocation_id,
+            .map_err(|error| error.to_string())?;
+        if view.spec.owner != self.run_owner()
+            || view.spec.session_id != execution.session_id
+            || view.spec.turn_id != execution.turn_id
+            || !matches!(
+                view.spec.origin,
+                maka_agent_facts::durable::RunOrigin::Local
             )
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("checklist_invocation_unavailable")?
-            .0;
-        if boundary.invocation != context.invocation
-            || matches!(
-                boundary.state,
-                maka_event_log::turns::InvocationState::Ended { .. }
-            )
+            || view.stopped
+            || view.cancelled_by_risk
+            || view.terminal.is_some()
         {
             return Err("checklist_invocation_closed".into());
         }

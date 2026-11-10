@@ -43,16 +43,16 @@ impl Foreground {
         if active.cancel.is_cancelled() {
             return Err("Prompt cancelled before admission".into());
         }
-        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
-        let (target, message) = match result {
-            SendResult::Started { invocation_id, .. } => {
-                (WorkTarget::Invocation { invocation_id }, None)
-            }
+        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"delivery":"steer","message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
+        let (target, message_id) = match result {
+            SendResult::Started {
+                run_id, message_id, ..
+            } => (WorkTarget::Run { run_id }, message_id),
             SendResult::Queued { message_id, .. } => (
                 WorkTarget::Message {
                     message_id: message_id.clone(),
                 },
-                Some(message_id),
+                message_id,
             ),
             SendResult::Rejected { .. } | SendResult::NotYourWorker { .. } => {
                 return Err("Host rejected Agent input".into());
@@ -75,13 +75,13 @@ impl Foreground {
         };
         let result = async {
             foreground.refresh().await?;
-            if let Some(message) = message {
-                return Ok(message);
+            if matches!(foreground.target, WorkTarget::Message { .. }) {
+                return Ok(message_id);
             }
             let execution = foreground
                 .work
                 .execution()
-                .ok_or("Accepted invocation has no execution receipt")?;
+                .ok_or("Accepted Run has no execution receipt")?;
             foreground.user = history::read(
                 &foreground.client,
                 &foreground.session.id,
@@ -92,14 +92,15 @@ impl Foreground {
             .into_iter()
             .filter(|chunk| {
                 chunk.role == maka_agent_ports::session::history::Role::User
-                    && chunk.turn_id == execution.turn_id
+                    && chunk.message_id.as_deref() == Some(message_id.as_str())
+                    && chunk.run_id == Some(execution.run_id)
             })
             .collect();
             foreground
                 .user
                 .first()
-                .map(|chunk| chunk.message_id.clone())
-                .ok_or_else(|| "Accepted invocation has no durable user message".into())
+                .and_then(|chunk| chunk.message_id.clone())
+                .ok_or_else(|| "Accepted Run has no durable user message".into())
         }
         .await;
         match result {

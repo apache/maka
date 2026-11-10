@@ -21,48 +21,64 @@ use super::{Owner, now};
 use crate::contract::{ComputerAppActivityState, ComputerApps, StopComputerApp, Stopped};
 use maka_capabilities::call::{Identity, Scope};
 
+use maka_agent_facts::durable::UnixMillis;
+use maka_event_log::root_store::DataChange;
+use maka_plugin_core::operation::RecoveryRef;
+
 impl Owner {
     pub async fn computer_apps(&self, session: &str) -> Result<ComputerApps, String> {
         self.session(session).await?;
-        let entries = self
-            .store
-            .session(session)
+        let activities = self
+            .durable
+            .computer()
+            .activities(session, &self.run_owner())
             .await
-            .map_err(|error| error.to_string())?
-            .computer_apps(session)
-            .await
-            .map_err(|_| "agent_computer_apps_unavailable")?;
+            .map_err(|e| e.to_string())?;
         Ok(ComputerApps {
-            entries: entries
+            entries: activities
                 .into_iter()
-                .map(|(activity, stopped)| ComputerAppActivityState { activity, stopped })
+                .map(|v| ComputerAppActivityState {
+                    activity: v.subject.activity,
+                    stopped: v.stopped,
+                })
                 .collect(),
         })
     }
-
-    pub async fn stop_computer_app(
+    pub async fn prepare_stop_computer_app(
         &self,
         input: StopComputerApp,
         scope: &Scope,
-    ) -> Result<Stopped, String> {
-        // Host dispatch owns this nonforgeable scope. A model/SDK Agent or a
-        // background grant cannot turn JSON app identity into user authority.
+        operation: &RecoveryRef,
+    ) -> Result<(Stopped, Option<DataChange>), String> {
         if !matches!(&scope.identity, Identity::Remote { .. }) {
             return Err("agent_computer_app_stop_requires_user_control".into());
         }
-        let runs = self.runs.lock().await;
-        if runs.closing {
+        if self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
         self.session(&input.session_id).await?;
-        let requested = self
-            .store
-            .session(&input.session_id)
+        let Some(source) = self
+            .durable
+            .computer()
+            .subject(&input.session_id, &input.operation_id)
             .await
-            .map_err(|error| error.to_string())?
-            .stop_computer_app_operation(&input.operation_id, now())
-            .await
-            .map_err(|_| "agent_computer_app_stop_unavailable")?;
-        Ok(Stopped { requested })
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok((Stopped { requested: false }, None));
+        };
+        if self
+            .session_run(&input.session_id, source.activity.execution.run_id)
+            .await?
+            .is_none()
+        {
+            return Ok((Stopped { requested: false }, None));
+        }
+        let change = self.durable.computer().prepare_stop(
+            &input.session_id,
+            &input.operation_id,
+            self.control_id(operation, "stop_computer_app"),
+            UnixMillis(now().try_into().expect("Unix milliseconds")),
+        );
+        Ok((Stopped { requested: true }, Some(change)))
     }
 }

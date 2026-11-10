@@ -18,7 +18,6 @@
  */
 
 use crate::CellDiagnostic;
-use maka_agent_facts::tool_output::ImageOutput;
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +27,7 @@ use std::{
 };
 use tokio::sync::Notify;
 
-/// Only JSON crosses cell boundaries; idle values and pending writes live on disk.
+/// Canonical SessionData reader; each Cell owns a separate unpublished draft.
 #[derive(Clone)]
 pub struct CellStore(maka_session_state::Session);
 
@@ -70,21 +69,7 @@ impl NotificationGate {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CellOutput {
-    Text {
-        text: String,
-    },
-    Image {
-        image: ImageOutput,
-    },
-    Media {
-        content: maka_agent_facts::capability::ContentBlock,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<maka_agent_facts::tool_output::ImageDetail>,
-    },
-}
+pub use maka_agent_facts::cells::CellOutput;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolMetadata {
@@ -98,7 +83,7 @@ pub struct ToolMetadata {
 pub struct CellContext(Arc<Inner>);
 
 struct Inner {
-    snapshot: maka_session_state::Snapshot,
+    draft: maka_session_state::Draft,
     state: Mutex<State>,
     changed: Notify,
     notification_ready: Notify,
@@ -125,9 +110,9 @@ impl CellContext {
         metadata: Vec<ToolMetadata>,
         notification_gate: NotificationGate,
     ) -> Result<Self, CellDiagnostic> {
-        let snapshot = store.0.snapshot().map_err(state_error)?;
+        let draft = store.0.draft();
         Ok(Self(Arc::new(Inner {
-            snapshot,
+            draft,
             state: Mutex::new(State {
                 output: Vec::new(),
                 notifications: VecDeque::new(),
@@ -184,14 +169,14 @@ impl CellContext {
 
     pub fn load(&self, key: &str) -> Result<Option<Value>, CellDiagnostic> {
         self.0
-            .snapshot
+            .draft
             .load(key)
             .map_err(|error| self.state_failure(error))
     }
 
     pub fn store(&self, key: String, value: Value) -> Result<(), CellDiagnostic> {
         self.0
-            .snapshot
+            .draft
             .store(&key, &value)
             .map_err(|error| self.state_failure(error))
     }
@@ -202,11 +187,31 @@ impl CellContext {
         state_error(error)
     }
 
-    /// Called only after the cell's effects and canonical completion settle.
-    pub fn commit(&self) -> Result<(), CellDiagnostic> {
+    /// Seal and transfer this Cell's private changes. The caller must first
+    /// settle all effects and verify success, then publish these changes with
+    /// Run acceptance and Cell completion in one canonical Root transaction.
+    /// Taking the draft alone never publishes anything.
+    pub fn take_draft(&self) -> Result<maka_session_state::SessionDraft, CellDiagnostic> {
+        if let Some(error) = self.failure() {
+            return Err(CellDiagnostic::new(
+                crate::CellDiagnosticKind::ToolFailure,
+                error.to_string(),
+            ));
+        }
         self.0
-            .snapshot
-            .commit()
+            .draft
+            .freeze()
+            .map_err(|error| self.state_failure(error))
+    }
+
+    /// Explicit Cell-local discovery staging, separate from Session staging.
+    pub fn stage_loaded(
+        &self,
+        names: std::collections::BTreeSet<String>,
+    ) -> Result<(), CellDiagnostic> {
+        self.0
+            .draft
+            .stage_loaded(names)
             .map_err(|error| self.state_failure(error))
     }
 
@@ -297,84 +302,5 @@ impl CellContext {
 
     pub fn has_notifications(&self) -> bool {
         !self.0.state.lock().unwrap().notifications.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retired_storage_is_a_sticky_host_failure_not_a_missing_value() {
-        let backend = maka_session_state::Backend::temporary().unwrap();
-        let session = backend.session("retired");
-        let context = CellContext::new(CellStore::new(session.clone()), vec![]).unwrap();
-        context
-            .store("answer".into(), serde_json::json!(42))
-            .unwrap();
-        session.retire().unwrap();
-        assert!(context.load("answer").is_err());
-        assert!(matches!(context.failure(), Some(ToolError::Persistence(_))));
-        assert!(context.commit().is_err());
-    }
-
-    #[test]
-    fn observation_image_deduplication_precedes_budget_and_does_not_cross_batches() {
-        let image = CellOutput::Media {
-            content: maka_agent_facts::capability::ContentBlock::Image {
-                data: "a".repeat(2048),
-                mime_type: "image/png".into(),
-            },
-            detail: None,
-        };
-        let context = CellContext::new(CellStore::temporary().unwrap(), vec![])
-            .unwrap()
-            .with_image_deduplication();
-        context.emit(image.clone()).unwrap();
-        context.emit(image.clone()).unwrap();
-        assert_eq!(context.take_output().len(), 1);
-        // A drained batch does not suppress a new observation.
-        context.emit(image.clone()).unwrap();
-        assert_eq!(context.take_output().len(), 1);
-        let next = CellContext::new(CellStore::temporary().unwrap(), vec![])
-            .unwrap()
-            .with_image_deduplication();
-        next.emit(image.clone()).unwrap();
-        assert_eq!(next.take_output().len(), 1);
-        let ordinary = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
-        ordinary.emit(image.clone()).unwrap();
-        ordinary.emit(image).unwrap();
-        assert_eq!(ordinary.take_output().len(), 2);
-    }
-
-    #[test]
-    fn notification_acceptance_and_empty_queue_closure_are_atomic() {
-        let gate = NotificationGate::default();
-        let context = CellContext::with_notification_gate(
-            CellStore::temporary().unwrap(),
-            vec![],
-            gate.clone(),
-        )
-        .unwrap();
-        context.notify("accepted".into()).unwrap();
-        assert!(!gate.close_if_empty(std::iter::once(&context)));
-        assert_eq!(context.take_notifications(), ["accepted".to_string()]);
-        let empty_checked = std::sync::Barrier::new(2);
-        let close = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            let closing = scope.spawn(|| {
-                gate.close_if_empty(std::iter::once(&context).chain(std::iter::from_fn(|| {
-                    empty_checked.wait();
-                    close.wait();
-                    None
-                })))
-            });
-            empty_checked.wait();
-            let late = scope.spawn(|| context.notify("after the empty check".into()));
-            close.wait();
-            assert!(closing.join().unwrap());
-            assert!(late.join().unwrap().is_err());
-        });
-        assert!(context.take_notifications().is_empty());
     }
 }

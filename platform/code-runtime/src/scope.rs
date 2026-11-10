@@ -73,6 +73,12 @@ impl ToolScope {
         name: String,
         input: Value,
     ) -> Result<oneshot::Receiver<Result<Value, CellDiagnostic>>, CellDiagnostic> {
+        if let Some(error) = self.context.failure() {
+            return Err(CellDiagnostic::new(
+                CellDiagnosticKind::ToolFailure,
+                error.to_string(),
+            ));
+        }
         if self.cancellation.is_cancelled() {
             return Err(CellDiagnostic::new(
                 CellDiagnosticKind::ExecutionError,
@@ -122,10 +128,14 @@ impl ToolScope {
                         "tool executor panicked".into(),
                     ))
                 });
-                if let Err(error @ (ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))) =
-                    &result
+                if let Err(
+                    error @ (ToolError::Persistence(_)
+                    | ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OutcomeUnknown(_)
+                    | ToolError::OperationUnknown { .. }
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ) = &result
                 {
-                    scope.cancellation.cancel();
                     scope.context.fail(error.clone());
                 }
                 // The effect is settled even if user code no longer observes its result.

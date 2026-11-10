@@ -20,13 +20,13 @@
 //! Durable continuation identity. The opening itself acquires the claim;
 //! a query or an in-memory plan has no execution authority.
 
-use crate::{archive::valid_projection_digest, event::Invocation, interaction::entity_id};
+use crate::{archive::valid_projection_digest, durable::ExecutionIdentity, interaction::entity_id};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunBoundary {
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     /// Run-local ordinal, never a root ledger sequence.
     pub high_water: u64,
     pub digest: String,
@@ -74,32 +74,16 @@ impl ReplayEvidence {
 }
 
 impl ContinuationClaim {
-    pub fn validate(&self, target: &Invocation) -> Result<(), &'static str> {
-        self.validate_boundary(target)?;
-        if self.source.invocation.turn_id == target.turn_id {
-            return Err("manual continuation requires a fresh Turn");
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_boundary(&self, target: &Invocation) -> Result<(), &'static str> {
+    pub fn validate(&self, target: &ExecutionIdentity) -> Result<(), &'static str> {
         entity_id(&self.id)?;
-        for invocation in [&self.source.invocation, target] {
-            for id in [
-                &invocation.session_id,
-                &invocation.turn_id,
-                &invocation.run_id,
-                &invocation.invocation_id,
-            ] {
+        for execution in [&self.source.execution, target] {
+            for id in [&execution.session_id, &execution.turn_id] {
                 entity_id(id)?;
             }
         }
-        let source = &self.source.invocation;
-        if source.session_id != target.session_id
-            || source.run_id == target.run_id
-            || source.invocation_id == target.invocation_id
-        {
-            return Err("continuation requires fresh Run and Invocation in the same Session");
+        let source = &self.source.execution;
+        if source.session_id != target.session_id || source.run_id == target.run_id {
+            return Err("continuation requires a fresh logical Run in the same Session");
         }
         if self.source.high_water == 0
             || self.source.high_water > crate::configuration::validation::MAX_SAFE_INTEGER

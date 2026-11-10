@@ -19,8 +19,8 @@
 
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use maka_agent_facts::terminal::TerminalSize;
 use maka_host_runtime::shell::PtyStreamEvent;
+use maka_plugin_core::terminal::TerminalSize;
 
 impl Processes {
     pub(super) async fn terminal_output(

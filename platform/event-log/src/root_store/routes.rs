@@ -32,26 +32,6 @@ pub(super) enum Creation {
         configuration: serde_json::Value,
         created_at: u64,
     },
-    Copy {
-        request: crate::sessions::SessionCopy,
-        origin: Option<super::family::Origin>,
-        configuration: serde_json::Value,
-        created_at: u64,
-    },
-    Bundle {
-        stage: String,
-        digest: String,
-        binding: String,
-        configurations: std::collections::BTreeMap<String, serde_json::Value>,
-        members: Vec<String>,
-    },
-    Import {
-        origin: super::family::Origin,
-        source: maka_agent_facts::import::Source,
-        records: Vec<maka_agent_facts::import::Record>,
-        configuration: serde_json::Value,
-        created_at: u64,
-    },
 }
 
 impl Creation {
@@ -61,7 +41,7 @@ impl Creation {
     pub(super) fn pin_inputs(
         &self,
         id: &str,
-    ) -> Result<(Vec<String>, Vec<maka_agent_facts::workspace::BindingRef>), StoreError> {
+    ) -> Result<(Vec<String>, Vec<maka_sandbox::workspace::BindingRef>), StoreError> {
         let mut sessions = std::collections::BTreeSet::from([id.to_owned()]);
         let mut configurations = Vec::new();
         match self {
@@ -70,38 +50,9 @@ impl Creation {
                 origin,
                 configuration,
                 ..
-            }
-            | Self::Import {
-                origin,
-                configuration,
-                ..
             } => {
                 sessions.extend(origin.dependencies()?);
                 configurations.push(configuration);
-            }
-            Self::Copy {
-                request,
-                origin,
-                configuration,
-                ..
-            } => {
-                sessions.extend([
-                    request.source_session_id.clone(),
-                    request.target_session_id.clone(),
-                ]);
-                if let Some(origin) = origin {
-                    sessions.extend(origin.dependencies()?);
-                }
-                configurations.push(configuration);
-            }
-            Self::Bundle {
-                members,
-                configurations: destinations,
-                ..
-            } => {
-                sessions.extend(members.iter().cloned());
-                sessions.extend(destinations.keys().cloned());
-                configurations.extend(destinations.values());
             }
         }
         let bindings = configurations
@@ -171,30 +122,6 @@ impl RootStore {
             return Err(StoreError::SessionCreationRejected(rejection));
         }
         Ok(self.handle(id.to_owned()))
-    }
-
-    #[cfg(test)]
-    pub(super) async fn reserve_family(
-        &self,
-        id: &str,
-        fingerprint: &str,
-        command: Creation,
-        members: Vec<String>,
-    ) -> Result<Creation, StoreError> {
-        let reserved = self
-            .log
-            .connection
-            .write(
-                creation::WriteReservation {
-                    id: id.to_owned(),
-                    fingerprint: fingerprint.to_owned(),
-                    command,
-                    members,
-                },
-                self.log.commits.notice(),
-            )
-            .await?;
-        Ok(reserved.command)
     }
 
     pub(super) async fn finish_creation(
@@ -273,7 +200,6 @@ impl RootStore {
                 Ok(connection.prepare_cached("SELECT session_id, fingerprint, command FROM session_creations WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?)
             }).await?;
             if page.is_empty() {
-                self.cleanup_stages().await?;
                 return Ok(());
             }
             for (id, fingerprint, command) in page {

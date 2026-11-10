@@ -1000,6 +1000,15 @@ define_field!(
     NSObject
 );
 
+/// The surface whose selection Copy copies while `view` has none of its
+/// own. `None` when Copy takes the view's own selection.
+fn copy_surface(view: &NSTextView, surface: Option<Rc<Surface>>) -> Option<Rc<Surface>> {
+    if view.selectedRange().length > 0 {
+        return None;
+    }
+    surface.filter(|surface| crate::text::has_selection(surface))
+}
+
 /// Defines a direct subclass of `NSTextView` that an input edits with, as
 /// `define_class!` does, with its file drags appended to its methods:
 /// files dragged over the text go to the file drop target around the input
@@ -1025,6 +1034,18 @@ macro_rules! define_text_view {
 
             impl $name {
                 $($methods)*
+
+                /// The Edit menu's Copy (Cmd+C): the surface's selected
+                /// output with nothing selected here, else the view's own.
+                #[unsafe(method(copy:))]
+                fn copy(&self, sender: Option<&AnyObject>) {
+                    if let Some(surface) = copy_surface(self, $surface(self)) {
+                        crate::text::copy(&surface);
+                        return;
+                    }
+                    // SAFETY: NSTextView's own method.
+                    let _: () = unsafe { msg_send![super(self), copy: sender] };
+                }
 
                 #[unsafe(method(draggingEntered:))]
                 fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
@@ -1210,11 +1231,18 @@ define_text_view!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens, and Copy for the surface's selected output while
+        /// nothing here is selected ([`copy_surface`]).
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && self.ivars().get().is_some_and(Ctx::pastes_more) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_surface(self, self.ivars().get().and_then(|cx| cx.surface.upgrade()))
+                    .is_some()
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.
@@ -1370,11 +1398,17 @@ define_text_view!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens, and Copy for the surface's selected output while
+        /// nothing here is selected ([`copy_surface`]).
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && field_ctx(self).is_some_and(|cx| cx.pastes_more()) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_surface(self, field_ctx(self).and_then(|cx| cx.surface.upgrade())).is_some()
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.

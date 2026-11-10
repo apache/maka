@@ -20,6 +20,7 @@
 //! ACP presentation of public observations and durable transcript rows.
 use crate::presentation::{MessageKind, Meta, Text, ToolCard, ToolStatus, Update};
 use maka_agent_api::contract::{ContentKind, HistoryChunk, PreviewField, PreviewPage};
+use maka_agent_facts::durable::{ModelAttemptId, RunId, StepId};
 use maka_agent_ports::session::history::HistoryField;
 use maka_agent_ports::session::history::Role;
 use serde_json::{Value, json};
@@ -34,23 +35,66 @@ struct Message {
     canonical: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum MessageIdentity {
+    Message { turn: String, id: String },
+    Row(maka_agent_ports::session::history::RowPosition),
+}
+impl MessageIdentity {
+    fn live(turn: &str, id: &str) -> Self {
+        Self::Message {
+            turn: turn.into(),
+            id: id.into(),
+        }
+    }
+    fn history(chunk: &HistoryChunk) -> Self {
+        // Only real live message identities join previews. Snapshot paths and
+        // rows without semantic IDs remain distinct presentation sources.
+        match (&chunk.position, &chunk.turn_id, &chunk.message_id) {
+            (
+                maka_agent_ports::session::history::RowPosition::Live { .. },
+                Some(turn),
+                Some(id),
+            ) if matches!(chunk.role, Role::User | Role::Assistant | Role::Failure) => {
+                Self::Message {
+                    turn: turn.clone(),
+                    id: id.clone(),
+                }
+            }
+            _ => Self::Row(chunk.position.clone()),
+        }
+    }
+    fn presentation_id(&self, kind: MessageKind) -> Result<String, crate::Error> {
+        let id = match self {
+            Self::Message { id, .. } => id.clone(),
+            Self::Row(position) => format!("history-row:{}", serde_json::to_string(position)?),
+        };
+        Ok(if kind == MessageKind::Thinking {
+            format!("thinking:{id}")
+        } else {
+            id
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Projection {
-    streams: HashMap<(String, String, MessageKind), Message>,
+    streams: HashMap<(MessageIdentity, MessageKind), Message>,
     tools: HashMap<String, Tool>,
-    pending_models:
-        HashMap<String, HashSet<(maka_agent_ports::session::history::RowPosition, MessageKind)>>,
+    pending_models: HashMap<
+        (StepId, ModelAttemptId),
+        HashSet<(maka_agent_ports::session::history::RowPosition, MessageKind)>,
+    >,
     preview_epoch: Option<String>,
-    preview_attempt: Option<(String, String)>,
+    preview_attempt: Option<(RunId, StepId, ModelAttemptId)>,
     preview_seed: HashMap<(String, String, MessageKind), String>,
-    committed_parts: HashSet<(String, String, String)>,
-    closed_steps: HashSet<(String, String)>,
+    committed_parts: HashSet<(RunId, StepId, ModelAttemptId, String)>,
+    closed_steps: HashSet<(RunId, StepId, ModelAttemptId)>,
     assembly: Option<CanonicalAssembly>,
 }
 
 struct CanonicalAssembly {
-    turn_id: String,
-    message_id: String,
+    identity: MessageIdentity,
     position: maka_agent_ports::session::history::RowPosition,
     field: HistoryField,
     text: String,
@@ -58,7 +102,7 @@ struct CanonicalAssembly {
 }
 
 struct Tool {
-    turn: String,
+    turn: Option<String>,
     card: ToolCard,
     published: Option<ToolCard>,
     authoritative: bool,
@@ -67,10 +111,26 @@ struct Tool {
 
 impl Projection {
     pub fn chunk(&mut self, chunk: &HistoryChunk) -> Result<Vec<Update>, crate::Error> {
+        let identity = MessageIdentity::history(chunk);
         if chunk.offset == 0 {
-            self.preview_seed
-                .retain(|(turn, id, _), _| turn != &chunk.turn_id || id != &chunk.message_id);
-            let mut meta = message_meta(&chunk.turn_id, &chunk.message_id);
+            if let MessageIdentity::Message { turn, id } = &identity {
+                self.preview_seed
+                    .retain(|(t, i, _), _| t != turn || i != id);
+            }
+            let mut meta = Meta::from_iter([("maka".into(), json!({}))]);
+            if matches!(&identity, MessageIdentity::Row(_)) {
+                meta["maka"]["historyPosition"] = serde_json::to_value(&chunk.position)?;
+                meta["maka"]["historyOrder"] = serde_json::to_value(&chunk.order)?;
+            }
+            if let Some(turn) = &chunk.turn_id {
+                meta["maka"]["turnId"] = json!(turn);
+            }
+            if let Some(id) = &chunk.message_id {
+                meta["maka"]["hostMessageId"] = json!(id);
+            }
+            if let Some(run) = chunk.run_id {
+                meta["maka"]["runId"] = serde_json::to_value(run)?;
+            }
             if let Some(model) = &chunk.model {
                 meta["maka"]["model"] = serde_json::to_value(model)?;
             }
@@ -81,9 +141,8 @@ impl Projection {
                 meta["maka"]["attachments"] = serde_json::to_value(&chunk.attachments)?;
             }
             self.assembly = Some(CanonicalAssembly {
-                turn_id: chunk.turn_id.clone(),
-                message_id: chunk.message_id.clone(),
-                position: chunk.position,
+                identity: identity.clone(),
+                position: chunk.position.clone(),
                 field: chunk.field,
                 text: String::new(),
                 meta,
@@ -111,6 +170,9 @@ impl Projection {
         }
         let CanonicalAssembly { text, mut meta, .. } =
             self.assembly.take().expect("complete field");
+        if chunk.tool.is_some() {
+            return self.tool_chunk(chunk, &text);
+        }
         let kind = match (chunk.role, chunk.field) {
             (Role::User, _) => MessageKind::User,
             (Role::Assistant, HistoryField::Thinking) => MessageKind::Thinking,
@@ -120,13 +182,14 @@ impl Projection {
                 MessageKind::Text
             }
             (Role::ToolCall | Role::ToolResult, _) => return self.tool_chunk(chunk, &text),
+            (Role::System | Role::Context | Role::Tool, _) => {
+                meta["maka"]["role"] = serde_json::to_value(chunk.role)?;
+                MessageKind::Text
+            }
             (Role::Compaction, _) => return Ok(vec![]),
         };
-        let updates = self.replace_text(&chunk.turn_id, &chunk.message_id, kind, &text, meta);
-        if let Some(message) =
-            self.streams
-                .get_mut(&(chunk.turn_id.clone(), chunk.message_id.clone(), kind))
-        {
+        let updates = self.replace_text(identity.clone(), kind, &text, meta)?;
+        if let Some(message) = self.streams.get_mut(&(identity, kind)) {
             if !message.canonical
                 && matches!(
                     chunk.model,
@@ -135,26 +198,28 @@ impl Projection {
                 && let Some(part) = &chunk.model_part
             {
                 self.pending_models
-                    .entry(part.step_id.clone())
+                    .entry((part.step_id, part.attempt_id))
                     .or_default()
-                    .insert((chunk.position, kind));
+                    .insert((chunk.position.clone(), kind));
             }
             message.canonical = true;
         }
         Ok(updates)
     }
-    pub fn commit_preview(&mut self, invocation: &str, step: &str, message: Option<&str>) {
+    pub fn commit_preview(
+        &mut self,
+        run: RunId,
+        step: StepId,
+        attempt: ModelAttemptId,
+        message: Option<&str>,
+    ) {
         if let Some(message) = message {
             self.committed_parts
-                .insert((invocation.into(), step.into(), message.into()));
+                .insert((run, step, attempt, message.into()));
             self.preview_seed.retain(|(_, id, _), _| id != message);
         } else {
-            self.closed_steps.insert((invocation.into(), step.into()));
-            if self
-                .preview_attempt
-                .as_ref()
-                .is_some_and(|(i, s)| i == invocation && s == step)
-            {
+            self.closed_steps.insert((run, step, attempt));
+            if self.preview_attempt == Some((run, step, attempt)) {
                 self.preview_seed.clear();
             }
         }
@@ -163,9 +228,10 @@ impl Projection {
     pub fn preview(&mut self, page: &PreviewPage) -> Result<Vec<Update>, crate::Error> {
         let PreviewPage::Cut {
             host_epoch,
-            invocation_id,
+            run_id,
             turn_id,
             step_id,
+            attempt_id,
             parts,
             ..
         } = page
@@ -184,14 +250,14 @@ impl Projection {
             self.preview_seed.clear();
         }
         self.preview_epoch = Some(host_epoch.clone());
-        let attempt = (invocation_id.clone(), step_id.clone());
+        let attempt = (*run_id, *step_id, *attempt_id);
         if self.preview_attempt.as_ref() != Some(&attempt) {
             self.preview_seed.clear();
             self.committed_parts
-                .retain(|(i, s, _)| i == invocation_id && s == step_id);
+                .retain(|(r, s, a, _)| r == run_id && s == step_id && a == attempt_id);
             self.closed_steps
-                .retain(|(i, s)| i == invocation_id && s == step_id);
-            self.preview_attempt = Some(attempt.clone());
+                .retain(|(r, s, a)| r == run_id && s == step_id && a == attempt_id);
+            self.preview_attempt = Some(attempt);
         }
         if self.closed_steps.contains(&attempt) {
             return Ok(vec![]);
@@ -199,10 +265,11 @@ impl Projection {
         let mut updates = Vec::new();
         for part in parts {
             if self.assembly.as_ref().is_some_and(|assembly| {
-                &assembly.turn_id == turn_id && assembly.message_id == part.message_id
+                assembly.identity == MessageIdentity::live(turn_id, &part.message_id)
             }) || self.committed_parts.contains(&(
-                invocation_id.clone(),
-                step_id.clone(),
+                *run_id,
+                *step_id,
+                *attempt_id,
                 part.message_id.clone(),
             )) {
                 continue;
@@ -217,7 +284,7 @@ impl Projection {
             let key = (turn_id.clone(), part.message_id.clone(), kind);
             if self
                 .streams
-                .get(&key)
+                .get(&(MessageIdentity::live(turn_id, &part.message_id), kind))
                 .is_some_and(|message| message.canonical)
             {
                 continue;
@@ -239,17 +306,16 @@ impl Projection {
                         .remove(&key)
                         .expect("complete preview seed");
                     updates.extend(self.replace_text(
-                        turn_id,
-                        &part.message_id,
+                        MessageIdentity::live(turn_id, &part.message_id),
                         kind,
                         &text,
                         message_meta(turn_id, &part.message_id),
-                    ));
+                    )?);
                 }
             } else {
                 if self
                     .streams
-                    .get(&key)
+                    .get(&(MessageIdentity::live(turn_id, &part.message_id), kind))
                     .map(|message| message.text.len() as u64)
                     != Some(part.offset)
                 {
@@ -269,7 +335,7 @@ impl Projection {
             ContentKind::Text => MessageKind::Text,
             ContentKind::Thinking => MessageKind::Thinking,
         };
-        let key = (turn.to_owned(), id.to_owned(), message_kind);
+        let key = (MessageIdentity::live(turn, id), message_kind);
         let meta = message_meta(turn, id);
         if delta.is_empty()
             && self

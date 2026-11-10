@@ -43,7 +43,7 @@ pub struct Binding {
     common_dir: PathBuf,
     source: PathBuf,
     #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    source_identity: maka_agent_facts::execution::DirectoryIdentity,
+    source_identity: maka_sandbox::workspace::DirectoryIdentity,
     base_commit: String,
     directory: PathBuf,
 }
@@ -55,7 +55,7 @@ impl Binding {
     pub fn source(&self) -> &Path {
         &self.source
     }
-    pub fn source_identity(&self) -> &maka_agent_facts::execution::DirectoryIdentity {
+    pub fn source_identity(&self) -> &maka_sandbox::workspace::DirectoryIdentity {
         &self.source_identity
     }
     pub fn base_commit(&self) -> &str {

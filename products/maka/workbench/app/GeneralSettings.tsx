@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction, platform, signal, View } from 'nsh';
+import { Image, inputAction, platform, signal, View } from 'nsh';
 import { Button, Slider } from 'nsh/base';
 import type {
   LanguagePreference,
@@ -32,7 +32,15 @@ import {
 import { UiScaleSettings } from './UiScaleSettings';
 import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
-import { appearance, colorThemes, paletteIds, textSizes } from './appearance';
+import {
+  appearance,
+  colorThemes,
+  paletteIds,
+  textSizes,
+  trayIcons,
+  type TrayIcon,
+} from './appearance';
+import { trayIconArtwork } from './trayIcon';
 import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
 import { LoadingIndicator } from './Loading';
 import {
@@ -427,8 +435,30 @@ function AppearanceRows() {
         choices={textSizes.map((scale) => ({ value: String(scale), title: textSizeLabel(scale) }))}
         change={(value) => appearance.chooseTextSize(Number(value))}
       />
+      <SettingsSelect
+        label={trayIconRowLabel()}
+        value={appearance.trayIcon()}
+        preview={
+          <Image
+            src={trayIconArtwork[appearance.trayIcon()]}
+            style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
+          />
+        }
+        choices={trayIcons.map((icon) => ({ value: icon, title: trayIconLabel(icon) }))}
+        change={(value) => appearance.chooseTrayIcon(value as TrayIcon)}
+      />
     </>
   );
+}
+
+function trayIconRowLabel() {
+  return platform.os === 'macos' ? tr('Menu bar icon') : tr('System tray icon');
+}
+
+function trayIconLabel(icon: TrayIcon) {
+  if (icon === 'line') return tr('Thin line');
+  if (icon === 'bold') return tr('Bold line');
+  return tr('Solid tile');
 }
 
 const sliderLook = () => ({

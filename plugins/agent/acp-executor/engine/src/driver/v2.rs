@@ -36,6 +36,17 @@ impl Driver<'_> {
                 "agent changed the session protocol version",
             ));
         }
+        let scope = self
+            .context
+            .call
+            .as_ref()
+            .ok_or(Error::Invalid("missing actual ACP process scope"))?;
+        let private_cwd = self
+            .host
+            .callbacks
+            .private_paths(scope)
+            .map_err(|error| Error::Output(executor::Error::IsolationUnavailable(error)))?
+            .working_directory;
         let (session_id, options) = match &journal.record.state {
             State::Creating => {
                 if journal.exists() {
@@ -48,7 +59,7 @@ impl Driver<'_> {
                 let result: acp::NewSessionResponse = self
                     .rpc(
                         &mut connection,
-                        acp::NewSessionRequest::new(&self.request.cwd),
+                        acp::NewSessionRequest::new(&private_cwd),
                         Some(Duration::from_secs(30)),
                     )
                     .await?;
@@ -59,14 +70,14 @@ impl Driver<'_> {
                 let session_id = session_id.clone();
                 self.v2 = Some(Projection::new(
                     session_id.clone(),
-                    self.request.invocation.invocation_id.clone(),
+                    self.request.task_id.to_string(),
                 ));
-                // No replay cursor: retained history must not become this invocation's output.
+                // No replay cursor: retained history must not become this task's output.
                 self.replay = true;
                 let result = self
                     .rpc(
                         &mut connection,
-                        acp::ResumeSessionRequest::new(session_id.clone(), &self.request.cwd),
+                        acp::ResumeSessionRequest::new(session_id.clone(), &private_cwd),
                         Some(Duration::from_secs(30)),
                     )
                     .await;
@@ -101,7 +112,7 @@ impl Driver<'_> {
     ) -> Result<executor::Outcome, Error> {
         self.v2 = Some(Projection::new(
             live.session_id.clone(),
-            self.request.invocation.invocation_id.clone(),
+            self.request.task_id.to_string(),
         ));
         self.configure_v2(
             live,
@@ -111,15 +122,16 @@ impl Driver<'_> {
         // Discard idle/state updates from configuration before admitting this prompt.
         self.v2 = Some(Projection::new(
             live.session_id.clone(),
-            self.request.invocation.invocation_id.clone(),
+            self.request.task_id.to_string(),
         ));
-        let content = self.prompt_content(&live.connection)?;
+        let mut content = self.prompt_content(&live.connection)?;
+        content.insert(0, self.history_reference()?);
         journal
             .save(
                 self.host.storage.as_ref(),
                 State::Running {
                     session_id: live.session_id.clone(),
-                    invocation_id: self.request.invocation.invocation_id.clone(),
+                    task_id: self.request.task_id,
                 },
             )
             .await?;

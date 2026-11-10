@@ -19,20 +19,12 @@
 
 //! Retirement shares Session admission with accepted workers.
 use super::*;
-use crate::sessions::{
-    AbandonRevision, RemovalPlan, RemoveFamilyResult, SessionMutation, SessionRetirement,
-};
+use crate::sessions::{RemovalPlan, RemoveFamilyResult, SessionMutation, SessionRetirement};
 
-#[cfg(test)]
-mod tests;
+mod prepared;
 
 impl SessionStore {
     pub(super) async fn exclusive_metadata(&self, drain: bool) -> Result<EventLog, StoreError> {
-        if self.execution.is_some() {
-            return Err(StoreError::InvalidTransition(
-                "execution scope cannot retire a Session".into(),
-            ));
-        }
         let owner = self.owner()?;
         let access = self
             .gates
@@ -100,6 +92,39 @@ impl RootStore {
             .retiring_session(id)
             .await
     }
+    /// Wait for physical Work custody, including releases that produce no SQL commit.
+    /// This is not a retirement completion receipt; readiness and finish recheck it.
+    pub async fn wait_session_retirement_work(&self, id: &str) -> Result<(), StoreError> {
+        let selected = self.session(id).await?;
+        {
+            let access = self
+                .gates
+                .read([gates::Key::Session(id.to_owned())])
+                .await?;
+            let owner = selected.owner()?;
+            if owner
+                .scoped(Arc::new(access))
+                .session_retirement(id)
+                .await?
+                .is_none()
+            {
+                return Err(StoreError::InvalidTransition(
+                    "Session has no retirement fence".into(),
+                ));
+            }
+        }
+        // Accepted workers may need a Session metadata CAS before releasing Work.
+        // Hold neither Session nor binding access while waiting for their custody.
+        let _work = self.gates.write([gates::Key::Work(id.to_owned())]).await?;
+        let owner = selected.owner()?;
+        if owner.session_retirement(id).await?.is_none() {
+            return Err(StoreError::InvalidTransition(
+                "Session retirement fence was removed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn finish_session_retirement(
         &self,
         id: &str,
@@ -192,8 +217,7 @@ impl RootStore {
                         .map(|reference| gates::Key::Binding(reference.id)),
                 )
                 .await?;
-            // A preparing revision can become committed without touching a
-            // locked ancestor. Compare the exact plan again in the write tx.
+            // Compare the exact dependency plan again in the write transaction.
             if let Some(result) = owner
                 .scoped(Arc::new((access, bindings)))
                 .remove_session_family_guarded(id, expected, Some(plan))
@@ -202,13 +226,5 @@ impl RootStore {
                 return Ok(result);
             }
         }
-    }
-    pub async fn abandon_revision(&self, id: &str) -> Result<AbandonRevision, StoreError> {
-        self.session(id)
-            .await?
-            .exclusive_metadata(true)
-            .await?
-            .abandon_revision(id)
-            .await
     }
 }

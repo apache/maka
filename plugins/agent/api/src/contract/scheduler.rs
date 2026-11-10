@@ -81,7 +81,7 @@ pub struct ScheduledTarget {
     pub workspace: Workspace,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
-    pub binding: maka_agent_facts::workspace::BindingStamp,
+    pub binding: maka_sandbox::workspace::BindingStamp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,9 +111,6 @@ pub enum ScheduleRead {
     },
     Get {
         task_id: String,
-    },
-    Receipt {
-        reference: Box<maka_plugin_core::operation::RecoveryRef>,
     },
 }
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -180,9 +177,6 @@ pub enum Schedules {
     },
     Changed {
         revision: u64,
-    },
-    Receipt {
-        result: Option<ScheduleResult>,
     },
 }
 #[derive(Deserialize, JsonSchema)]

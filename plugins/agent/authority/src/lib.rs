@@ -17,13 +17,26 @@
  * under the License.
  */
 
-//! Admission and interaction settlement against the original Agent invocation facts.
+//! Permission policy and interaction settlement using native-issued Run capabilities.
+pub mod computer;
+pub mod executor;
 pub mod interaction_wait;
 pub mod permissions;
+pub mod publication;
+pub mod setup;
 use std::time::{SystemTime, UNIX_EPOCH};
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_millis() as u64
+}
+
+/// Data selection only; service grants remain independent of this prefix.
+pub fn session_namespace(
+    domain: &str,
+    deployment: uuid::Uuid,
+    instance: &maka_plugin_core::composition::InstanceId,
+) -> String {
+    maka_host_runtime::storage::instance_prefix(domain, deployment, instance)
 }

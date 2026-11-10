@@ -45,7 +45,7 @@ impl Tools {
         &mut self,
         event: &RuntimeEvent,
         ts: u64,
-        step: &str,
+        link: maka_agent_facts::durable::AgentStepLink,
         message_id: &str,
         part: &ModelPart,
         anchor: Option<&str>,
@@ -78,8 +78,8 @@ impl Tools {
             }
             ModelPart::Text { .. } => {}
             ModelPart::ToolCall { call } => {
-                let operation = format!("{step}:{}", call.id);
-                let identity = ToolCallIdentity::provider(step.into(), call.id.clone());
+                let operation = format!("{}:{}", link.attempt, call.id);
+                let identity = ToolCallIdentity::provider(link, call.id.clone());
                 let metadata = self.insert(
                     &operation,
                     identity,
@@ -99,7 +99,7 @@ impl Tools {
                     Content::ToolCall {
                         tool_name: call.name.clone(),
                         args: display_input(&call.input),
-                        step_id: anchor.map(str::to_owned),
+                        anchor_message_id: anchor.map(str::to_owned),
                         provider_options: call.provider_options.clone(),
                         provider_executed: Some(call.provider_executed),
                         metadata,
@@ -113,7 +113,7 @@ impl Tools {
                 is_error,
                 ..
             } => {
-                let operation = format!("{step}:{id}");
+                let operation = format!("{}:{id}", link.attempt);
                 let pending = self
                     .pending
                     .get(&operation)
@@ -133,6 +133,9 @@ impl Tools {
                 )?);
             }
         }
+        for row in &mut rows {
+            row.model = Some(link.into());
+        }
         Ok(rows)
     }
     pub fn boundary(
@@ -141,6 +144,16 @@ impl Tools {
         ts: u64,
         resolved: Option<&ToolOutput>,
     ) -> Result<Vec<Message>, ProjectionError> {
+        let model = match &event.fact {
+            Fact::ToolDispatched { call, .. } | Fact::ToolRejected { call, .. } => {
+                model_identity(&call.origin)
+            }
+            Fact::ToolSettled { operation_id, .. } => self
+                .pending
+                .get(operation_id)
+                .and_then(|pending| model_identity(&pending.identity.origin)),
+            _ => unreachable!("tool boundary fact"),
+        };
         let metadata = match &event.fact {
             Fact::ToolDispatched {
                 operation_id,
@@ -224,7 +237,11 @@ impl Tools {
             }
             _ => unreachable!("tool boundary fact"),
         };
-        boundary_messages(event, ts, metadata, resolved)
+        let mut rows = boundary_messages(event, ts, metadata, resolved)?;
+        for row in &mut rows {
+            row.model = model;
+        }
+        Ok(rows)
     }
     fn result(
         &mut self,
@@ -262,7 +279,7 @@ fn result_message(
 ) -> Message {
     let images = match &event.fact {
         Fact::ToolSettled { outcome, .. } => {
-            crate::ToolImage::from_projection(&event.invocation.session_id, outcome, &content)
+            crate::ToolImage::from_projection(&event.execution.session_id, outcome, &content)
         }
         _ => Vec::new(),
     };
@@ -271,7 +288,7 @@ fn result_message(
         ts,
         id,
         Content::ToolResult {
-            tool_use_id: tool_message_id(&event.invocation.invocation_id, operation),
+            tool_use_id: tool_message_id(event.execution.run_id, operation),
             settlement: match &event.fact {
                 Fact::ToolRejected { .. } => {
                     Some(maka_agent_facts::tool_call::ToolSettlement::Rejected)
@@ -326,11 +343,11 @@ fn boundary_messages(
                 rows.push(message(
                     event,
                     ts,
-                    tool_message_id(&event.invocation.invocation_id, operation_id),
+                    tool_message_id(event.execution.run_id, operation_id),
                     Content::ToolCall {
                         tool_name: name.clone(),
                         args,
-                        step_id: None,
+                        anchor_message_id: None,
                         provider_options: None,
                         provider_executed: None,
                         metadata: metadata.clone(),
@@ -355,10 +372,7 @@ fn boundary_messages(
                         ts,
                         format!("{}:activity", event.id),
                         Content::ToolActivity {
-                            tool_use_id: tool_message_id(
-                                &event.invocation.invocation_id,
-                                operation_id,
-                            ),
+                            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
                             tool_name: name.clone(),
                             title: title.clone(),
                             presentation: presentation.clone(),
@@ -446,7 +460,7 @@ pub fn project_tool_boundary(
         Fact::ToolDispatched { call, .. } | Fact::ToolRejected { call, .. } => &call.origin,
         Fact::ToolSettled { operation_id, .. } => match dispatch {
             Some(RuntimeEvent {
-                invocation,
+                execution,
                 fact:
                     Fact::ToolDispatched {
                         operation_id: original,
@@ -454,14 +468,28 @@ pub fn project_tool_boundary(
                         ..
                     },
                 ..
-            }) if invocation == &event.invocation && original == operation_id => &call.origin,
+            }) if execution.run_id == event.execution.run_id
+                && execution.session_id == event.execution.session_id
+                && original == operation_id =>
+            {
+                &call.origin
+            }
             _ => return Err(ProjectionError::Invalid("result without original dispatch")),
         },
         _ => return Err(ProjectionError::Invalid("expected tool boundary")),
     };
-    let metadata = crate::ToolMetadata::from_origin(origin, &event.invocation.invocation_id)?;
-    crate::rows(
-        stored.sequence,
-        boundary_messages(event, crate::message::timestamp(event)?, metadata, resolved)?,
-    )
+    let metadata = crate::ToolMetadata::from_origin(origin, event.execution.run_id)?;
+    let mut messages =
+        boundary_messages(event, crate::message::timestamp(event)?, metadata, resolved)?;
+    for message in &mut messages {
+        message.model = model_identity(origin);
+    }
+    crate::rows(stored.sequence, messages)
+}
+
+fn model_identity(origin: &ToolOrigin) -> Option<crate::ModelIdentity> {
+    match origin {
+        ToolOrigin::Provider { link } => Some((*link).into()),
+        _ => None,
+    }
 }

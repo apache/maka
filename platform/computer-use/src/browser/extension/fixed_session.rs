@@ -33,7 +33,7 @@ use std::sync::atomic::AtomicU8;
 
 #[derive(Clone)]
 pub(in crate::browser) struct FixedAttempt {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     policy: ExtensionPreparationPolicy,
     ui: ExtensionFixedUiRequest,
@@ -56,7 +56,7 @@ const UI_RETIRED: u8 = 2;
 
 #[derive(Clone)]
 struct FixedUiAttempt {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     request: ExtensionFixedUiRequest,
     dispatch: Arc<AtomicU8>,
@@ -64,13 +64,13 @@ struct FixedUiAttempt {
 
 #[derive(Clone)]
 struct FixedClearAttempt {
-    operation: Option<ExtensionHostOperation>,
+    operation: Option<BoundHostOperation>,
     dispatch: Arc<AtomicU8>,
 }
 
 #[derive(Clone)]
 struct FixedUiRecord {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     completion_id: u64,
     dispatch: Arc<AtomicU8>,
@@ -107,6 +107,26 @@ pub(in crate::browser) enum FixedPreparation {
 }
 
 impl FixedPreparation {
+    pub(super) fn check_execution(
+        &self,
+        execution: &crate::ExecutionCorrelation,
+    ) -> Result<(), ToolError> {
+        let original = match self {
+            Self::NotAttempted => return Ok(()),
+            Self::Pending(attempt) => &attempt.operation.execution,
+            Self::Retained(resource) if matches!(resource.phase, FixedPhase::Cleared { .. }) => {
+                return Ok(());
+            }
+            Self::Retained(resource) => &resource.attempt.operation.execution,
+        };
+        if original != execution {
+            return Err(ToolError::CleanupUnconfirmed("the original fixed preparation must receive its actual logical clear acknowledgement before another execution can reuse it".into()));
+        }
+        Ok(())
+    }
+}
+
+impl FixedPreparation {
     pub(super) fn ready(&self) -> Option<&ExtensionFixedSessionPreparedTab> {
         match self {
             Self::Retained(resource)
@@ -124,7 +144,7 @@ impl FixedPreparation {
             _ => None,
         }
     }
-    pub(super) fn operation(&self) -> Option<&ExtensionHostOperation> {
+    pub(super) fn operation(&self) -> Option<&BoundHostOperation> {
         self.attempt().map(|attempt| &attempt.operation)
     }
     pub(super) fn settled(&self) -> bool {
@@ -155,7 +175,7 @@ impl FixedPreparation {
 
 #[derive(Clone)]
 pub(in crate::browser) struct FixedPresentationScope {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     request: crate::BrowserSessionPreparation,
     authorization: Arc<dyn crate::BrowserAuthorization>,
@@ -168,7 +188,11 @@ impl FixedPresentationScope {
         invocation: &crate::InvocationContext<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, ToolError> {
-        request.check_scope(invocation.turn(), &operation(invocation)?.operation_id)?;
+        request.check_scope(
+            invocation.turn(),
+            invocation.execution_correlation(),
+            &operation(invocation)?.operation_id,
+        )?;
         if request.native_owner != scope.owner
             || request.native_epoch != scope.epoch.to_string()
             || request.browser_id != scope.provider.id()
@@ -319,7 +343,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<(TabIdentity, FixedAttempt), ToolError> {
         let ExtensionOperation::PrepareFixedSessionTab {
             tab_id,
@@ -428,7 +452,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         prepared: ExtensionFixedSessionPreparedTab,
     ) -> Result<(), ToolError> {
         let (identity, attempt) = self.fixed_attempt_for(owner, provider, operation, context)?;
@@ -444,8 +468,8 @@ impl Host {
                 .extension
                 .get(&(owner, identity.browser.clone()))
                 .is_some_and(|state| {
-                    state.current_turn.as_deref() == Some(attempt.operation.turn_id.as_str())
-                        && state.retiring_turn.is_none()
+                    state.current_scope.as_ref() == Some(&attempt.operation.scope())
+                        && state.retiring_scope.is_none()
                         && state
                             .calls
                             .get(&attempt.operation.operation_id)
@@ -490,7 +514,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         receipt: Option<ExtensionFixedSessionReceipt>,
         reason: &str,
     ) -> Result<(), ToolError> {
@@ -585,7 +609,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         proof: ExtensionFixedUiProof,
     ) -> Result<(), ToolError> {
         let ExtensionOperation::SessionUi { receipt, ui } = operation else {
@@ -679,7 +703,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         proof: ExtensionFixedSessionCleanupProof,
     ) -> Result<(), ToolError> {
         let ExtensionOperation::ClearSessionPreparation { receipt } = operation else {
@@ -777,7 +801,7 @@ impl Host {
         owner: uuid::Uuid,
         identity: &TabIdentity,
         receipt: &ExtensionFixedSessionReceipt,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<bool, ToolError> {
         self.fixed_state_mut(owner, identity)?
             .fixed_preparation
@@ -845,7 +869,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
     ) -> Result<(), ToolError> {
         if matches!(operation, ExtensionOperation::PrepareFixedSessionTab { .. }) {
             let (identity, expected) =
@@ -1078,7 +1102,7 @@ async fn retain_prepare_error(
     // asks the extension to prepare again or invents a guessed cleanup address.
     if let Ok(pending) = scope.control.pending_operations().await {
         for entry in pending.into_iter().filter(|entry| {
-            entry.host_operation.as_ref() == Some(&scope.context)
+            entry.host_operation.as_ref().is_some_and(|wire| scope.context.matches_wire(wire))
                 && matches!(&entry.operation, ExtensionOperation::PrepareFixedSessionTab { tab_id, .. }
                     if tab_id.to_string() == identity.target)
         }) {
@@ -1098,7 +1122,7 @@ async fn retain_prepare_error(
                     scope.owner,
                     &scope.provider,
                     &entry.operation,
-                    entry.host_operation.as_ref(),
+                    Some(&expected.operation),
                     Some(receipt),
                     error,
                 );
@@ -1150,7 +1174,7 @@ async fn clear_for_replacement(
     let reconciled = host
         .lock()
         .await
-        .reconcile_provider(scope.owner, &scope.provider)
+        .reconcile_provider(scope.owner, &scope.provider, None)
         .await;
     if let Err(error) = &result {
         host.lock().await.finish_fixed_clear_error(
@@ -1294,7 +1318,7 @@ pub(super) async fn prepare_fixed_tab(
     let reconciled = host
         .lock()
         .await
-        .reconcile_provider(scope.owner, &scope.provider)
+        .reconcile_provider(scope.owner, &scope.provider, None)
         .await;
     if let Err(error) = &result {
         let not_dispatched = reconciled.is_ok()
@@ -1348,11 +1372,12 @@ impl Host {
         if scope.owner != owner
             || scope.target.as_deref() != Some(identity.target.as_str())
             || provider.provider != scope.provider
-            || provider.retiring_turn.is_some()
+            || provider.retiring_scope.is_some()
             || provider.headers_unknown
             || (scope.purpose != CallPurpose::FixedConfiguration
-                && provider.current_turn.as_deref() != Some(scope.context.turn_id.as_str()))
+                && provider.current_scope.as_ref() != Some(&scope.context.scope()))
             || call.turn != scope.context.turn_id
+            || call.execution != scope.context.execution
             || call.epoch != scope.epoch
             || !call.purposes.contains(&scope.purpose)
             || !Arc::ptr_eq(&call.controls, &scope.controls)
@@ -1463,7 +1488,7 @@ impl Host {
                 .extension
                 .get(&(owner, identity.browser.clone()))
                 .is_some_and(|provider| {
-                    provider.current_turn.as_deref() == Some(scope.context.turn_id.as_str())
+                    provider.current_scope.as_ref() == Some(&scope.context.scope())
                 });
         let renew = matches!(
             completion.proof.ui,
@@ -1496,6 +1521,7 @@ impl Host {
             Some(LeaseChildScope {
                 effects,
                 turn: scope.context.turn_id.clone(),
+                execution: scope.context.execution.clone(),
                 epoch: scope.epoch,
             })
         } else {
@@ -1649,7 +1675,7 @@ impl Tab {
         let reconciled = host
             .lock()
             .await
-            .reconcile_provider(self.cursor_owner, &self.provider)
+            .reconcile_provider(self.cursor_owner, &self.provider, None)
             .await;
         reconciled?;
         let proof = result.map_err(provider::extension_error)?;
@@ -1758,7 +1784,11 @@ pub(in crate::browser) async fn configure_fixed_session_ui(
             scope.control.session_ui(receipt, &ui).await
         })
         .await;
-    let reconciled = host.lock().await.reconcile_provider(owner, &provider).await;
+    let reconciled = host
+        .lock()
+        .await
+        .reconcile_provider(owner, &provider, None)
+        .await;
     reconciled?;
     let proof = result.map_err(provider::extension_error)?;
     if matches!(proof.ui, ExtensionFixedUiAck::Unknown) {
@@ -1817,19 +1847,26 @@ pub(in crate::browser) enum FixedCleanupPurpose {
     },
     Turn {
         turn: String,
+        execution: crate::ExecutionCorrelation,
     },
     Owner,
 }
 
 impl FixedPreparation {
-    pub(in crate::browser) fn protected_from_turn(&self, turn: &str) -> bool {
+    pub(in crate::browser) fn protected_from_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> bool {
         match self {
             Self::Pending(attempt) => {
                 attempt.dispatch.load(Ordering::SeqCst) == UI_MAY_DISPATCH
-                    && attempt.operation.turn_id != turn
+                    && (attempt.operation.turn_id != turn
+                        || &attempt.operation.execution != execution)
             }
             Self::Retained(resource) if !matches!(resource.phase, FixedPhase::Cleared { .. }) => {
                 resource.latest_ui_owner().0.turn_id != turn
+                    || &resource.latest_ui_owner().0.execution != execution
             }
             _ => false,
         }
@@ -1886,7 +1923,7 @@ impl FixedPreparation {
 }
 
 impl FixedResource {
-    fn latest_ui_owner(&self) -> (&ExtensionHostOperation, crate::desktop::NativeEpochId) {
+    fn latest_ui_owner(&self) -> (&BoundHostOperation, crate::desktop::NativeEpochId) {
         let known = self
             .last_ui
             .as_ref()
@@ -1902,7 +1939,7 @@ impl FixedResource {
     }
     fn matches_ui_ack(
         &self,
-        context: &ExtensionHostOperation,
+        context: &BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
         operation: ExtensionFixedUiOperation,
         cursor_id: &str,
@@ -1975,7 +2012,9 @@ impl Host {
                         .get(&(owner, identity.clone()))
                         .is_some_and(|endpoint| endpoint.epoch() > *through)
             }
-            FixedCleanupPurpose::Turn { turn } => state.fixed_preparation.protected_from_turn(turn),
+            FixedCleanupPurpose::Turn { turn, execution } => state
+                .fixed_preparation
+                .protected_from_scope(turn, execution),
             FixedCleanupPurpose::Owner => false,
         })
     }
@@ -2077,7 +2116,7 @@ impl Host {
                 scope.control.session_ui(&receipt, &ui).await
             })
             .await;
-        self.reconcile_provider(owner, &provider).await?;
+        self.reconcile_provider(owner, &provider, None).await?;
         let proof = result.map_err(provider::extension_error)?;
         let ExtensionFixedUiAck::Attempted {
             retention: Some(ack),
@@ -2203,7 +2242,7 @@ impl Host {
                 cleanup_control.clear_session_preparation(receipt).await
             })
             .await;
-        let reconciled = self.reconcile_provider(owner, &provider).await;
+        let reconciled = self.reconcile_provider(owner, &provider, None).await;
         if let Err(error) = &result {
             self.finish_fixed_clear_error(
                 owner,
@@ -2285,961 +2324,5 @@ impl Host {
         // True metadata cannot manufacture an SDK Clear ACK, discharge Unknown,
         // or prove independent physical/Header/CDP/Host T2 cleanup.
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl FixedPreparation {
-    fn unknown(&self) -> Option<&str> {
-        match self {
-            Self::Retained(resource) => resource.uncertainty.as_deref(),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(all(test, unix))]
-mod actual_call_scope_tests {
-    use super::*;
-    use cua_driver_core::browser::{ExtensionProviderError, ValidatedExtensionEndpoint};
-    use std::{fs::Permissions, future::Future, os::unix::fs::PermissionsExt};
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::{UnixListener, UnixStream},
-    };
-
-    async fn bounded<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(5), future)
-            .await
-            .expect("private extension fixture boundary must finish")
-    }
-
-    async fn read_frame(server: &mut UnixStream) -> Value {
-        let mut header = [0_u8; 4];
-        server.read_exact(&mut header).await.unwrap();
-        let length = u32::from_ne_bytes(header) as usize;
-        assert!((1..=65_536).contains(&length), "fixture frame byte budget");
-        let mut payload = vec![0; length];
-        server.read_exact(&mut payload).await.unwrap();
-        serde_json::from_slice(&payload).unwrap()
-    }
-
-    async fn write_frame(server: &mut UnixStream, frame: Value) {
-        let payload = serde_json::to_vec(&frame).unwrap();
-        let length = u32::try_from(payload.len()).unwrap();
-        server.write_all(&length.to_ne_bytes()).await.unwrap();
-        server.write_all(&payload).await.unwrap();
-        server.flush().await.unwrap();
-    }
-
-    struct Fixture {
-        extension: ExtensionBrowserProvider,
-        server: UnixStream,
-        // Retain the actual private descriptor/socket directory through the call.
-        _directory: tempfile::TempDir,
-    }
-
-    impl Fixture {
-        async fn open_with_lifecycle(lifecycle: &str) -> Self {
-            // Canonical /tmp remains short on supported Unix hosts and avoids a
-            // symlink component (notably /tmp -> /private/tmp on macOS).
-            let directory = tempfile::Builder::new()
-                .prefix("mcu-")
-                .tempdir_in("/tmp")
-                .unwrap();
-            let private = std::fs::canonicalize(directory.path()).unwrap();
-            std::fs::set_permissions(&private, Permissions::from_mode(0o700)).unwrap();
-            let generation = uuid::Uuid::new_v4().to_string();
-            let socket = private.join(format!("{generation}.sock"));
-            let listener = UnixListener::bind(&socket).unwrap();
-            std::fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
-            let adapter = "org.apache.maka.inventory_fixture";
-            let identity = json!({
-                "adapter":adapter,
-                "extensionId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "instanceId":"main-inventory-fixture",
-                "generation":generation,
-                "hostPid":std::process::id(),
-                "capabilities":{
-                    "attachmentPreparation":"metadata_only",
-                    "userTabsOrder":"provider",
-                    "headerScope":"session",
-                    "createdPresentationOwner":"provider",
-                    "cursorPresentationOwner":"provider",
-                    "cursorHideOwner":"unavailable",
-                    "turnLifecycleOwner":lifecycle,
-                    "sessionTabInventory":true,"sessionPreparation":"explicit_fixed"
-                }
-            });
-            let capability = "0".repeat(64);
-            let descriptor = private.join(format!("{generation}.json"));
-            std::fs::write(
-                &descriptor,
-                serde_json::to_vec(&json!({
-                    "protocol":1,"identity":identity,
-                    "endpoint":{"kind":"unix","address":socket},
-                    "capability":capability
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            std::fs::set_permissions(&descriptor, Permissions::from_mode(0o600)).unwrap();
-            let endpoint = ValidatedExtensionEndpoint::load(&descriptor, adapter).unwrap();
-            let accept = async {
-                let (mut server, _) = listener.accept().await.unwrap();
-                let hello = read_frame(&mut server).await;
-                assert_eq!(
-                    hello,
-                    json!({
-                        "kind":"hello","protocol":1,
-                        "generation":generation,"capability":capability
-                    })
-                );
-                write_frame(
-                    &mut server,
-                    json!({
-                        "kind":"welcome","protocol":1,
-                        "generation":generation,"identity":identity
-                    }),
-                )
-                .await;
-                server
-            };
-            let (extension, server) = bounded(async {
-                tokio::join!(ExtensionBrowserProvider::connect(endpoint), accept)
-            })
-            .await;
-            Self {
-                extension: extension.unwrap(),
-                server,
-                _directory: directory,
-            }
-        }
-
-        fn provider(&self) -> Provider {
-            Provider::Extension {
-                id: "extension-inventory-fixture".into(),
-                connection: Arc::new(self.extension.clone()),
-            }
-        }
-
-        async fn assert_no_frame_and_close(&mut self) {
-            // Reach the actual actor FIFO barrier, then close only this fixture's
-            // public transport. EOF after draining the server proves that no extra
-            // bytes were queued; a timed WouldBlock observation would not do so.
-            assert!(
-                bounded(self.extension.pending_operations())
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
-            bounded(self.extension.close()).await;
-            let mut byte = [0_u8];
-            assert_eq!(
-                bounded(self.server.read(&mut byte)).await.unwrap(),
-                0,
-                "the fixture transport must close without another IPC frame"
-            );
-            // Transport EOF is deliberately not used as extension cleanup proof.
-        }
-    }
-
-    struct PendingScope {
-        host: Arc<tokio::sync::Mutex<Host>>,
-        owner: uuid::Uuid,
-        identity: TabIdentity,
-        scope: CallScope,
-        policy: ExtensionPreparationPolicy,
-        ui: ExtensionFixedUiRequest,
-        cursor: Spec,
-        attempt: FixedAttempt,
-    }
-    impl PendingScope {
-        async fn new(fixture: &Fixture) -> Self {
-            Self::new_with_policy(fixture, ExtensionPreparationPolicy::default()).await
-        }
-        async fn new_with_policy(fixture: &Fixture, policy: ExtensionPreparationPolicy) -> Self {
-            let provider = fixture.provider();
-            let owner = uuid::Uuid::new_v4();
-            let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-            bounded(register(&host, owner, &provider)).await.unwrap();
-            let identity = BrowserIdentity::of(&provider, &fixture.extension.identity().generation)
-                .unwrap()
-                .tab("17");
-            let scope = {
-                let mut ledger = host.lock().await;
-                ledger
-                    .extension_reserve(owner, &provider, "gate-turn", "17", Origin::UserClaimed)
-                    .unwrap();
-                ledger
-                    .extension_context(
-                        owner,
-                        &provider,
-                        context_operation("gate-turn"),
-                        crate::desktop::NativeEpochId::new(),
-                        CallTarget::Tab {
-                            origin: Origin::UserClaimed,
-                            tab: Some("17".into()),
-                        },
-                        true,
-                    )
-                    .unwrap()
-            };
-            let cursor = Spec::default();
-            let ui = ui_request(
-                &cursor,
-                scope.epoch,
-                None,
-                "idle",
-                ExtensionFixedUiOperation::Control,
-            )
-            .unwrap();
-            let attempt = {
-                let mut ledger = host.lock().await;
-                ledger
-                    .begin_fixed_preparation(&scope, &identity, policy.clone(), ui.clone())
-                    .unwrap();
-                ledger
-                    .fixed_state(owner, &identity)
-                    .unwrap()
-                    .fixed_preparation
-                    .attempt()
-                    .unwrap()
-                    .clone()
-            };
-            Self {
-                host,
-                owner,
-                identity,
-                scope,
-                policy,
-                ui,
-                cursor,
-                attempt,
-            }
-        }
-        async fn reject_at_actual_call_gate(&self) -> ExtensionProviderError {
-            // Build the SAME real SDK future before sealing the actual scope.
-            let original = self.scope.dispatch(async {
-                enter_fixed_ui(&self.attempt.dispatch).map_err(|error| *error)?;
-                self.scope
-                    .control
-                    .prepare_fixed_session_tab(17, &self.policy, &self.ui)
-                    .await
-            });
-            self.scope.controls.seal();
-            *bounded(original).await.unwrap_err()
-        }
-    }
-
-    #[tokio::test]
-    async fn actual_call_gate_refusal_before_inner_sdk_poll_retires_exact_pending() {
-        let mut fixture = Fixture::open_with_lifecycle("host").await;
-        let pending = PendingScope::new(&fixture).await;
-        let error = pending.reject_at_actual_call_gate().await;
-        assert!(matches!(error, ExtensionProviderError::Refused { .. }));
-        assert_eq!(
-            pending.attempt.dispatch.load(Ordering::SeqCst),
-            UI_RESERVED,
-            "the exact inner SDK firstpoll was not crossed"
-        );
-        {
-            let mut ledger = pending.host.lock().await;
-            ledger.fixed_caller_error(
-                pending.owner,
-                &pending.identity,
-                &pending.attempt,
-                &error.to_string(),
-            );
-            assert!(matches!(
-                ledger
-                    .fixed_state(pending.owner, &pending.identity)
-                    .unwrap()
-                    .fixed_preparation,
-                FixedPreparation::NotAttempted
-            ));
-            assert_eq!(pending.attempt.dispatch.load(Ordering::SeqCst), UI_RETIRED);
-        }
-        fixture.assert_no_frame_and_close().await;
-        // This proves actual local gate/IPC lifetime only, not Host authorization
-        // or a successful extension fixed preparation/Chrome operation.
-    }
-
-    async fn retained_completion(
-        control: &ExtensionBrowserProvider,
-        id: u64,
-    ) -> cua_driver_core::browser::ExtensionOperationCompletion {
-        bounded(async {
-            loop {
-                if let Some(completion) = control
-                    .pending_completions()
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .find(|completion| completion.id == id)
-                {
-                    return completion;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-    }
-    async fn reply_not_dispatched(server: &mut UnixStream, id: u64) {
-        write_frame(server, json!({"kind":"controlEvent", "event":{"kind":"reply","data":{
-            "id":id, "outcome":{"kind":"notDispatched","data":{
-                "kind":"not_dispatched", "message":"trusted Rust phase before native frame", "details":null
-            }}
-        }}})).await;
-    }
-
-    #[tokio::test]
-    async fn retained_no_dispatch_without_caller_folds_before_ack_and_cannot_retire_replacement() {
-        let mut fixture = Fixture::open_with_lifecycle("host").await;
-        let PendingScope {
-            host,
-            owner,
-            identity,
-            scope,
-            policy,
-            ui,
-            attempt,
-            ..
-        } = PendingScope::new(&fixture).await;
-        let provider = scope.provider.clone();
-        let context = scope.context.clone();
-        let epoch = scope.epoch;
-        let control = scope.control.clone();
-        let mut original = Box::pin(scope.dispatch(async {
-            enter_fixed_ui(&attempt.dispatch).map_err(|error| *error)?;
-            scope
-                .control
-                .prepare_fixed_session_tab(17, &policy, &ui)
-                .await
-        }));
-        let frame = bounded(async {
-            tokio::select! {
-                result = &mut original => panic!("original waits for same retained reply: {result:?}"),
-                frame = read_frame(&mut fixture.server) => frame,
-            }
-        }).await;
-        let old_id = frame["request"]["id"].as_u64().unwrap();
-        drop(original);
-        drop(scope);
-        // Block the automatic observer; exercise the production synchronous fold
-        // exactly before its ACK await, while the actual Core row stays retained.
-        let mut ledger = host.lock().await;
-        reply_not_dispatched(&mut fixture.server, old_id).await;
-        let old = retained_completion(&control, old_id).await;
-        let recovered = control.recover_completion(old_id).await.unwrap();
-        ledger
-            .apply_extension_completion(owner, &provider, &old, recovered)
-            .unwrap();
-        assert!(matches!(
-            ledger
-                .fixed_state(owner, &identity)
-                .unwrap()
-                .fixed_preparation,
-            FixedPreparation::NotAttempted
-        ));
-        assert_eq!(attempt.dispatch.load(Ordering::SeqCst), UI_RETIRED);
-        assert!(
-            ledger.extension[&(owner, identity.browser.clone())]
-                .applied
-                .contains(&old_id)
-        );
-        assert!(
-            control
-                .pending_completions()
-                .await
-                .unwrap()
-                .iter()
-                .any(|entry| entry.id == old_id),
-            "the original SDK ACK has deliberately not been sent or consumed"
-        );
-        let replacement = ledger
-            .extension_context(
-                owner,
-                &provider,
-                context,
-                epoch,
-                CallTarget::Tab {
-                    origin: Origin::UserClaimed,
-                    tab: Some("17".into()),
-                },
-                true,
-            )
-            .unwrap();
-        ledger
-            .begin_fixed_preparation(&replacement, &identity, policy.clone(), ui.clone())
-            .unwrap();
-        let next = ledger
-            .fixed_state(owner, &identity)
-            .unwrap()
-            .fixed_preparation
-            .attempt()
-            .unwrap()
-            .clone();
-        let mut next_future = Box::pin(replacement.dispatch(async {
-            enter_fixed_ui(&next.dispatch).map_err(|error| *error)?;
-            replacement
-                .control
-                .prepare_fixed_session_tab(17, &policy, &ui)
-                .await
-        }));
-        let next_frame = bounded(async {
-            tokio::select! {
-                result = &mut next_future => panic!("replacement waits for its own reply: {result:?}"),
-                frame = read_frame(&mut fixture.server) => frame,
-            }
-        }).await;
-        assert_ne!(
-            frame["request"]["scopeId"],
-            next_frame["request"]["scopeId"]
-        );
-        assert_eq!(next.dispatch.load(Ordering::SeqCst), UI_MAY_DISPATCH);
-        // Re-read the SAME real old completion while B has identical Host
-        // operation/epoch/UI and has actually crossed its own SDK firstpoll.
-        let recovered = control.recover_completion(old_id).await.unwrap();
-        ledger
-            .apply_extension_completion(owner, &provider, &old, recovered)
-            .unwrap();
-        assert!(
-            ledger
-                .fixed_state(owner, &identity)
-                .unwrap()
-                .fixed_preparation
-                .matches_attempt(&next)
-        );
-        assert_eq!(next.dispatch.load(Ordering::SeqCst), UI_MAY_DISPATCH);
-        drop(next_future);
-        drop(replacement);
-        let next_id = next_frame["request"]["id"].as_u64().unwrap();
-        reply_not_dispatched(&mut fixture.server, next_id).await;
-        let next_completion = retained_completion(&control, next_id).await;
-        let recovered = control.recover_completion(next_id).await.unwrap();
-        ledger
-            .apply_extension_completion(owner, &provider, &next_completion, recovered)
-            .unwrap();
-        assert!(matches!(
-            ledger
-                .fixed_state(owner, &identity)
-                .unwrap()
-                .fixed_preparation,
-            FixedPreparation::NotAttempted
-        ));
-        control.acknowledge_completion(old_id).await.unwrap();
-        control.acknowledge_completion(next_id).await.unwrap();
-        assert!(control.pending_operations().await.unwrap().is_empty());
-        drop(ledger);
-        fixture.assert_no_frame_and_close().await;
-        // Real public Core/Unix actor + Main fold ordering only. The independent
-        // Core broker writer keeper proves the zero-write producer; this peer is
-        // a trusted-phase consumer fixture, not actual Chrome or Host T1/T2.
-    }
-
-    #[tokio::test]
-    async fn late_old_error_cannot_change_replacement_pending_or_actual_new_unknown() {
-        let mut fixture = Fixture::open_with_lifecycle("host").await;
-        let old = PendingScope::new(&fixture).await;
-        let error = old.reject_at_actual_call_gate().await;
-        let (new_scope, new_attempt, ui) = {
-            let mut ledger = old.host.lock().await;
-            ledger.fixed_caller_error(old.owner, &old.identity, &old.attempt, &error.to_string());
-            let scope = ledger
-                .extension_context(
-                    old.owner,
-                    &old.scope.provider,
-                    context_operation("gate-turn"),
-                    crate::desktop::NativeEpochId::new(),
-                    CallTarget::Tab {
-                        origin: Origin::UserClaimed,
-                        tab: Some("17".into()),
-                    },
-                    true,
-                )
-                .unwrap();
-            let ui = ui_request(
-                &Spec::default(),
-                scope.epoch,
-                None,
-                "idle",
-                ExtensionFixedUiOperation::Control,
-            )
-            .unwrap();
-            ledger
-                .begin_fixed_preparation(&scope, &old.identity, old.policy.clone(), ui.clone())
-                .unwrap();
-            let attempt = ledger
-                .fixed_state(old.owner, &old.identity)
-                .unwrap()
-                .fixed_preparation
-                .attempt()
-                .unwrap()
-                .clone();
-            // A late handler for the completed old future must not touch this
-            // replacement, even though the same owner/tab/turn is reused.
-            ledger.fixed_caller_error(old.owner, &old.identity, &old.attempt, &error.to_string());
-            let actual = ledger
-                .fixed_state(old.owner, &old.identity)
-                .unwrap()
-                .fixed_preparation
-                .attempt()
-                .unwrap();
-            assert_eq!(actual.operation, attempt.operation);
-            assert_eq!(actual.epoch, attempt.epoch);
-            assert!(Arc::ptr_eq(&actual.dispatch, &attempt.dispatch));
-            assert!(matches!(
-                ledger
-                    .fixed_state(old.owner, &old.identity)
-                    .unwrap()
-                    .fixed_preparation,
-                FixedPreparation::Pending(_)
-            ));
-            (scope, attempt, ui)
-        };
-        let reply = async {
-            let frame = read_frame(&mut fixture.server).await;
-            assert_eq!(frame["request"]["method"], "prepareSessionTab");
-            write_frame(
-                &mut fixture.server,
-                json!({"kind":"controlEvent","event":{"kind":"reply","data":{
-                    "id":frame["request"]["id"],"outcome":{"kind":"unknown","data":{
-                        "reason":"actual-new-prepare-unknown"
-                    }}
-                }}}),
-            )
-            .await;
-        };
-        let result = new_scope.dispatch(async {
-            enter_fixed_ui(&new_attempt.dispatch).map_err(|error| *error)?;
-            new_scope
-                .control
-                .prepare_fixed_session_tab(17, &old.policy, &ui)
-                .await
-        });
-        let (result, ()) = bounded(async { tokio::join!(result, reply) }).await;
-        assert!(matches!(
-            result.map_err(|error| *error),
-            Err(ExtensionProviderError::OutcomeUnknown { .. })
-        ));
-        {
-            let mut ledger = old.host.lock().await;
-            bounded(ledger.reconcile_provider(old.owner, &old.scope.provider))
-                .await
-                .unwrap();
-            let state = &ledger
-                .fixed_state(old.owner, &old.identity)
-                .unwrap()
-                .fixed_preparation;
-            let cause = state
-                .unknown()
-                .expect("actual matched SDK Unknown is retained")
-                .to_owned();
-            assert!(
-                state.cleanup_receipt().is_some(),
-                "actual SDK issued cleanup-only address"
-            );
-            ledger.fixed_caller_error(old.owner, &old.identity, &old.attempt, &error.to_string());
-            let state = &ledger
-                .fixed_state(old.owner, &old.identity)
-                .unwrap()
-                .fixed_preparation;
-            assert_eq!(state.unknown(), Some(cause.as_str()));
-            let actual = state.attempt().unwrap();
-            assert_eq!(actual.operation, new_attempt.operation);
-            assert_eq!(actual.epoch, new_attempt.epoch);
-            assert!(Arc::ptr_eq(&actual.dispatch, &new_attempt.dispatch));
-        }
-        // Unknown stays retained. Closing the task-owned IPC fixture is not
-        // claimed as extension cleanup, Host permission or T2 settlement.
-        bounded(fixture.extension.close()).await;
-        let mut byte = [0_u8];
-        assert_eq!(bounded(fixture.server.read(&mut byte)).await.unwrap(), 0);
-    }
-
-    fn known_preparation_result(frame: &Value) -> Value {
-        json!({"tab":{"id":frame["request"]["tabId"]},"sessionOnly":true,"preparation":{
-            "scopeId":frame["request"]["scopeId"],
-            "foreignInstalled":false,"popupInstalled":false,
-            "headers":{"stateConfirmed":true,"cleanupConfirmed":true,"active":false,"pendingRemoval":false},
-            "ui":{"status":"notAttempted"}
-        }})
-    }
-
-    #[tokio::test]
-    async fn actual_preparation_ack_after_same_call_seal_is_cleanup_only_in_host() {
-        let mut fixture = Fixture::open_with_lifecycle("host").await;
-        let pending = PendingScope::new(&fixture).await;
-        let reply = async {
-            let frame = read_frame(&mut fixture.server).await;
-            assert_eq!(frame["request"]["method"], "prepareSessionTab");
-            {
-                let ledger = pending.host.lock().await;
-                let provider = ledger
-                    .extension
-                    .get(&(pending.owner, pending.identity.browser.clone()))
-                    .unwrap();
-                assert!(
-                    provider.retiring_turn.is_none(),
-                    "old epoch drain need not retire the turn"
-                );
-                let call = provider
-                    .calls
-                    .get(&pending.attempt.operation.operation_id)
-                    .unwrap();
-                assert_eq!(call.epoch, pending.attempt.epoch);
-                call.controls.seal();
-            }
-            write_frame(&mut fixture.server, json!({"kind":"controlEvent","event":{"kind":"reply","data":{
-                "id":frame["request"]["id"],"outcome":{"kind":"result","data":known_preparation_result(&frame)}
-            }}})).await;
-        };
-        let original = pending.scope.dispatch(async {
-            enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
-            pending
-                .scope
-                .control
-                .prepare_fixed_session_tab(17, &pending.policy, &pending.ui)
-                .await
-        });
-        let (prepared, ()) = bounded(async { tokio::join!(original, reply) }).await;
-        let prepared = prepared.unwrap();
-        {
-            let mut ledger = pending.host.lock().await;
-            bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider))
-                .await
-                .unwrap();
-            let state = ledger
-                .fixed_state(pending.owner, &pending.identity)
-                .unwrap();
-            assert!(state.fixed_preparation.ready().is_none());
-            let retained = state.fixed_preparation.cleanup_receipt().unwrap();
-            assert!(same_receipt(retained, &prepared.receipt));
-            assert!(state.fixed_preparation.unknown().is_some());
-            assert!(
-                state.user_prepared_operation.is_none(),
-                "late ACK must not mint an acquisition"
-            );
-            assert!(
-                ledger
-                    .acquisition(pending.owner, &pending.identity)
-                    .is_none()
-            );
-        }
-        // The actual known receipt remains retained; transport close is no Clear/T2 proof.
-        fixture.assert_no_frame_and_close().await;
-    }
-
-    struct RetentionIdentityOnly;
-    impl crate::BrowserHostEffects for RetentionIdentityOnly {
-        fn spawn(&self, unpolled: crate::HostEffectFuture) -> Result<(), ToolError> {
-            drop(unpolled);
-            Err(failed(
-                "identity-only keeper cannot execute any Host effect",
-            ))
-        }
-        fn supports_lease_children(&self) -> bool {
-            // This marker is retained solely for Arc identity. No callback is
-            // invoked and it supplies no actual Host admission or DB authority.
-            true
-        }
-    }
-
-    fn actual_retention_request(
-        scope: &CallScope,
-        receipt: &ExtensionFixedSessionReceipt,
-    ) -> crate::BrowserSessionPreparation {
-        crate::BrowserSessionPreparation {
-            native_owner: scope.owner,
-            native_epoch: scope.epoch.to_string(),
-            browser_id: scope.provider.id().into(),
-            generation: receipt.generation().into(),
-            turn_id: scope.context.turn_id.clone(),
-            operation_id: scope.context.operation_id.clone(),
-            target: crate::BrowserPreparationTarget::FixedSessionTab {
-                tab_id: receipt.tab_id().to_string(),
-                scope_id: receipt.scope_id().into(),
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn actual_configure_ack_renews_only_current_compatible_factory_and_ui_attempt() {
-        for case in [
-            "renew",
-            "cross_turn",
-            "policy_changed",
-            "missing_current_factory",
-            "new_pending_same_context",
-            "new_ack_same_context",
-        ] {
-            let mut fixture = Fixture::open_with_lifecycle("host").await;
-            let initial = PendingScope::new_with_policy(
-                &fixture,
-                ExtensionPreparationPolicy {
-                    popup_enabled: true,
-                    ..Default::default()
-                },
-            )
-            .await;
-            let reply = async {
-                let frame = read_frame(&mut fixture.server).await;
-                let mut result = known_preparation_result(&frame);
-                result["preparation"]["popupInstalled"] = json!(true);
-                write_frame(
-                    &mut fixture.server,
-                    json!({"kind":"controlEvent","event":{"kind":"reply","data":{
-                        "id":frame["request"]["id"],"outcome":{"kind":"result","data":result}
-                    }}}),
-                )
-                .await;
-            };
-            let prepare = initial.scope.dispatch(async {
-                enter_fixed_ui(&initial.attempt.dispatch).map_err(|error| *error)?;
-                initial
-                    .scope
-                    .control
-                    .prepare_fixed_session_tab(17, &initial.policy, &initial.ui)
-                    .await
-            });
-            let (prepared, ()) = bounded(async { tokio::join!(prepare, reply) }).await;
-            let prepared = prepared.unwrap();
-            let owner_text = initial.owner.to_string();
-            let old_factory: Arc<dyn crate::BrowserHostEffects> = Arc::new(RetentionIdentityOnly);
-            let old_invocation =
-                crate::InvocationContext::new(&owner_text, &initial.scope.context.turn_id)
-                    .with_operation_id(initial.scope.context.operation_id.clone())
-                    .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
-                        popup_enabled: true,
-                        ..Default::default()
-                    })
-                    .with_browser_host_effects(old_factory.clone());
-            let old_request = actual_retention_request(&initial.scope, &prepared.receipt);
-            let (scope, ui, dispatch, initial_sequence, acquisition, creator_turn) = {
-                let mut ledger = initial.host.lock().await;
-                bounded(ledger.reconcile_provider(initial.owner, &initial.scope.provider))
-                    .await
-                    .unwrap();
-                ledger
-                    .retain_fixed_services(
-                        &initial.scope,
-                        &prepared,
-                        &initial.cursor,
-                        &old_invocation,
-                        &old_request,
-                    )
-                    .unwrap();
-                let sequence = ledger.tabs[&initial.identity].extension_sequence;
-                let acquisition = ledger
-                    .fixed_state(initial.owner, &initial.identity)
-                    .unwrap()
-                    .user_prepared_operation
-                    .clone();
-                let creator = ledger.tabs[&initial.identity].creator.turn.clone();
-                let turn = if case == "cross_turn" {
-                    "next-turn"
-                } else {
-                    "gate-turn"
-                };
-                let scope = ledger
-                    .extension_context(
-                        initial.owner,
-                        &initial.scope.provider,
-                        context_operation(turn),
-                        crate::desktop::NativeEpochId::new(),
-                        CallTarget::FixedConfiguration { tab: "17".into() },
-                        false,
-                    )
-                    .unwrap();
-                let ui = ui_request(
-                    &initial.cursor,
-                    scope.epoch,
-                    None,
-                    "idle",
-                    ExtensionFixedUiOperation::Configure,
-                )
-                .unwrap();
-                let dispatch = ledger
-                    .begin_fixed_ui(initial.owner, &initial.identity, &scope, &ui)
-                    .unwrap();
-                (scope, ui, dispatch, sequence, acquisition, creator)
-            };
-            let fresh_factory: Arc<dyn crate::BrowserHostEffects> = Arc::new(RetentionIdentityOnly);
-            let invocation = crate::InvocationContext::new(&owner_text, &scope.context.turn_id)
-                .with_operation_id(scope.context.operation_id.clone())
-                .with_browser_preparation_policy(crate::BrowserPreparationPolicy {
-                    popup_enabled: case != "policy_changed",
-                    ..Default::default()
-                });
-            let invocation = if case == "missing_current_factory" {
-                invocation
-            } else {
-                invocation.with_browser_host_effects(fresh_factory.clone())
-            };
-            let admission = actual_retention_request(&scope, &prepared.receipt);
-            let reply = async {
-                let frame = read_frame(&mut fixture.server).await;
-                assert_eq!(frame["request"]["method"], "sessionUi");
-                assert_eq!(frame["request"]["scopeId"], prepared.receipt.scope_id());
-                let ack = json!({"status":"attempted","acknowledged":true,"state":{"status":"ready","visible":false,"requestedPosition":null}});
-                write_frame(
-                    &mut fixture.server,
-                    json!({"kind":"controlEvent","event":{"kind":"reply","data":{
-                        "id":frame["request"]["id"],"outcome":{"kind":"result","data":{
-                            "tabId":17,"scopeId":prepared.receipt.scope_id(),"ui":ack
-                        }}
-                    }}}),
-                )
-                .await;
-            };
-            let configure = scope.dispatch(async {
-                enter_fixed_ui(&dispatch).map_err(|error| *error)?;
-                scope.control.session_ui(&prepared.receipt, &ui).await
-            });
-            let (proof, ()) = bounded(async { tokio::join!(configure, reply) }).await;
-            let proof = proof.unwrap();
-            bounded(
-                initial
-                    .host
-                    .lock()
-                    .await
-                    .reconcile_provider(initial.owner, &initial.scope.provider),
-            )
-            .await
-            .unwrap();
-            let replacement_attempt =
-                if matches!(case, "new_pending_same_context" | "new_ack_same_context") {
-                    Some(
-                        initial
-                            .host
-                            .lock()
-                            .await
-                            .begin_fixed_ui(initial.owner, &initial.identity, &scope, &ui)
-                            .unwrap(),
-                    )
-                } else {
-                    None
-                };
-            if case == "new_ack_same_context" {
-                let next = replacement_attempt.as_ref().unwrap();
-                let reply = async {
-                    let frame = read_frame(&mut fixture.server).await;
-                    write_frame(&mut fixture.server, json!({"kind":"controlEvent","event":{"kind":"reply","data":{
-                        "id":frame["request"]["id"],"outcome":{"kind":"result","data":{
-                            "tabId":17,"scopeId":prepared.receipt.scope_id(),
-                            "ui":{"status":"attempted","acknowledged":true,"state":{"status":"ready","visible":false,"requestedPosition":null}}
-                        }}
-                    }}})).await;
-                };
-                let newer = scope.dispatch(async {
-                    enter_fixed_ui(next).map_err(|error| *error)?;
-                    scope.control.session_ui(&prepared.receipt, &ui).await
-                });
-                let (newer, ()) = bounded(async { tokio::join!(newer, reply) }).await;
-                newer.unwrap();
-                bounded(
-                    initial
-                        .host
-                        .lock()
-                        .await
-                        .reconcile_provider(initial.owner, &initial.scope.provider),
-                )
-                .await
-                .unwrap();
-            }
-            {
-                let mut ledger = initial.host.lock().await;
-                let outcome = ledger.commit_fixed_configuration(
-                    initial.owner,
-                    &initial.identity,
-                    &initial.cursor,
-                    &invocation,
-                    &admission,
-                    &FixedUiCompletion {
-                        scope: &scope,
-                        request: &ui,
-                        proof: &proof,
-                        dispatch: &dispatch,
-                    },
-                );
-                let refused = matches!(
-                    case,
-                    "missing_current_factory" | "new_pending_same_context" | "new_ack_same_context"
-                );
-                assert_eq!(outcome.is_err(), refused, "case {case}: {outcome:?}");
-                let state = ledger
-                    .fixed_state(initial.owner, &initial.identity)
-                    .unwrap();
-                let child = state.lease_children.as_ref().unwrap();
-                if case == "renew" {
-                    assert!(Arc::ptr_eq(&child.effects, &fresh_factory));
-                    assert!(!Arc::ptr_eq(&child.effects, &old_factory));
-                    assert_eq!(child.epoch, scope.epoch);
-                    assert_eq!(child.turn, scope.context.turn_id);
-                } else {
-                    assert!(Arc::ptr_eq(&child.effects, &old_factory), "case {case}");
-                    assert_eq!(child.epoch, initial.scope.epoch);
-                    assert_eq!(child.turn, initial.scope.context.turn_id);
-                }
-                let endpoint = &ledger.cursor_scopes[&(initial.owner, initial.identity.clone())];
-                assert_eq!(
-                    endpoint.epoch(),
-                    if refused {
-                        initial.scope.epoch
-                    } else {
-                        scope.epoch
-                    },
-                    "case {case}"
-                );
-                let FixedPreparation::Retained(resource) = &state.fixed_preparation else {
-                    unreachable!()
-                };
-                assert_eq!(
-                    resource.current_ui.owner_epoch,
-                    if refused {
-                        initial.ui.owner_epoch.clone()
-                    } else {
-                        ui.owner_epoch.clone()
-                    },
-                    "case {case}"
-                );
-                assert!(same_receipt(
-                    resource.receipt.as_ref().unwrap(),
-                    &prepared.receipt
-                ));
-                assert_eq!(
-                    ledger.tabs[&initial.identity].extension_sequence,
-                    initial_sequence
-                );
-                assert_eq!(ledger.tabs[&initial.identity].creator.turn, creator_turn);
-                let (
-                    Some(PreparedOperation::Acquired {
-                        operation: current_operation,
-                        epoch: current_epoch,
-                    }),
-                    Some(PreparedOperation::Acquired {
-                        operation: original_operation,
-                        epoch: original_epoch,
-                    }),
-                ) = (state.user_prepared_operation.as_ref(), acquisition.as_ref())
-                else {
-                    panic!("actual initial SDK preparation must remain the acquisition");
-                };
-                assert_eq!(current_operation, original_operation);
-                assert_eq!(current_epoch, original_epoch);
-                if case == "new_pending_same_context" {
-                    let pending = resource.pending_ui.as_ref().unwrap();
-                    assert!(Arc::ptr_eq(
-                        &pending.dispatch,
-                        replacement_attempt.as_ref().unwrap()
-                    ));
-                    assert!(!Arc::ptr_eq(&pending.dispatch, &dispatch));
-                }
-            }
-            // The positive/negative cases preserve actual original acquisition;
-            // identity-only factories do not prove canonical Host grants/effects.
-            bounded(fixture.extension.close()).await;
-        }
     }
 }

@@ -44,6 +44,90 @@ impl RowPosition {
     }
 }
 
+/// An original row within the actual read capability supplied by the caller.
+/// Marker paths are relative to that capability; none of these fields grants access.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum HistoryRowAddress {
+    Live {
+        sequence: u64,
+        fact: crate::durable::FactId,
+        item_index: u64,
+    },
+    Snapshot {
+        path: Vec<crate::durable::RunId>,
+        #[schemars(with = "uuid::Uuid")]
+        snapshot: crate::history_snapshot::SnapshotId,
+        sequence: u64,
+        fact: crate::durable::FactId,
+        item_index: u64,
+    },
+    Imported {
+        path: Vec<crate::durable::RunId>,
+        #[schemars(with = "uuid::Uuid")]
+        snapshot: crate::history_snapshot::SnapshotId,
+        message_ordinal: u64,
+        part_ordinal: u64,
+    },
+}
+impl HistoryRowAddress {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const MAX: u64 = 9_007_199_254_740_991;
+        match self {
+            Self::Live {
+                sequence,
+                item_index,
+                ..
+            }
+            | Self::Snapshot {
+                sequence,
+                item_index,
+                ..
+            } if *sequence > 0 && *sequence <= MAX && *item_index <= MAX => Ok(()),
+            Self::Imported {
+                message_ordinal,
+                part_ordinal,
+                ..
+            } if *message_ordinal <= MAX && *part_ordinal <= MAX => Ok(()),
+            _ => Err("invalid history source address"),
+        }
+    }
+    pub fn with_item_index(&self, index: u64) -> Self {
+        let mut address = self.clone();
+        match &mut address {
+            Self::Live { item_index, .. } | Self::Snapshot { item_index, .. } => {
+                *item_index = index
+            }
+            Self::Imported { part_ordinal, .. } => *part_ordinal = index,
+        }
+        address
+    }
+    pub fn path(&self) -> &[crate::durable::RunId] {
+        match self {
+            Self::Live { .. } => &[],
+            Self::Snapshot { path, .. } | Self::Imported { path, .. } => path,
+        }
+    }
+}
+
+/// Lexicographic tree order: original marker sequences followed by the leaf
+/// sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryOrder {
+    pub path: Vec<u64>,
+    pub item_index: u64,
+}
+
 /// Incremental, policy-independent model-history interpretation.
 pub mod semantic;
 

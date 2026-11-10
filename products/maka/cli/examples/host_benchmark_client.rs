@@ -56,6 +56,7 @@
 use maka_app_client::{Client, Journal, Mutation, SubscriptionEvent};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::host::{Client as HostClient, discovery};
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     contract::{ResourceType, text_resource_type},
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
@@ -130,9 +131,23 @@ fn operation_id(v: &Value) -> Result<Uuid> {
 fn returned(reply: OperationReply) -> Result<Value> {
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
             cleanup: OperationCleanup::Confirmed,
         } => Ok(value),
+        Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Failure { diagnostic },
+                },
+            cleanup: OperationCleanup::Confirmed,
+        } => Err(diagnostic),
+        Receipt::Recorded {
+            outcome: OperationOutcome::NotExecuted { .. },
+            cleanup: OperationCleanup::Confirmed,
+        } => Err("mutation was prevented before execution".into()),
         receipt => Err(format!(
             "mutation did not return a confirmed recorded outcome: {}",
             serde_json::to_string(&receipt).unwrap_or_default()

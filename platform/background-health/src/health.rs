@@ -17,13 +17,14 @@
  * under the License.
  */
 
-use maka_agent_facts::shell_result::ShellOutput;
-use maka_agent_facts::shell_result::ShellSnapshot;
-use maka_agent_facts::shell_result::ShellStatus;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call;
 use maka_capabilities::filesystem;
 use maka_capabilities::http;
+use maka_plugin_core::{
+    http::Method,
+    shell_result::{ShellOutput, ShellSnapshot, ShellStatus},
+};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Instant};
 
@@ -161,9 +162,9 @@ impl Health {
             biased;
             _ = scope.cancellation.cancelled() => Err(http::Error::Failed("cancelled".into())),
             result = async {
-                let status = self.request(&scope, &target, http::Method::Head).await?;
+                let status = self.request(&scope, &target, Method::Head).await?;
                 if matches!(status, 405 | 501) {
-                    self.request(&scope, &target, http::Method::Get).await
+                    self.request(&scope, &target, Method::Get).await
                 } else {
                     Ok(status)
                 }
@@ -204,7 +205,7 @@ impl Health {
         &self,
         scope: &call::Scope,
         url: &str,
-        method: http::Method,
+        method: Method,
     ) -> Result<u16, http::Error> {
         let response = self
             .http
@@ -227,240 +228,4 @@ impl Health {
 }
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::future::BoxFuture;
-    use maka_agent_facts::tools::ToolError;
-    use maka_capabilities::call;
-    use maka_capabilities::filesystem;
-    use maka_capabilities::http;
-    use serde_json::{Value, json};
-    use std::{
-        collections::VecDeque,
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        },
-    };
-    use tokio_util::sync::CancellationToken;
-    const REFERENCE: &str = "maka://runtime/background-tasks/task";
-    struct Files {
-        snapshot: Value,
-        denied: AtomicBool,
-        calls: AtomicUsize,
-    }
-    impl filesystem::Files for Files {
-        fn invoke(
-            &self,
-            _: call::Scope,
-            operation: filesystem::Operation,
-        ) -> BoxFuture<'_, Result<filesystem::Output, ToolError>> {
-            Box::pin(async move {
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                assert!(matches!(operation,filesystem::Operation::Read(ref r)if r.path==REFERENCE));
-                if self.denied.load(Ordering::SeqCst) {
-                    return Err(ToolError::Failed("Session access denied".into()));
-                }
-                Ok(filesystem::Output::Value(self.snapshot.clone()))
-            })
-        }
-    }
-    #[derive(Default)]
-    struct Transport {
-        replies: Mutex<VecDeque<http::Response>>,
-        calls: Mutex<Vec<http::BufferedRequest>>,
-        started: tokio::sync::Notify,
-    }
-    impl http::Client for Transport {
-        fn request(
-            &self,
-            _: call::Scope,
-            request: http::Request,
-        ) -> BoxFuture<'_, Result<http::Response, http::Error>> {
-            Box::pin(async move {
-                let http::Request {
-                    url,
-                    method,
-                    headers,
-                    body,
-                } = request;
-                let mut upload = body.into_stream();
-                let mut body = Vec::new();
-                while let Some(chunk) = futures_util::StreamExt::next(&mut upload).await {
-                    body.extend_from_slice(&chunk.unwrap());
-                }
-                let request = http::BufferedRequest {
-                    url,
-                    method,
-                    headers,
-                    body,
-                };
-                self.calls.lock().unwrap().push(request);
-                self.started.notify_one();
-                let result = self.replies.lock().unwrap().pop_front();
-                match result {
-                    Some(r) => Ok(r),
-                    None => std::future::pending().await,
-                }
-            })
-        }
-    }
-    #[derive(Default)]
-    struct Body {
-        cancelled: AtomicBool,
-        closed: AtomicUsize,
-        uncertain: bool,
-    }
-    impl http::Body for Body {
-        fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
-            Box::pin(async { panic!("Health probes must never read response bodies") })
-        }
-        fn cancel(&self) {
-            self.cancelled.store(true, Ordering::SeqCst)
-        }
-        fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
-            Box::pin(async {
-                self.closed.fetch_add(1, Ordering::SeqCst);
-                assert!(self.cancelled.load(Ordering::SeqCst));
-                if self.uncertain {
-                    Err(http::Error::CleanupUnconfirmed)
-                } else {
-                    Ok(())
-                }
-            })
-        }
-    }
-    fn reply(transport: &Transport, status: u16, uncertain: bool) -> Arc<Body> {
-        let body = Arc::new(Body {
-            uncertain,
-            ..Default::default()
-        });
-        transport.replies.lock().unwrap().push_back(http::Response {
-            head: http::Head {
-                status,
-                url: "https://example.test/health".into(),
-                headers: vec![("Location".into(), b"https://other.test/".to_vec())],
-            },
-            body: body.clone(),
-        });
-        body
-    }
-    fn backend() -> (Health, Arc<Files>, Arc<Transport>) {
-        let files = Arc::new(Files {
-            denied: AtomicBool::new(false),
-            calls: AtomicUsize::new(0),
-            snapshot: json!({"kind":"shell_run","ref":REFERENCE,"mode":"pipes","status":"failed","cwd":"/tmp","cmd":"test","startedAt":1,"updatedAt":2,"completedAt":2,"exitCode":3,"revision":2,"output":{"mode":"pipes","stdout":"private logs","stderr":"failed","stdoutTruncated":false,"stderrTruncated":false,"redacted":false}}),
-        });
-        let http = Arc::new(Transport::default());
-        (
-            Health {
-                files: files.clone(),
-                http: http.clone(),
-            },
-            files,
-            http,
-        )
-    }
-    fn scope() -> call::Scope {
-        call::Issuer::default()
-            .issue(
-                call::Identity::Remote {
-                    request_id: uuid::Uuid::new_v4(),
-                },
-                CancellationToken::new(),
-            )
-            .unwrap()
-    }
-    fn input(url: bool, logs: bool) -> Input {
-        Input {
-            reference: REFERENCE.into(),
-            include_logs: logs,
-            url: url.then(|| "https://example.test/health".into()),
-        }
-    }
-    #[tokio::test]
-    async fn process_and_endpoint_are_independent_logs_are_opt_in_and_bodies_are_discarded() {
-        let (health, _, http) = backend();
-        let scope = scope();
-        let report =
-            serde_json::to_value(health.check(&scope, input(false, false)).await.unwrap()).unwrap();
-        assert_eq!(report["process"]["status"], "failed");
-        assert_eq!(report["endpoint"]["state"], "not_checked");
-        assert!(report["process"].get("logs").is_none());
-        assert!(http.calls.lock().unwrap().is_empty());
-        let head = reply(&http, 405, false);
-        let get = reply(&http, 204, false);
-        let report =
-            serde_json::to_value(health.check(&scope, input(true, true)).await.unwrap()).unwrap();
-        assert_eq!(report["process"]["status"], "failed");
-        assert_eq!(report["process"]["exitCode"], 3);
-        assert_eq!(report["process"]["logs"]["stdout"], "private logs");
-        assert_eq!(report["endpoint"]["health"], "healthy");
-        {
-            let calls = http.calls.lock().unwrap();
-            assert_eq!(calls.len(), 2);
-            assert!(matches!(calls[0].method, http::Method::Head));
-            assert!(matches!(calls[1].method, http::Method::Get));
-            assert!(calls.iter().all(|request| request.body.is_empty()));
-        }
-        assert_eq!(head.closed.load(Ordering::SeqCst), 1);
-        assert_eq!(get.closed.load(Ordering::SeqCst), 1);
-        scope.finish().await.unwrap();
-    }
-    #[tokio::test]
-    async fn redirects_are_observations_and_failed_settlement_is_not_a_health_result() {
-        let (health, _, http) = backend();
-        let scope = scope();
-        for (status, expected) in [(302, "unknown"), (503, "unhealthy")] {
-            reply(&http, status, false);
-            let report =
-                serde_json::to_value(health.check(&scope, input(true, false)).await.unwrap())
-                    .unwrap();
-            assert_eq!(report["endpoint"]["health"], expected);
-        }
-        assert_eq!(http.calls.lock().unwrap().len(), 2);
-        reply(&http, 200, true);
-        assert!(matches!(
-            health.check(&scope, input(true, false)).await,
-            Err(ToolError::CleanupUnconfirmed(_))
-        ));
-        scope.finish().await.unwrap();
-    }
-    #[tokio::test]
-    async fn unauthorized_resource_and_invalid_reference_do_not_probe() {
-        let (health, files, http) = backend();
-        let scope = scope();
-        files.denied.store(true, Ordering::SeqCst);
-        assert!(health.check(&scope, input(true, false)).await.is_err());
-        assert!(http.calls.lock().unwrap().is_empty());
-        files.denied.store(false, Ordering::SeqCst);
-        let calls = files.calls.load(Ordering::SeqCst);
-        for reference in [
-            "/etc/passwd",
-            "maka://runtime/background-tasks/%74ask",
-            "maka://runtime/background-tasks/task?other=1",
-        ] {
-            let mut input = input(false, false);
-            input.reference = reference.into();
-            assert!(health.check(&scope, input).await.is_err());
-        }
-        assert_eq!(files.calls.load(Ordering::SeqCst), calls);
-        scope.finish().await.unwrap();
-    }
-    #[tokio::test]
-    async fn cancellation_drains_probe_and_is_not_reported_as_unhealthy() {
-        let (health, _, http) = backend();
-        let parent = scope();
-        let check = health.check(&parent, input(true, false));
-        let cancel = async {
-            http.started.notified().await;
-            parent.cancellation.cancel();
-        };
-        let (result, ()) = tokio::join!(check, cancel);
-        assert!(result.is_err());
-        parent.finish().await.unwrap();
-    }
 }

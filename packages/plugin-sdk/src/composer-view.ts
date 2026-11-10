@@ -26,7 +26,8 @@ import type {
   AgentExecution,
   AgentGoalView,
   GoalControl,
-  AgentResumable,
+  AgentAdjudicateRisk,
+  RunId,
   AgentQueueAction,
   AgentQueueMessageResult,
   AgentQueueMutationResult,
@@ -215,6 +216,16 @@ export interface ComposerCompletionSource {
   pathLabel(path: WorkspacePath): string;
 }
 
+/** A terminal source observed at its exact Run-local fence. Continuing admits a new Run. */
+export interface ComposerContinuation {
+  readonly source: AgentExecution & {
+    readonly state: Extract<
+      AgentExecution['state'],
+      { kind: 'completed' | 'failed' | 'cancelled' }
+    >;
+  };
+}
+
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
   quotes(): QuoteRef[];
@@ -247,18 +258,21 @@ export interface ComposerSession<Element = unknown> {
   dismissSend(id: string): Promise<void>;
   recovering(): boolean;
   connected(): boolean;
-  invocation(): string | null;
+  run(): RunId | null;
+  execution(): AgentExecution | null;
   stopping(): boolean;
-  resumable(): AgentResumable | null;
-  resuming(): boolean;
-  resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
+  continuation(): ComposerContinuation | null;
+  continuing(): boolean;
+  continueRun(source: AgentExecution, backend: ComposerBackend): Promise<void>;
+  adjudicating(): boolean;
+  adjudicateRisk(input: AgentAdjudicateRisk): Promise<void>;
   metrics(): string;
   /** How much of its model's context the conversation uses, when the model reports a window. */
   contextUsage?(): ComposerContextUsage | null;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
-  stop(invocationId: string | null): Promise<void>;
+  stop(runId: RunId | null): Promise<void>;
 }
 
 export interface ComposerViewInput<Element = unknown> {

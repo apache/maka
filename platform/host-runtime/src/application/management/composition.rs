@@ -181,10 +181,18 @@ impl Manager {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| unavailable.into())
     }
-    pub(super) async fn binding_candidates(&self, input: Value) -> Result<Value> {
+    pub(super) async fn binding_candidates(
+        &self,
+        floor: &maka_sandbox::Sandbox,
+        input: Value,
+    ) -> Result<Value> {
         let request: BindingCandidatesRead =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
-        let _read = self.writes.lock().await;
+        if matches!(&request.consumer, BindingConsumer::Root { .. })
+            && !matches!(floor, maka_sandbox::Sandbox::Disabled)
+        {
+            return Err("IsolationUnavailable: root binding configuration requires an unconstrained host control scope".into());
+        }
         let loaded = self.source_at(request.source).await?;
         let plan = loaded.plan();
         let (entry, configuration, current) = match &request.consumer {

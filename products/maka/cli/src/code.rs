@@ -17,37 +17,29 @@
  * under the License.
  */
 
-use std::io::Read;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use maka_agent_facts::event::EventWrite;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::execution::ApprovalPolicy;
-use maka_agent_facts::execution::CollaborationMode;
-use maka_agent_facts::execution::InvocationConfiguration;
-use maka_agent_facts::execution::SandboxMode;
-use maka_agent_facts::execution::ToolMode;
-use maka_agent_facts::tools::JournaledTools;
-use maka_agent_facts::tools::ToolError;
-use maka_agent_facts::tools::ToolExecutor;
-use maka_agent_facts::tools::ToolFuture;
-use maka_code_runtime::{
-    CellAbort, CellContext, CellDiagnosticKind, CellLimits, CellResult, CellStore, ToolMetadata,
+use maka_agent_facts::{
+    execution::{ApprovalPolicy, SandboxMode},
+    tools::{
+        ToolError, ToolExecutor, ToolFuture, ToolHandler, ToolNesting, ToolRegistration,
+        ToolSemantics,
+    },
 };
+use maka_code_runtime::{CellLimits, CellStore};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_fs_tools::{MutationExecutor, ReadExecutor, ReadScope, WriteCoordinator, WriteScope};
-use maka_js_runtime::CodeExecutor;
 use maka_sandbox::{
     Sandbox,
     filesystem::{Access, Rule},
 };
+use maka_tools::{
+    CellAdmission, CellObservation, CellPersistence, CodeCells, CodeExecutor, ToolCatalog,
+    ToolDefinition,
+};
 use serde_json::{Value, json};
+use std::{io::Read, path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+mod persistence;
 
 #[derive(clap::Args)]
 pub(super) struct Args {
@@ -130,13 +122,18 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
     } else {
         RootOwner::create(&args.root, &namespaces)?
     };
-    let root = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
+    let root = Arc::new(
+        maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())
+            .await?,
+    );
     let (mut sandbox, _) = maka_fs_tools::workspace::permissions::resolve(sandbox_mode, &cwd)?;
     if let Sandbox::Managed { filesystem, .. } = &mut sandbox {
         for path in [&args.root, &namespaces.ownership, &namespaces.control] {
             let path = path.canonicalize()?;
-            let path = maka_fs_tools::workspace::project::host_path(&path)?;
-            filesystem.rules.push(Rule::subtree(path, Access::Deny));
+            filesystem.rules.push(Rule::subtree(
+                maka_fs_tools::workspace::project::host_path(&path)?,
+                Access::Deny,
+            ));
         }
     }
     let (read_scope, write_scope) = match sandbox {
@@ -150,165 +147,138 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
         Sandbox::Disabled => (ReadScope::Unrestricted, WriteScope::Unrestricted),
         Sandbox::External { .. } => unreachable!("workspace presets never delegate isolation"),
     };
-    let local_tools = LocalTools {
+    let local_tools = Arc::new(LocalTools {
         read: ReadExecutor::new(&cwd, read_scope)?,
         write: MutationExecutor::new(&cwd, write_scope, Arc::new(WriteCoordinator::default()))?,
-    };
-    let limits = CellLimits::default();
+    });
+    let catalog = ToolCatalog::new(
+        local_tools
+            .names()
+            .into_iter()
+            .map(|name| ToolRegistration {
+                definition: ToolDefinition {
+                    name,
+                    description: String::new(),
+                    input_schema: json!(true),
+                    output_schema: None,
+                    provider: None,
+                    freeform: None,
+                },
+                nesting: ToolNesting::Nestable,
+                semantics: ToolSemantics::Parallel,
+                handler: ToolHandler::Immediate(local_tools.clone()),
+            }),
+    )
+    .map_err(|error| error.to_string())?;
     let mut source = String::new();
     std::io::stdin().read_to_string(&mut source)?;
-    let id = || Uuid::new_v4().to_string();
-    let invocation = Invocation {
-        session_id: id(),
-        turn_id: id(),
-        run_id: id(),
-        invocation_id: id(),
-    };
+    let session_id = Uuid::new_v4().to_string();
     let binding = root
         .attach_workspace("cli-code", &json!({"path":cwd}))
         .await?;
-    let stamp = maka_agent_facts::workspace::BindingStamp {
+    let stamp = maka_sandbox::workspace::BindingStamp {
         id: binding.id,
         permission_epoch: binding.permission_epoch_at_attach,
     };
-    let now = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis(),
-    )?;
-    let session = root
-        .create_session(
-            &invocation.session_id,
-            &invocation.invocation_id,
-            &json!({"workspace":binding,"boundary_revision":0}),
-            now,
-        )
-        .await?;
+    let now = persistence::now();
+    let session = root.create_session(&session_id, "maka.cli.code.v1", &json!({"workspace":binding, "boundary_revision":0, "sandboxMode":sandbox_mode, "approvalPolicy":approval_policy}), u64::try_from(now.0)?).await?;
     let scope = session
-        .execution_scope(Some(maka_agent_facts::workspace::PermissionBasis {
+        .work_scope(Some(maka_sandbox::workspace::PermissionBasis {
             boundary_revision: 0,
             binding: stamp,
         }))
         .await?;
-    let log = Arc::new(scope.store());
-    log.append(&EventWrite::plain(RuntimeEvent::new(
-        invocation.clone(),
-        Fact::InvocationOpened {
-            configuration: Some(Box::new(InvocationConfiguration {
-                language: maka_agent_facts::language::Language::En,
-                compaction_prompt: None,
-                workspace_origin: maka_agent_facts::execution::WorkspaceOrigin::Selected,
-                system_prompt: None,
-                editing_tools: None,
-                tool_discovery: false,
-                tool_composition: None,
-                workspace_binding: Some(stamp),
-                workspace_identity: None,
-                cwd: cwd
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|_| "code working directory is not UTF-8")?,
-                sandbox_mode,
-                approval_policy,
-                boundary_revision: 0,
-                collaboration_mode: CollaborationMode::Agent,
-                tool_mode: ToolMode::CodeMode,
-                code_language: Default::default(),
-                model: None,
-                thinking_level: None,
-            })),
-            input: maka_agent_facts::input::InvocationInput::Code {
-                source: source.clone(),
-            },
-        },
-    ))?)
-    .await?;
-    let engine = CodeExecutor::new(limits)?;
-    let tools = Arc::new(JournaledTools::new(
-        log.clone(),
-        invocation.clone(),
-        Arc::new(local_tools),
-    ));
-    let context = CellContext::new(
-        CellStore::temporary().map_err(|error| error.message)?,
-        tools
-            .names()
-            .into_iter()
-            .map(|name| ToolMetadata {
-                name,
-                description: String::new(),
-            })
-            .collect(),
-    )
-    .map_err(|error| error.message)?;
+    let executor = CodeExecutor::new(CellLimits::default())?;
     let cancellation = CancellationToken::new();
+    let admission = CellAdmission::new(
+        source,
+        maka_agent_facts::cells::CellOwner::Standalone {
+            session: session_id.clone(),
+        },
+        now,
+    );
     let signal_cancel = cancellation.clone();
     let signal = tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             signal_cancel.cancel();
         }
     });
-    let lease = scope.accept();
-    let result = engine
-        .execute_with_context(source, tools, cancellation, context.clone())
-        .await;
-    signal.abort();
-    let outcome = match &result {
-        Ok(CellResult::Success { .. }) => InvocationOutcome::Completed,
-        Ok(CellResult::Failure { error, .. }) => InvocationOutcome::Failed {
-            class: match error.kind {
-                CellDiagnosticKind::ParseError => "cell_parse",
-                CellDiagnosticKind::ExecutionError => "javascript",
-                CellDiagnosticKind::UnknownTool => "unknown_tool",
-                CellDiagnosticKind::LimitExceeded => "cell_limit",
-                CellDiagnosticKind::ToolFailure => "tool_execution",
+    let (lease, effects) = scope.accept(cancellation.clone());
+    let mut coordinator = None;
+    let result = async {
+        let custody = lease
+            .store()
+            .work_custody()
+            .map_err(|error| ToolError::Persistence(error.to_string()))?;
+        let data = root
+            .data_writer_for_work(custody.as_ref(), &session_id)
+            .map_err(|error| ToolError::Persistence(error.to_string()))?;
+        let cells_store = maka_agent_state::cells::CellsStore::new(data);
+        let reader = cells_store.reader(session_id.clone(), tokio::runtime::Handle::current());
+        let cells = CodeCells::new(executor, CellStore::new(reader));
+        coordinator = Some(cells.clone());
+        let port = Arc::new(persistence::Standalone {
+            root: root.clone(),
+            cells: cells_store,
+            session: session_id.clone(),
+            cell: admission.id(),
+            custody,
+            tools: local_tools,
+            admission: Arc::default(),
+        });
+        let cell = cells
+            .start_cell(&admission, catalog, port.clone(), cancellation.clone())
+            .await?;
+        loop {
+            let observed = cells
+                .observe_cell(
+                    cell,
+                    Duration::from_secs(30),
+                    false,
+                    port.clone(),
+                    cancellation.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            if !matches!(&observed.observation, CellObservation::Running { .. }) {
+                break Ok::<_, ToolError>(observed.observation);
             }
-            .into(),
-            message: Some(error.message.chars().take(2048).collect()),
-            model_failure: None,
-        },
-        Err(CellAbort::Cancelled) => InvocationOutcome::Cancelled {
-            source: "runtime_cancellation".into(),
-        },
-        Err(error) => InvocationOutcome::Failed {
-            class: match error {
-                CellAbort::Tool(_) => "tool_execution",
-                CellAbort::Cancelled => unreachable!(),
-                CellAbort::Internal(_) => "cell_internal",
-            }
-            .into(),
-            message: Some(error.to_string().chars().take(2048).collect()),
-            model_failure: None,
-        },
+        }
+    }
+    .await;
+    let cleanup = match coordinator {
+        Some(cells) => cells.shutdown().await,
+        None => Ok(()),
     };
-    let terminal = log
-        .append(&EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
-            Fact::InvocationEnded { outcome },
-        ))?)
-        .await;
-    if matches!(
-        &result,
-        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(_)) | CellAbort::Internal(_))
-    ) {
-        lease.retain_unconfirmed();
+    let drained = effects.settle().await;
+    signal.abort();
+    let unconfirmed = matches!(
+        &cleanup,
+        Err(ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. })
+    );
+    if unconfirmed || drained.is_err() {
+        lease.retain_unconfirmed(());
     } else {
         lease.finish();
     }
     let closed = root.shutdown().await;
-    terminal?;
+    println!(
+        "{}",
+        json!({
+            "sessionId":session_id,"cellId":admission.id(),"output":result.as_ref().ok(),
+            "error":result.as_ref().err().map(ToString::to_string),
+            "settlement":{"cellError":cleanup.as_ref().err().map(ToString::to_string),
+                "workError":drained.as_ref().err().map(ToString::to_string),
+                "rootError":closed.as_ref().err().map(ToString::to_string)}
+        })
+    );
+    drained?;
+    cleanup?;
     closed?;
-    match result {
-        Ok(output) => {
-            println!(
-                "{}",
-                json!({"invocation": invocation, "output": output, "content": context.take_output(), "notifications":context.take_notifications()})
-            );
-            if let CellResult::Failure { error, .. } = output {
-                return Err(error.message.into());
-            }
-        }
-        Err(error) => return Err(error.into()),
+    let output = result
+        .map_err(|error| format!("Cell {} in Session {session_id}: {error}", admission.id()))?;
+    if let CellObservation::Interrupted { report, .. } = output {
+        return Err(format!("code Cell interrupted: {report}").into());
     }
     Ok(())
 }

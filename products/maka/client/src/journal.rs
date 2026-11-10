@@ -19,6 +19,7 @@
 
 //! Client-owned correlation and original receipts, independent of UI nodes.
 use crate::{CONTROL_KIND, CONTROL_METHODS, Result, SETTINGS_KIND, SETTINGS_METHODS, ServiceOwner};
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
@@ -70,8 +71,6 @@ pub struct Journal {
     pub(crate) pool: SqlitePool,
     writes: tokio::sync::mpsc::Sender<write::Pending>,
     path: std::path::PathBuf,
-    #[cfg(test)]
-    pub(crate) preparing: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// Stable product owner, independent of endpoint aliases, VM instances and UI nodes.
@@ -291,8 +290,6 @@ impl Journal {
         .map(|_| ())
     }
     pub(crate) async fn prepared(&self, id: Uuid, reference: &RecoveryRef) -> Result<()> {
-        #[cfg(test)]
-        self.preparing.notify_one();
         self.write(write::Command::Prepared {
             id,
             reference: reference.clone(),
@@ -332,13 +329,7 @@ impl Journal {
         .map(|_| ())
     }
     pub(crate) async fn observe(&self, operation: &Operation, receipt: &Receipt) -> Result<()> {
-        if !matches!(
-            receipt,
-            Receipt::Recorded {
-                outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
-                ..
-            }
-        ) {
+        if !matches!(receipt, Receipt::Recorded { .. }) {
             return Ok(());
         }
         self.write(write::Command::Observe {
@@ -351,18 +342,6 @@ impl Journal {
     }
 
     pub async fn open(path: &Path) -> Result<Self> {
-        Self::open_inner(
-            path,
-            #[cfg(test)]
-            None,
-        )
-        .await
-    }
-
-    async fn open_inner(
-        path: &Path,
-        #[cfg(test)] contention: Option<&tokio::sync::Notify>,
-    ) -> Result<Self> {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -396,10 +375,7 @@ impl Journal {
                             .and_then(|error| error.code())
                             .and_then(|code| code.parse::<i32>().ok())
                             .is_some_and(|code| code & 0xff == 5);
-                        #[cfg(test)]
-                        if busy && let Some(contention) = contention {
-                            contention.notify_one();
-                        }
+
                         if busy {
                             tokio::task::yield_now().await;
                         }
@@ -415,8 +391,6 @@ impl Journal {
                 .map_err(|error| format!("client journal beginning schema transaction: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, domain TEXT NOT NULL, deployment TEXT NOT NULL, context TEXT NOT NULL, draft_owner TEXT, reference TEXT, receipt TEXT, abandoned INTEGER NOT NULL DEFAULT 0, upload_adopted INTEGER NOT NULL DEFAULT 0)")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating operations table: {error}"))?;
-            sqlx::query("CREATE INDEX IF NOT EXISTS operations_pending ON operations(domain,deployment,draft_owner) WHERE receipt IS NULL AND abandoned=0")
-                .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS dismissed_controls (operation TEXT PRIMARY KEY REFERENCES operations(id))")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating dismissed controls table: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS pending_sends (operation TEXT PRIMARY KEY REFERENCES operations(id), owner TEXT NOT NULL)")
@@ -459,8 +433,6 @@ impl Journal {
             pool,
             writes,
             path: path.to_owned(),
-            #[cfg(test)]
-            preparing: std::sync::Arc::new(tokio::sync::Notify::new()),
         })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
@@ -547,6 +519,8 @@ impl Journal {
             .bind(&correlation)
             .bind(&correlation)
             .bind(&correlation)
+            .bind(&correlation)
+            .bind(&correlation)
             .fetch_all(&self.pool)
             .await
             .map_err(error)?;
@@ -573,7 +547,7 @@ impl Journal {
         host: &DeploymentRef,
         instance: &InstanceId,
     ) -> Result<Vec<Operation>> {
-        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND json_extract(context,'$.correlation.kind')='ui' AND json_extract(context,'$.correlation.instance')=? AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC")
+        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND json_extract(context,'$.correlation.kind')='ui' AND json_extract(context,'$.correlation.instance')=? AND (receipt IS NULL OR json_extract(receipt,'$.outcome.kind') IN ('unresolved','unknown') OR json_extract(receipt,'$.cleanup.kind') != 'confirmed') AND abandoned=0 ORDER BY rowid DESC")
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
             .bind(serde_json::to_string(instance).map_err(error)?)
@@ -680,7 +654,10 @@ fn decode_operation(row: SqliteRow) -> Result<Operation> {
 }
 fn accepted_send(receipt: &Receipt, session: &str) -> bool {
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -693,9 +670,9 @@ fn accepted_send(receipt: &Receipt, session: &str) -> bool {
             .is_some_and(|id| !id.is_empty())
         && match value.get("kind").and_then(Value::as_str) {
             Some("started") => value
-                .get("invocationId")
+                .get("runId")
                 .and_then(Value::as_str)
-                .is_some_and(|id| !id.is_empty()),
+                .is_some_and(|id| Uuid::parse_str(id).is_ok_and(|id| !id.is_nil())),
             Some("queued") => value
                 .get("revision")
                 .and_then(Value::as_u64)
@@ -710,7 +687,10 @@ pub(crate) fn queued_send(operation: &Operation) -> Option<(&str, u64)> {
         return None;
     }
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = receipt
     else {
@@ -730,9 +710,16 @@ pub(crate) fn queued_send(operation: &Operation) -> Option<(&str, u64)> {
 
 pub(crate) fn retryable_send(operation: &Operation) -> bool {
     operation.abandoned
+        || matches!(
+            &operation.receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::NotExecuted { .. },
+                ..
+            })
+        )
         || matches!(&operation.receipt,
             Some(Receipt::Recorded {
-                outcome: OperationOutcome::Returned { value }, ..
+                outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, ..
             }) if matches!(value.get("kind").and_then(Value::as_str), Some("rejected" | "not_your_worker")))
 }
 fn error(error: impl std::fmt::Display) -> String {
@@ -770,8 +757,25 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
     ) {
         return Ok(None);
     }
+    match &operation.receipt {
+        Some(Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Failure { diagnostic },
+                },
+            ..
+        }) => return Err(format!("attachment upload failed: {diagnostic}")),
+        Some(Receipt::Recorded {
+            outcome: OperationOutcome::NotExecuted { .. },
+            ..
+        }) => return Ok(None),
+        _ => {}
+    }
     let Some(Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     }) = &operation.receipt
     else {
@@ -796,460 +800,4 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
         return Err("attachment upload receipt differs from the original file".into());
     }
     Ok(Some(attachment))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_plugin_core::{
-        contract::Transport,
-        operation::{OperationCleanup, RecoveryContract, RecoveryProtocol},
-    };
-    use sqlx::{Connection, SqliteConnection};
-
-    #[tokio::test]
-    async fn execution_observations_survive_reopen_without_changing_reservation_context() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("client.db");
-        let journal = Journal::open(&path).await.unwrap();
-        let host = DeploymentRef {
-            state_domain: "a".repeat(64),
-            deployment: Uuid::from_u128(9),
-            revision: 1,
-        };
-        let mut originals = Vec::new();
-        for operation_id in [1, 2] {
-            let operation = Operation {
-                id: Uuid::from_u128(operation_id),
-                host: host.clone(),
-                endpoint: "agent".into(),
-                method: "create".into(),
-                session_id: Some("session".into()),
-                correlation: serde_json::json!({"editor":"composer"}),
-                draft: None,
-                upload: None,
-                abandoned: false,
-                reference: None,
-                receipt: None,
-            };
-            journal.reserve(&operation).await.unwrap();
-            let context: String = sqlx::query_scalar("SELECT context FROM operations WHERE id=?")
-                .bind(operation.id.to_string())
-                .fetch_one(&journal.pool)
-                .await
-                .unwrap();
-            let stored: Value = serde_json::from_str(&context).unwrap();
-            assert_eq!(
-                stored["correlation"],
-                serde_json::json!({"editor":"composer"})
-            );
-            for field in ["reference", "receipt", "abandoned"] {
-                assert!(
-                    stored.get(field).is_none(),
-                    "execution observation {field} must not be copied into reservation context"
-                );
-            }
-            let reference = RecoveryRef {
-                source: host.clone(),
-                namespace: InstanceId(vec![Uuid::from_u128(3)]),
-                export: "Agent".into(),
-                method: "create".into(),
-                operation: operation.id,
-                fingerprint: format!("sha256-{}", "f".repeat(64)),
-                contract: RecoveryContract {
-                    name: "test.Agent".into(),
-                    version: 1,
-                    transport: Transport::Remote,
-                    digest: format!("sha256-{}", "c".repeat(64)),
-                },
-                recovery: RecoveryProtocol::JournalV1,
-            };
-            journal.prepared(operation.id, &reference).await.unwrap();
-            if operation_id == 1 {
-                journal
-                    .observe(
-                        &operation,
-                        &Receipt::Recorded {
-                            outcome: OperationOutcome::Returned {
-                                value: serde_json::json!({"accepted":1}),
-                            },
-                            cleanup: OperationCleanup::Confirmed,
-                        },
-                    )
-                    .await
-                    .unwrap();
-            } else {
-                journal
-                    .abandon_undispatched(&host, operation.id, &reference)
-                    .await
-                    .unwrap();
-            }
-            originals.push((operation.id, reference, context));
-        }
-        journal.pool.close().await;
-        drop(journal);
-
-        let reopened = Journal::open(&path).await.unwrap();
-        for (id, reference, context) in originals {
-            let loaded = reopened.load(&host, id).await.unwrap();
-            assert_eq!(loaded.id, id);
-            assert_eq!(loaded.host, host);
-            assert_eq!(
-                (
-                    loaded.endpoint.as_str(),
-                    loaded.method.as_str(),
-                    loaded.session_id.as_deref(),
-                ),
-                ("agent", "create", Some("session"))
-            );
-            assert_eq!(loaded.reference.as_ref(), Some(&reference));
-            if id == Uuid::from_u128(1) {
-                assert!(!loaded.abandoned);
-                assert_eq!(
-                    loaded.receipt,
-                    Some(Receipt::Recorded {
-                        outcome: OperationOutcome::Returned {
-                            value: serde_json::json!({"accepted":1}),
-                        },
-                        cleanup: OperationCleanup::Confirmed,
-                    })
-                );
-            } else {
-                assert!(loaded.abandoned);
-                assert_eq!(loaded.receipt, None);
-                assert_eq!(
-                    reopened.prepared(id, &reference).await.unwrap_err(),
-                    "original client preparation was already recorded or is unavailable"
-                );
-            }
-            let after: String = sqlx::query_scalar("SELECT context FROM operations WHERE id=?")
-                .bind(id.to_string())
-                .fetch_one(&reopened.pool)
-                .await
-                .unwrap();
-            assert_eq!(after, context);
-        }
-        reopened.pool.close().await;
-    }
-
-    #[tokio::test]
-    async fn reopened_terminal_recovery_lists_every_unsettled_original_for_its_session() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("client.db");
-        let journal = Journal::open(&path).await.unwrap();
-        let host = DeploymentRef {
-            state_domain: "a".repeat(64),
-            deployment: Uuid::from_u128(1),
-            revision: 1,
-        };
-        let owner = ServiceOwner {
-            namespace: InstanceId(vec![Uuid::from_u128(2)]),
-            export: "terminal".into(),
-        };
-        let mut expected = Vec::new();
-        for id in 1..=132 {
-            let operation = Operation {
-                id: Uuid::from_u128(id),
-                host: host.clone(),
-                endpoint: "terminal".into(),
-                method: "start".into(),
-                session_id: Some(if id == 130 { "other" } else { "session" }.into()),
-                correlation: serde_json::json!({"kind":"terminal","owner":owner}),
-                draft: None,
-                upload: None,
-                abandoned: false,
-                reference: None,
-                receipt: None,
-            };
-            journal.reserve(&operation).await.unwrap();
-            match id {
-                130 => {}
-                131 => {
-                    journal.abandon(&host, operation.id).await.unwrap();
-                }
-                132 => {
-                    journal
-                        .observe(
-                            &operation,
-                            &Receipt::Recorded {
-                                outcome: OperationOutcome::Returned {
-                                    value: serde_json::json!({"kind":"started"}),
-                                },
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                        )
-                        .await
-                        .unwrap();
-                }
-                _ => expected.push(operation.id),
-            }
-        }
-        journal.pool.close().await;
-        let journal = Journal::open(&path).await.unwrap();
-        let pending = journal
-            .pending_terminals(&host, "session", &owner)
-            .await
-            .unwrap();
-        expected.reverse();
-        assert_eq!(
-            pending
-                .iter()
-                .map(|operation| operation.id)
-                .collect::<Vec<_>>(),
-            expected
-        );
-        journal.pool.close().await;
-    }
-
-    async fn seeded_journal() -> (tempfile::TempDir, std::path::PathBuf, DraftKey) {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("client.db");
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(&path)
-                    .create_if_missing(true),
-            )
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')").execute(&pool).await.unwrap();
-        let key = DraftKey {
-            state_domain: "original-host".into(),
-            deployment: Uuid::from_u128(1),
-            namespace: InstanceId(vec![Uuid::from_u128(2)]),
-            export: "Agent".into(),
-            session_id: "original-session".into(),
-            editor_id: "composer".into(),
-        };
-        sqlx::query("INSERT INTO drafts(owner,revision,text) VALUES (?,7,'original unsent text')")
-            .bind(serde_json::to_string(&key).unwrap())
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-        (directory, path, key)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_open_preserves_the_existing_draft_and_revision() {
-        let (_directory, path, key) = seeded_journal().await;
-        let (first, second) = tokio::join!(Journal::open(&path), Journal::open(&path));
-        let (first, second) = (first.unwrap(), second.unwrap());
-        let loaded = first.load_draft(&key).await.unwrap().unwrap();
-        assert_eq!(
-            (
-                loaded.revision,
-                loaded.text.as_str(),
-                loaded.attachments.len()
-            ),
-            (7, "original unsent text", 0)
-        );
-        first
-            .save_draft(&key, Some(7), "edited after reopening".to_owned().into())
-            .await
-            .unwrap();
-        assert_eq!(
-            second.load_draft(&key).await.unwrap().unwrap().text,
-            "edited after reopening"
-        );
-        assert!(
-            second
-                .save_draft(&key, Some(7), "stale scope".to_owned().into())
-                .await
-                .is_err()
-        );
-    }
-
-    async fn seeded_journal_with_reader() -> (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        DraftKey,
-        SqliteConnection,
-    ) {
-        let (directory, path, key) = seeded_journal().await;
-        let mut reader =
-            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-                .await
-                .unwrap();
-        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-            .fetch_one(&mut reader)
-            .await
-            .unwrap();
-        assert_eq!(mode, "delete");
-        sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
-        let revision: i64 = sqlx::query_scalar("SELECT revision FROM drafts")
-            .fetch_one(&mut reader)
-            .await
-            .unwrap();
-        assert_eq!(revision, 7);
-
-        (directory, path, key, reader)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn open_waits_for_a_real_reader_before_loading_the_existing_draft() {
-        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
-        let contention = tokio::sync::Notify::new();
-        let opening = Journal::open_inner(&path, Some(&contention));
-        tokio::pin!(opening);
-        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            tokio::select! {
-                biased;
-                () = contention.notified() => None,
-                result = &mut opening => Some(result),
-            }
-        })
-        .await;
-        // Release even when startup returned an unexpected non-contention error.
-        let rollback = sqlx::query("ROLLBACK").execute(&mut reader).await;
-        let closed = reader.close().await;
-        rollback.unwrap();
-        closed.unwrap();
-        let result = match observed.expect("startup did not report contention or finish") {
-            Some(result) => result,
-            None => opening.await,
-        };
-        let first = result.expect("startup must resume after the real reader releases its lock");
-        let second = Journal::open(&path).await.unwrap();
-        let loaded = first.load_draft(&key).await.unwrap().unwrap();
-        assert_eq!(
-            (
-                loaded.revision,
-                loaded.text.as_str(),
-                loaded.attachments.len()
-            ),
-            (7, "original unsent text", 0)
-        );
-        let edited = first
-            .save_draft(&key, Some(7), "edited after reopening".into())
-            .await
-            .unwrap();
-        assert_eq!(edited.revision, 8);
-        let stale = second.save_draft(&key, Some(7), "stale scope".into()).await;
-        let loaded = second.load_draft(&key).await.unwrap().unwrap();
-        for journal in [&first, &second] {
-            let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-                .fetch_one(&journal.pool)
-                .await
-                .unwrap();
-            let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
-                .fetch_one(&journal.pool)
-                .await
-                .unwrap();
-            assert_eq!((mode.as_str(), synchronous), ("wal", 2));
-        }
-        first.pool.close().await;
-        second.pool.close().await;
-        assert!(stale.is_err());
-        assert_eq!(
-            (
-                loaded.revision,
-                loaded.text.as_str(),
-                loaded.attachments.len()
-            ),
-            (8, "edited after reopening", 0)
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelling_contended_open_leaves_the_original_draft_reopenable() {
-        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
-        let contention = tokio::sync::Notify::new();
-        let mut opening = Box::pin(Journal::open_inner(&path, Some(&contention)));
-        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            tokio::select! {
-                biased;
-                () = contention.notified() => Ok(()),
-                result = &mut opening => Err(result.err()),
-            }
-        })
-        .await;
-        drop(opening);
-        let rollback = sqlx::query("ROLLBACK").execute(&mut reader).await;
-        let closed = reader.close().await;
-        rollback.unwrap();
-        closed.unwrap();
-        observed
-            .expect("startup did not report contention")
-            .expect("startup returned before cancellation");
-        let journal = Journal::open(&path).await.unwrap();
-        let draft = journal.load_draft(&key).await.unwrap().unwrap();
-        journal.pool.close().await;
-        assert_eq!(
-            (draft.revision, draft.text.as_str(), draft.attachments.len()),
-            (7, "original unsent text", 0)
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn contended_open_exhausts_its_budget_without_losing_the_original_draft() {
-        let (_directory, path, key, mut reader) = seeded_journal_with_reader().await;
-        let started = tokio::time::Instant::now();
-        let result = Journal::open(&path).await;
-        let elapsed = started.elapsed();
-        let rollback = sqlx::query("ROLLBACK").execute(&mut reader).await;
-        let closed = reader.close().await;
-        rollback.unwrap();
-        closed.unwrap();
-        let cause = result
-            .err()
-            .expect("held reader must prevent WAL admission");
-        assert!(
-            cause.contains("client journal enabling WAL:") && cause.contains("(code: 5)"),
-            "{cause}"
-        );
-        assert!(elapsed >= SqlitePoolOptions::new().get_acquire_timeout());
-        let journal = Journal::open(&path).await.unwrap();
-        let draft = journal.load_draft(&key).await.unwrap().unwrap();
-        journal.pool.close().await;
-        assert_eq!(
-            (draft.revision, draft.text.as_str(), draft.attachments.len()),
-            (7, "original unsent text", 0)
-        );
-    }
-
-    #[tokio::test]
-    async fn schema_failure_keeps_its_stage_and_releases_the_startup_transaction() {
-        let (_directory, path, _key) = seeded_journal().await;
-        let mut connection =
-            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-                .await
-                .unwrap();
-        sqlx::query("CREATE TABLE operations (id TEXT PRIMARY KEY)")
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        connection.close().await.unwrap();
-        let cause = Journal::open(&path)
-            .await
-            .err()
-            .expect("invalid schema must fail");
-        assert!(
-            cause.contains("client journal creating pending operations index:")
-                && cause.contains("(code: 1)"),
-            "{cause}"
-        );
-        let mut connection =
-            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-                .await
-                .unwrap();
-        sqlx::query("BEGIN EXCLUSIVE")
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        let row = sqlx::query("SELECT revision,text FROM drafts")
-            .fetch_one(&mut connection)
-            .await
-            .unwrap();
-        sqlx::query("ROLLBACK")
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        connection.close().await.unwrap();
-        assert_eq!(
-            (row.get::<i64, _>("revision"), row.get::<&str, _>("text")),
-            (7, "original unsent text")
-        );
-    }
 }

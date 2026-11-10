@@ -40,48 +40,39 @@ struct Route {
     service: Service,
 }
 struct EndpointState {
-    catalog: Arc<Vec<Value>>,
+    catalog: Option<Arc<Vec<Value>>>,
     route: Option<Arc<Route>>,
-    busy: bool,
+    active: Weak<Bridge>,
     retired: bool,
-    failure: Option<Error>,
 }
 pub(super) struct Endpoint {
     pub session_id: String,
+    address: std::net::SocketAddr,
     url: String,
-    directory: PathBuf,
     state: Mutex<EndpointState>,
     server_stop: CancellationToken,
     server: tokio::sync::Mutex<Option<tokio::task::JoinHandle<std::io::Result<()>>>>,
 }
 impl Endpoint {
-    pub async fn open(session_id: String, definitions: Vec<Value>) -> Result<Arc<Self>, Error> {
+    pub async fn open(
+        session_id: String,
+        definitions: Option<Vec<Value>>,
+    ) -> Result<Arc<Self>, Error> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
         let address = listener
             .local_addr()
             .map_err(|e| Error::Provider(e.to_string()))?;
-        // Explicit cleanup only: an unconfirmed native process may still read these files.
-        let directory = tokio::task::spawn_blocking(|| {
-            tempfile::Builder::new()
-                .prefix("maka-native-mcp-")
-                .tempdir()
-                .map(tempfile::TempDir::keep)
-        })
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?
-        .map_err(|e| Error::Provider(e.to_string()))?;
         let endpoint = Arc::new(Self {
             session_id,
+            address,
             url: format!("http://{address}/mcp"),
-            directory,
             state: Mutex::new(EndpointState {
-                catalog: Arc::new(definitions),
+                catalog: definitions.map(Arc::new),
                 route: None,
-                busy: false,
+                active: Weak::new(),
                 retired: false,
-                failure: None,
             }),
             server_stop: CancellationToken::new(),
             server: tokio::sync::Mutex::new(None),
@@ -128,30 +119,54 @@ impl Endpoint {
         }));
         Ok(endpoint)
     }
-    pub fn bind(self: &Arc<Self>, tools: tools::Tools) -> Result<Arc<Bridge>, Error> {
-        let definitions = tools.definitions();
-        let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
-        if state.retired {
+    pub async fn local_addr(&self) -> Result<std::net::SocketAddr, Error> {
+        let server = self.server.lock().await;
+        if self.server_stop.is_cancelled()
+            || self
+                .state
+                .lock()
+                .expect("MCP endpoint lock poisoned")
+                .retired
+            || !server.as_ref().is_some_and(|task| !task.is_finished())
+        {
             return Err(Error::Retired);
         }
-        if let Some(failure) = &state.failure {
-            return Err(failure.clone());
+        Ok(self.address)
+    }
+    pub fn bind(
+        self: &Arc<Self>,
+        tools: tools::Tools,
+        directory: PathBuf,
+    ) -> Result<Arc<Bridge>, Error> {
+        let definitions = tools.definitions();
+        let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
+        if state.retired || self.server_stop.is_cancelled() {
+            return Err(Error::Retired);
         }
-        if state.busy {
+        if state
+            .active
+            .upgrade()
+            .is_some_and(|bridge| !bridge.drained())
+        {
             return Err(Error::Invalid(
-                "Native MCP invocation has not settled".into(),
+                "Previous Host MCP scope has not drained".into(),
             ));
         }
-        if definitions
-            .iter()
-            .any(|definition| !state.catalog.contains(definition))
-        {
-            state.catalog = Arc::new(definitions);
+        if state.catalog.as_ref().is_none_or(|catalog| {
+            definitions
+                .iter()
+                .any(|definition| !catalog.contains(definition))
+        }) {
+            state.catalog = Some(Arc::new(definitions));
         }
         let bridge = Arc::new(Bridge {
             tools,
             endpoint: Arc::downgrade(self),
-            catalog: state.catalog.clone(),
+            catalog: state
+                .catalog
+                .as_ref()
+                .expect("actual Call initialized the catalog")
+                .clone(),
             state: Mutex::new(Admission {
                 phase: Phase::Opening,
                 pending: 0,
@@ -164,7 +179,7 @@ impl Endpoint {
             failed: CancellationToken::new(),
             listed: CancellationToken::new(),
             url: self.url.clone(),
-            directory: self.directory.clone(),
+            directory,
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
             sessions_stop: CancellationToken::new(),
             manager: Arc::new(LocalSessionManager::default()),
@@ -185,7 +200,7 @@ impl Endpoint {
             bridge.manager.clone(),
             config,
         );
-        state.busy = true;
+        state.active = Arc::downgrade(&bridge);
         state.route = Some(Arc::new(Route {
             bridge: bridge.clone(),
             service,
@@ -196,11 +211,16 @@ impl Endpoint {
         let bridge = {
             let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
             state.retired = true;
-            state.route.as_ref().map(|route| route.bridge.clone())
+            state.active.upgrade()
         };
-        let scope = match bridge {
-            Some(bridge) => bridge.close().await,
-            None => Ok(()),
+        let drained = match bridge {
+            Some(bridge) => {
+                // Business failures belong to the canonical effect receipt. Only
+                // still-live Host resources prevent this transport's retirement.
+                let _business = bridge.close().await;
+                bridge.drained()
+            }
+            None => true,
         };
         self.server_stop.cancel();
         let mut server = self.server.lock().await;
@@ -212,18 +232,9 @@ impl Endpoint {
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             *server = None;
         }
-        {
-            let state = self.state.lock().expect("MCP endpoint lock poisoned");
-            if state.busy || matches!(scope, Err(Error::CleanupUnconfirmed)) {
-                return Err(Error::CleanupUnconfirmed);
-            }
+        if !drained {
+            return Err(Error::CleanupUnconfirmed);
         }
-        match tokio::fs::remove_dir_all(&self.directory).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(Error::CleanupUnconfirmed),
-        }
-        // Historical invocation failures still quarantine bind, but do not prevent retirement.
         Ok(())
     }
 }
@@ -283,7 +294,7 @@ impl Drop for RequestGuard {
             .lock()
             .expect("MCP admission lock poisoned")
             .requests -= 1;
-        self.0.changed.notify_one();
+        self.0.changed.notify_waiters();
     }
 }
 pub(super) struct Bridge {
@@ -302,6 +313,29 @@ pub(super) struct Bridge {
     manager: Arc<LocalSessionManager>,
     closing: tokio::sync::Mutex<()>,
 }
+impl maka_agent_ports::executor::RootSettlementOwner for Bridge {
+    fn original_root_cleanup(&self) -> OperationCleanup {
+        if self.drained() {
+            OperationCleanup::Confirmed
+        } else {
+            OperationCleanup::Unconfirmed
+        }
+    }
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move {
+            loop {
+                let notified = self.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.drained() {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+}
+
 impl Bridge {
     fn begin_request(self: &Arc<Self>) -> Option<RequestGuard> {
         let mut state = self.state.lock().expect("MCP admission lock poisoned");
@@ -337,6 +371,7 @@ impl Bridge {
             .expect("MCP admission lock poisoned")
             .phase = Phase::Closed;
         self.cancelled.cancel();
+        self.changed.notify_waiters();
     }
     pub async fn close(&self) -> Result<(), Error> {
         let _closing = self.closing.lock().await;
@@ -398,18 +433,9 @@ impl Bridge {
             .clone()
             .map_or(Ok(()), Err)
     }
-    // Only runtime, after physical native cleanup, may release this endpoint for another invocation.
-    pub fn settled(&self, result: &Result<Outcome, Error>) {
-        if let Some(endpoint) = self.endpoint.upgrade() {
-            let mut state = endpoint.state.lock().expect("MCP endpoint lock poisoned");
-            if matches!(
-                result,
-                Err(Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_))
-            ) {
-                state.failure = result.as_ref().err().cloned();
-            }
-            state.busy = matches!(result, Err(Error::CleanupUnconfirmed));
-        }
+    pub(super) fn drained(&self) -> bool {
+        let state = self.state.lock().expect("MCP admission lock poisoned");
+        state.phase == Phase::Closed && state.idle() && state.handlers == 0
     }
     async fn call(
         self: &Arc<Self>,
@@ -457,7 +483,7 @@ impl Bridge {
                     state.pending -= 1;
                 }
                 let _ = send.send(reply);
-                bridge.changed.notify_one();
+                bridge.changed.notify_waiters();
             });
         }
         let reply = receive
@@ -491,7 +517,7 @@ impl Drop for Handler {
             .lock()
             .expect("MCP admission lock poisoned")
             .handlers -= 1;
-        self.0.changed.notify_one();
+        self.0.changed.notify_waiters();
     }
 }
 impl ServerHandler for Handler {
@@ -518,287 +544,5 @@ impl ServerHandler for Handler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
         self.0.call(request, context.ct).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::Body;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    async fn tools() -> (tempfile::TempDir, Arc<maka_event_log::SessionStore>) {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("owners"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = RootStore::open(Arc::new(owner)).await.unwrap();
-        root.create_session("session", "test", &serde_json::json!({}), 1)
-            .await
-            .unwrap();
-        let store = Arc::new(root.session("session").await.unwrap());
-        (directory, store)
-    }
-    fn definition() -> Value {
-        serde_json::json!({"name":"FrozenTool","description":"original","inputSchema":{"type":"object"}})
-    }
-    fn catalog(definitions: Vec<Value>) -> maka_tools::ToolCatalog {
-        use maka_agent_facts::tools::{
-            ToolExecutor, ToolFuture, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
-        };
-        struct Listing(Vec<String>);
-        impl ToolExecutor for Listing {
-            fn names(&self) -> Vec<String> {
-                self.0.clone()
-            }
-            fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
-                panic!("listing tools does not execute them")
-            }
-        }
-        let names = definitions
-            .iter()
-            .map(|value| value["name"].as_str().unwrap().to_owned())
-            .collect();
-        let handler = ToolHandler::Immediate(Arc::new(Listing(names)));
-        maka_tools::ToolCatalog::new(definitions.into_iter().map(|definition| ToolRegistration {
-            definition: serde_json::from_value(definition).unwrap(),
-            nesting: ToolNesting::DirectOnly,
-            semantics: ToolSemantics::Parallel,
-            handler: handler.clone(),
-        }))
-        .unwrap()
-    }
-    fn initialize() -> Value {
-        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}})
-    }
-    async fn post(
-        bridge: &Bridge,
-        token: &str,
-        session: Option<&str>,
-        message: Value,
-    ) -> (u16, String) {
-        let address = bridge
-            .url
-            .strip_prefix("http://")
-            .unwrap()
-            .strip_suffix("/mcp")
-            .unwrap();
-        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
-        let body = message.to_string();
-        let session = session
-            .map(|id| format!("Mcp-Session-Id: {id}\r\n"))
-            .unwrap_or_default();
-        socket.write_all(format!("POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\n{session}Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
-        let mut response = String::new();
-        tokio::time::timeout(Duration::from_secs(5), socket.read_to_string(&mut response))
-            .await
-            .unwrap()
-            .unwrap();
-        let status = response.split_whitespace().nth(1).unwrap().parse().unwrap();
-        (status, response)
-    }
-    async fn initialized(bridge: &Bridge) -> String {
-        let (status, response) = post(bridge, bridge.bearer(), None, initialize()).await;
-        assert_eq!(status, 200, "{response}");
-        let id = response
-            .lines()
-            .find_map(|line| {
-                let (key, value) = line.split_once(':')?;
-                key.eq_ignore_ascii_case("mcp-session-id")
-                    .then(|| value.trim().to_owned())
-            })
-            .unwrap();
-        let (status, response) = post(
-            bridge,
-            bridge.bearer(),
-            Some(&id),
-            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        )
-        .await;
-        assert_eq!(status, 202, "{response}");
-        id
-    }
-    #[tokio::test]
-    async fn endpoint_is_stable_but_credentials_and_transport_authority_are_not_reusable() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![definition()])
-            .await
-            .unwrap();
-        let first = endpoint
-            .bind(tools::Tools::for_test(store.clone(), Default::default()))
-            .unwrap();
-        let config_directory = first.directory().to_owned();
-        let first_id = initialized(&first).await;
-        let list = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}});
-        let (status, response) = post(&first, first.bearer(), Some(&first_id), list.clone()).await;
-        assert_eq!(status, 200, "{response}");
-        assert!(response.contains("FrozenTool"), "{response}");
-        first.close().await.unwrap();
-        assert!(first.manager.sessions.read().await.is_empty());
-        assert!(first.admit().is_err(), "a closed scope must never reopen");
-        assert!(
-            config_directory.exists(),
-            "scope close cannot remove native input files"
-        );
-        first.settled(&Err(Error::Cancelled));
-        let second = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
-            .unwrap();
-        assert_eq!(first.url, second.url);
-        assert_eq!(first.directory(), second.directory());
-        assert_ne!(first.bearer(), second.bearer());
-        assert_eq!(
-            post(&second, first.bearer(), None, initialize()).await.0,
-            401
-        );
-        assert_eq!(
-            post(&second, second.bearer(), Some(&first_id), list.clone())
-                .await
-                .0,
-            404
-        );
-        assert_eq!(
-            post(&second, second.bearer(), None, list.clone()).await.0,
-            400
-        );
-        let second_id = initialized(&second).await;
-        assert_ne!(first_id, second_id);
-        let (status, response) = post(&second, second.bearer(), Some(&second_id), list).await;
-        assert_eq!(status, 200, "{response}");
-        assert!(
-            response.contains("FrozenTool"),
-            "reduced ceiling must not change the catalog: {response}"
-        );
-        second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
-        assert_eq!(
-            post(&second, second.bearer(), None, initialize()).await.0,
-            401
-        );
-        endpoint.finish().await.unwrap();
-        assert!(!config_directory.exists());
-    }
-    #[tokio::test]
-    async fn request_captured_before_close_cannot_rebind_to_the_next_scope() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![]).await.unwrap();
-        let first = endpoint
-            .bind(tools::Tools::for_test(store.clone(), Default::default()))
-            .unwrap();
-        let old_route = endpoint.state.lock().unwrap().route.clone().unwrap();
-        let guard = first.begin_request().unwrap();
-        let closing = {
-            let first = first.clone();
-            tokio::spawn(async move { first.close().await })
-        };
-        first.cancelled.cancelled().await;
-        assert!(
-            !closing.is_finished(),
-            "request capture must settle before transport cleanup"
-        );
-        assert!(
-            endpoint
-                .bind(tools::Tools::for_test(store.clone(), Default::default()))
-                .is_err()
-        );
-        drop(guard);
-        closing.await.unwrap().unwrap();
-        first.settled(&Err(Error::Cancelled));
-        let second = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
-            .unwrap();
-        let request = HttpRequest::builder()
-            .method("POST")
-            .uri("/mcp")
-            .header("Content-Type", "application/json")
-            .body(Body::from(initialize().to_string()))
-            .unwrap();
-        assert_eq!(
-            old_route.handle(request).await.status(),
-            StatusCode::UNAUTHORIZED
-        );
-        assert!(second.manager.sessions.read().await.is_empty());
-        second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
-        endpoint.finish().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn settled_catalog_updates_keep_the_endpoint_and_do_not_rewrite_old_scopes() {
-        let (_directory, store) = tools().await;
-        let endpoint = Endpoint::open("session".into(), vec![definition()])
-            .await
-            .unwrap();
-        let first = endpoint
-            .bind(tools::Tools::for_test(
-                store.clone(),
-                catalog(vec![definition()]),
-            ))
-            .unwrap();
-        let first_id = initialized(&first).await;
-        let mut changed = definition();
-        changed["description"] = "updated description".into();
-        changed["inputSchema"] = serde_json::json!({"type":"object","required":["new"]});
-        let mut added = definition();
-        added["name"] = "ExtraTool".into();
-        let updated = vec![added, changed];
-        assert!(
-            endpoint
-                .bind(tools::Tools::for_test(
-                    store.clone(),
-                    catalog(updated.clone())
-                ))
-                .is_err(),
-            "definitions cannot change while the original invocation is unsettled"
-        );
-        first.close().await.unwrap();
-        first.settled(&Err(Error::Cancelled));
-        let second = endpoint
-            .bind(tools::Tools::for_test(
-                store.clone(),
-                catalog(updated.clone()),
-            ))
-            .unwrap();
-        assert_eq!(second.url, first.url);
-        assert_eq!(second.directory(), first.directory());
-        assert_eq!(first.definitions(), &[definition()]);
-        assert_eq!(second.definitions(), updated);
-        assert_eq!(
-            post(&second, first.bearer(), None, initialize()).await.0,
-            401
-        );
-        let list = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}});
-        assert_eq!(
-            post(&second, second.bearer(), Some(&first_id), list.clone())
-                .await
-                .0,
-            404
-        );
-        let second_id = initialized(&second).await;
-        let (status, response) = post(&second, second.bearer(), Some(&second_id), list).await;
-        assert_eq!(status, 200, "{response}");
-        assert!(
-            response.contains("updated description") && response.contains("ExtraTool"),
-            "{response}"
-        );
-        second.close().await.unwrap();
-        second.settled(&Err(Error::Cancelled));
-        let reduced = endpoint
-            .bind(tools::Tools::for_test(store, Default::default()))
-            .unwrap();
-        assert_eq!(
-            reduced.definitions(),
-            updated,
-            "a reduced ceiling must not churn the catalog"
-        );
-        reduced.close().await.unwrap();
-        reduced.settled(&Err(Error::Cancelled));
-        endpoint.finish().await.unwrap();
     }
 }

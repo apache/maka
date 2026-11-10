@@ -19,14 +19,20 @@
 
 use super::*;
 use crate::owner::ResolvedConfiguration;
+use crate::owner::access::RunAccess;
+use maka_agent_authority::{
+    computer::{NativeCallAccess, NativeCallContext},
+    permissions::Access,
+};
 use maka_agent_facts::{
-    event::Invocation,
-    interaction::{Decision, InteractionOutcome, SessionApprovalAnswer},
-    tools::ToolCallContext,
+    durable::ExecutionIdentity,
+    interaction::{
+        Decision, InteractionOutcome, PermissionDecision, PermissionScope, SessionApprovalAnswer,
+    },
 };
 use maka_capabilities::call::{Identity, Scope};
+use maka_host_runtime::application::Context;
 use maka_plugin_core::operation::RecoveryRef;
-use maka_sandbox::grant;
 use std::sync::Arc;
 
 enum ChildConfirmation {
@@ -69,14 +75,11 @@ impl Owner {
         };
         match &scope.identity {
             Identity::Remote { .. } => Ok(None),
-            Identity::Agent { invocation, .. }
+            Identity::Agent { execution, .. }
                 if session.configuration.parent_session_id.as_deref()
-                    == Some(invocation.session_id.as_str()) =>
+                    == Some(execution.session_id.as_str()) =>
             {
-                let store = self.caller_store(scope)?;
-                maka_agent_authority::permissions::live(&store, invocation)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                self.access_for_scope(scope).await?;
                 Ok(None)
             }
             _ => Ok(Some(InteractionRejection::NotYourChild)),
@@ -87,11 +90,44 @@ impl Owner {
         self: &Arc<Self>,
         input: InteractionRespond,
         operation: &RecoveryRef,
-        scope: &Scope,
-    ) -> Result<InteractionResult, String> {
+        context: &Context,
+    ) -> Result<NativeMutation<InteractionResult>, String> {
+        let scope = context.scope();
+        let native_access = if scope.identity.agent().is_some() {
+            let native = context
+                .native_context::<NativeCallContext>()
+                .ok_or("agent_native_call_context_missing")?;
+            let call = native.access().call();
+            let access = self.access_for_scope(scope).await?;
+            let target = access
+                .target_for_context(call)
+                .await
+                .map_err(|error| error.to_string())?;
+            if native.access().target() != &target
+                || scope.identity.operation_id() != Some(call.operation_id.as_str())
+            {
+                return Err("agent_native_call_obligation_mismatch".into());
+            }
+            native
+                .access()
+                .bind_original(context)
+                .await
+                .map_err(|error| error.to_string())?;
+            let access: Arc<dyn NativeCallAccess> = match native.as_ref() {
+                NativeCallContext::Agent(access) => access.clone(),
+                NativeCallContext::Computer(access) => access.clone(),
+            };
+            Some(access)
+        } else {
+            None
+        };
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.respond_inner(input, &operation, &scope).await })
+            Box::pin(async move {
+                owner
+                    .respond_inner(input, &operation, &scope, native_access.as_deref())
+                    .await
+            })
         })
         .await
     }
@@ -101,49 +137,53 @@ impl Owner {
         mut input: InteractionRespond,
         operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<InteractionResult, String> {
+        native_access: Option<&dyn NativeCallAccess>,
+    ) -> Result<NativeMutation<InteractionResult>, String> {
         if let Some(reason) = self.interaction_rejection(scope, &input.session_id).await? {
-            return Ok(InteractionResult::Rejected { reason });
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }));
         }
         let Some(record) = self
             .find_interaction(&input.session_id, &input.request_id)
             .await?
         else {
-            return Ok(InteractionResult::Rejected {
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                 reason: InteractionRejection::Unavailable,
-            });
+            }));
         };
         if input.answer.validate_for_request(&record.request).is_err() {
-            return Ok(InteractionResult::Rejected {
+            return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                 reason: InteractionRejection::InvalidAnswer,
-            });
+            }));
         }
-        if let Some(invocation) = scope.identity.agent() {
+        if let Some(execution) = scope.identity.agent() {
             if matches!(record.request, InteractionRequest::SessionApproval { .. }) {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::HumanActionRequired,
-                });
+                }));
             }
             if record.outcome.is_some() {
-                return Ok(InteractionResult::Recorded {
+                return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                     record: Box::new(record),
-                });
+                }));
             }
-            let store = self.caller_store(scope)?;
-            let parent = maka_agent_authority::permissions::live(&store, invocation)
+            let access = self.access_for_scope(scope).await?;
+            let parent = access
+                .live_configuration()
                 .await
                 .map_err(|error| error.to_string())?;
             let mut human_denied = false;
             if !self
-                .may_approve(&record, &input.answer, &parent, invocation, scope)
+                .may_approve(&record, &input.answer, &parent, execution, access.as_ref())
                 .await?
             {
                 if !parent.permissions.request_permissions
                     && matches!(record.request, InteractionRequest::Permissions { .. })
                 {
-                    return Ok(InteractionResult::Rejected {
+                    return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                         reason: InteractionRejection::PermissionRequestsDisabled,
-                    });
+                    }));
                 }
                 match self
                     .confirm_child_response(
@@ -152,6 +192,7 @@ impl Owner {
                         &parent,
                         operation,
                         scope,
+                        native_access.ok_or("agent_native_call_context_missing")?,
                     )
                     .await?
                 {
@@ -161,41 +202,48 @@ impl Owner {
                         human_denied = true;
                     }
                     ChildConfirmation::Withdrawn => {
-                        return Ok(InteractionResult::Rejected {
+                        return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                             reason: InteractionRejection::Unavailable,
-                        });
+                        }));
                     }
                     ChildConfirmation::ChildSettled => {
-                        return Ok(InteractionResult::Recorded {
+                        return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                             record: Box::new(
                                 self.interaction(&input.session_id, &input.request_id)
                                     .await?,
                             ),
-                        });
+                        }));
                     }
                 }
             }
-            // Permission edits and Stop use this same owner gate. Never hold it
-            // while waiting for a person; only the final check and commit are fenced.
-            let runs = self.runs.lock().await;
+            // Do not hold owner state while waiting for a person. The final SQL
+            // transaction also rechecks the caller's Run and permission basis.
+            let runs = Arc::new(self.runs.lock().await);
             if runs.closing || scope.cancellation.is_cancelled() {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::Unavailable,
-                });
+                }));
             }
-            let current = maka_agent_authority::permissions::live(&store, invocation)
+            let current = access
+                .live_configuration()
                 .await
                 .map_err(|error| error.to_string())?;
             // A committed human denial grants nothing; a permission edit must
-            // not discard it. Stop and invocation liveness still fence settlement.
+            // not discard it. Stop and Run liveness still fence settlement.
             if !human_denied && current.permission_basis() != parent.permission_basis() {
-                return Ok(InteractionResult::Rejected {
+                return Ok(NativeMutation::Returned(InteractionResult::Rejected {
                     reason: InteractionRejection::AuthorizationChanged,
-                });
+                }));
             }
-            return self.commit_response_unlocked(input).await;
+            let caller = maka_agent_state::CallerFence {
+                execution: execution.clone(),
+                expected_basis: (!human_denied).then(|| current.permission_basis()),
+            };
+            return self
+                .prepare_response_locked(input, runs, Some(caller))
+                .await;
         }
-        self.commit_response(input).await
+        self.prepare_response(input).await
     }
 
     async fn may_approve(
@@ -203,8 +251,8 @@ impl Owner {
         record: &InteractionRecord,
         answer: &InteractionAnswer,
         parent: &ResolvedConfiguration,
-        invocation: &Invocation,
-        scope: &Scope,
+        execution: &ExecutionIdentity,
+        access: &RunAccess,
     ) -> Result<bool, String> {
         match (&record.request, answer) {
             (
@@ -216,7 +264,7 @@ impl Owner {
                     decision: Decision::Deny,
                 }
                 | InteractionAnswer::Permissions {
-                    decision: grant::Decision::Deny,
+                    decision: PermissionDecision::Deny,
                 }
                 | InteractionAnswer::ComputerApp {
                     decision: maka_agent_facts::interaction::ComputerAppDecision::Deny,
@@ -228,15 +276,16 @@ impl Owner {
                 InteractionRequest::Permissions { .. },
                 InteractionAnswer::Permissions {
                     decision:
-                        grant::Decision::Allow {
+                        PermissionDecision::Allow {
                             permissions,
                             scope: requested_scope,
                         },
                 },
             ) => {
-                let store = self.caller_store(scope)?;
-                let grants = store
-                    .permission_grants(invocation, None, &parent.permission_basis())
+                let grants = self
+                    .durable
+                    .interactions()
+                    .permission_grants(execution, None, &parent.permission_basis())
                     .await
                     .map_err(|error| error.to_string())?;
                 let workspace = parent.workspace.clone();
@@ -253,8 +302,8 @@ impl Owner {
                     let (mut sandbox, ceiling) =
                         maka_workspace_support::sandbox(&workspace, access, &state_root)?;
                     for granted in grants.into_iter().filter(|granted| {
-                        granted.scope == grant::Scope::Session
-                            || requested_scope == grant::Scope::Once
+                        granted.scope == maka_agent_facts::interaction::PermissionScope::Session
+                            || requested_scope == PermissionScope::Once
                     }) {
                         sandbox = sandbox
                             .with_grant(&granted.permissions, &ceiling)
@@ -280,7 +329,7 @@ impl Owner {
                     decision: Decision::Allow,
                 },
             ) => {
-                let held = self.admitted_tools(&invocation.session_id, &parent.tools);
+                let held = self.admitted_tools(&execution.session_id, &parent.tools);
                 Ok(held.as_ref().is_none_or(|names| names.contains(tool_name))
                     && self
                         .tool_basis
@@ -296,9 +345,11 @@ impl Owner {
                 if parent.permissions.access == WorkspaceAccess::DangerFullAccess {
                     return Ok(true);
                 }
+                access.fresh().await?;
                 let granted = self
-                    .caller_store(scope)?
-                    .client_capability_grant(&invocation.session_id, target)
+                    .durable
+                    .interactions()
+                    .client_capability_grant(&execution.session_id, target)
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok(granted.is_some_and(|grant| grant.basis == Some(parent.permission_basis())))
@@ -324,65 +375,50 @@ impl Owner {
         parent: &ResolvedConfiguration,
         operation: &RecoveryRef,
         scope: &Scope,
+        access: &dyn NativeCallAccess,
     ) -> Result<ChildConfirmation, String> {
-        let invocation = scope
+        let execution = access.execution();
+        let operation_id = scope
             .identity
-            .agent()
-            .ok_or("agent_interaction_source_missing")?;
-        let tool = ToolCallContext {
-            invocation: invocation.clone(),
-            operation_id: scope
-                .identity
-                .operation_id()
-                .ok_or("agent_interaction_operation_missing")?
-                .into(),
-            execution: scope.execution().cloned(),
-        };
+            .operation_id()
+            .ok_or("agent_interaction_operation_missing")?;
         let record = InteractionRecord {
-            session_id: invocation.session_id.clone(),
-            turn_id: invocation.turn_id.clone(),
-            run_id: invocation.run_id.clone(),
+            execution: execution.clone(),
             request_id: format!("session_approval_{}", self.operation_id(operation)),
             created_at: now(),
             request: InteractionRequest::SessionApproval {
-                tool_use_id: tool.tool_use_id(),
+                tool_use_id: maka_agent_facts::tool_call::tool_use_id(
+                    execution.run_id,
+                    operation_id,
+                ),
                 basis: parent.permission_basis(),
-                session_id: child.session_id.clone(),
+                session_id: child.execution.session_id.clone(),
                 request_id: child.request_id.clone(),
                 answer: answer.clone(),
             },
             outcome: None,
         };
-        let store = self.caller_store(scope)?;
-        let child_store = self
-            .store
-            .session(&child.session_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let publication = store.establish_run_interaction(invocation, &record).await;
+        let publication = access.establish(&record).await;
         let observed = match publication {
-            Ok(committed) if committed.matches => None,
-            result => {
-                let failure = match result {
-                    Ok(_) => "agent_interaction_identity_conflict".to_owned(),
-                    Err(error) => format!("agent_interaction_publication_unavailable: {error}"),
-                };
-                match maka_agent_authority::interaction_wait::withdraw(&store, &record).await {
+            Ok(_) => None,
+            Err(failure) => {
+                match maka_agent_authority::interaction_wait::withdraw(access, &record).await {
                     Ok(Some(outcome)) => Some(outcome),
                     Ok(None) => return Err(failure),
                     Err(cleanup) => return Err(format!("{failure}; {cleanup}")),
                 }
             }
         };
+        let child_store = self.durable.interactions();
         let observed = if let Some(outcome) = observed {
             Ok(outcome)
         } else {
             tokio::select! {
-            result = maka_agent_authority::interaction_wait::wait(&store, &record, &scope.cancellation) => result,
-            result = child_answered(&child_store, &child.request_id) => {
+            result = maka_agent_authority::interaction_wait::wait(access, &record, &scope.cancellation) => result,
+            result = child_answered(&child_store, &child.execution.session_id, &child.request_id) => {
                 // The child was answered elsewhere or stopped; withdraw the now
                 // obsolete parent prompt instead of leaving a second live decision.
-                let cleanup = maka_agent_authority::interaction_wait::withdraw(&store, &record).await;
+                let cleanup = maka_agent_authority::interaction_wait::withdraw(access, &record).await;
                 cleanup.map_err(|_| "agent_interaction_cleanup_unconfirmed")?;
                 result.map_err(str::to_owned)?;
                 return Ok(ChildConfirmation::ChildSettled);
@@ -392,7 +428,7 @@ impl Owner {
         let outcome = match observed {
             Ok(outcome) => outcome,
             Err(error) => {
-                match maka_agent_authority::interaction_wait::withdraw(&store, &record).await {
+                match maka_agent_authority::interaction_wait::withdraw(access, &record).await {
                     Ok(Some(outcome)) => outcome,
                     Ok(None) => return Err(error.into()),
                     Err(cleanup) => return Err(cleanup.into()),
@@ -411,15 +447,16 @@ impl Owner {
 }
 
 async fn child_answered(
-    store: &maka_event_log::SessionStore,
+    store: &maka_agent_state::interactions::InteractionsStore,
+    session: &str,
     request: &str,
 ) -> Result<(), &'static str> {
     let mut commits = store
-        .subscribe_commits()
+        .subscribe()
         .map_err(|_| "agent_interaction_store_closed")?;
     loop {
         let record = store
-            .interaction(request)
+            .read(session, request)
             .await
             .map_err(|_| "agent_interaction_read_unavailable")?
             .ok_or("agent_interaction_unavailable")?;

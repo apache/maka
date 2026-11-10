@@ -19,8 +19,8 @@
 
 //! Consent descriptions and durable references, never bearer capabilities.
 
-use maka_agent_facts::execution::SandboxMode;
-use maka_agent_facts::execution::WorkspaceTarget;
+use maka_plugin_core::authorization::Boundary;
+use maka_sandbox::{Mode as SandboxMode, workspace::WorkspaceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -201,113 +201,63 @@ pub trait Access: Send + Sync {
     ) -> futures_util::future::BoxFuture<'_, Result<Authorized, crate::authorization::CommandError>>;
 }
 
-/// Frozen observation, not a capability. Only a Host-issued Scope can use it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Boundary {
-    Profile,
-    Directory {
-        path: String,
-        identity: maka_agent_facts::execution::DirectoryIdentity,
-    },
-    Session {
-        boundary: crate::authorization::SessionBoundary,
-        workspace_identity: maka_agent_facts::execution::WorkspaceIdentity,
-    },
-    Workspace {
-        workspace: maka_agent_facts::execution::WorkspaceProjection,
-        workspace_identity: maka_agent_facts::execution::WorkspaceIdentity,
-        origin: maka_agent_facts::execution::WorkspaceOrigin,
-        sandbox_mode: SandboxMode,
-    },
-}
-impl Boundary {
-    pub fn validate(&self, request: &Request) -> Result<(), crate::Error> {
-        let invalid =
-            || crate::Error::Invalid("authorization boundary does not match proposal".into());
-        let mode = match (self, &request.target) {
-            (Self::Profile, Target::Profile) => SandboxMode::ReadOnly,
-            (Self::Directory { path, .. }, Target::Directory { .. }) if !path.is_empty() => {
-                SandboxMode::DangerFullAccess
-            }
-            (
-                Self::Workspace {
-                    workspace,
-                    sandbox_mode,
-                    origin: maka_agent_facts::execution::WorkspaceOrigin::Allocated,
-                    ..
-                },
-                Target::PluginWorkspace {
-                    sandbox_mode: proposed,
-                },
-            ) if sandbox_mode == proposed
-                && !workspace.host_cwd.is_empty()
-                && matches!(&workspace.target, WorkspaceTarget::HostPath { path } if path == &workspace.host_cwd) =>
-            {
-                *sandbox_mode
-            }
-            (Self::Session { boundary, .. }, Target::Session { session_id })
-                if &boundary.session_id == session_id =>
-            {
-                boundary.validate().map_err(|_| invalid())?;
-                boundary.sandbox_mode
-            }
-            (
-                Self::Workspace {
-                    workspace,
-                    sandbox_mode,
-                    origin: maka_agent_facts::execution::WorkspaceOrigin::Selected,
-                    ..
-                },
-                Target::Workspace {
-                    workspace: target,
-                    sandbox_mode: proposed,
-                },
-            ) if sandbox_mode == proposed
-                && match (&workspace.target, target) {
-                    (
-                        WorkspaceTarget::Project { project_id: left },
-                        WorkspaceTarget::Project { project_id: right },
-                    ) => left == right,
-                    // Only Host resolves path aliases into this canonical snapshot.
-                    (WorkspaceTarget::HostPath { .. }, WorkspaceTarget::HostPath { .. }) => true,
-                    _ => false,
-                }
-                && !workspace.host_cwd.is_empty() =>
-            {
-                *sandbox_mode
-            }
-            _ => return Err(invalid()),
-        };
-        request.validate_mode(mode)
-    }
-}
-
-/// Persisted constraints, not a bearer capability. Only an explicit Host grant
-/// binds them to a live plugin instance; current boundaries are still checked.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SessionBoundary {
-    pub workspace_origin: maka_agent_facts::execution::WorkspaceOrigin,
-    pub session_id: String,
-    pub boundary_revision: u64,
-    pub sandbox_mode: maka_agent_facts::execution::SandboxMode,
-    pub approval_policy: maka_agent_facts::execution::ApprovalPolicy,
-    pub cwd: String,
-}
-impl SessionBoundary {
-    pub fn validate(&self) -> Result<(), Error> {
-        name(&self.session_id)?;
-        if self.boundary_revision >= (1 << 53) || self.cwd.is_empty() || self.cwd.contains('\0') {
-            return Err(Error::Invalid("invalid Session execution boundary".into()));
+pub fn validate_boundary(boundary: &Boundary, request: &Request) -> Result<(), crate::Error> {
+    let invalid = || crate::Error::Invalid("authorization boundary does not match proposal".into());
+    let mode = match (boundary, &request.target) {
+        (Boundary::Profile, Target::Profile) => SandboxMode::ReadOnly,
+        (Boundary::Directory { path, .. }, Target::Directory { .. }) if !path.is_empty() => {
+            SandboxMode::DangerFullAccess
         }
-        Ok(())
-    }
+        (
+            Boundary::Workspace {
+                workspace,
+                sandbox_mode,
+                origin: maka_sandbox::workspace::WorkspaceOrigin::Allocated,
+                ..
+            },
+            Target::PluginWorkspace {
+                sandbox_mode: proposed,
+            },
+        ) if sandbox_mode == proposed
+            && !workspace.host_cwd.is_empty()
+            && matches!(&workspace.target, WorkspaceTarget::HostPath { path } if path == &workspace.host_cwd) =>
+        {
+            *sandbox_mode
+        }
+        (Boundary::Session { boundary, .. }, Target::Session { session_id })
+            if &boundary.session_id == session_id =>
+        {
+            boundary.validate().map_err(|_| invalid())?;
+            boundary.sandbox_mode
+        }
+        (
+            Boundary::Workspace {
+                workspace,
+                sandbox_mode,
+                origin: maka_sandbox::workspace::WorkspaceOrigin::Selected,
+                ..
+            },
+            Target::Workspace {
+                workspace: target,
+                sandbox_mode: proposed,
+            },
+        ) if sandbox_mode == proposed
+            && match (&workspace.target, target) {
+                (
+                    WorkspaceTarget::Project { project_id: left },
+                    WorkspaceTarget::Project { project_id: right },
+                ) => left == right,
+                // Only Host resolves path aliases into this canonical snapshot.
+                (WorkspaceTarget::HostPath { .. }, WorkspaceTarget::HostPath { .. }) => true,
+                _ => false,
+            }
+            && !workspace.host_cwd.is_empty() =>
+        {
+            *sandbox_mode
+        }
+        _ => return Err(invalid()),
+    };
+    request.validate_mode(mode)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -346,5 +296,3 @@ impl From<CommandError> for maka_agent_facts::tools::ToolError {
         }
     }
 }
-
-use crate::{Error, name};

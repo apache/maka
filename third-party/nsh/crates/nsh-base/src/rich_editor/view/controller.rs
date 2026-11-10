@@ -202,6 +202,10 @@ pub(crate) struct Rv {
     pub(crate) table_preview: Signal<Option<TablePreview>>,
 }
 
+fn copy_or_cut(event: &KeyEvent) -> bool {
+    event.mod_key && !event.alt && !event.shift && matches!(event.key.as_str(), "c" | "x")
+}
+
 impl Rv {
     pub(crate) fn new(props: RichEditorProps, cx: Scope<RichEditorEvent>) -> Rv {
         let session = props
@@ -768,19 +772,15 @@ impl Rv {
                 return;
             }
         }
-        if event.mod_key && !event.alt && !event.shift {
-            match event.key.as_str() {
-                "c" => return self.copy(),
-                "x" => {
-                    self.copy();
-                    if editable {
-                        self.delete_selection();
-                    }
-                    return;
-                }
-                "a" => return self.select_all(),
-                _ => {}
+        if copy_or_cut(event) {
+            self.copy();
+            if editable && event.key == "x" {
+                self.delete_selection();
             }
+            return;
+        }
+        if event.mod_key && !event.alt && !event.shift && event.key == "a" {
+            return self.select_all();
         }
         if editable && self.delete_by_key(event) {
             self.after_key(event);

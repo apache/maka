@@ -23,6 +23,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+asyncband = { workspace = true, features = ["completion"] }
+thiserror.workspace = true
+rusqlite.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 dunce = "1.0.5"
@@ -51,6 +54,7 @@ base64 = "0.23.1"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 maka-agent-engine.workspace = true
+maka-agent-state.workspace = true
 maka-assistant.workspace = true
 maka-config.workspace = true
 maka-event-log.workspace = true
@@ -85,7 +89,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
 [dev-dependencies]
-maka-agent-engine = { workspace = true, features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-external-agent.workspace = true

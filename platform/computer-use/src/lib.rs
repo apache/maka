@@ -36,11 +36,13 @@ pub mod cursor;
 pub mod desktop;
 #[cfg(feature = "native-desktop")]
 mod driver;
+mod execution;
 pub mod extension_browser_host;
 #[cfg(feature = "native-desktop")]
 mod host_handoff;
 #[cfg(feature = "native-desktop")]
 mod identity;
+pub use execution::ExecutionCorrelation;
 mod invocation;
 pub mod language;
 #[cfg(all(
@@ -80,7 +82,6 @@ pub use invocation::{
     CheckedSettlementFuture, HostEffectFactory, HostEffectFuture, HostUncertaintyFuture,
     InvocationCompletion, InvocationContext, OperationSettlement, SettlementFuture,
 };
-pub use maka_capabilities::computer::BrowserLeaseSubject;
 pub use native_interruption::{
     InterruptionFuture, NativeBindingSource, NativeInterruption, NativeInterruptionDrain,
     NativeInterruptionObserver,

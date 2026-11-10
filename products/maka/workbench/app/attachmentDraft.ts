@@ -82,13 +82,15 @@ export function createAttachmentDraft(options: {
   const watchFailed = signal(false);
   const owns = (target: { owner: string }) => alive && target.owner === options.sessionId;
   const returned = (original: any) =>
-    original.receipt?.kind === 'recorded' && original.receipt.outcome?.kind === 'returned'
-      ? original.receipt.outcome.value
+    original.receipt?.kind === 'recorded' &&
+    original.receipt.outcome?.kind === 'returned' &&
+    original.receipt.outcome.result?.kind === 'success'
+      ? original.receipt.outcome.result.value
       : null;
   const ended = (original: any) =>
     original.abandoned ||
     (original.receipt?.kind === 'recorded' &&
-      ['returned', 'unknown'].includes(original.receipt.outcome?.kind));
+      ['returned', 'not_executed', 'unknown'].includes(original.receipt.outcome?.kind));
   const uploaded = (original: any): DraftAttachment | null => {
     const value = returned(original),
       attachment = value?.attachment;
@@ -166,7 +168,11 @@ export function createAttachmentDraft(options: {
           error:
             result?.kind === 'rejected'
               ? uiMessage('Upload rejected: {reason}', { reason: result.reason })
-              : undefined,
+              : original.receipt?.kind === 'recorded' &&
+                  original.receipt.outcome?.kind === 'returned' &&
+                  original.receipt.outcome.result?.kind === 'failure'
+                ? errorText(new Error(original.receipt.outcome.result.diagnostic))
+                : undefined,
           original,
         };
       }),

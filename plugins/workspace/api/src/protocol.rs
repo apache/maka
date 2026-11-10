@@ -18,6 +18,7 @@
  */
 
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+use maka_plugin_core::operation::{OperationCleanup, RecoveryRef};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -66,11 +67,36 @@ pub struct Input {
     pub bytes: Option<Vec<u8>>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ProtocolProcessClose")]
+pub struct Close {
+    pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ProtocolProcessObserve")]
+pub struct Observe {
+    pub original: RecoveryRef,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ProtocolProcessObservation")]
+pub struct Observation {
+    pub original: RecoveryRef,
+    pub id: Uuid,
+    pub cleanup: OperationCleanup,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "ProtocolProcessProgress")]
 pub enum Progress {
     Started {
         id: Uuid,
+        /// Original protected private-task resource address, not launch authority.
+        resource_ref: String,
     },
     Output {
         stream: Stream,
@@ -110,10 +136,30 @@ pub struct Written {
 pub fn contract() -> Contract {
     Contract {
         name: "maka.workspace.ProtocolProcesses".into(),
-        version: 1,
+        version: 2,
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                (
+                    "observe".into(),
+                    Method {
+                        mode: MethodMode::Subscription,
+                        input: schemars::schema_for!(Observe).into(),
+                        output: schemars::schema_for!(Observation).into(),
+                        progress: None,
+                        resources: BTreeMap::new(),
+                    },
+                ),
+                (
+                    "close".into(),
+                    Method {
+                        mode: MethodMode::Mutation,
+                        input: schemars::schema_for!(Close).into(),
+                        output: schemars::schema_for!(Written).into(),
+                        progress: None,
+                        resources: BTreeMap::new(),
+                    },
+                ),
                 (
                     "launch".into(),
                     Method {

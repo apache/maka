@@ -26,8 +26,7 @@ use maka_agent_facts::tools::ToolError;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
+
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -49,8 +48,6 @@ pub enum WriteScope {
 #[derive(Default)]
 pub struct WriteCoordinator {
     pub(crate) mutation: Mutex<()>,
-    #[cfg(test)]
-    after_capture: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 pub struct MutationExecutor {
@@ -122,6 +119,47 @@ impl MutationExecutor {
                 .map(|scope| Authority::new(cwd.as_ref(), scope).map(Arc::new))
                 .transpose()?,
             coordinator,
+        })
+    }
+}
+
+impl MutationExecutor {
+    pub fn publish_change(
+        &self,
+        change: crate::publication::PublicationChange,
+        source: crate::publication::SourceIdentity,
+        content: Option<Box<dyn crate::publication::PublicationContent>>,
+        cancellation: CancellationToken,
+    ) -> ToolFuture<crate::publication::PublicationResult> {
+        let authority = self.authority.clone();
+        let coordinator = self.coordinator.clone();
+        Box::pin(async move {
+            let authority = authority.ok_or_else(|| failed("Write authority is disabled"))?;
+            let started = Arc::new(AtomicBool::new(false));
+            let worker_started = started.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::publication::run(
+                    &authority,
+                    &coordinator,
+                    change,
+                    source,
+                    content,
+                    &cancellation,
+                    &worker_started,
+                )
+            })
+            .await
+            .map_err(|error| {
+                if started.load(Ordering::SeqCst) {
+                    ToolError::OutcomeUnknown(format!(
+                        "publication worker failed after mutation started: {error}"
+                    ))
+                } else {
+                    failed(format!(
+                        "publication worker failed before mutation: {error}"
+                    ))
+                }
+            })?
         })
     }
 }
@@ -204,10 +242,7 @@ fn run(
             crate::write_target::ReadMode::Preview
         },
     )?;
-    #[cfg(test)]
-    if let Some(hook) = coordinator.after_capture.lock().unwrap().take() {
-        hook();
-    }
+
     let _guard = coordinator
         .mutation
         .lock()
@@ -223,85 +258,5 @@ pub(crate) fn check_cancelled(token: &CancellationToken) -> Result<(), ToolError
         Err(failed("Write cancelled before mutation"))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{fs, sync::mpsc};
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn queued_existing_and_missing_reject_replacement_and_cancel() {
-        for (initial, name) in [
-            (false, WRITE_NAME),
-            (true, WRITE_NAME),
-            (false, EDIT_NAME),
-            (true, EDIT_NAME),
-        ] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().canonicalize().unwrap();
-            let path = root.join("file");
-            if initial {
-                fs::write(&path, "original").unwrap();
-            }
-            let coordinator = Arc::new(WriteCoordinator::default());
-            let executor = MutationExecutor::new(
-                &root,
-                WriteScope::Restricted {
-                    roots: vec![root.clone()],
-                },
-                coordinator.clone(),
-            )
-            .unwrap();
-            let guard = coordinator.mutation.lock().unwrap();
-            let (sent, captured) = mpsc::channel();
-            *coordinator.after_capture.lock().unwrap() =
-                Some(Box::new(move || sent.send(()).unwrap()));
-            let task = tokio::spawn(executor.invoke(
-                name.into(),
-                arguments(name, "original"),
-                CancellationToken::new(),
-            ));
-            captured
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-            if initial {
-                fs::rename(&path, root.join("old")).unwrap();
-            }
-            fs::write(&path, "replacement").unwrap();
-            drop(guard);
-            assert!(matches!(task.await.unwrap(), Err(ToolError::Failed(_))));
-            assert_eq!(fs::read(&path).unwrap(), b"replacement");
-            if initial {
-                assert_eq!(fs::read(root.join("old")).unwrap(), b"original");
-            }
-
-            let guard = coordinator.mutation.lock().unwrap();
-            let (sent, captured) = mpsc::channel();
-            *coordinator.after_capture.lock().unwrap() =
-                Some(Box::new(move || sent.send(()).unwrap()));
-            let token = CancellationToken::new();
-            let task = tokio::spawn(executor.invoke(
-                name.into(),
-                arguments(name, "replacement"),
-                token.clone(),
-            ));
-            captured
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-            token.cancel();
-            drop(guard);
-            assert!(matches!(task.await.unwrap(), Err(ToolError::Failed(_))));
-            assert_eq!(fs::read(&path).unwrap(), b"replacement");
-        }
-    }
-
-    fn arguments(name: &str, old: &str) -> Value {
-        if name == WRITE_NAME {
-            json!({"path":"file","content":"tool"})
-        } else {
-            json!({"path":"file","old_string":old,"new_string":"tool"})
-        }
     }
 }

@@ -1599,38 +1599,49 @@ impl AppView {
         self.catch_up_with_focus();
         let command_key = self.options.capabilities.command_key;
         let selecting = self.selection.is_active();
-        let mut handled =
-            if self
+        let field_selected = self
+            .editing_field()
+            .and_then(|id| self.tree.get(id)?.field.as_ref())
+            .is_some_and(|f| f.model.has_selection());
+        let mut handled = if (self.editing_field().is_some()
+            && !field_selected
+            && self.selection.key_while_editing(
+                key,
+                modifiers,
+                &self.tree,
+                &self.geometry,
+                self.clipboard.as_ref(),
+            ))
+            || self
                 .keyboard
                 .shortcut(&self.tree, stroke, repeat, command_key, &control)
-                || self.menu_shortcut(stroke, repeat, false)
-                || self.handle_field_key(key, stroke, &control)
-                || self.selection.key(
-                    key,
-                    modifiers,
-                    &self.tree,
-                    &self.geometry,
-                    self.clipboard.as_ref(),
-                )
-                || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
-                    self.keyboard
-                        .shortcut(&self.tree, arrow, repeat, command_key, &control)
-                })
-            {
-                Handled::Yes
-            } else if let Some(crate::key_scheme::Action::Search(forward)) =
-                crate::key_scheme::terminal(stroke)
-            {
-                self.search(|minibuffer, scene| minibuffer.start(forward, scene));
-                Handled::Yes
-            } else if let Some(action) = crate::key_scheme::terminal(stroke)
-                .filter(|a| !matches!(a, crate::key_scheme::Action::Quit))
-            {
+            || self.menu_shortcut(stroke, repeat, false)
+            || self.handle_field_key(key, stroke, &control)
+            || self.selection.key(
+                key,
+                modifiers,
+                &self.tree,
+                &self.geometry,
+                self.clipboard.as_ref(),
+            )
+            || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
                 self.keyboard
-                    .action(action, &mut self.tree, &self.geometry, &control, modifiers)
-            } else {
-                Handled::Ignored
-            };
+                    .shortcut(&self.tree, arrow, repeat, command_key, &control)
+            }) {
+            Handled::Yes
+        } else if let Some(crate::key_scheme::Action::Search(forward)) =
+            crate::key_scheme::terminal(stroke)
+        {
+            self.search(|minibuffer, scene| minibuffer.start(forward, scene));
+            Handled::Yes
+        } else if let Some(action) = crate::key_scheme::terminal(stroke)
+            .filter(|a| !matches!(a, crate::key_scheme::Action::Quit))
+        {
+            self.keyboard
+                .action(action, &mut self.tree, &self.geometry, &control, modifiers)
+        } else {
+            Handled::Ignored
+        };
         if handled == Handled::Ignored {
             if self
                 .keyboard

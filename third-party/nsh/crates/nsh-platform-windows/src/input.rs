@@ -1263,6 +1263,30 @@ pub(crate) fn key_now(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         // it saw no other key: swallow the release once Alt + key was ours.
         return event.vk == VK_MENU && input.alt_combo.replace(false);
     }
+    if !MODIFIER_KEYS.contains(&event.vk)
+        && crate::text_input::focused(surface).is_some()
+        && !crate::text_input::focused_has_selection(surface)
+        && (crate::text::has_selection(surface) || crate::selectable_view::has_selection(surface))
+    {
+        let m = event.modifiers;
+        let is_copy =
+            m.ctrl && !m.alt && !m.shift && !m.meta && (event.vk == 0x43 || event.vk == 0x2D);
+        let is_escape = event.vk == 0x1B
+            && !m.ctrl
+            && !m.alt
+            && !m.shift
+            && !m.meta
+            && !crate::text_input::composing_focused(surface);
+        if is_copy || is_escape {
+            if crate::text::key(surface, &event) || crate::selectable_view::key(surface, &event) {
+                crate::keymap::drop_char(surface);
+                return true;
+            }
+        } else {
+            crate::text::clear_surface(surface);
+            crate::selectable_view::clear_surface(surface);
+        }
+    }
     // The window's shortcuts (full screen, the dev host's reload) work
     // wherever the focus is.
     let shortcut = surface.shortcuts.borrow().iter().any(|f| f(&event));
@@ -2786,6 +2810,91 @@ mod tests {
                     modifiers: Modifiers::default(),
                 }
             ));
+
+            // Programmatically refocusing an empty field while output remains
+            // selected keeps Ctrl+C on the output selection until another key
+            // edits or selects in the field.
+            down(
+                &surface,
+                Key::Mouse,
+                10.0,
+                90.0,
+                0.0,
+                2,
+                Modifiers::default(),
+            );
+            up(&surface, Key::Mouse, Some((10.0, 90.0)), 1.0, false);
+            assert!(
+                crate::text::has_selection(&surface)
+                    || crate::selectable_view::has_selection(&surface)
+            );
+            crate::keymap::set(
+                &surface,
+                std::sync::Arc::new(nsh_core::keymap::Keymap::new(vec![
+                    nsh_core::keymap::KeyBinding::new(
+                        1,
+                        nsh_core::keymap::Keystroke::parse(
+                            "ctrl+c",
+                            nsh_core::platform::Os::Windows,
+                        )
+                        .unwrap(),
+                        nsh_core::keymap::When::Always,
+                        false,
+                    ),
+                ])),
+            );
+            crate::text_input::focus_view(&surface, &field);
+            crate::text_input::disarm(&surface);
+
+            // Pressing bare Control before C must not clear the output selection.
+            let _ = key(
+                &surface,
+                KeyEvent {
+                    vk: 0x11,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                },
+            );
+            assert!(
+                crate::text::has_selection(&surface)
+                    || crate::selectable_view::has_selection(&surface)
+            );
+
+            let sent_before_copy = surface.events_sent();
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x43,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                }
+            ));
+            assert_eq!(surface.events_sent(), sent_before_copy);
+
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x41,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                }
+            ));
+            assert!(
+                !crate::text::has_selection(&surface)
+                    && !crate::selectable_view::has_selection(&surface)
+            );
         }
     }
 

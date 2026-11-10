@@ -18,9 +18,9 @@
  */
 
 //! Canonical Session controls, authorized through the captured client identity.
-use maka_agent_facts::execution::WorkspaceTarget;
 use maka_agent_facts::executor::ExecutorId;
 use maka_agent_facts::executor::Settings;
+use maka_sandbox::workspace::WorkspaceTarget;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

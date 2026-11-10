@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { textTooltip } from './ui';
 import { tr } from './locale';
 import { Image, inputAction, Scroll, signal, Text, View } from 'nsh';
@@ -24,7 +25,7 @@ import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerAttachments } from '../../../../packages/plugin-sdk/src/composer-view.js';
-import type { Position } from './history';
+
 import { ImageThumbnail, type ImagePreview } from './ImageThumbnail';
 import { ImageViewer } from './ImageViewer';
 import { C, captionTextStyle, controlStyle } from './ui';
@@ -309,7 +310,7 @@ export function DraftAttachments(props: {
 export function HistoryAttachments(props: {
   sessionId: string;
   through: number;
-  position?: Position;
+  position?: HistoryRowAddress;
   attachments: AgentHistoryAttachment[];
   preview(image: ImagePreview): void;
   userScroll(): void;

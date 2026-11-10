@@ -22,7 +22,6 @@ import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
-import { closeCjkEmphasis } from './markdownEmphasis';
 import { Icon } from './Icon';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
@@ -63,7 +62,7 @@ export function BotReply(props: {
                 }}
                 trigger={
                   <TextView
-                    markdown={closeCjkEmphasis(message().text)}
+                    markdown={message().text}
                     extensions={mermaidExtensions}
                     renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
                     sourceId={`bot/${message().sequence}`}

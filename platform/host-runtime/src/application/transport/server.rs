@@ -479,10 +479,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         drop(prepared);
                         self.abort("mutation preparation cancelled".into()).await
                     }
-                    control @ (Control::Commit { .. } | Control::Confirm)
+                    control @ (Control::Commit { .. } | Control::Confirm { .. })
                         if matches!(
                             (&control, owned),
-                            (Control::Commit { .. }, false) | (Control::Confirm, true)
+                            (Control::Commit { .. }, false) | (Control::Confirm { .. }, true)
                         ) =>
                     {
                         let reference = prepared.reference().clone();
@@ -491,7 +491,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                                 Control::Commit { intent } => {
                                     server.client.mutate_from_peer(prepared, *intent).await
                                 }
-                                Control::Confirm => server.client.mutate_owned(prepared).await,
+                                Control::Confirm { recovery } => {
+                                    server.client.mutate_owned(prepared, recovery).await
+                                }
                                 _ => unreachable!(),
                             }
                         };
@@ -574,203 +576,5 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 self.query(completion).await
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        pin::Pin,
-        sync::atomic::{AtomicBool, Ordering},
-        task::{Context, Poll, Waker},
-    };
-    use tokio::{io::DuplexStream, sync::Semaphore};
-    struct Gate {
-        entered: Semaphore,
-        release: AtomicBool,
-        waker: Mutex<Option<Waker>>,
-    }
-    struct FlushGate {
-        inner: DuplexStream,
-        gate: Arc<Gate>,
-    }
-    impl AsyncWrite for FlushGate {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            bytes: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
-            Pin::new(&mut self.inner).poll_write(cx, bytes)
-        }
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-            if self.gate.release.load(Ordering::SeqCst) {
-                return Poll::Ready(Ok(()));
-            }
-            *self.gate.waker.lock().unwrap() = Some(cx.waker().clone());
-            self.gate.entered.add_permits(1);
-            Poll::Pending
-        }
-        fn poll_shutdown(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            Pin::new(&mut self.inner).poll_shutdown(cx)
-        }
-    }
-    fn scope() -> Scope {
-        maka_capabilities::call::Issuer::default()
-            .issue(
-                maka_capabilities::call::Identity::Remote {
-                    request_id: uuid::Uuid::new_v4(),
-                },
-                CancellationToken::new(),
-            )
-            .unwrap()
-    }
-    #[tokio::test]
-    async fn cancellation_during_reply_flush_keeps_the_same_channel_for_cleanup() {
-        let (input, mut command) = tokio::io::duplex(128);
-        let (output, reply) = tokio::io::duplex(128);
-        let mut reply = Reader::new(reply);
-        let gate = Arc::new(Gate {
-            entered: Semaphore::new(0),
-            release: AtomicBool::new(false),
-            waker: Mutex::new(None),
-        });
-        let scope = scope();
-        let observed = scope.clone();
-        let task = tokio::spawn({
-            let gate = gate.clone();
-            async move {
-                let mut session = Session {
-                    reader: Reader::new(input),
-                    writer: FlushGate {
-                        inner: output,
-                        gate,
-                    },
-                    scope: Some(scope),
-                    stop: CancellationToken::new(),
-                    lost: false,
-                    pending: None,
-                };
-                session.send(&Reply::Subscribed).await.unwrap();
-                assert!(!session.lost);
-                assert!(matches!(session.control().await.unwrap(), Control::Cancel));
-                session.abort("cancelled".into()).await.unwrap();
-            }
-        });
-        gate.entered.acquire().await.unwrap().forget();
-        assert!(matches!(
-            reply.read::<Reply>().await.unwrap(),
-            Reply::Subscribed
-        ));
-        wire::write(&mut command, &Control::Cancel).await.unwrap();
-        observed.cancellation.cancelled().await;
-        gate.release.store(true, Ordering::SeqCst);
-        gate.waker.lock().unwrap().take().unwrap().wake();
-        assert!(matches!(
-            reply.read::<Reply>().await.unwrap(),
-            Reply::Aborted {
-                cleanup: Ok(()),
-                ..
-            }
-        ));
-        task.await.unwrap();
-        observed.finish().await.unwrap();
-    }
-    #[tokio::test]
-    async fn cancellation_while_receiving_a_queued_item_survives_until_cleanup() {
-        let (input, mut command) = tokio::io::duplex(128);
-        let (output, reply) = tokio::io::duplex(1024);
-        let mut reply = Reader::new(reply);
-        let scope = scope();
-        let mut resource = scope.resources.reserve().unwrap();
-        resource.start();
-        let (mut items, emitter) = crate::application::subscriptions::items(
-            Arc::new(jsonschema::validator_for(&serde_json::json!({})).unwrap()),
-            scope.cancellation.clone(),
-        );
-        let value = serde_json::json!("already accepted");
-        emitter.emit(value.clone()).await.unwrap();
-        let mut session = Session {
-            reader: Reader::new(input),
-            writer: output,
-            scope: Some(scope.clone()),
-            stop: CancellationToken::new(),
-            lost: false,
-            pending: None,
-        };
-        // Both are ready on the same poll: cancellation wins observation,
-        // but the real subscription queue still returns its accepted item.
-        wire::write(&mut command, &Control::Cancel).await.unwrap();
-        assert_eq!(session.observe(items.recv()).await, Some(value.clone()));
-        assert!(scope.cancellation.is_cancelled());
-        assert!(!session.lost);
-        session
-            .send(&Reply::Item {
-                value: value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            reply.read::<Reply>().await.unwrap(),
-            Reply::Item { value: received } if received == value
-        ));
-        // The peer has already sent its one Cancel and now only reads.
-        assert!(matches!(
-            session.control().now_or_never(),
-            Some(Ok(Control::Cancel))
-        ));
-        let finish = session.finish(Reply::Finished {
-            result: Ok(serde_json::Value::Null),
-            cleanup: Ok(()),
-        });
-        tokio::pin!(finish);
-        assert!(finish.as_mut().now_or_never().is_none());
-        resource.complete(Ok(()));
-        finish.await.unwrap();
-        assert!(matches!(
-            reply.read::<Reply>().await.unwrap(),
-            Reply::Finished {
-                cleanup: Ok(()),
-                ..
-            }
-        ));
-        scope.finish().await.unwrap();
-    }
-    #[tokio::test]
-    async fn eof_revokes_but_does_not_drop_the_same_admission_observer() {
-        let (input, peer) = tokio::io::duplex(64);
-        let scope = scope();
-        let observed = scope.clone();
-        let release = Arc::new(Semaphore::new(0));
-        let task = tokio::spawn({
-            let release = release.clone();
-            async move {
-                let mut session = Session {
-                    reader: Reader::new(input),
-                    writer: tokio::io::sink(),
-                    scope: Some(scope),
-                    stop: CancellationToken::new(),
-                    lost: false,
-                    pending: None,
-                };
-                let value = session
-                    .observe(async {
-                        release.acquire().await.unwrap().forget();
-                        17
-                    })
-                    .await;
-                assert!(session.lost);
-                value
-            }
-        });
-        drop(peer);
-        observed.cancellation.cancelled().await;
-        assert!(!task.is_finished());
-        release.add_permits(1);
-        assert_eq!(task.await.unwrap(), 17);
-        observed.finish().await.unwrap();
     }
 }

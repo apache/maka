@@ -17,12 +17,13 @@
  * under the License.
  */
 
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { useHost } from './host';
-import { messageBytes, type Position, type Row } from './history';
+import { messageBytes, sameHistoryRow, type Row } from './history';
 import type { MessageMenu } from './messageMenu';
 import { C, IconButton } from './ui';
 
@@ -30,11 +31,9 @@ export type OriginalMessage = {
   sessionId: string;
   key: string;
   role: 'user' | 'assistant';
-  position: Position;
+  position: HistoryRowAddress;
   through: number;
 };
-const samePosition = (left: Position, right: Position) =>
-  left.sourceSequence === right.sourceSequence && left.itemIndex === right.itemIndex;
 const sameMessage = (left: OriginalMessage | null, right: OriginalMessage | null) =>
   left === right ||
   (left !== null &&
@@ -42,7 +41,7 @@ const sameMessage = (left: OriginalMessage | null, right: OriginalMessage | null
     left.sessionId === right.sessionId &&
     left.key === right.key &&
     left.role === right.role &&
-    samePosition(left.position, right.position));
+    sameHistoryRow(left.position, right.position));
 
 /** The whole original text of a message, read page by page; null once it is no longer current. */
 export async function readOriginal(
@@ -67,7 +66,7 @@ export async function readOriginal(
     if (
       page.kind !== 'ready' ||
       page.through !== original.through ||
-      !samePosition(source.position, original.position) ||
+      !sameHistoryRow(source.position, original.position) ||
       source.field !== 'body' ||
       source.role !== original.role ||
       source.format !== 'text' ||
@@ -109,7 +108,11 @@ export function MessageCopy(props: {
     () => {
       const row = props.row();
       if (row.field !== 'body' || !row.position) return null;
-      if (row.role !== 'user' && (row.role !== 'assistant' || !row.finalOutput)) return null;
+      if (
+        row.role !== 'user' &&
+        (row.role !== 'assistant' || (!row.finalOutput && row.position.kind === 'live'))
+      )
+        return null;
       return {
         sessionId: props.sessionId,
         key: props.ownerKey(),

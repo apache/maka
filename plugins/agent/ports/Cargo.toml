@@ -29,6 +29,7 @@ jsonschema.workspace = true
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 maka-plugin-core.workspace = true
+maka-sandbox.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

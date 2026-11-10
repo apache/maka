@@ -22,11 +22,12 @@ import { Button, Dialog } from 'nsh/base';
 import { host } from 'nsh';
 import { keymap } from 'nsh';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type { RunId } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
 
-type InterruptSession = Pick<ComposerSession, 'draft' | 'invocation' | 'stopping' | 'stop'>;
-type StopRequest = { owner: InterruptSession; invocationId: string };
+type InterruptSession = Pick<ComposerSession, 'draft' | 'run' | 'stopping' | 'stop'>;
+type StopRequest = { owner: InterruptSession; runId: RunId };
 
 export function createTerminalInterrupt(options: {
   session(): InterruptSession | null;
@@ -55,13 +56,13 @@ export function createTerminalInterrupt(options: {
     reset();
   });
   let previousOwner: InterruptSession | null = null;
-  let previousInvocation: string | null = null;
+  let previousRun: RunId | null = null;
   effect(() => {
     const owner = options.session();
-    const invocationId = owner?.invocation() ?? null;
-    if (owner !== previousOwner || invocationId !== previousInvocation) dismiss();
+    const runId = owner?.run() ?? null;
+    if (owner !== previousOwner || runId !== previousRun) dismiss();
     previousOwner = owner;
-    previousInvocation = invocationId;
+    previousRun = runId;
     if (owner?.stopping() || options.blocked()) confirmation.set(null);
   });
   const interrupt = () => {
@@ -75,10 +76,10 @@ export function createTerminalInterrupt(options: {
       return;
     }
     const owner = options.session();
-    const invocationId = owner?.invocation();
-    if (owner && invocationId && !owner.stopping()) {
+    const runId = owner?.run();
+    if (owner && runId && !owner.stopping()) {
       reset();
-      confirmation.set({ owner, invocationId });
+      confirmation.set({ owner, runId });
       return;
     }
     const now = Date.now();
@@ -112,12 +113,12 @@ export function createTerminalInterrupt(options: {
         !alive ||
         confirmation() !== request ||
         options.session() !== request.owner ||
-        request.owner.invocation() !== request.invocationId ||
+        request.owner.run() !== request.runId ||
         request.owner.stopping()
       )
         return;
       dismiss();
-      void request.owner.stop(request.invocationId).catch(options.report);
+      void request.owner.stop(request.runId).catch(options.report);
     },
   };
 }

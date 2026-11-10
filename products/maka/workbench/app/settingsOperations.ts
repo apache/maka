@@ -32,7 +32,12 @@ export function settingsValue(reply: unknown): unknown {
   const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
   const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
   if (outcome?.kind !== 'returned') throw new UiError('This action could not be completed.');
-  return outcome.value;
+  const result = outcome.result;
+  if (!record(result)) throw new UiError('This action could not be completed.');
+  if (result.kind === 'failure' && typeof result.diagnostic === 'string')
+    throw new Error(result.diagnostic);
+  if (result.kind !== 'success') throw new UiError('This action could not be completed.');
+  return result.value;
 }
 
 export const credentialBasis = (status: CredentialStatus | null): CredentialVersionBasis | null =>

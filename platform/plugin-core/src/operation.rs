@@ -119,12 +119,30 @@ impl RecoveryRef {
     }
 }
 
-/// Unresolved means no durable result is known, including after process loss.
+/// An observation of a provider fence, not a capability to create that fence.
+/// Only the original provider may establish this proof before handler start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotExecutedProof {
+    ProviderPreventedBeforeStart,
+}
+
+/// A definite handler return. Failure does not imply absence of side effects.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationResult {
+    Success { value: Value },
+    Failure { diagnostic: String },
+}
+
+/// Unresolved and Unknown may advance to authoritative original evidence.
+/// Returned and NotExecuted are immutable; handler errors are Returned too.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationOutcome {
     Unresolved,
-    Returned { value: Value },
+    Returned { result: OperationResult },
+    NotExecuted { proof: NotExecutedProof },
     Unknown { diagnostic: String },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -148,6 +166,7 @@ pub struct OperationObservation {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Receipt {
     /// An authorized lookup found no row at the exact original reference.
+    /// This is not proof of non-execution: the original request may arrive later.
     NotRecorded,
     Recorded {
         outcome: OperationOutcome,

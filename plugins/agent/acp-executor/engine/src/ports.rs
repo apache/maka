@@ -26,7 +26,7 @@ use maka_capabilities::call::Scope;
 use maka_capabilities::filesystem::Operation;
 use maka_capabilities::filesystem::Output;
 use maka_capabilities::process::Processes;
-use maka_capabilities::storage::Store;
+use maka_plugin_core::storage::Store;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -42,9 +42,18 @@ pub struct PromptAttachment {
     pub mime_type: String,
     pub resource: Arc<dyn ReadResource>,
 }
+/// Data observed from this call's original isolated process, not authority.
+pub struct PrivatePaths {
+    pub working_directory: String,
+    pub history_file: String,
+}
+
 /// Each callback identity belongs to one accepted protocol callback. Repeated
 /// pages retain it; separate identical requests are still separate operations.
 pub trait Callbacks: Send + Sync {
+    /// Observed from this call's actual isolated process, never the source cwd.
+    fn private_paths(&self, scope: &Scope) -> Result<PrivatePaths, String>;
+
     /// Actual immutable resources from this admitted call, never filesystem locators.
     fn prompt_attachments(&self, _scope: &Scope) -> Result<Vec<PromptAttachment>, String> {
         Ok(vec![])

@@ -21,8 +21,8 @@ use crate::{ConfigError, ConfigurationStore, Result, TransactionMode};
 use maka_capabilities::credentials::Record;
 use maka_capabilities::credentials::Write;
 use maka_capabilities::credentials::WriteResult;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::validate_key;
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::validate_key;
 use rusqlite::{Connection, OptionalExtension};
 
 impl ConfigurationStore {

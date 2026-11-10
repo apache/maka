@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use maka_sandbox::workspace::{WorkspaceIdentity, WorkspaceOrigin};
 pub use maka_sandbox::{Approval as ApprovalPolicy, Mode as SandboxMode};
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +26,10 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CollaborationMode {
+    /// Durable sessions and invocations still carry this field. Planning mode no
+    /// longer exists, so a record written in it continues as an ordinary session.
     #[default]
+    #[serde(alias = "plan")]
     Agent,
 }
 
@@ -36,6 +40,8 @@ pub enum ToolProfile {
     HeadlessCodingV1,
 }
 
+mod behavior;
+pub use behavior::BehaviorId;
 mod tool_policy;
 pub use tool_policy::{CodeLanguage, EditingTools};
 
@@ -82,7 +88,7 @@ pub struct ModelBinding {
     pub model: String,
 }
 
-/// Actual Host-composed instructions admitted with this invocation, not a
+/// Actual Host-composed instructions admitted with this execution, not a
 /// pointer to mutable root settings or a replacement for conversation history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemPrompt {
@@ -106,14 +112,14 @@ impl SystemPrompt {
 /// Immutable admission context, committed in the opening before dispatch.
 /// Later Session mutations must not reinterpret relative paths or grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InvocationConfiguration {
+pub struct RunConfiguration {
     /// Frozen effective instructions for automatic and manual context compaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
     /// Frozen file-editing policy. Older invocations retain their original unfiltered tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editing_tools: Option<EditingTools>,
-    /// Frozen discovery policy for this invocation, including continuations.
+    /// Frozen discovery policy for this execution, including continuations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_discovery: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,7 +132,7 @@ pub struct InvocationConfiguration {
     pub workspace_identity: Option<WorkspaceIdentity>,
     /// Frozen shared-workspace authority; None only for non-Session execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_binding: Option<crate::workspace::BindingStamp>,
+    pub workspace_binding: Option<maka_sandbox::workspace::BindingStamp>,
     pub workspace_origin: WorkspaceOrigin,
     pub sandbox_mode: SandboxMode,
     pub approval_policy: ApprovalPolicy,
@@ -134,6 +140,7 @@ pub struct InvocationConfiguration {
     /// to the same modes and paths. Equality of values does not restore a grant.
     pub boundary_revision: u64,
     pub collaboration_mode: CollaborationMode,
+    pub orchestration_mode: BehaviorId,
     pub tool_mode: ToolMode,
     /// Frozen Code Mode interpreter. Historical invocations used JavaScript.
     #[serde(default, skip_serializing_if = "CodeLanguage::is_javascript")]
@@ -169,101 +176,4 @@ pub enum NativeToolSet {
     #[default]
     Workspace,
     Attachments,
-}
-
-/// User-selected workspace locator, before Host path resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum WorkspaceTarget {
-    Project { project_id: String },
-    HostPath { path: String },
-}
-
-/// Host-resolved location; a locator alone never authorizes filesystem access.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkspaceProjection {
-    pub target: WorkspaceTarget,
-    pub host_cwd: String,
-}
-
-/// Host-issued provenance recorded with execution authority, never inferred from
-/// the display projection's path or supplied by a workspace locator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceOrigin {
-    Selected,
-    Allocated,
-}
-
-/// Intrinsic workspace identity is distinct from its current filesystem location.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct WorkspaceIdentity(String);
-
-/// Filesystem-object observation for directory consent, not an execution workspace marker.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct DirectoryIdentity(String);
-
-impl TryFrom<String> for DirectoryIdentity {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.strip_prefix("sha256:").is_none_or(|hex| {
-            hex.len() != 64
-                || !hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        }) {
-            return Err("invalid directory identity");
-        }
-        Ok(Self(value))
-    }
-}
-impl From<DirectoryIdentity> for String {
-    fn from(identity: DirectoryIdentity) -> Self {
-        identity.0
-    }
-}
-
-impl WorkspaceIdentity {
-    pub fn from_marker_id(id: &str) -> Result<Self, &'static str> {
-        let uuid = uuid::Uuid::parse_str(id).map_err(|_| "invalid workspace UUID")?;
-        if id.len() != 36
-            || !uuid.hyphenated().to_string().eq_ignore_ascii_case(id)
-            || !(1..=8).contains(&uuid.get_version_num())
-            || uuid.get_variant() != uuid::Variant::RFC4122
-        {
-            return Err("invalid workspace UUID");
-        }
-        // Preserve an existing marker's exact spelling, including uppercase UUIDs.
-        Ok(Self(format!("workspace:v1:{id}")))
-    }
-
-    pub fn marker_id(&self) -> &str {
-        &self.0["workspace:v1:".len()..]
-    }
-}
-
-impl TryFrom<String> for WorkspaceIdentity {
-    type Error = &'static str;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::from_marker_id(
-            value
-                .strip_prefix("workspace:v1:")
-                .ok_or("invalid workspace identity")?,
-        )
-    }
-}
-
-impl From<WorkspaceIdentity> for String {
-    fn from(identity: WorkspaceIdentity) -> Self {
-        identity.0
-    }
 }

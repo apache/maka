@@ -20,14 +20,19 @@
 //! Durable, bounded replacements of immutable model evidence.
 mod encoding;
 mod reference;
+mod source;
 use crate::{
     read::{MAX_PAGE_CHARS, ReadInput, ReadPage},
     tool_output::DurableToolProjection,
 };
-pub use encoding::{encode_projection, outcome_projection, projection_digest};
+pub use encoding::{
+    encode_projection, outcome_projection, projection_digest, projection_identity_source,
+    projection_source,
+};
 pub use reference::ToolResultAddress;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub use source::prepare_imported_source;
 
 const ARCHIVE_READ_INSTRUCTIONS: &str = "Read the page below; pass page.next to Read to continue. The address is a Session resource, not a workspace file.";
 
@@ -176,12 +181,24 @@ impl ArchivedPlaceholder {
 }
 
 fn canonical_header(identity: &ArchiveIdentity) -> Result<CanonicalHeader<'_>, &'static str> {
-    Ok(CanonicalHeader {
+    Ok(canonical_resource_header(
+        &identity.tool_name,
+        identity.short_ref()?,
+        identity.original_bytes,
+    ))
+}
+
+fn canonical_resource_header(
+    tool_name: &str,
+    resource_ref: String,
+    original_bytes: u64,
+) -> CanonicalHeader<'_> {
+    CanonicalHeader {
         kind: "maka.archived_tool_result",
-        resource_ref: identity.short_ref()?,
-        tool_name: &identity.tool_name,
-        original_bytes: identity.original_bytes,
+        resource_ref,
+        tool_name,
+        original_bytes,
         reason: PruneReason::ToolResultPruned,
         read_instructions: ARCHIVE_READ_INSTRUCTIONS,
-    })
+    }
 }

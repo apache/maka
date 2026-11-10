@@ -21,14 +21,18 @@
 //! retain all authorization and custody; the adapter exposes only their ABI.
 use futures_util::future::BoxFuture;
 use maka_host_runtime::application::{
-    Context, Handler, Result,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, Result,
     abi::{HostActivation, HostObservation, HostRequest},
     backend,
 };
+use maka_host_runtime::storage::StateChange;
 use maka_js_runtime::plugin::{Captured, Limits, Vm};
 use maka_plugin_core::{contract::Interface, package::EntryDeclaration, runtime::Published};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 pub fn factory(limits: Limits) -> Arc<dyn backend::Factory> {
     Arc::new(Factory(limits))
@@ -115,38 +119,84 @@ impl Handler for Service {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let callbacks = self.0.clone();
         Box::pin(async move {
             let observation = serde_json::to_value(HostObservation {
                 source: context.scope().identity.clone(),
                 operation: context.operation().cloned(),
             })
-            .map_err(message)?;
-            callbacks
-                .call_with_context(
-                    &method,
-                    vec![input, observation],
-                    Arc::new(Request(context)),
-                )
+            .map_err(|error| HandlerError::Unknown {
+                diagnostic: error.to_string(),
+            })?;
+            let request = Arc::new(Request {
+                context,
+                completion: Mutex::new(None),
+            });
+            let value = callbacks
+                .call_with_context(&method, vec![input, observation], request.clone())
                 .await
-                .map_err(message)
+                .map_err(|error| match error {
+                    maka_js_runtime::plugin::Error::Rejected { diagnostic } => {
+                        HandlerError::Returned { diagnostic }
+                    }
+                    maka_js_runtime::plugin::Error::Unavailable { diagnostic } => {
+                        HandlerError::Unknown { diagnostic }
+                    }
+                })?;
+            let completion = request
+                .completion
+                .lock()
+                .expect("state completion lock poisoned")
+                .take();
+            match completion {
+                Some((declared, state)) if declared == value => {
+                    Ok(HandlerValue::Commit { value, state })
+                }
+                Some(_) => Err(HandlerError::Returned {
+                    diagnostic: "callback output does not match its sealed state completion".into(),
+                }),
+                None => Ok(HandlerValue::Json(value)),
+            }
         })
     }
 }
-struct Request(Context);
+struct Request {
+    context: Context,
+    completion: Mutex<Option<(Value, StateChange)>>,
+}
 impl maka_js_runtime::plugin::RequestBridge for Request {
     fn invoke(
         &self,
         input: Value,
     ) -> BoxFuture<'static, std::result::Result<Value, maka_js_runtime::plugin::Error>> {
-        let request =
-            serde_json::from_value::<HostRequest>(input).map(|request| self.0.request(request));
+        let request = (|| {
+            let operation: HostRequest = serde_json::from_value(input).map_err(message)?;
+            // Serialize the last descriptor with admission, not asynchronous work.
+            // Previously accepted requests retain their own original Scope tickets.
+            let mut completion = self
+                .completion
+                .lock()
+                .expect("state completion lock poisoned");
+            if completion.is_some() {
+                return Err("callback state completion is already sealed".to_string());
+            }
+            match operation {
+                HostRequest::CompleteState { mutations, value } => {
+                    let state = self.context.prepare_state(mutations)?;
+                    *completion = Some((value.clone(), state));
+                    Ok(Box::pin(async move { Ok(value) }) as BoxFuture<'static, Result<Value>>)
+                }
+                operation => Ok(self.context.request(operation)),
+            }
+        })();
         Box::pin(async move {
             request
-                .map_err(|error| maka_js_runtime::plugin::Error(error.to_string()))?
+                .map_err(|error| maka_js_runtime::plugin::Error::Rejected {
+                    diagnostic: error.to_string(),
+                })?
                 .await
-                .map_err(maka_js_runtime::plugin::Error)
+                .map_err(|diagnostic| maka_js_runtime::plugin::Error::Rejected { diagnostic })
         })
     }
 }
