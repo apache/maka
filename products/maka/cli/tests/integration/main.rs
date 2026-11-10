@@ -55,3 +55,6 @@ mod network_sandbox;
 mod sandbox;
 mod startup;
 mod terminal_shell;
+
+#[path = "../../../terminal-shell/tests/real_host/mod.rs"]
+mod terminal;

@@ -728,6 +728,7 @@ pub fn click_node(view: &mut AppView, node: nsh_platform_tui::AccessibleNode) {
     }
 }
 
+#[track_caller]
 pub fn wait_view(
     view: &mut AppView,
     predicate: impl Fn(&str) -> bool,
@@ -768,6 +769,7 @@ pub fn wait_view_state(
     }
 }
 
+#[track_caller]
 pub fn wait_draft<'a>(
     client: &'a Client,
     session: &'a str,

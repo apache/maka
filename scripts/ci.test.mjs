@@ -525,3 +525,47 @@ test('Linux keeps native Computer Use without the retired desktop engine', () =>
   assert.equal(worker.dependencies, 'computer-use');
   assert.equal(worker.javascript, false);
 });
+
+test('terminal keyboard fixtures and editor changes select the required CLI root tests', () => {
+  const packages = [
+    ['nsh-base', 'third-party/nsh/crates/nsh-base', []],
+    ['nsh-platform-tui', 'third-party/nsh/crates/nsh-platform-tui', ['nsh-base']],
+    ['maka-workbench', 'products/maka/workbench', ['nsh-base']],
+    [
+      'maka-terminal-shell',
+      'products/maka/terminal-shell',
+      ['nsh-base', 'nsh-platform-tui', 'maka-workbench'],
+    ],
+    [
+      'maka-cli',
+      'products/maka/cli',
+      ['nsh-base', 'nsh-platform-tui', 'maka-terminal-shell', 'maka-workbench'],
+    ],
+  ];
+  const metadata = {
+    root: {
+      packages: packages.map(([name, path]) => ({
+        name,
+        id: name,
+        source: null,
+        manifest_path: join(root, path, 'Cargo.toml'),
+      })),
+      workspace_members: packages.map(([name]) => name),
+      resolve: {
+        nodes: packages.map(([id, , deps]) => ({ id, deps: deps.map((pkg) => ({ pkg })) })),
+      },
+    },
+  };
+  for (const path of [
+    'products/maka/cli/tests/integration/main.rs',
+    'products/maka/terminal-shell/tests/real_host/mod.rs',
+    'products/maka/terminal-shell/tests/real_host/keyboard.rs',
+    'products/maka/terminal-shell/tests/real_host/support.rs',
+    'third-party/nsh/crates/nsh-base/src/rich_editor/view/controller.rs',
+    'third-party/nsh/crates/nsh-platform-tui/src/app.rs',
+  ]) {
+    const plan = createPlan({ root, changes: [path], metadata, revision: 'test' });
+    assert.equal(plan.full, false, path);
+    assert.ok(plan.suites.root.filter.includes('package(=maka-cli)'), path);
+  }
+});
