@@ -17,9 +17,8 @@
  * under the License.
  */
 
-//! Root-owned physical compaction follows committed material releases. Domain
-//! owners decide which canonical bytes may be deleted; this loop only reclaims
-//! pages already freed by those owners, never interprets their facts.
+//! Root reclaims content nominated by committed domain releases and compacts
+//! the resulting free pages. The current reference graph decides what survives.
 
 use super::EventLog;
 use tokio::sync::oneshot;
@@ -49,12 +48,11 @@ async fn collect(log: &EventLog) {
         // A release during a pass remains unread and schedules another pass.
         releases.borrow_and_update();
         loop {
-            match vacuum_step(log).await {
+            match reclaim_step(log).await {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(error) => {
-                    // Uncertainty is not completion. A later release or reopen
-                    // rereads the physical freelist; no canonical bytes are lost.
+                    // A later release or reopen resumes the durable work.
                     eprintln!("Root material compaction failed: {error}");
                     break;
                 }
@@ -66,9 +64,25 @@ async fn collect(log: &EventLog) {
     }
 }
 
-async fn vacuum_step(log: &EventLog) -> Result<bool, crate::StoreError> {
+async fn reclaim_step(log: &EventLog) -> Result<bool, crate::StoreError> {
     log.connection
         .run(|connection| {
+            let pending: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_content_releases)", [], |row| row.get(0),
+            )?;
+            if pending {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                tx.execute(
+                    "WITH batch AS MATERIALIZED (SELECT content_id FROM pending_content_releases ORDER BY content_id LIMIT 128)
+                     DELETE FROM pending_content_releases WHERE content_id IN (SELECT content_id FROM batch)",
+                    [],
+                )?;
+                tx.commit().map_err(crate::StoreError::CommitUnknown)?;
+                return Ok(true);
+            }
             let free: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
             if free == 0 {
                 return Ok(false);

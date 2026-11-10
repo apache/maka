@@ -198,4 +198,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "locate immutable inventory pages",
         sql: include_str!("../migrations/0034_snapshot_inventory_pages.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 35,
+        description: "own executor profile contents",
+        sql: include_str!("../migrations/0035_profile_content_owners.sql"),
+    },
 ];

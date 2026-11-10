@@ -33,6 +33,11 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         description: "plugin_data_live",
         sql: include_str!("../migrations/0023_plugin_data_live.sql"),
     },
+    crate::migration::Migration {
+        version: 36,
+        description: "deferred content release",
+        sql: include_str!("../migrations/0036_pending_content_release.sql"),
+    },
 ];
 
 pub(crate) fn initialize_connection(
