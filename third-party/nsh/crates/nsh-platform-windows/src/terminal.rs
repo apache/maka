@@ -829,20 +829,28 @@ mod tests {
                     kind: ViewKind::Modal,
                 },
             );
+            let insert = || {
+                surface.mounter.borrow_mut().apply(
+                    surface,
+                    &MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: window,
+                        before: None,
+                    },
+                );
+            };
+            // The platform can see an Insert earlier in the batch, or a
+            // later reinsertion of the same Window.open root.
+            if active {
+                insert();
+            }
             desktop(
                 window,
                 DesktopCommand::OpenWindow(Box::new(OpenWindow::default())),
             );
-            // Window.open inserts its modal root after OpenWindow. Rejecting the
-            // OS command must not turn that root into a terminal dialog.
-            surface.mounter.borrow_mut().apply(
-                surface,
-                &MountItem::Insert {
-                    parent: ROOT_ID,
-                    child: window,
-                    before: None,
-                },
-            );
+            if !active {
+                insert();
+            }
             surface.mounter.borrow_mut().end_batch(surface);
             desktop(window, DesktopCommand::Request(WindowRequest::Focus));
             assert_eq!(

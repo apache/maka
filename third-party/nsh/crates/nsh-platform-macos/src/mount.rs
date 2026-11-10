@@ -564,6 +564,11 @@ impl Mounter {
                 if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
                     self.terminal_windows.insert(*id);
                     crate::navigation::release(surface, *id);
+                    if let Some(view) = self.get(*id)
+                        && view.has_parent()
+                    {
+                        view.unparent();
+                    }
                 }
             }
             MountItem::Command { id, command } => self.command(surface, *id, command),
