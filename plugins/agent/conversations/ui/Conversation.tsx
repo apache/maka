@@ -2607,7 +2607,13 @@ export function Conversation(props: ConversationProps) {
       !sending() &&
       !recovering() &&
       !confirmingContinuation();
-    untracked(() => messagePrediction.eligible(eligible));
+    const composer =
+      !draftReady() || attachments.restoring()
+        ? 'restoring'
+        : draft() !== '' || attachments.files().length > 0 || attachments.blocked() !== ''
+          ? 'occupied'
+          : 'empty';
+    untracked(() => messagePrediction.eligible(eligible, composer));
   });
   const queueSession: ComposerQueue = {
     sessionId,

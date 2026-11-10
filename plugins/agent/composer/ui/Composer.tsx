@@ -79,7 +79,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       owner.continuing() ||
       owner.run() !== null ||
       owner.draft() !== '' ||
+      owner.attachments.restoring() ||
       owner.attachments.files().length > 0 ||
+      owner.attachments.rows().length > 0 ||
       completion.composing() ||
       completion.opened() !== null
     )
