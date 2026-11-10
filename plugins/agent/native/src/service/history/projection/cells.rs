@@ -84,6 +84,9 @@ pub(super) fn project(
                 .and_then(|tool| tool.call.as_mut())
                 .expect("Cell child call");
             call.origin = wire::ToolCallOrigin::CodeMode;
+            if let Some(display) = &child.display {
+                super::apply_display(call, display);
+            }
             if let CellOwner::Agent { link, call: parent } = &cell.owner {
                 call.ancestor_tool_use_ids
                     .push(super::super::super::delivery::tool_id(

@@ -1833,7 +1833,16 @@ impl NativeCellPort {
                 ));
             }
         }
-        let mut admitted = Vec::new();
+        let display = prepared.display(match self.run.access.spec().language {
+            maka_agent_facts::language::Language::En => "en",
+            maka_agent_facts::language::Language::ZhCn => "zh-CN",
+            maka_agent_facts::language::Language::ZhTw => "zh-TW",
+        });
+        let mut admitted = vec![self.change(CellEvent::ChildDisplayRecorded {
+            cell,
+            operation,
+            display,
+        })];
         for (approval, consumed) in &child.approvals {
             if !consumed {
                 admitted.push(self.change(CellEvent::ChildApprovalConsumed {

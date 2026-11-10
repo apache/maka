@@ -71,6 +71,10 @@ pub enum ExternalEffectEvent {
         key: ExternalEffectKey,
         descriptor: ContentRef,
     },
+    DisplayRecorded {
+        key: ExternalEffectKey,
+        display: crate::durable::ToolDisplay,
+    },
     Rejected {
         key: ExternalEffectKey,
         rejection_kind: crate::tool_call::RejectionKind,
@@ -103,6 +107,7 @@ impl ExternalEffectEvent {
     pub fn key(&self) -> ExternalEffectKey {
         match self {
             Self::Prepared { key, .. }
+            | Self::DisplayRecorded { key, .. }
             | Self::Rejected { key, .. }
             | Self::Admitted { key, .. }
             | Self::Bound { key, .. }
