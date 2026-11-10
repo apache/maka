@@ -671,7 +671,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                         .requests
                         .iter()
                         .filter(|(_, request)| request.main && request.source < stored.sequence)
-                        .map(|(id, _)| id.clone())
+                        .map(|(id, _)| *id)
                         .collect();
                     frontier
                         .notifications
@@ -702,7 +702,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                     .requests
                     .iter()
                     .filter(|(_, request)| request.main && request.source < stored.sequence)
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, _)| *id)
                     .collect();
                 frontier
                     .notifications
@@ -734,7 +734,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 .requests
                 .iter()
                 .filter(|(_, request)| request.main && request.source < stored.sequence)
-                .map(|(id, _)| id.clone())
+                .map(|(id, _)| *id)
                 .collect();
             frontier.notifications.push(PendingNotification {
                 row: notification,

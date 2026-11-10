@@ -322,13 +322,13 @@ pub(super) fn append(
         return Ok(None);
     }
     let view = run(c, run_id)?;
-    if let Some(expected) = head {
-        if Head::from(&view) != expected {
-            return Err(StoreError::RevisionConflict {
-                expected: json(&expected)?,
-                actual: json(&Head::from(&view))?,
-            });
-        }
+    if let Some(expected) = head
+        && Head::from(&view) != expected
+    {
+        return Err(StoreError::RevisionConflict {
+            expected: json(&expected)?,
+            actual: json(&Head::from(&view))?,
+        });
     }
     match &change.fact {
         Fact::NativeSourceBound { source } => {

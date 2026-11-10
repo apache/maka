@@ -1062,15 +1062,15 @@ impl Rig {
                 Err(error) => errors.push(format!("original Cell proof: {error}")),
             }
         }
-        if let Some(call) = &mut self.call {
-            if let Err(error) = call.close().await {
-                errors.push(format!("original create call: {error}"));
-            }
+        if let Some(call) = &mut self.call
+            && let Err(error) = call.close().await
+        {
+            errors.push(format!("original create call: {error}"));
         }
-        if let Some(client) = &mut self.client {
-            if let Err(error) = client.close().await {
-                errors.push(format!("Host client: {error}"));
-            }
+        if let Some(client) = &mut self.client
+            && let Err(error) = client.close().await
+        {
+            errors.push(format!("Host client: {error}"));
         }
         let originals_closed = self
             .driver
@@ -1093,10 +1093,10 @@ impl Rig {
                 Err(error) => errors.push(format!("original work scope: {error}")),
             }
         }
-        if let Some(host) = &self.host {
-            if let Err(error) = host.shutdown().await {
-                errors.push(format!("Host: {error}"));
-            }
+        if let Some(host) = &self.host
+            && let Err(error) = host.shutdown().await
+        {
+            errors.push(format!("Host: {error}"));
         }
         self.stop_serving.cancel();
         if let Some(serving) = self.serving.take() {
@@ -1110,10 +1110,10 @@ impl Rig {
                 "Root work pins retained without original settlement ACK; no forced Root shutdown"
                     .into(),
             );
-        } else if let Some(store) = &self.store {
-            if let Err(error) = store.shutdown().await {
-                errors.push(format!("Root store: {error}"));
-            }
+        } else if let Some(store) = &self.store
+            && let Err(error) = store.shutdown().await
+        {
+            errors.push(format!("Root store: {error}"));
         }
         match self.model_listener.accept() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -1490,9 +1490,7 @@ mod source_recovery {
             assert!(
                 matches!(
                     &failure,
-                    Err(RunError::Blocked(
-                        BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ))
+                    Err(RunError::Blocked(reason)) if matches!(reason.as_ref(), BlockerKind::CurrentAuthorityUnavailable { .. })
                 ) || matches!(&failure, Ok(maka_agent_engine::DriverExit::Blocked { .. })),
                 "actual scope exclusion did not block the capability probe"
             );

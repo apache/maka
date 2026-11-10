@@ -325,41 +325,39 @@ async fn tree_window(
         field: chunk.field,
         offset: chunk.offset + chunk.text.len() as u64,
     });
-    if let Some(first) = chunks.first() {
-        if first.offset == 0
-            && source::window(
-                tree,
-                Some(first.position.clone()),
-                true,
-                include_thinking,
-                2,
-                &mut cache,
-                stop,
-            )
-            .await?
-            .len()
-                <= 1
-        {
-            before = None;
-        }
+    if let Some(first) = chunks.first()
+        && first.offset == 0
+        && source::window(
+            tree,
+            Some(first.position.clone()),
+            true,
+            include_thinking,
+            2,
+            &mut cache,
+            stop,
+        )
+        .await?
+        .len()
+            <= 1
+    {
+        before = None;
     }
-    if let Some(last) = chunks.last() {
-        if last.offset + last.text.len() as u64 == last.total_bytes
-            && source::window(
-                tree,
-                Some(last.position.clone()),
-                false,
-                include_thinking,
-                2,
-                &mut cache,
-                stop,
-            )
-            .await?
-            .len()
-                <= 1
-        {
-            after = None;
-        }
+    if let Some(last) = chunks.last()
+        && last.offset + last.text.len() as u64 == last.total_bytes
+        && source::window(
+            tree,
+            Some(last.position.clone()),
+            false,
+            include_thinking,
+            2,
+            &mut cache,
+            stop,
+        )
+        .await?
+        .len()
+            <= 1
+    {
+        after = None;
     }
     Ok(wire::Page::Ready {
         through,

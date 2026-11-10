@@ -23,6 +23,13 @@ use maka_agent_facts::{
 };
 use rusqlite::{OptionalExtension, params};
 
+pub struct LocalResult {
+    pub head: Head,
+    pub original: Change,
+    pub contents: Vec<ContentBlob>,
+    pub normalized_artifacts: Vec<ProjectionArtifactWrite>,
+}
+
 impl Store {
     pub const LOCAL_ADMISSION_FENCED: &'static str = "local_admission_fenced";
 
@@ -30,37 +37,29 @@ impl Store {
     pub async fn append_local_copy(
         &self,
         claim: &DriverClaim,
-        head: Head,
-        original: Change,
-        contents: Vec<ContentBlob>,
-        normalized_artifacts: Vec<ProjectionArtifactWrite>,
+        result: LocalResult,
         copy: crate::artifacts::CopyArtifact,
         business_writer: &DataWriter,
     ) -> Result<Commit, StoreError> {
         let business = self.artifacts().copy_statement(copy, business_writer);
-        self.append_local_with(
-            claim,
-            head,
-            original,
-            contents,
-            normalized_artifacts,
-            business,
-            business_writer,
-        )
-        .await
+        self.append_local_with(claim, result, business, business_writer)
+            .await
     }
     /// Commit a successful original local result with its pure business SQL.
     /// The original selected work must supply this Store's writer and claim.
     pub async fn append_local_with<S: Statement>(
         &self,
         claim: &DriverClaim,
-        head: Head,
-        original: Change,
-        contents: Vec<ContentBlob>,
-        normalized_artifacts: Vec<ProjectionArtifactWrite>,
+        result: LocalResult,
         business: S,
         business_writer: &DataWriter,
     ) -> Result<Commit, StoreError> {
+        let LocalResult {
+            head,
+            original,
+            contents,
+            normalized_artifacts,
+        } = result;
         self.validate_root(business_writer)?;
         if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
             return Err(invalid("foreign driver claim"));
@@ -142,16 +141,15 @@ impl<S: Statement> Statement for LocalWith<S> {
         if original_run.is_some() && recorded.is_none() {
             return Err(StoreError::EventConflict);
         }
-        if let Some(recorded) = &recorded {
-            if recorded.schema_version != SCHEMA_VERSION
+        if let Some(recorded) = &recorded
+            && (recorded.schema_version != SCHEMA_VERSION
                 || recorded.run != self.append.run
                 || recorded.id != original.id
                 || recorded.revision == 0
                 || recorded.at != original.at
-                || recorded.fact != original.fact
-            {
-                return Err(StoreError::EventConflict);
-            }
+                || recorded.fact != original.fact)
+        {
+            return Err(StoreError::EventConflict);
         }
         if recorded.is_none() && target_has_local_result(c, self.append.run, &original.fact)? {
             return Err(StoreError::EventConflict);

@@ -122,20 +122,21 @@ impl ConfigurationStore {
                                 .commit()
                                 .map(|()| value)
                                 .map_err(|_| ConfigError::CommitUnknown);
-                            if connection.total_changes() != before {
-                                if let Some(owner) = owner.upgrade() {
-                                    owner.capability_source_changed();
-                                }
+                            if connection.total_changes() != before
+                                && let Some(owner) = owner.upgrade()
+                            {
+                                owner.capability_source_changed();
                             }
                             Ok(result)
                         }
                         Err(error) => {
                             // Finish rollback before the next accepted job can run.
                             let rollback = tx.rollback();
-                            if rollback.is_err() && connection.total_changes() != before {
-                                if let Some(owner) = owner.upgrade() {
-                                    owner.capability_source_changed();
-                                }
+                            if rollback.is_err()
+                                && connection.total_changes() != before
+                                && let Some(owner) = owner.upgrade()
+                            {
+                                owner.capability_source_changed();
                             }
                             rollback?;
                             Ok(Err(error))

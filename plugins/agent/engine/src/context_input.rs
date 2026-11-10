@@ -22,7 +22,7 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::language::Language;
 use maka_model::prompt::{AssistantPart, ContentPart, Message, ToolOutput};
 
-pub(super) use maka_agent_facts::context::measure::{estimate, json_tokens};
+pub(super) use maka_agent_facts::context::measure::estimate;
 
 pub fn summary_budget(context: Option<&maka_agent_facts::context::ModelRequestContext>) -> u64 {
     let total = context

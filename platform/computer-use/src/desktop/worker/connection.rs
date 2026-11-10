@@ -426,16 +426,14 @@ impl Connection {
                 execution,
                 operation_id,
                 ..
-            } => {
-                if session != invocation.session()
-                    || turn != invocation.turn()
-                    || execution != invocation.execution_correlation()
-                    || Some(operation_id.as_str()) != invocation.operation_id()
-                {
-                    return Err(failed(
-                        "browser lease child changed its original invocation source",
-                    ));
-                }
+            } if (session != invocation.session()
+                || turn != invocation.turn()
+                || execution != invocation.execution_correlation()
+                || Some(operation_id.as_str()) != invocation.operation_id()) =>
+            {
+                return Err(failed(
+                    "browser lease child changed its original invocation source",
+                ));
             }
             _ => {}
         }

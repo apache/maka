@@ -138,9 +138,6 @@ struct CapturedRun {
     tools: Arc<Vec<crate::tools::SelectedTool>>,
     language: Language,
 }
-fn is_agent_collaboration(mode: &CollaborationMode) -> bool {
-    *mode == CollaborationMode::Agent
-}
 #[derive(Clone, Default, PartialEq, Eq)]
 enum BackgroundKind {
     #[default]
@@ -149,11 +146,6 @@ enum BackgroundKind {
         task_id: String,
     },
     Goal(Uuid),
-}
-impl BackgroundKind {
-    fn is_schedule(&self) -> bool {
-        matches!(self, Self::Schedule { .. })
-    }
 }
 #[derive(Clone)]
 struct Control {

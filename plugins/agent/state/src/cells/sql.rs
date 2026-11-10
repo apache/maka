@@ -231,16 +231,15 @@ pub(super) fn validate_batch(
             let mut values=BTreeMap::new();let mut loaded=None;
             for change in changes {match &change.fact {
                 Fact::Cell{event:CellEvent::SessionValuePublished{cell:id,key,value}} if id==cell=>{if values.insert(key.clone(),value.clone()).is_some(){return Err(invalid("duplicate Cell value publication"));}},
-                Fact::Cell{event:CellEvent::LoadedToolsPublished{cell:id,names}} if id==cell=>{if loaded.replace(names.clone()).is_some(){return Err(invalid("duplicate Cell tools publication"));}},_=>{}
+                Fact::Cell{event:CellEvent::LoadedToolsPublished{cell:id,names}} if id==cell&& loaded.replace(names.clone()).is_some()=> {return Err(invalid("duplicate Cell tools publication"));},_=>{}
             }}
             if values!=publication.values || loaded!=publication.loaded_tools{return Err(invalid("Cell acceptance must atomically publish its exact complete draft"));}
         },
         CellEvent::SessionValuePublished{cell,..}|CellEvent::LoadedToolsPublished{cell,..}=>{
             if !changes.iter().any(|change|matches!(&change.fact,Fact::Cell{event:CellEvent::ResultAccepted{cell:id}} if id==cell)){return Err(invalid("Cell publication requires same-batch final acceptance"));}
         },
-        CellEvent::NotificationConsumed{step,..}=>{
-            if !changes.iter().any(|change|matches!(&change.fact,Fact::StepPrepared{step:id,..} if id==step)){return Err(invalid("Cell notification consumption requires exact same-batch context step"));}
-        },_=>{}
+        CellEvent::NotificationConsumed{step,..}
+            if !changes.iter().any(|change|matches!(&change.fact,Fact::StepPrepared{step:id,..} if id==step))=> {return Err(invalid("Cell notification consumption requires exact same-batch context step"));},_=>{}
     }
     Ok(())
 }
@@ -335,7 +334,7 @@ pub(crate) fn apply(
     let Fact::Cell { event } = &recorded.fact else {
         return Ok(());
     };
-    let mut view = if let CellEvent::Started { owner, .. } = event {
+    let view = if let CellEvent::Started { owner, .. } = event {
         let CellOwner::Agent { link, call } = owner else {
             return Err(invalid("Standalone Cell cannot enter Agent facts"));
         };
@@ -488,14 +487,7 @@ pub(crate) fn apply(
     for reference in event.content_refs() {
         content_id(c, reference)?;
     }
-    project(
-        c,
-        session,
-        Some(recorded.run),
-        recorded.id,
-        event,
-        &mut view,
-    )
+    project(c, session, Some(recorded.run), recorded.id, event, &view)
 }
 pub(crate) fn clear_run(c: &Connection, run: RunId) -> Result<(), StoreError> {
     c.execute("DELETE FROM agent_cell_operation_pins WHERE cell IN (SELECT cell FROM agent_cells WHERE run=?)",[run.to_string()])?;
@@ -621,13 +613,15 @@ pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), Store
             let event: StandaloneEvent = serde_json::from_slice(&bytes)?;
             crate::usage::index_cell(
                 c,
-                "cell",
                 None,
-                session,
-                None,
-                u64::try_from(sequence)
-                    .map_err(|_| invalid("negative standalone Cell sequence"))?,
-                event.at,
+                crate::usage::UsagePosition {
+                    source: "cell",
+                    session,
+                    run: None,
+                    sequence: u64::try_from(sequence)
+                        .map_err(|_| invalid("negative standalone Cell sequence"))?,
+                    at: event.at,
+                },
                 &event.event,
             )?;
             cursor = sequence;

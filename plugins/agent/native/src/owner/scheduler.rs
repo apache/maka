@@ -36,6 +36,10 @@ use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Scheduler approval transfers its original record inline without an allocation per observation"
+)]
 pub(in crate::owner) enum Approval {
     Reminder,
     Execution {
@@ -308,26 +312,25 @@ fn schedule_candidate(
             let mut base = current.clone();
             base.timezone = input.timezone.clone();
             base.misfire = input.misfire;
-            let next = base
-                .update(
-                    maka_scheduler::command::Update {
-                        title: Some(input.task.title.clone()),
-                        intent_body: Some(input.task.intent_body.clone()),
-                        schedule: Some(input.task.schedule.clone()),
-                        effect: Some(input.task.effect.clone()),
-                        max_fires: input.task.max_fires.map_or(
-                            maka_agent_facts::configuration::Patch::Clear,
-                            maka_agent_facts::configuration::Patch::Set,
-                        ),
-                        expires_at: input.task.expires_at.map_or(
-                            maka_agent_facts::configuration::Patch::Clear,
-                            maka_agent_facts::configuration::Patch::Set,
-                        ),
-                    },
-                    at,
-                )
-                .map_err(reason)?;
-            next
+
+            base.update(
+                maka_scheduler::command::Update {
+                    title: Some(input.task.title.clone()),
+                    intent_body: Some(input.task.intent_body.clone()),
+                    schedule: Some(input.task.schedule.clone()),
+                    effect: Some(input.task.effect.clone()),
+                    max_fires: input.task.max_fires.map_or(
+                        maka_agent_facts::configuration::Patch::Clear,
+                        maka_agent_facts::configuration::Patch::Set,
+                    ),
+                    expires_at: input.task.expires_at.map_or(
+                        maka_agent_facts::configuration::Patch::Clear,
+                        maka_agent_facts::configuration::Patch::Set,
+                    ),
+                },
+                at,
+            )
+            .map_err(reason)?
         }
         ScheduleChange::Approve { .. } => {
             let mut next = plan()?.clone();

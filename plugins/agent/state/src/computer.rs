@@ -59,6 +59,10 @@ pub struct NativeSource {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Native observations are serialized into facts; keep their owned metadata inline instead of adding a payload allocation"
+)]
 pub enum Fact {
     NativeSourceBound {
         source: NativeSource,

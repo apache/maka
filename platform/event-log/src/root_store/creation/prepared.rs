@@ -76,12 +76,7 @@ impl RootStore {
     /// Ordinary creation keeps its original semantics, without plugin origin.
     pub async fn prepare_session_creation<W, F>(
         &self,
-        id: &str,
-        fingerprint: &str,
-        owner_scope: &str,
-        workspace: &W,
-        project: Option<crate::root_store::ProjectWorkspacePlan>,
-        now: u64,
+        request: SessionCreationRequest<'_, W>,
         writer: &DataWriter,
         configuration: F,
     ) -> Result<impl Statement<Value = SessionRecord, Output = SessionRecord> + use<W, F>, StoreError>
@@ -91,6 +86,14 @@ impl RootStore {
     {
         self.require_open()?;
         self.validate_data_writer(writer)?;
+        let SessionCreationRequest {
+            id,
+            fingerprint,
+            owner_scope,
+            workspace,
+            project,
+            now,
+        } = request;
         crate::sessions::validate_id(id)?;
         crate::sessions::validate_time(now)?;
         if fingerprint.is_empty() {

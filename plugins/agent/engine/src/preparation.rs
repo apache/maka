@@ -336,6 +336,10 @@ mod media_source;
 pub use media_source::MediaSource;
 
 /// Render admitted input data under this execution's current Session artifact authority.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Projection keeps media authority, source content, language, model capabilities and preparation resources explicit"
+)]
 pub async fn project_input(
     artifacts: &maka_agent_state::artifacts::ArtifactStore,
     scope: &maka_agent_state::artifacts::SessionScope,
@@ -363,6 +367,10 @@ pub async fn project_input(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Projection keeps source content, language, model capabilities and preparation resources explicit"
+)]
 pub async fn project_input_from(
     media: MediaSource<'_>,
     content: &maka_agent_facts::input::MessageInput,
@@ -595,29 +603,6 @@ pub async fn project_durable_projection(
     })
 }
 
-async fn projection_media(
-    artifacts: &maka_agent_state::artifacts::ArtifactStore,
-    scope: &maka_agent_state::artifacts::ArtifactScope,
-    reference: &maka_agent_facts::attachment::StorageRef,
-    mime: &str,
-    audio: bool,
-    remaining: &mut usize,
-    cancellation: &CancellationToken,
-) -> Result<String, RunError> {
-    projection_media_from(
-        &MediaSource::Live {
-            artifacts,
-            scope: scope.clone().into(),
-        },
-        reference,
-        mime,
-        audio,
-        remaining,
-        cancellation,
-    )
-    .await
-}
-
 async fn projection_media_from(
     media: &MediaSource<'_>,
     reference: &maka_agent_facts::attachment::StorageRef,
@@ -679,7 +664,6 @@ async fn read_media(
     let cancellation = cancellation.clone();
     media
         .with_content(id, move |record, reader| -> Result<String, RunError> {
-            use std::io::Read as _;
             if cancellation.is_cancelled() {
                 return Err(RunError::Cancelled);
             }

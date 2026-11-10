@@ -658,7 +658,7 @@ impl Producer {
                 let metadata = Metadata {
                     turn: message.source_turn_id.clone(),
                     imported_turn: Some(message.turn_ordinal),
-                    role: AuthorRole::Imported(message.role.clone()),
+                    role: AuthorRole::Imported(message.role),
                     origin: None,
                 };
                 let mut doc = Document::new(&self.snapshot, row, metadata, &self.stop).await?;

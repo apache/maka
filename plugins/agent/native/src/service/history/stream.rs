@@ -82,6 +82,10 @@ async fn collect(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Source reading binds immutable content identity, presentation mode, cancellation and source budget"
+)]
 async fn content_source(
     data: &data::DataSource,
     run: RunId,
@@ -138,31 +142,42 @@ pub(super) async fn result_value(
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<JsonSource, String> {
     use maka_agent_state::session_history::tool_result_source::ToolResultSource;
-    if display {
-        if let ToolResultSource::Returned { body, .. } | ToolResultSource::External { body } =
+    if display
+        && let ToolResultSource::Returned { body, .. } | ToolResultSource::External { body } =
             &selected
-        {
-            let projection = json::field(body, &["projection"], budget.clone())
-                .await
-                .map_err(|error| error.to_string())?;
-            match projection {
-                Some(projection) if projection.kind != JsonKind::Null => {
-                    let kind: String = small(
-                        required(&projection.source, &["kind"], budget).await?,
-                        budget,
-                    )
-                    .await?;
-                    return match kind.as_str() {
-                        "text" => Ok(required(&projection.source, &["text"], budget).await?.source),
-                        "json" => Ok(required(&projection.source, &["value"], budget).await?.source),
-                        "content" => Ok(required(&projection.source, &["parts"], budget).await?.source),
-                        "failure" => Ok(JsonSource::new(SourceBytes::Inline(serde_json::to_vec(maka_agent_facts::tool_output::DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE).map_err(|error| error.to_string())?.into()))),
-                        _ => Err("agent_history_projection_codec_invalid".into()),
-                    };
-                }
-                _ if optional_projection => {}
-                _ => return Err("agent_history_projection_missing".into()),
+    {
+        let projection = json::field(body, &["projection"], budget.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        match projection {
+            Some(projection) if projection.kind != JsonKind::Null => {
+                let kind: String = small(
+                    required(&projection.source, &["kind"], budget).await?,
+                    budget,
+                )
+                .await?;
+                return match kind.as_str() {
+                    "text" => Ok(required(&projection.source, &["text"], budget)
+                        .await?
+                        .source),
+                    "json" => Ok(required(&projection.source, &["value"], budget)
+                        .await?
+                        .source),
+                    "content" => Ok(required(&projection.source, &["parts"], budget)
+                        .await?
+                        .source),
+                    "failure" => Ok(JsonSource::new(SourceBytes::Inline(
+                        serde_json::to_vec(
+                            maka_agent_facts::tool_output::DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE,
+                        )
+                        .map_err(|error| error.to_string())?
+                        .into(),
+                    ))),
+                    _ => Err("agent_history_projection_codec_invalid".into()),
+                };
             }
+            _ if optional_projection => {}
+            _ => return Err("agent_history_projection_missing".into()),
         }
     }
     selected
@@ -293,7 +308,7 @@ pub(super) async fn read_window(
     limit: usize,
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<(wire::SourceFormat, u64, u64, String), String> {
-    let total = measure(&bytes, &budget).await?;
+    let total = measure(&bytes, budget).await?;
     let (start, end) = match position {
         wire::SourcePosition::Start => (0, total.min(limit as u64)),
         wire::SourcePosition::Tail => (total.saturating_sub(limit as u64), total),
@@ -307,7 +322,7 @@ pub(super) async fn read_window(
     }
     if bytes.len().is_some() {
         let slice = bytes.slice(start..end).map_err(|e| e.to_string())?;
-        let selected = collect(slice, &budget, limit).await?;
+        let selected = collect(slice, budget, limit).await?;
         return super::source::finish(format, start, total, selected, position);
     }
     let mut cursor = bytes.open(budget.clone());
@@ -439,10 +454,10 @@ pub(super) async fn media_metadata_value(
     error_key: &str,
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<(bool, u32, bool), String> {
-    let is_error: bool = small(required(&source, &[error_key], &budget).await?, &budget).await?;
+    let is_error: bool = small(required(source, &[error_key], budget).await?, budget).await?;
     let format: String = small(
-        required(&source, &["output", "format"], &budget).await?,
-        &budget,
+        required(source, &["output", "format"], budget).await?,
+        budget,
     )
     .await?;
     let projection = json::field(source, &["projection"], budget.clone())
@@ -457,13 +472,13 @@ pub(super) async fn media_metadata_value(
     };
     let mut images = 0u32;
     if kind.as_deref() == Some("content") {
-        let parts = required(&source, &["projection", "parts"], &budget).await?;
+        let parts = required(source, &["projection", "parts"], budget).await?;
         let mut cursor = json::ArrayCursor::open(parts.source, budget.clone())
             .await
             .map_err(|e| e.to_string())?;
         while let Some(part) = cursor.next().await.map_err(|e| e.to_string())? {
             let kind: String =
-                small(required(&part.source, &["kind"], &budget).await?, &budget).await?;
+                small(required(&part.source, &["kind"], budget).await?, budget).await?;
             if kind == "artifact" {
                 images = images.checked_add(1).ok_or("agent_image_count_overflow")?;
             }
@@ -490,18 +505,18 @@ async fn image_reference_value(
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<maka_agent_facts::attachment::StorageRef, String> {
     if let Some(mut index) = index {
-        let parts = required(&source, &["projection", "parts"], &budget).await?;
+        let parts = required(source, &["projection", "parts"], budget).await?;
         let mut cursor = json::ArrayCursor::open(parts.source, budget.clone())
             .await
             .map_err(|e| e.to_string())?;
         while let Some(part) = cursor.next().await.map_err(|e| e.to_string())? {
             let kind: String =
-                small(required(&part.source, &["kind"], &budget).await?, &budget).await?;
+                small(required(&part.source, &["kind"], budget).await?, budget).await?;
             if kind == "artifact" {
                 if index == 0 {
                     return small(
-                        required(&part.source, &["image", "ref"], &budget).await?,
-                        &budget,
+                        required(&part.source, &["image", "ref"], budget).await?,
+                        budget,
                     )
                     .await;
                 }
@@ -511,21 +526,25 @@ async fn image_reference_value(
         Err("agent_image_source_invalid".into())
     } else {
         let format: String = small(
-            required(&source, &["output", "format"], &budget).await?,
-            &budget,
+            required(source, &["output", "format"], budget).await?,
+            budget,
         )
         .await?;
         if format != "image" {
             return Err("agent_image_source_invalid".into());
         }
         small(
-            required(&source, &["output", "value", "ref"], &budget).await?,
-            &budget,
+            required(source, &["output", "value", "ref"], budget).await?,
+            budget,
         )
         .await
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Field reading binds the exact history item, path, presentation mode, cancellation and source budget"
+)]
 pub(super) async fn field_source(
     data: &data::DataSource,
     item: &maka_agent_state::session_history::source_tree::SourceItem,
@@ -592,6 +611,10 @@ pub(super) async fn field_source(
         _ => Err("agent_history_field_source_mismatch".into()),
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Excerpt reading binds the exact item, path, cursor, presentation mode and cancellation"
+)]
 pub(super) async fn field_excerpt(
     data: &data::DataSource,
     item: &maka_agent_state::session_history::source_tree::SourceItem,

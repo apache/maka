@@ -197,16 +197,16 @@ pub(crate) fn persist(
             let original = read_original(c, run, &key)?;
             let returned: ExternalReturn =
                 serde_json::from_slice(&crate::sql::owned_content(c, run, output)?)?;
-            if let ExternalReturn::Failure { settlement, .. } = &returned {
-                if !matches!(
+            if let ExternalReturn::Failure { settlement, .. } = &returned
+                && !matches!(
                     settlement,
                     maka_agent_facts::tool_call::ToolSettlement::Failed
                         | maka_agent_facts::tool_call::ToolSettlement::Rejected
-                ) {
-                    return Err(invalid(
-                        "external failure requires a definite failed or rejected settlement",
-                    ));
-                }
+                )
+            {
+                return Err(invalid(
+                    "external failure requires a definite failed or rejected settlement",
+                ));
             }
             match (&original.reference, returned) {
                 (
@@ -270,38 +270,6 @@ pub(crate) fn replay(
          ON CONFLICT(run,operation) DO UPDATE SET revision=excluded.revision,pending=excluded.pending,body=excluded.body",
         params![run.to_string(),key.operation.to_string(),key.task.to_string(),signed(revision)?,effect.pending(),serde_json::to_string(effect)?],
     )?;
-    Ok(())
-}
-
-pub(crate) fn rebuild(c: &Connection, run: RunId) -> Result<(), StoreError> {
-    c.execute(
-        "DELETE FROM agent_external_effects WHERE run=?",
-        [run.to_string()],
-    )?;
-    let mut q = c.prepare_cached(
-        "SELECT f.revision,f.schema_version,c.payload FROM agent_facts f JOIN contents c ON c.id=f.body_content_id WHERE f.run=? ORDER BY f.revision"
-    )?;
-    let mut rows = q.query([run.to_string()])?;
-    while let Some(row) = rows.next()? {
-        let revision = u64::try_from(row.get::<_, i64>(0)?)
-            .map_err(|_| invalid("negative external effect revision"))?;
-        let version: u32 = row.get(1)?;
-        let fact: RecordedFact = serde_json::from_slice(&row.get::<_, Vec<u8>>(2)?)?;
-        if version != SCHEMA_VERSION
-            || fact.schema_version != version
-            || fact.run != run
-            || fact.revision != revision
-        {
-            return Err(invalid(
-                "external Host projection source is not the canonical Run fact",
-            ));
-        }
-        if let Fact::ExternalEffect { event } = fact.fact {
-            // Replaying historical evidence never reconsumes approval or asks
-            // today's permission basis to authorize an already admitted call.
-            replay(c, run, revision, &event)?;
-        }
-    }
     Ok(())
 }
 

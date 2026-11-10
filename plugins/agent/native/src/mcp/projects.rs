@@ -40,9 +40,6 @@ impl ClientGeneration {
     pub fn fresh() -> Self {
         Self(uuid::Uuid::new_v4())
     }
-    pub fn interrupt(self) -> String {
-        format!("mcp_{}", self.0.simple())
-    }
 }
 pub(crate) struct Catalog {
     pub revision: Option<String>,
@@ -724,14 +721,13 @@ impl Projects {
                             catalog
                         }
                         Err(error) => {
-                            if let Some(opened) = opened_global {
-                                if let Some(servers) = opened.servers {
-                                    if let Err(cleanup) = servers.close().await {
-                                        let message = format!("{error}; {}", cleanup.message);
-                                        owner.retain_transport_cleanup(cleanup);
-                                        return Err(message);
-                                    }
-                                }
+                            if let Some(opened) = opened_global
+                                && let Some(servers) = opened.servers
+                                && let Err(cleanup) = servers.close().await
+                            {
+                                let message = format!("{error}; {}", cleanup.message);
+                                owner.retain_transport_cleanup(cleanup);
+                                return Err(message);
                             }
                             return Err(error);
                         }

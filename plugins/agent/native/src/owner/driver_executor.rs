@@ -411,6 +411,10 @@ impl TaskBinding for Publications {
         })
     }
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "A connection selects one recovery mode; keep its original recovery payload inline"
+)]
 enum ConnectionMode {
     Start(PrivatePreparation),
     Observe,
@@ -489,7 +493,7 @@ impl DriverExecutor {
         id: ExternalPublicationId,
     ) -> Result<Arc<super::driver_executor_publication::calls::LivePublication>, RunError> {
         let unavailable = |diagnostic: &str| {
-            RunError::Blocked(BlockerKind::ExternalPublicationUnavailable {
+            RunError::from(BlockerKind::ExternalPublicationUnavailable {
                 publication: id,
                 diagnostic: diagnostic.into(),
             })
@@ -855,7 +859,7 @@ impl ExternalPorts for DriverExecutor {
             };
             let request = Request {
                 task_id: task,
-                language: view.spec.language.clone(),
+                language: view.spec.language,
                 execution: self.access.execution().clone(),
                 conversation_key: view.spec.session_id.clone(),
                 content,
@@ -1021,7 +1025,7 @@ impl ExternalPorts for DriverExecutor {
     }
 }
 fn blocked(descriptor: ContentRef) -> RunError {
-    RunError::Blocked(BlockerKind::ExternalTaskUnobservable { descriptor })
+    RunError::from(BlockerKind::ExternalTaskUnobservable { descriptor })
 }
 fn external_error(error: Error, descriptor: ContentRef) -> RunError {
     match error {

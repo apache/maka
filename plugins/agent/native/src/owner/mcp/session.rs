@@ -278,10 +278,10 @@ impl Owner {
             self.mcp_projects.client_cleanup_failed(error.clone());
         }
         // Close the original transport before waiting for its containing work.
-        if let Some(servers) = servers {
-            if let Err(error) = servers.close().await {
-                materials.push((error.message, error.material));
-            }
+        if let Some(servers) = servers
+            && let Err(error) = servers.close().await
+        {
+            materials.push((error.message, error.material));
         }
         let mut failures = Vec::new();
         for (cause, material) in materials.iter() {

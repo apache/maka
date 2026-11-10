@@ -54,10 +54,8 @@ fn tools(page: &Value) -> Vec<wire::Tool> {
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|chunk| {
-            (!chunk["tool"].is_null())
-                .then(|| serde_json::from_value(chunk["tool"].clone()).unwrap())
-        })
+        .filter(|&chunk| !chunk["tool"].is_null())
+        .map(|chunk| serde_json::from_value(chunk["tool"].clone()).unwrap())
         .collect()
 }
 

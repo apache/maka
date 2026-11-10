@@ -399,11 +399,10 @@ impl Owner {
                         coordinator.borrow_and_update();
                     }
                     let cells_live_before = matches!(&driver.backend, driver::NativeBackend::Model { cells: Some(cells), .. } if !cells.coordinator.is_idle());
-                    if let driver::NativeBackend::Model { model, .. } = &driver.backend {
-                        if let Err(error) = model.original_cleanup.reconcile_pending().await {
+                    if let driver::NativeBackend::Model { model, .. } = &driver.backend
+                        && let Err(error) = model.original_cleanup.reconcile_pending().await {
                             tracing::error!(run = %view.run, %error, "Original model cleanup publication remains unresolved");
                         }
-                    }
                     let driven = engine.drive(claim.clone(), driver.clone(), cancellation.clone()).await;
                     match driven {
                         Err(RunError::PublicationUncertain { publication, .. }) => {

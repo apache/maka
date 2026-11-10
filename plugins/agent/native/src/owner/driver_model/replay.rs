@@ -85,6 +85,10 @@ pub(super) struct TailReplay<'a, 'source> {
 }
 
 impl<'a, 'source> TailReplay<'a, 'source> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Replay borrows the exact source frontier, target, system prompt and message builder for one invocation"
+    )]
     pub(super) fn new(
         driver: &'a DriverModel,
         target: super::ReplayTarget<'a>,

@@ -23,6 +23,10 @@ use maka_agent_facts::external_publication::{
 };
 
 impl Engine {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication launch needs the original claim, frontier, ports and both live work registries"
+    )]
     pub(super) async fn launch_publication(
         &self,
         claim: &DriverClaim,
@@ -143,6 +147,10 @@ impl Engine {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication completion settles the original claim, frontier, ports and work registries together"
+    )]
     pub(super) async fn complete_publication(
         &self,
         claim: &DriverClaim,
@@ -302,8 +310,11 @@ impl Engine {
                         }
                     }
                     Ok(OriginalLookup::Absent) => {}
-                    Ok(OriginalLookup::Blocked(reason)) | Err(RunError::Blocked(reason)) => {
+                    Ok(OriginalLookup::Blocked(reason)) => {
                         self.block(claim, view, reason, at).await?;
+                    }
+                    Err(RunError::Blocked(reason)) => {
+                        self.block(claim, view, *reason, at).await?;
                     }
                     Err(error) => return Err(error),
                 }
@@ -326,7 +337,7 @@ impl Engine {
                         return Err(error);
                     }
                     Err(RunError::Blocked(reason)) => {
-                        self.block(claim, view, reason, at).await?;
+                        self.block(claim, view, *reason, at).await?;
                     }
                     Err(error) => {
                         tracing::error!(publication=%key.publication,index=key.index,cause=%error,"original publication item observation failed");
@@ -369,7 +380,7 @@ impl Engine {
         at: UnixMillis,
     ) -> Result<(), RunError> {
         let reason = match error {
-            RunError::Blocked(reason) => reason,
+            RunError::Blocked(reason) => *reason,
             error @ (RunError::Store(_) | RunError::PublicationUncertain { .. }) => {
                 return Err(error);
             }

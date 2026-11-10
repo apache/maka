@@ -26,6 +26,10 @@ enum LifecycleEnd {
     Detached(String),
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The process worker receives independent task, role, command, input and close-channel owners"
+)]
 pub(super) async fn run(
     owner: &Processes,
     context: &Context,

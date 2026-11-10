@@ -42,6 +42,10 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The exact Cell cut, child evidence, artifact authority and model preparation resources remain explicit"
+)]
 pub async fn project_cell_knowledge(
     source: NotificationSource<'_>,
     scope: &ArtifactScope,
@@ -209,7 +213,7 @@ fn lossless_output(output: ActualToolOutput, is_error: bool) -> Result<ToolOutpu
         | ActualToolOutput::Operation(_)
         | ActualToolOutput::Mcp(_)
         | ActualToolOutput::Image(_) => {
-            return Err(RunError::Blocked(BlockerKind::UnsupportedProtocol {
+            return Err(RunError::from(BlockerKind::UnsupportedProtocol {
                 protocol: "maka.cell-child-knowledge/output-without-normalized-projection".into(),
                 version: 1,
             }));

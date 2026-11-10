@@ -85,6 +85,7 @@ mod admission;
 mod content;
 pub(crate) mod fallback;
 mod local;
+pub use local::LocalResult;
 mod metadata;
 mod publication;
 mod quiescence;
@@ -281,13 +282,12 @@ impl Ticket {
 }
 impl Drop for Ticket {
     fn drop(&mut self) {
-        if let Ok(mut entries) = self.domain.drivers.lock() {
-            if entries
+        if let Ok(mut entries) = self.domain.drivers.lock()
+            && entries
                 .get(&self.run)
                 .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
-            {
-                entries.remove(&self.run);
-            }
+        {
+            entries.remove(&self.run);
         }
     }
 }
@@ -1009,10 +1009,12 @@ impl Statement for Append {
             self.run,
             self.expected,
             &self.changes,
-            self.contents,
+            sql::AppendMaterial {
+                contents: self.contents,
+                artifacts: &self.artifacts,
+            },
             &self.mode,
             self.steering.as_ref(),
-            &self.artifacts,
         )?;
         let notification = sql::notification(connection, self.run, changed)?;
         Ok(Prepared {
@@ -1310,10 +1312,12 @@ impl Statement for StopLatest {
             self.run,
             Some(Head::from(&view)),
             &[self.change],
-            Vec::new(),
+            sql::AppendMaterial {
+                contents: Vec::new(),
+                artifacts: &Default::default(),
+            },
             &Mode::Control,
             None,
-            &Default::default(),
         )?;
         Ok(Prepared {
             value,

@@ -293,8 +293,10 @@ impl Recall {
                     .context(
                         more.session_id,
                         more.anchor_message_id,
-                        more.before.unwrap_or(8),
-                        more.after.unwrap_or(8),
+                        maka_agent_state::recall::ContextWindow {
+                            before: more.before.unwrap_or(8),
+                            after: more.after.unwrap_or(8),
+                        },
                         None,
                         exclude,
                         stop,
@@ -480,6 +482,10 @@ fn invalid(error: impl std::fmt::Display) -> ToolRejection {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "A passage combines the resolved address with its exact anchor, matched terms and context window"
+)]
 fn passage(
     record: Record,
     address: maka_agent_facts::history::HistoryRowAddress,

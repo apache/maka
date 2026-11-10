@@ -38,8 +38,8 @@ pub mod usage;
 pub use store::{
     Admission, AdmissionGuard, AnswerPage, CallerFence, CallerStatus, Change, CleanupFrontier,
     Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
-    ModelCleanupItem, PublicationRead, ReadyCause, ReadyRun, RunObservation, SessionObligation,
-    SessionQuiescence, SessionQuiescenceGuard, Store,
+    LocalResult, ModelCleanupItem, PublicationRead, ReadyCause, ReadyRun, RunObservation,
+    SessionObligation, SessionQuiescence, SessionQuiescenceGuard, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[

@@ -62,7 +62,7 @@ fn equals(raw: &RawValue, expected: &str) -> Result<bool, StoreError> {
     })?;
     Ok(same && offset == expected.len())
 }
-fn required<'a>(raw: Option<&'a RawValue>) -> Result<&'a RawValue, StoreError> {
+fn required(raw: Option<&RawValue>) -> Result<&RawValue, StoreError> {
     raw.ok_or_else(|| invalid("canonical External document field is missing"))
 }
 fn fields<'de, const N: usize>(

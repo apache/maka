@@ -31,7 +31,7 @@ use uuid::Uuid;
 mod sql;
 pub(crate) use sql::{
     ReadDescriptor, ReadEffect, load_run, native_source_pending, persist, read_descriptor,
-    read_original, rebuild, replay, verify_native_source,
+    read_original, replay, verify_native_source,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

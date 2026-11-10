@@ -194,6 +194,10 @@ pub enum ContentSource<'a> {
     Snapshot(&'a maka_agent_state::session_history::snapshot::Snapshot),
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Restoration requires the original history cut, content identity, layout, I/O owner and cancellation as independent inputs"
+)]
 pub async fn restore_prompt(
     io: PreparationIo,
     resources: ModelPreparationResources,

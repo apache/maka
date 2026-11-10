@@ -58,7 +58,7 @@ impl Engine {
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[error("execution blocked: {0:?}")]
-    Blocked(maka_agent_facts::durable::BlockerKind),
+    Blocked(Box<maka_agent_facts::durable::BlockerKind>),
     #[error("canonical publication outcome is uncertain: {source}")]
     PublicationUncertain {
         publication: Box<driver::PendingPublication>,
@@ -112,6 +112,12 @@ struct PreparationCancelled(&'static str);
 
 fn preparation_cancelled(message: &'static str) -> std::io::Error {
     std::io::Error::other(PreparationCancelled(message))
+}
+
+impl From<maka_agent_facts::durable::BlockerKind> for RunError {
+    fn from(reason: maka_agent_facts::durable::BlockerKind) -> Self {
+        Self::Blocked(Box::new(reason))
+    }
 }
 
 impl RunError {

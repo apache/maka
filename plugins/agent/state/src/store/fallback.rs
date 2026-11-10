@@ -58,7 +58,17 @@ struct PreparedStep {
 impl Query for ReadFallback {
     type Output = Option<StepId>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let row:Option<(String,String,u32,Option<String>,Option<String>,Option<u32>,Option<String>,Option<i64>)>=c.query_row(
+        type OriginalAttemptRow = (
+            String,
+            String,
+            u32,
+            Option<String>,
+            Option<String>,
+            Option<u32>,
+            Option<String>,
+            Option<i64>,
+        );
+        let row:Option<OriginalAttemptRow>=c.query_row(
             "SELECT s.owner,s.session,s.schema_version,r.owner,r.session,r.schema_version,r.current_step,r.revision FROM agent_run_specs s LEFT JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
             [self.0.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
         ).optional()?;
@@ -120,7 +130,15 @@ fn scope(
     })
 }
 fn prepared(c: &Connection, scope: &Scope, step: StepId) -> Result<PreparedStep, StoreError> {
-    let row:Option<(i64,String,Option<String>,Option<String>,Option<i64>,Option<u32>)>=c.query_row(
+    type ProviderObservationRow = (
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<u32>,
+    );
+    let row:Option<ProviderObservationRow>=c.query_row(
         "SELECT h.sequence,h.fact_id,f.id,f.run,f.revision,f.schema_version FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='step_prepared' AND h.sequence<=? ORDER BY h.sequence LIMIT 1",
         params![scope.owner,scope.session,scope.run.to_string(),step.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
     ).optional()?;
@@ -788,31 +806,29 @@ pub(crate) fn progress_in_snapshot(
             view.current_step
                 .ok_or_else(|| invalid("compaction progress has no current canonical Step"))?,
         )?;
-        if let Some(attempt) = view.current_attempt.and_then(|id| view.attempts.get(&id)) {
-            if let Some(closed) = &attempt.closed {
-                match closed.outcome {
-                    Outcome::Success => {
-                        let protocol: ModelClosureProtocol =
-                            serde_json::from_value(closed.protocol.clone())?;
-                        if matches!(
-                            &protocol.summary,
-                            Some(SummaryResult::ProviderEffectsUnknown { .. })
-                        ) {
-                            return Err(invalid(
-                                "unknown current Summary provider effects cannot prove rearm progress",
-                            ));
-                        }
-                    }
-                    Outcome::Error => known_summary_failure(
-                        &closed.protocol,
-                        attempt.semantic,
-                        attempt.has_tools,
-                    )?,
-                    Outcome::Unknown | Outcome::Aborted => {
+        if let Some(attempt) = view.current_attempt.and_then(|id| view.attempts.get(&id))
+            && let Some(closed) = &attempt.closed
+        {
+            match closed.outcome {
+                Outcome::Success => {
+                    let protocol: ModelClosureProtocol =
+                        serde_json::from_value(closed.protocol.clone())?;
+                    if matches!(
+                        &protocol.summary,
+                        Some(SummaryResult::ProviderEffectsUnknown { .. })
+                    ) {
                         return Err(invalid(
-                            "unknown or aborted current Summary cannot prove rearm progress",
+                            "unknown current Summary provider effects cannot prove rearm progress",
                         ));
                     }
+                }
+                Outcome::Error => {
+                    known_summary_failure(&closed.protocol, attempt.semantic, attempt.has_tools)?
+                }
+                Outcome::Unknown | Outcome::Aborted => {
+                    return Err(invalid(
+                        "unknown or aborted current Summary cannot prove rearm progress",
+                    ));
                 }
             }
         }

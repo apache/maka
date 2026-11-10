@@ -120,7 +120,6 @@ The default composition enables `goals`. `/goal` or the composer’s + menu open
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
-[Performance baseline](checkpoint-baseline.md)
 
 ChatGPT subscription requests use the Host-owned [account inventory](src/model/codex_inventory.rs).
 Logical model-step preparation shares per-connection discovery, refreshes its five-minute

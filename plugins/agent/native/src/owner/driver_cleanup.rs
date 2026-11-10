@@ -135,10 +135,10 @@ impl Owner {
                     None
                 }
             };
-            if let Some(observer) = observer {
-                if let Err(error) = observer.await {
-                    tracing::error!(%error, "Original cleanup observer failed to join normally");
-                }
+            if let Some(observer) = observer
+                && let Err(error) = observer.await
+            {
+                tracing::error!(%error, "Original cleanup observer failed to join normally");
             }
             let material = scope.material.lock().unwrap();
             let Some(material) = material.as_ref() else {
@@ -231,25 +231,24 @@ impl RetainedScope {
                 model_changes = original.model_changes();
                 match original.as_ref() {
                     OriginalScope::Driver { driver, .. } => {
-                        if let Some(driver) = driver {
-                            if let driver::NativeBackend::Model {
+                        if let Some(driver) = driver
+                            && let driver::NativeBackend::Model {
                                 cells: Some(runtime),
                                 ..
                             } = &driver.backend
-                            {
-                                let (js, python, coordinator) = runtime.physical_changes();
-                                for receiver in [js, python, coordinator] {
-                                    cells.push(
-                                        futures_util::stream::unfold(
-                                            receiver,
-                                            |mut receiver| async move {
-                                                receiver.changed().await.ok()?;
-                                                Some(((), receiver))
-                                            },
-                                        )
-                                        .boxed(),
-                                    );
-                                }
+                        {
+                            let (js, python, coordinator) = runtime.physical_changes();
+                            for receiver in [js, python, coordinator] {
+                                cells.push(
+                                    futures_util::stream::unfold(
+                                        receiver,
+                                        |mut receiver| async move {
+                                            receiver.changed().await.ok()?;
+                                            Some(((), receiver))
+                                        },
+                                    )
+                                    .boxed(),
+                                );
                             }
                         }
                         physical.push(

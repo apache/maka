@@ -144,10 +144,10 @@ impl SessionMessage {
     pub fn validate(&self) -> Result<(), Error> {
         name(&self.session_id)?;
         name(&self.message_id)?;
-        if let Some(cursor) = &self.cursor {
-            if cursor.offset > 9_007_199_254_740_991 {
-                return Err(Error::Invalid("invalid answer cursor".into()));
-            }
+        if let Some(cursor) = &self.cursor
+            && cursor.offset > 9_007_199_254_740_991
+        {
+            return Err(Error::Invalid("invalid answer cursor".into()));
         }
         Ok(())
     }

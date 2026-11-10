@@ -60,6 +60,10 @@ pub(super) struct NativeDriver {
     external_effects: std::sync::OnceLock<super::driver_external_effects::NativeExternalEffects>,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "A local result owns its prepared publication directly; avoid another allocation per result"
+)]
 pub(super) enum LocalCompletion {
     Todo(super::todo::Replacement),
     Copy(maka_agent_state::artifacts::CopyArtifact),
@@ -84,10 +88,12 @@ impl LocalCompletion {
                     match state
                         .append_local_copy(
                             access.claim(),
-                            (&view).into(),
-                            original.clone(),
-                            contents.to_vec(),
-                            artifacts.to_vec(),
+                            maka_agent_state::LocalResult {
+                                head: (&view).into(),
+                                original: original.clone(),
+                                contents: contents.to_vec(),
+                                normalized_artifacts: artifacts.to_vec(),
+                            },
                             copy.clone(),
                             &writer,
                         )
@@ -165,6 +171,10 @@ impl PreparedTool {
     pub(super) fn display(&self, locale: &str) -> ToolDisplay {
         self.effect.display(locale)
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Local tool preparation keeps the original access, catalog, call context, cancellation and semantics explicit"
+    )]
     pub(super) async fn prepare(
         owner: &Arc<Owner>,
         access: &Arc<RunAccess>,
@@ -266,6 +276,10 @@ pub(super) struct BoundStepTools {
     pub(super) catalog: maka_tools::ToolCatalog,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "A driver owns one selected backend; keep the backend value inline"
+)]
 pub(super) enum NativeBackend {
     Model {
         model: DriverModel,
@@ -274,6 +288,10 @@ pub(super) enum NativeBackend {
     Executor(Arc<super::driver_executor::DriverExecutor>),
 }
 impl NativeDriver {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Driver construction transfers distinct execution, backend, cleanup and worker owners together"
+    )]
     pub(super) fn new(
         owner: Arc<Owner>,
         state: maka_agent_state::Store,
@@ -1137,7 +1155,7 @@ impl DriverPorts for NativeDriver {
                 .await
                 .remove(&tool_key(&tool.key))
                 .ok_or_else(|| {
-                    RunError::Blocked(BlockerKind::OriginalAdmissionUnknown {
+                    RunError::from(BlockerKind::OriginalAdmissionUnknown {
                         tool: tool.key.clone(),
                     })
                 })?;
@@ -1188,7 +1206,7 @@ impl DriverPorts for NativeDriver {
                 .recovery_request(&source, None, None)
                 .await?
                 .ok_or_else(|| {
-                    RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
+                    RunError::from(BlockerKind::CurrentAuthorityUnavailable {
                         stage: AuthorityStage::BackendScope,
                         diagnostic: "original caller intent is unavailable".into(),
                     })

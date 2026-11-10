@@ -134,10 +134,12 @@ pub(super) fn completed(
             run,
             &spec,
             &material.record,
-            recorded.id,
-            recorded.revision,
-            result,
-            &tool::BindingOrigin::Cell { cell: *cell },
+            tool::BindingEvidence {
+                fact: recorded.id,
+                revision: recorded.revision,
+                source: result,
+                origin: &tool::BindingOrigin::Cell { cell: *cell },
+            },
         )?;
     }
     Ok(())

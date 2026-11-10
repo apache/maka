@@ -59,6 +59,10 @@ pub(super) struct OriginalEffect {
     reader_signal_armed: bool,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Cleanup observation keeps the original physical outcome inline without a separate handoff allocation"
+)]
 enum PhysicalCleanup {
     Confirmed,
     Host(RecoveryRef),
@@ -200,7 +204,7 @@ pub(super) fn request(
 }
 
 fn recovery_unavailable(diagnostic: impl Into<String>) -> RunError {
-    RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
+    RunError::from(BlockerKind::CurrentAuthorityUnavailable {
         stage: AuthorityStage::BackendScope,
         diagnostic: diagnostic.into(),
     })
@@ -454,11 +458,11 @@ impl OriginalEffects {
             let Ok(mut original) = original.try_lock() else {
                 continue;
             };
-            if !original.reader_signal_armed {
-                if let Some(reader) = &original.reader {
-                    resources.push(reader.scope().resources.clone());
-                    original.reader_signal_armed = true;
-                }
+            if !original.reader_signal_armed
+                && let Some(reader) = &original.reader
+            {
+                resources.push(reader.scope().resources.clone());
+                original.reader_signal_armed = true;
             }
         }
         resources
@@ -602,10 +606,10 @@ impl OriginalEffects {
         if successful {
             batch.local = local;
         }
-        if let Some(reply) = &batch.observation {
-            if !cleanup_confirmed(reply) {
-                material.physical = PhysicalCleanup::Host(reply.reference.clone());
-            }
+        if let Some(reply) = &batch.observation
+            && !cleanup_confirmed(reply)
+        {
+            material.physical = PhysicalCleanup::Host(reply.reference.clone());
         }
         material.observation = batch.observation.clone();
         material.batch = Some(batch);
@@ -720,37 +724,34 @@ impl OriginalEffects {
             *original = settlement;
             material.physical = PhysicalCleanup::Confirmed;
         }
-        if material.batch.is_some() {
-            if !material.acknowledged {
-                self.publish_material(&mut material).await?;
-                material.acknowledged = true;
-            }
+        if material.batch.is_some() && !material.acknowledged {
+            self.publish_material(&mut material).await?;
+            material.acknowledged = true;
         }
         if matches!(&material.source, DispatchSource::Ordinary)
             && !matches!(material.physical, PhysicalCleanup::Confirmed)
+            && let Some(reply) = material.observe(self).await?
         {
-            if let Some(reply) = material.observe(self).await? {
-                if cleanup_confirmed(&reply) {
-                    material.physical = PhysicalCleanup::Confirmed;
-                }
-                if material.observation.as_ref() != Some(&reply) {
-                    // This is a new actual observation of the *same* Host
-                    // operation, not replacement IDs for an uncertain batch.
-                    let batch = OriginalBatch::operation(
-                        &material.key,
-                        reply.clone(),
-                        UnixMillis(now().try_into().expect("Unix milliseconds")),
-                    );
-                    material.batch = Some(batch);
-                    material.acknowledged = false;
-                    material.observation = Some(reply.clone());
-                }
-                if let Some(batch) = &material.batch {
-                    if !material.acknowledged {
-                        batch.publish(&self.state, &self.access).await?;
-                        material.acknowledged = true;
-                    }
-                }
+            if cleanup_confirmed(&reply) {
+                material.physical = PhysicalCleanup::Confirmed;
+            }
+            if material.observation.as_ref() != Some(&reply) {
+                // This is a new actual observation of the *same* Host
+                // operation, not replacement IDs for an uncertain batch.
+                let batch = OriginalBatch::operation(
+                    &material.key,
+                    reply.clone(),
+                    UnixMillis(now().try_into().expect("Unix milliseconds")),
+                );
+                material.batch = Some(batch);
+                material.acknowledged = false;
+                material.observation = Some(reply.clone());
+            }
+            if let Some(batch) = &material.batch
+                && !material.acknowledged
+            {
+                batch.publish(&self.state, &self.access).await?;
+                material.acknowledged = true;
             }
         }
         if cells_cleanup_confirmed

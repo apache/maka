@@ -24,6 +24,15 @@ use serde_json::Value;
 
 mod prepared;
 
+pub struct SessionCreationRequest<'a, W> {
+    pub id: &'a str,
+    pub fingerprint: &'a str,
+    pub owner_scope: &'a str,
+    pub workspace: &'a W,
+    pub project: Option<super::ProjectWorkspacePlan>,
+    pub now: u64,
+}
+
 /// Confirmed, rolled-back admission outcomes. Storage failures never become a
 /// rejected request; they retain their recovery obligation and original error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]

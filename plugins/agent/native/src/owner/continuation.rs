@@ -29,6 +29,10 @@ use maka_agent_state::{Admission, fold::RunView};
 use maka_capabilities::call::Scope;
 use maka_plugin_core::operation::RecoveryRef;
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Continuation preparation consumes one readiness snapshot at a time"
+)]
 enum ContinuationReadiness {
     Ready {
         source: RunView,
