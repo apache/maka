@@ -1296,6 +1296,87 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn original_cell_can_recover_after_authority_and_vm_loss() {
+        use maka_agent_facts::cells::CellInterruption;
+
+        let mut rig = Rig::new().expect("owned Cell recovery fixture");
+        let result = AssertUnwindSafe(async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            let cell = running_cell_with_returned_parent(&rig, attempt).await?;
+            let blocker = BlockerId::new();
+            rig.append(
+                vec![Fact::Blocked {
+                    blocker,
+                    reason: BlockerKind::CodeCellRecoveryUnavailable {
+                        cell: cell.to_string(),
+                    },
+                }],
+                vec![],
+            )
+            .await?;
+            let driver = rig.driver.as_ref().ok_or("original driver missing")?;
+            let run = driver.access.execution().run_id;
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            let claim = driver.access.claim();
+            let first = engine
+                .current_authority_unavailable(
+                    claim.clone(),
+                    AuthorityStage::WorkspaceScope,
+                    "access temporarily unavailable".into(),
+                    at(),
+                )
+                .await?;
+            assert!(matches!(
+                first,
+                maka_agent_engine::DriverExit::Blocked { .. }
+            ));
+            let report = ContentBlob::json(&CellInterruption {
+                cell,
+                diagnostic: "the original VM ended".into(),
+                children: Default::default(),
+                prior_output: None,
+            })?;
+            rig.append(
+                vec![Fact::Cell {
+                    event: CellEvent::Interrupted {
+                        cell,
+                        report: report.reference().clone(),
+                    },
+                }],
+                vec![report],
+            )
+            .await?;
+            engine
+                .current_authority_unavailable(
+                    claim.clone(),
+                    AuthorityStage::WorkspaceScope,
+                    "access still unavailable".into(),
+                    at(),
+                )
+                .await?;
+            let recovered = driver.state.frontier(run).await?;
+            assert!(recovered.terminal.is_none() && recovered.recovery_failure().is_none());
+            assert!(recovered.waiting_for_authority());
+            assert!(matches!(
+                recovered.cells[&cell].status,
+                CellStatus::Interrupted { .. }
+            ));
+            assert!(!recovered.cells[&cell].blocks_session_retirement(Some(&Terminal::Failed)));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "Cell recovery failed: {result:?}"
+        );
+        assert!(cleanup.is_empty(), "original Cell cleanup: {cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retired_cell_cancellation_decision_does_not_reblock_or_confirm_physical_cleanup() {
         let mut rig = Rig::new().expect("owned bounded Cell fixture");
         let mut stage = "setup";
@@ -1665,11 +1746,17 @@ mod source_recovery {
             assert!(
                 driver
                     .state
-                    .ready_runs(owner, at(), None, 64)
+                    .ready_runs_with_cause(
+                        owner,
+                        at(),
+                        None,
+                        64,
+                        ReadyCause::CapabilitySourceChanged
+                    )
                     .await?
                     .iter()
                     .any(|entry| entry.run == run),
-                "authority wait hid a run that needs to settle as failed"
+                "source change did not wake the parked Run"
             );
             let exit = maka_agent_engine::Engine::new(driver.state.clone())
                 .current_authority_unavailable(

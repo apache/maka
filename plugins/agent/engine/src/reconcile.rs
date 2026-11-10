@@ -263,6 +263,27 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
             .values()
             .find(|tool| tool.original.as_ref() == Some(reference))
             .and_then(|tool| observe_tool(&tool.key)),
+        BlockerKind::CodeCellRecoveryUnavailable { cell } => {
+            let cell = view.recovery_cell(cell)?;
+            (cell.has_unsettled_effects() && !live.cells_observed.contains(&cell.id))
+                .then_some(Action::ObserveCell(cell.id))
+        }
+        BlockerKind::ExternalPublicationItem { key, .. } => {
+            let publication = view.external.as_ref()?.publication.as_ref()?;
+            let item = publication
+                .items
+                .get(&key.index)
+                .filter(|item| item.key == *key)?;
+            if item.settled() {
+                None
+            } else if let Some(reference) = &item.original {
+                (!live.publication_observed.contains(key))
+                    .then(|| Action::ObservePublication(*key, reference.clone()))
+            } else {
+                (!live.publication_looked_up.contains(key) && !item.known())
+                    .then_some(Action::LookupPublication(*key))
+            }
+        }
         BlockerKind::ExternalTaskUnobservable { descriptor } if !live.external_observed => view
             .external
             .as_ref()

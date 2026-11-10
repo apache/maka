@@ -566,10 +566,9 @@ impl Owner {
         }
         let authority_unavailable = match &result {
             Ok(maka_agent_engine::DriverExit::Blocked { blockers, .. }) => {
-                !blockers.is_empty()
-                    && blockers.iter().all(|(_, reason)| {
-                        matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
-                    })
+                blockers.iter().any(|(_, reason)| {
+                    matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
+                })
             }
             Err(RunError::Blocked(reason)) => matches!(
                 reason.as_ref(),

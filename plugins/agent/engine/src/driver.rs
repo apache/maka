@@ -407,6 +407,7 @@ impl Engine {
         let mut live = Live::default();
         let mut work = Work::new();
         let mut cancellation_sent = false;
+        let mut recovery_cancelled = false;
         let mut authority_checked = false;
         let mut model_level: Option<(Option<StepId>, Option<ContentRef>, reconcile::ModelLevel)> =
             None;
@@ -473,6 +474,11 @@ impl Engine {
             });
             // Cancellation belongs to the physical activation. Only an explicit
             // Native control transaction may place the durable Stop fence.
+            if recovery_cancelled && view.recovery_failure().is_none() {
+                // Resume with new live ports if late evidence settled the failure
+                // after this activation cancelled its workers.
+                cancellation.cancel();
+            }
             let retiring = cancellation.is_cancelled() && view.terminal.is_none();
             let complete_at_budget = !retiring && self.complete_at_budget(&view, now).await?;
             let fenced = view.stopped
@@ -483,6 +489,12 @@ impl Engine {
                 live.cells_observed.clear();
                 ports.cancel_live(run);
                 cancellation_sent = true;
+            }
+            if !retiring
+                && !view.cancelled_by_risk
+                && self.resolve_recovered_cells(&claim, &view, now).await?
+            {
+                continue;
             }
             if retiring && work.is_empty() {
                 return Ok(DriverExit::Retired { run });
@@ -555,7 +567,9 @@ impl Engine {
             let mut action = if retiring {
                 Action::Idle
             } else if view.recovery_failure().is_some() && !view.cancelled_by_risk {
-                if work.is_empty()
+                if view.waiting_for_authority() {
+                    Action::Idle
+                } else if work.is_empty()
                     && let Some(observation) = reconcile::recovery_action(&view, &live)
                 {
                     observation
@@ -563,6 +577,7 @@ impl Engine {
                     if !cancellation_sent {
                         ports.cancel_live(run);
                         cancellation_sent = true;
+                        recovery_cancelled = true;
                     }
                     if work.is_empty() || live.only_cleanup(&view) {
                         Action::Terminate(Terminal::Failed)
@@ -1565,6 +1580,15 @@ impl Engine {
                             now,
                         )
                         .await?;
+                    }
+                    Err(RunError::Blocked(reason))
+                        if !retiring
+                            && matches!(
+                                *reason,
+                                BlockerKind::CurrentAuthorityUnavailable { .. }
+                            ) =>
+                    {
+                        self.block(claim, &view, *reason, now).await?;
                     }
                     Err(error) => {
                         tracing::error!(cause=%error,"original operation could not be observed");

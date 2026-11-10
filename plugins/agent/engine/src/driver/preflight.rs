@@ -76,7 +76,15 @@ impl Engine {
             if view.terminal.is_some() {
                 return Ok(exit(&view));
             }
-            if view.recovery_failure().is_some() && !view.cancelled_by_risk {
+            if self.recover_legacy_compaction(&claim, &view, at).await?
+                || self.resolve_recovered_cells(&claim, &view, at).await?
+            {
+                continue;
+            }
+            let probe_original = view.recovery_failure().is_some()
+                && !view.cancelled_by_risk
+                && reconcile::recovery_action(&view, &Live::default()).is_some();
+            if view.recovery_failure().is_some() && !view.cancelled_by_risk && !probe_original {
                 self.publish(
                     Some(&claim),
                     &view,
@@ -88,18 +96,19 @@ impl Engine {
                 continue;
             }
             let mut source_blocker = None;
-            if view.stopped
-                || view.cancelled_by_risk
-                || view
-                    .spec
-                    .budget
-                    .deadline
-                    .is_some_and(|deadline| at >= deadline)
-                || view
-                    .spec
-                    .budget
-                    .tokens
-                    .is_some_and(|limit| view.tokens >= limit)
+            if !probe_original
+                && (view.stopped
+                    || view.cancelled_by_risk
+                    || view
+                        .spec
+                        .budget
+                        .deadline
+                        .is_some_and(|deadline| at >= deadline)
+                    || view
+                        .spec
+                        .budget
+                        .tokens
+                        .is_some_and(|limit| view.tokens >= limit))
             {
                 // Without ports, only canonical evidence can be drained. A Cell
                 // needing physical observation remains explicitly unavailable.

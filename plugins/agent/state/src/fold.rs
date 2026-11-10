@@ -307,6 +307,22 @@ impl RunView {
         }
     }
 
+    pub fn recovery_cell(&self, id: &str) -> Option<&maka_agent_facts::cells::CellView> {
+        let id = id.parse::<uuid::Uuid>().ok()?.try_into().ok()?;
+        self.cells.get(&id)
+    }
+
+    pub fn waiting_for_authority(&self) -> bool {
+        self.blockers.values().any(|blocker| {
+            blocker.decision.is_none()
+                && blocker.resolved_by.is_none()
+                && matches!(
+                    blocker.reason,
+                    BlockerKind::CurrentAuthorityUnavailable { .. }
+                )
+        })
+    }
+
     pub fn recovery_failures(&self) -> impl Iterator<Item = &BlockerKind> {
         self.blockers.iter().filter_map(|(id, blocker)| {
             (self.replans.contains_key(id)
@@ -331,35 +347,29 @@ impl RunView {
 
     pub fn has_unsettled_recovery(&self) -> bool {
         self.recovery_failures().any(|reason| {
+            if let BlockerKind::CodeCellRecoveryUnavailable { cell } = reason {
+                return self
+                    .recovery_cell(cell)
+                    .is_none_or(|cell| cell.has_unsettled_effects());
+            }
             !matches!(
                 reason,
-                BlockerKind::UnsupportedProtocol { .. } | BlockerKind::ResourcesUnavailable { .. }
+                BlockerKind::UnsupportedProtocol { .. }
+                    | BlockerKind::ResourcesUnavailable { .. }
+                    | BlockerKind::ExternalPublicationUnavailable { .. }
+                    | BlockerKind::ExternalPublicationItem { .. }
             )
-        }) || self.tools.values().any(|tool| {
-            original_effect_unknown(tool)
-                || (tool.call.provider_executed && tool.provider_result.is_none())
-                || (tool.admitted
-                    && tool.accepted.is_none()
-                    && tool.original.is_none()
-                    && tool.local_returned.is_none()
-                    && tool.prohibited_before_host.is_none())
-                || (tool.original.is_some()
-                    && !matches!(
-                        &tool.receipt,
-                        Some(Receipt::Recorded {
-                            cleanup: OperationCleanup::Confirmed,
-                            ..
-                        })
-                    ))
-        }) || self.attempts.values().any(|attempt| {
-            attempt.admission.is_some() && attempt.cleanup != OperationCleanup::Confirmed
-        }) || self.cells.values().any(|cell| cell.pending())
+        }) || self.tools.values().any(tool_unsettled)
+            || self.attempts.values().any(attempt_unsettled)
+            || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
                 task.admitted
                     && (task.closed.is_none()
                         || task.cleanup != OperationCleanup::Confirmed
                         || task.effects.values().any(|effect| effect.pending())
-                        || !crate::external_publication::quiescent(self))
+                        || task.publication.as_ref().is_some_and(|publication| {
+                            !publication.quiescent() || publication.unknown()
+                        }))
             })
     }
 
@@ -1772,21 +1782,28 @@ impl RunView {
                 }
             }
             Fact::BlockerResolved { blocker, .. } => {
-                let current = self.blockers.get_mut(blocker).ok_or_else(|| {
+                let current = self.blockers.get(blocker).ok_or_else(|| {
                     StoreError::InvalidTransition("unknown resolved blocker".into())
                 })?;
+                let cell_settled = match &current.reason {
+                    BlockerKind::CodeCellRecoveryUnavailable { cell } => self
+                        .recovery_cell(cell)
+                        .is_some_and(|cell| !cell.has_unsettled_effects()),
+                    _ => false,
+                };
                 require(
                     matches!(
                         current.reason,
                         BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ) || current.reason.is_legacy_compaction_lookup(),
+                    ) || current.reason.is_legacy_compaction_lookup()
+                        || cell_settled,
                     "this blocker requires an observation from its original source",
                 )?;
-                require(
-                    current.resolved_by.is_none(),
-                    "authority blocker is already resolved",
-                )?;
-                current.resolved_by = Some(recorded.id);
+                require(current.resolved_by.is_none(), "blocker is already resolved")?;
+                self.blockers
+                    .get_mut(blocker)
+                    .expect("validated blocker")
+                    .resolved_by = Some(recorded.id);
             }
             Fact::RiskAdjudicated {
                 blocker,
@@ -2358,7 +2375,17 @@ pub(crate) fn original_effect_unknown(tool: &Tool) -> bool {
                 })
             )
 }
-pub(crate) fn tool_pending(tool: &Tool) -> bool {
+pub(crate) fn attempt_unsettled(attempt: &Attempt) -> bool {
+    attempt.admission.is_some()
+        && (attempt.cleanup != OperationCleanup::Confirmed
+            || (attempt.closed.is_none()
+                && matches!(
+                    attempt.recovery,
+                    Some(AttemptRecovery::ObserveOriginal { .. })
+                )))
+}
+
+pub(crate) fn tool_unsettled(tool: &Tool) -> bool {
     let cleanup = tool.original.is_some()
         && !matches!(
             &tool.receipt,
@@ -2372,7 +2399,13 @@ pub(crate) fn tool_pending(tool: &Tool) -> bool {
         && tool.prohibited_before_host.is_none()
         && tool.local_returned.is_none()
         && !cell_context_recovered(tool);
-    tool.accepted.is_none() || original_effect_unknown(tool) || cleanup || unknown_admission
+    original_effect_unknown(tool)
+        || cleanup
+        || unknown_admission
+        || (tool.call.provider_executed && tool.provider_result.is_none())
+}
+pub(crate) fn tool_pending(tool: &Tool) -> bool {
+    tool.accepted.is_none() || tool_unsettled(tool)
 }
 
 fn receipt_blocks_effects<R>(receipt: &maka_plugin_core::operation::Receipt<R>) -> bool {

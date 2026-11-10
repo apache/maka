@@ -71,15 +71,7 @@ impl Engine {
         }) else {
             return Ok(false);
         };
-        if view.stopped
-            || view.has_unsettled_recovery()
-            || view
-                .blockers
-                .values()
-                .filter(|b| b.resolved_by.is_none() && b.decision.is_none())
-                .count()
-                != 1
-        {
+        if view.stopped || view.has_unsettled_recovery() || view.recovery_failures().count() != 1 {
             return Ok(false);
         }
         let Ok(level) = self.model_level(view).await else {

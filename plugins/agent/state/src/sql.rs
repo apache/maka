@@ -433,7 +433,6 @@ pub(crate) fn load(
         }
         return Ok(view);
     }
-    view.cells = crate::cells::load_run(c, run, facts, all)?;
     if let Some(task) = &mut view.external {
         task.effects = crate::external_effects::load_run(c, run, facts, all)?;
         task.publication = crate::external_publication::load_run(c, run, facts, all)?;
@@ -480,6 +479,11 @@ pub(crate) fn load(
         targets.blocker(&value.reason);
         view.blockers.insert(identity(key)?, value);
     }
+    let blocked_cells = view.recovery_failures().filter_map(|reason| match reason {
+        BlockerKind::CodeCellRecoveryUnavailable { cell } => Some(cell.clone()),
+        _ => None,
+    });
+    view.cells = crate::cells::load_run(c, run, facts, blocked_cells, all)?;
     for (key, value) in projection_rows::<Wait>(c, "agent_waits", run, &targets.waits, all)? {
         view.waits.insert(identity(key)?, value);
     }
@@ -576,15 +580,15 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
     for (key, value) in &view.steps {
         upsert(c, "agent_steps", view.run, key, false, value)?;
     }
+    let failed = view.terminal == Some(Terminal::Failed);
     for (key, value) in &view.attempts {
         upsert(
             c,
             "agent_attempts",
             view.run,
             key,
-            (value.closed.is_none() && value.interrupted.is_none())
-                || (value.admission.is_some()
-                    && value.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed),
+            fold::attempt_unsettled(value)
+                || (!failed && value.closed.is_none() && value.interrupted.is_none()),
             value,
         )?;
     }
@@ -594,7 +598,11 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             "agent_tools",
             view.run,
             key,
-            fold::tool_pending(value),
+            if failed {
+                fold::tool_unsettled(value)
+            } else {
+                fold::tool_pending(value)
+            },
             value,
         )?;
     }
@@ -1761,10 +1769,10 @@ pub(crate) fn ready(
     let mut statement = c.prepare_cached(&format!("WITH business AS (
         SELECT r.run,r.admission_sequence,r.session FROM agent_runs r
         WHERE r.owner=?1 AND r.terminal IS NULL AND r.local=1 AND r.admission_sequence>?2
+        AND (?5=1 OR NOT {AUTHORITY_BLOCKED} OR r.cancelled_by_risk=1 OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
         AND (EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable')
         OR r.replans != '{{}}'
-        OR ((?5=1 OR NOT {AUTHORITY_BLOCKED} OR r.cancelled_by_risk=1 OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
-        AND (r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
+        OR ((r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
             OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED})
             OR (r.stopped=1 AND json_extract(r.external,'$.admitted')=1
                 AND json_extract(r.external,'$.closed') IS NULL

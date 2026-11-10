@@ -36,14 +36,7 @@ pub(super) fn project(view: &RunView) -> Execution {
                 .filter(|wait| wait.satisfied.is_none() && wait.cancelled.is_none())
                 .map(|wait| wait.reason.clone())
                 .collect();
-            let authority_unavailable = view.blockers.values().any(|blocker| {
-                blocker.resolved_by.is_none()
-                    && blocker.decision.is_none()
-                    && matches!(
-                        blocker.reason,
-                        durable::BlockerKind::CurrentAuthorityUnavailable { .. }
-                    )
-            });
+            let authority_unavailable = view.waiting_for_authority();
             if !waits.is_empty() || authority_unavailable {
                 ExecutionState::Waiting {
                     waits,
