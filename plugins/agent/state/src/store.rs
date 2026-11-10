@@ -209,6 +209,17 @@ pub struct ReadyRun {
 pub enum DriverPurpose {
     Business,
     LateExternalCleanup { task: ExternalTaskId },
+    LateModelCleanup,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelCleanupItem {
+    pub owner: RunOwner,
+    pub execution: ExecutionIdentity,
+    pub attempt: ModelAttemptId,
+    pub step: StepId,
+    pub request: ContentRef,
+    pub upstream: serde_json::Value,
 }
 #[derive(Clone, Debug)]
 pub struct CleanupFrontier {
@@ -260,7 +271,7 @@ struct Ticket {
 impl Ticket {
     fn blocks(&self, requested: DriverPurpose) -> bool {
         match requested {
-            DriverPurpose::LateExternalCleanup { .. } => true,
+            DriverPurpose::LateExternalCleanup { .. } | DriverPurpose::LateModelCleanup => true,
             DriverPurpose::Business => {
                 matches!(self.purpose, DriverPurpose::Business)
                     && self.active.load(std::sync::atomic::Ordering::Acquire)
@@ -578,24 +589,47 @@ impl Store {
         after: Option<u64>,
         limit: u32,
     ) -> Result<Vec<ReadyRun>, StoreError> {
+        self.ready_runs_with_cause(owner, at, after, limit, ReadyCause::Ordinary)
+            .await
+    }
+    pub async fn ready_runs_with_cause(
+        &self,
+        owner: RunOwner,
+        at: UnixMillis,
+        after: Option<u64>,
+        limit: u32,
+        cause: ReadyCause,
+    ) -> Result<Vec<ReadyRun>, StoreError> {
         self.data
             .query(ReadReady {
                 owner,
                 at,
                 after,
                 limit,
+                cause,
             })
             .await
     }
     pub async fn next_due_wait(&self, owner: RunOwner) -> Result<Option<UnixMillis>, StoreError> {
-        self.data.query(ReadNextDue(owner, None)).await
+        self.data
+            .query(ReadNextDue(owner, None, ReadyCause::Ordinary))
+            .await
     }
     pub async fn next_due_after(
         &self,
         owner: RunOwner,
         at: UnixMillis,
     ) -> Result<Option<UnixMillis>, StoreError> {
-        self.data.query(ReadNextDue(owner, Some(at))).await
+        self.next_due_after_with_cause(owner, at, ReadyCause::Ordinary)
+            .await
+    }
+    pub async fn next_due_after_with_cause(
+        &self,
+        owner: RunOwner,
+        at: UnixMillis,
+        cause: ReadyCause,
+    ) -> Result<Option<UnixMillis>, StoreError> {
+        self.data.query(ReadNextDue(owner, Some(at), cause)).await
     }
     pub async fn latest_run(&self, session: String) -> Result<Option<RunId>, StoreError> {
         self.data.query(ReadLatest(session)).await
@@ -671,6 +705,14 @@ impl Store {
                 let view = self.data.query(ReadCleanup(run)).await?;
                 if view.task != task
                     || view.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
+                {
+                    return Ok(None);
+                }
+            }
+            DriverPurpose::LateModelCleanup => {
+                let view = self.frontier(run).await?;
+                if !matches!(view.spec.origin, RunOrigin::Local)
+                    || !matches!(view.spec.backend, BackendSpec::Model { .. })
                 {
                     return Ok(None);
                 }
@@ -819,6 +861,31 @@ impl Store {
             })
             .await
     }
+    pub async fn model_reconciliation_runs(
+        &self,
+        owner: RunOwner,
+        after: Option<u64>,
+        limit: u32,
+        cold_probe: bool,
+    ) -> Result<Vec<ReadyRun>, StoreError> {
+        self.data
+            .query(ReadModelRuns(owner, after, limit, cold_probe))
+            .await
+    }
+    pub async fn model_cleanups(
+        &self,
+        claim: &DriverClaim,
+        after: Option<ModelAttemptId>,
+        limit: u32,
+        cold_probe: bool,
+    ) -> Result<Vec<ModelCleanupItem>, StoreError> {
+        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+            return Err(invalid("foreign model cleanup claim"));
+        }
+        self.data
+            .query(ReadModelCleanups(claim.clone(), after, limit, cold_probe))
+            .await
+    }
     pub async fn history(
         &self,
         run: RunId,
@@ -961,6 +1028,25 @@ impl Statement for Append {
         Admit::isolated_rejection(error)
     }
 }
+struct ReadModelRuns(RunOwner, Option<u64>, u32, bool);
+impl Query for ReadModelRuns {
+    type Output = Vec<ReadyRun>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::model_reconciliation_runs(c, self.0, self.1, self.2, self.3)
+    }
+}
+struct ReadModelCleanups(DriverClaim, Option<ModelAttemptId>, u32, bool);
+impl Query for ReadModelCleanups {
+    type Output = Vec<ModelCleanupItem>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        self.0.with_current(&self.0.ticket.domain.data, || {
+            if self.0.purpose() != DriverPurpose::LateModelCleanup {
+                return Err(invalid("not a model cleanup claim"));
+            }
+            sql::model_cleanups(c, self.0.run(), self.1, self.2, self.3)
+        })
+    }
+}
 struct ReadFrontier(RunId);
 struct ReadCleanup(RunId);
 impl Query for ReadCleanup {
@@ -1081,7 +1167,14 @@ impl Query for ReadFact {
         sql::fact(c, self.run, self.id)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadyCause {
+    Ordinary,
+    CapabilitySourceChanged,
+}
+
 struct ReadReady {
+    cause: ReadyCause,
     owner: RunOwner,
     at: UnixMillis,
     after: Option<u64>,
@@ -1090,14 +1183,14 @@ struct ReadReady {
 impl Query for ReadReady {
     type Output = Vec<ReadyRun>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::ready(c, self.owner, self.at, self.after, self.limit)
+        sql::ready(c, self.owner, self.at, self.after, self.limit, self.cause)
     }
 }
-struct ReadNextDue(RunOwner, Option<UnixMillis>);
+struct ReadNextDue(RunOwner, Option<UnixMillis>, ReadyCause);
 impl Query for ReadNextDue {
     type Output = Option<UnixMillis>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::next_due(c, self.0, self.1)
+        sql::next_due(c, self.0, self.1, self.2)
     }
 }
 struct ReadLatest(String);

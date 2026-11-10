@@ -36,6 +36,10 @@ use std::collections::BTreeSet;
 
 pub(crate) const HEADER_SCHEMA_VERSION: u32 = 2;
 
+const AUTHORITY_BLOCKED: &str = "EXISTS(SELECT 1 FROM agent_blockers authority WHERE authority.run=r.run AND authority.pending=1
+    AND json_extract(authority.body,'$.decision') IS NULL AND json_extract(authority.body,'$.resolvedBy') IS NULL
+    AND json_extract(authority.body,'$.reason.kind')='current_authority_unavailable')";
+
 // Correlated to the pending wait `w` in both ready and next_due.
 const RECONCILABLE_WAIT: &str = "
     (json_extract(w.body,'$.reason.kind') IS 'approval' AND (
@@ -44,7 +48,6 @@ const RECONCILABLE_WAIT: &str = "
     OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'model' AND EXISTS(
         SELECT 1 FROM agent_attempts a WHERE a.run=w.run AND a.key=json_extract(w.body,'$.reason.attempt')
         AND json_extract(a.body,'$.admission') IS NOT NULL
-        AND (json_extract(a.body,'$.closed') IS NOT NULL OR json_extract(a.body,'$.interrupted') IS NOT NULL)
         AND json_extract(a.body,'$.cleanup.kind') IS 'confirmed'))
     OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS(
         SELECT 1 FROM agent_cells c WHERE c.cell=json_extract(w.body,'$.reason.cell') AND c.run=w.run
@@ -232,6 +235,9 @@ impl Targets {
     }
     fn blocker(&mut self, reason: &BlockerKind) {
         match reason {
+            BlockerKind::ModelCleanupUnconfirmed { attempt, .. } => {
+                self.attempts.insert(attempt.to_string());
+            }
             BlockerKind::OperationUnknown { tool, .. }
             | BlockerKind::OriginalAdmissionUnknown { tool }
             | BlockerKind::ToolCleanupUnconfirmed { tool, .. }
@@ -423,6 +429,23 @@ pub(crate) fn load(
     for fact in facts {
         targets.fact(fact);
     }
+    // Late server calls need the actual decision/id, not just the sticky logical fence.
+    if !all
+        && view.cancelled_by_risk
+        && facts.iter().any(|fact| {
+            matches!(fact,
+        Fact::ModelObserved { part: ModelPart::ToolCall { call }, .. } if call.provider_executed)
+        })
+    {
+        let retired = c
+            .prepare_cached(
+                "SELECT key FROM agent_blockers WHERE run=? AND pending=0
+            AND json_extract(body,'$.decision.scope.kind')='run_cancellation'",
+            )?
+            .query_map([run.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        targets.blockers.extend(retired);
+    }
     if let Some(step) = view.current_step {
         targets.steps.insert(step.to_string());
     }
@@ -565,10 +588,12 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
         upsert(c, "agent_approvals", view.run, key, !value.consumed, value)?;
     }
     for (key, value) in &view.blockers {
-        let needed = view
-            .tools
-            .values()
-            .any(|tool| fold::tool_pending(tool) && fold::blocker_covers(&value.reason, tool));
+        let needed = view.tools.values().any(|tool| {
+            fold::tool_pending(tool)
+                && (value.decision.as_ref().is_some_and(|decision| {
+                    matches!(decision.scope, RiskActionScope::RunCancellation)
+                }) || fold::blocker_covers(&value.reason, tool))
+        });
         upsert(
             c,
             "agent_blockers",
@@ -1128,6 +1153,33 @@ pub(crate) fn append(
         return Err(invalid("empty canonical batch"));
     }
     if let Mode::Driver(claim) = mode {
+        if claim.purpose() == crate::store::DriverPurpose::LateModelCleanup {
+            let empty_artifacts = match artifacts {
+                crate::artifacts::ArtifactBatch::Pending(items) => items.is_empty(),
+                crate::artifacts::ArtifactBatch::Prepared(items) => items.is_empty(),
+            };
+            if !empty_artifacts || !contents.is_empty() || steering.is_some() {
+                return Err(invalid(
+                    "model cleanup claim cannot publish material or steering",
+                ));
+            }
+            for change in changes {
+                let Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+                } = &change.fact
+                else {
+                    return Err(invalid(
+                        "model cleanup claim accepts only original admitted cleanup proof",
+                    ));
+                };
+                let admitted = c.prepare_cached("SELECT 1 FROM agent_attempts WHERE run=? AND key=? AND json_extract(body,'$.admission') IS NOT NULL")?
+                    .query_row(params![run.to_string(), attempt.to_string()], |_| Ok(())).optional()?.is_some();
+                if !admitted {
+                    return Err(invalid("model cleanup has no original admission"));
+                }
+            }
+        }
         if let crate::store::DriverPurpose::LateExternalCleanup { task } = claim.purpose() {
             let empty_artifacts = match artifacts {
                 crate::artifacts::ArtifactBatch::Pending(items) => items.is_empty(),
@@ -1668,19 +1720,26 @@ pub(crate) fn ready(
     at: UnixMillis,
     after: Option<u64>,
     count: u32,
+    cause: crate::store::ReadyCause,
 ) -> Result<Vec<crate::store::ReadyRun>, StoreError> {
     let mut statement = c.prepare_cached(&format!("WITH business AS (
         SELECT r.run,r.admission_sequence,r.session FROM agent_runs r
         WHERE r.owner=?1 AND r.terminal IS NULL AND r.local=1 AND r.admission_sequence>?2
-        AND (NOT EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL)
+        AND (NOT EXISTS (SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND (?5=0 OR json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable'))
+            OR r.cancelled_by_risk=1
             OR (r.stopped=1 AND r.stop_request IS NOT NULL AND r.stop_assessed IS NOT r.stop_request))
         AND (r.stopped=0 OR r.stop_request IS NULL OR r.stop_assessed IS NOT r.stop_request
+            OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED})
             OR (r.stopped=1 AND json_extract(r.external,'$.admitted')=1
                 AND json_extract(r.external,'$.closed') IS NULL
                 AND json_extract(r.external,'$.cleanup.kind') IN ('confirmed','failed'))
             OR EXISTS (SELECT 1 FROM agent_cells cell WHERE cell.run=r.run AND cell.pending=1 AND json_extract(cell.body,'$.status.kind')='running'))
-        AND (r.stopped=1 OR r.retry_due_at IS NULL OR r.retry_due_at<=?3)
-        AND (r.stopped=1 OR NOT EXISTS (SELECT 1 FROM agent_waits w WHERE w.run=r.run AND w.pending=1 AND (w.due_at IS NULL OR w.due_at>?3) AND NOT ({RECONCILABLE_WAIT}))))
+        AND (r.stopped=1 OR r.cancelled_by_risk=1 OR r.retry_due_at IS NULL OR r.retry_due_at<=?3)
+        AND (r.stopped=1 OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED}) OR NOT EXISTS (SELECT 1 FROM agent_waits w WHERE w.run=r.run AND w.pending=1 AND (w.due_at IS NULL OR w.due_at>?3) AND NOT (
+            {RECONCILABLE_WAIT}
+            OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS (
+                SELECT 1 FROM agent_cells c WHERE c.run=w.run AND c.cell=json_extract(w.body,'$.reason.cell')
+                AND json_extract(c.body,'$.status.kind') IS 'running'))))))
         SELECT run,admission_sequence,session,NULL AS cleanup_task FROM business
         UNION ALL
         SELECT r.run,r.admission_sequence,r.session,json_extract(r.external,'$.task') AS cleanup_task
@@ -1693,7 +1752,8 @@ pub(crate) fn ready(
         serde_json::to_string(&owner)?,
         signed(after.unwrap_or(0))?,
         at.0,
-        limit(count)?
+        limit(count)?,
+        cause == crate::store::ReadyCause::CapabilitySourceChanged
     ])?;
     let mut ready = Vec::new();
     while let Some(row) = rows.next()? {
@@ -1712,16 +1772,116 @@ pub(crate) fn ready(
     }
     Ok(ready)
 }
+pub(crate) fn model_reconciliation_runs(
+    c: &Connection,
+    owner: RunOwner,
+    after: Option<u64>,
+    count: u32,
+    cold_probe: bool,
+) -> Result<Vec<crate::store::ReadyRun>, StoreError> {
+    let mut statement = c.prepare_cached("WITH candidates AS (
+        SELECT a.run FROM agent_attempts a INDEXED BY agent_model_cleanup_pending
+        WHERE json_extract(a.body,'$.admission') IS NOT NULL AND json_extract(a.body,'$.cleanup.kind') IS NOT 'confirmed'
+        AND (?4=1 OR EXISTS(SELECT 1 FROM agent_runs live WHERE live.run=a.run AND live.terminal IS NULL))
+        AND (?4=1 OR NOT EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=a.run AND json_extract(b.body,'$.resolvedBy') IS NULL
+            AND json_extract(b.body,'$.reason.kind')='model_cleanup_unconfirmed' AND json_extract(b.body,'$.reason.attempt')=a.key))
+        UNION
+        SELECT r.run FROM agent_runs r INDEXED BY agent_runs_live
+        JOIN agent_attempts a ON a.run=r.run AND a.key=r.current_attempt
+        WHERE r.owner=?1 AND r.terminal IS NULL AND r.stopped=0
+            AND json_extract(a.body,'$.closed.outcome')='success' AND json_extract(a.body,'$.closed.diagnostic') IS NULL
+            AND json_extract(a.body,'$.closed.protocol.finishReason')='stop' AND json_extract(a.body,'$.hasTools')=0
+            AND (?4=1 OR EXISTS(SELECT 1 FROM agent_waits w WHERE w.run=r.run AND w.pending=1 AND json_extract(w.body,'$.reason.kind')='model')
+                OR (EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1
+                    AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL
+                    AND json_extract(b.body,'$.reason.kind')='current_authority_unavailable')
+                    AND NOT EXISTS(SELECT 1 FROM agent_waits w WHERE w.run=r.run AND w.pending=1
+                        AND json_extract(w.body,'$.reason.kind') IN ('child','retry','provider_backoff'))))
+            AND NOT EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1
+                AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL
+                AND json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable')
+            AND NOT EXISTS(SELECT 1 FROM agent_attempts pending INDEXED BY agent_model_cleanup_pending WHERE pending.run=r.run
+                AND json_extract(pending.body,'$.admission') IS NOT NULL AND json_extract(pending.body,'$.cleanup.kind') IS NOT 'confirmed')
+    ) SELECT r.run,r.admission_sequence,r.session FROM candidates p JOIN agent_runs r ON r.run=p.run
+        WHERE r.owner=?1 AND r.local=1 AND r.admission_sequence>?2 ORDER BY r.admission_sequence LIMIT ?3")?;
+    let mut rows = statement.query(params![
+        serde_json::to_string(&owner)?,
+        signed(after.unwrap_or(0))?,
+        limit(count)?,
+        cold_probe
+    ])?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        result.push(crate::store::ReadyRun {
+            run: identity(row.get(0)?)?,
+            admission_sequence: column_u64(row, 1)?,
+            session_id: row.get(2)?,
+            purpose: crate::store::DriverPurpose::LateModelCleanup,
+        });
+    }
+    Ok(result)
+}
+
+pub(crate) fn model_cleanups(
+    c: &Connection,
+    run: RunId,
+    after: Option<ModelAttemptId>,
+    count: u32,
+    cold_probe: bool,
+) -> Result<Vec<crate::store::ModelCleanupItem>, StoreError> {
+    let view = load(c, run, &[], false)?;
+    if !matches!(view.spec.origin, RunOrigin::Local)
+        || !matches!(view.spec.backend, BackendSpec::Model { .. })
+    {
+        return Err(invalid("foreign model cleanup source"));
+    }
+    let mut statement = c.prepare_cached("SELECT key,body FROM agent_attempts INDEXED BY agent_model_cleanup_pending
+        WHERE run=? AND json_extract(body,'$.admission') IS NOT NULL AND json_extract(body,'$.cleanup.kind') IS NOT 'confirmed'
+        AND (?2 IS NULL OR key>?2)
+        AND (?4=1 OR NOT EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=agent_attempts.run AND json_extract(b.body,'$.resolvedBy') IS NULL
+            AND json_extract(b.body,'$.reason.kind')='model_cleanup_unconfirmed' AND json_extract(b.body,'$.reason.attempt')=agent_attempts.key))
+        ORDER BY key LIMIT ?3")?;
+    let mut rows = statement.query(params![
+        run.to_string(),
+        after.map(|id| id.to_string()),
+        limit(count)?,
+        cold_probe
+    ])?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        let attempt: Attempt = serde_json::from_str(&row.get::<_, String>(1)?)?;
+        let request = request(c, run, attempt.step)?;
+        result.push(crate::store::ModelCleanupItem {
+            owner: view.spec.owner.clone(),
+            execution: ExecutionIdentity {
+                run_id: run,
+                session_id: view.spec.session_id.clone(),
+                turn_id: view.spec.turn_id.clone(),
+            },
+            attempt: identity(row.get(0)?)?,
+            step: attempt.step,
+            request: request.request,
+            upstream: attempt
+                .admission
+                .expect("selected admitted source")
+                .upstream,
+        });
+    }
+    Ok(result)
+}
+
 pub(crate) fn next_due(
     c: &Connection,
     owner: RunOwner,
     after: Option<UnixMillis>,
+    cause: crate::store::ReadyCause,
 ) -> Result<Option<UnixMillis>, StoreError> {
     let next: Option<i64> = c.prepare_cached(&format!("SELECT min(due) FROM (
         SELECT max(coalesce(r.retry_due_at,0),coalesce(max(w.due_at),0)) AS due
         FROM agent_runs r LEFT JOIN agent_waits w ON w.run=r.run AND w.pending=1 AND NOT ({RECONCILABLE_WAIT})
+            AND NOT (?3=1 AND w.due_at IS NULL AND {AUTHORITY_BLOCKED})
         WHERE r.owner=?1 AND r.terminal IS NULL AND r.local=1 AND r.stopped=0
-        AND NOT EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM agent_blockers b WHERE b.run=r.run AND b.pending=1 AND json_extract(b.body,'$.decision') IS NULL AND json_extract(b.body,'$.resolvedBy') IS NULL AND (?3=0 OR json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable'))
         GROUP BY r.run
         HAVING sum(CASE WHEN w.key IS NOT NULL AND w.due_at IS NULL THEN 1 ELSE 0 END)=0
             AND (r.retry_due_at IS NOT NULL OR count(w.due_at)>0)
@@ -1732,7 +1892,7 @@ pub(crate) fn next_due(
         AND json_extract(r.external,'$.cleanupNotBefore') IS NOT NULL
         AND coalesce(json_extract(r.external,'$.cleanupNotBefore'),-9223372036854775808)>coalesce(?2,-9223372036854775808)
     ) WHERE ?2 IS NULL OR due>?2"))?
-        .query_row(params![serde_json::to_string(&owner)?, after.map(|at| at.0)], |row| row.get(0))?;
+        .query_row(params![serde_json::to_string(&owner)?, after.map(|at| at.0), cause == crate::store::ReadyCause::CapabilitySourceChanged], |row| row.get(0))?;
     Ok(next.map(UnixMillis))
 }
 pub(crate) fn cleanup_frontier(

@@ -3042,6 +3042,7 @@ export function Conversation(props: ConversationProps) {
     unsupported_protocol: 'Protocol recovery unavailable',
     cleanup_unconfirmed: 'Resource cleanup unconfirmed',
     tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
+    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
     resources_unavailable: 'Resources unavailable',
     external_task_unobservable: 'External task cannot be observed',
     external_publication_item: 'External output needs reconciliation',

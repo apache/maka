@@ -495,12 +495,12 @@ impl NativeExternalEffects {
                 ..
             }
         );
+        self.observe_reply(key, &reply).await?;
         if confirmed {
             if let Some(active) = &self.active {
                 active.lock().await.physical = true;
             }
         }
-        self.observe_reply(key, &reply).await?;
         Ok(confirmed)
     }
 
@@ -604,8 +604,10 @@ impl NativeExternalEffects {
         for batch in batches {
             actor.settle_batch(&batch).await?;
         }
-        if !physical {
-            physical = actor.original_cleanup(key, host).await?;
+        // A physical ACK does not prove that the settlement batch was captured.
+        let has_settlement = call.lock().await.has_settlement();
+        if !physical || !has_settlement {
+            physical = actor.original_cleanup(key, host).await? || physical;
         }
         let batches = retained.lock().expect("external T2 material").clone();
         for batch in batches {
@@ -1239,25 +1241,41 @@ impl NativeExternalEffects {
                 return Ok(());
             }
             source.host = Some(reply.reference.clone());
-            source.observation = Some(reply.clone());
         }
-        let mut changes = vec![
-            change(ExternalEffectEvent::Bound {
+        let original = self
+            .state
+            .external_effect(self.claim.run(), key)
+            .await
+            .map_err(persistence)?
+            .ok_or_else(|| ToolError::Persistence("Original external effect disappeared".into()))?;
+        let mut changes = Vec::new();
+        if original.reference.is_none() {
+            changes.push(change(ExternalEffectEvent::Bound {
                 key,
                 reference: reply.reference.clone(),
-            }),
-            change(ExternalEffectEvent::Observed {
-                key,
-                observation: reply.clone(),
-            }),
-        ];
-        if let Receipt::Recorded { cleanup, .. } = &reply.receipt {
-            changes.push(change(ExternalEffectEvent::CleanupObserved {
-                key,
-                cleanup: cleanup.clone(),
             }));
         }
-        self.observe(changes, vec![]).await
+        if original.observation.as_ref() != Some(reply) {
+            changes.push(change(ExternalEffectEvent::Observed {
+                key,
+                observation: reply.clone(),
+            }));
+        }
+        if let Receipt::Recorded { cleanup, .. } = &reply.receipt {
+            if original.cleanup != *cleanup {
+                changes.push(change(ExternalEffectEvent::CleanupObserved {
+                    key,
+                    cleanup: cleanup.clone(),
+                }));
+            }
+        }
+        if !changes.is_empty() {
+            self.observe(changes, vec![]).await?;
+        }
+        if let Some(active) = &self.active {
+            active.lock().await.observation = Some(reply.clone());
+        }
+        Ok(())
     }
 
     async fn settle(

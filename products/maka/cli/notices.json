@@ -63,6 +63,7 @@
     "cargo:async-signal@0.2.14 registry+https://github.com/rust-lang/crates.io-index": "9e6b3ac09431e0140f9f339487ef8d54b5b00b15c9902d5f97571b341dc4fe38",
     "cargo:async-task@4.7.1 registry+https://github.com/rust-lang/crates.io-index": "ffaefca31e4b8441da50a1d3fde68995dbabbdd8298ffaa80c1df59bf739dded",
     "cargo:async-trait@0.1.92 registry+https://github.com/rust-lang/crates.io-index": "26f452a0423d85115fb01ed945647f8b81621cf09eed26c9dd23012af3797863",
+    "cargo:asyncband@0.7.4 registry+https://github.com/rust-lang/crates.io-index": "b4c6cfecc438677759ebc38eb19730e8d732b8bc7519a564a0f49358b3ba19b0",
     "cargo:atoi@2.0.0 registry+https://github.com/rust-lang/crates.io-index": "1d17dc5440aa5b61498ba2318f6b996934ae3eff2c0b3ddca449aeaaa6b9578c",
     "cargo:atomic-waker@1.1.2 registry+https://github.com/rust-lang/crates.io-index": "77fd45f93b2c7c3ff74b2ad946c6a0d994b91bd7c648b15a2bb5338e3e673cf6",
     "cargo:atspi-common@0.13.0 registry+https://github.com/rust-lang/crates.io-index": "e9ed7a0854e1cfff4ea7a67d5942171d946ee848ceecc6d5d4f5b78e03a90570",
@@ -1380,5 +1381,5 @@
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
     "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
   },
-  "sha256": "f7d6a8be3375ce48f30cbf85e004e013814837fceab6bbfbdf66a2df16b4f0e7"
+  "sha256": "51f9403232cd451e2c3b2cee9a2cdba9b4f2786c76b93b1cde5b403f01cc0b4d"
 }

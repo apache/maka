@@ -181,7 +181,14 @@ impl Owner {
                 record.metadata.revision,
                 update,
                 &writer,
-                ConfigurationChange { ordered, guard },
+                ConfigurationChange {
+                    ordered,
+                    guard,
+                    root: self
+                        .store
+                        .owned_root()
+                        .map_err(|_| "agent_root_unavailable")?,
+                },
             )
             .await;
         let (preview, change) = match prepared {
@@ -201,26 +208,32 @@ impl Owner {
 }
 
 struct ConfigurationChange {
+    root: Arc<maka_event_log::root::RootOwner>,
     ordered: Arc<runs::Ordered>,
     guard: Option<SessionQuiescenceGuard>,
 }
 impl Statement for ConfigurationChange {
-    type Value = ();
+    type Value = Arc<maka_event_log::root::RootOwner>;
     type Output = ();
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
         vec![self.ordered.clone()]
     }
-    fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
         if let Some(guard) = self.guard {
             guard.validate(connection)?;
         }
         Ok(Prepared {
-            value: (),
+            value: self.root,
             changed: false,
             notification: Notification::NONE,
         })
     }
-    fn committed(_: ()) {}
+    fn committed(root: Self::Value) {
+        root.capability_source_changed();
+    }
     fn isolated_rejection(_: &StoreError) -> bool {
         false
     }

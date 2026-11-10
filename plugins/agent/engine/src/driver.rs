@@ -365,7 +365,9 @@ impl Engine {
         now: UnixMillis,
     ) -> Result<(), RunError> {
         if view.blockers.values().any(|blocker| {
-            blocker.reason == reason && blocker.decision.is_none() && blocker.resolved_by.is_none()
+            (blocker.reason == reason || matches!((&blocker.reason, &reason),
+                (BlockerKind::CurrentAuthorityUnavailable { stage: old, .. }, BlockerKind::CurrentAuthorityUnavailable { stage: new, .. }) if old == new))
+                && blocker.decision.is_none() && blocker.resolved_by.is_none()
         }) {
             return Ok(());
         }
@@ -466,15 +468,12 @@ impl Engine {
             // Cancellation belongs to the physical activation. Only an explicit
             // Native control transaction may place the durable Stop fence.
             let retiring = cancellation.is_cancelled() && view.terminal.is_none();
+            let complete_at_budget = !retiring && self.complete_at_budget(&view, now).await?;
             let fenced = view.stopped
                 || view.cancelled_by_risk
                 || view.spec.budget.deadline.is_some_and(|at| now >= at)
-                || view
-                    .spec
-                    .budget
-                    .tokens
-                    .is_some_and(|limit| view.tokens >= limit);
-            if (fenced || retiring) && !cancellation_sent {
+                || reconcile::budget_exhausted(&view);
+            if ((fenced && !complete_at_budget) || retiring) && !cancellation_sent {
                 live.cells_observed.clear();
                 ports.cancel_live(run);
                 cancellation_sent = true;
@@ -556,9 +555,11 @@ impl Engine {
                     &live,
                     now,
                     model_level.as_ref().map(|(_, _, level)| level),
+                    complete_at_budget,
                 )
             };
             if matches!(action, Action::Terminate(Terminal::Completed))
+                && !reconcile::budget_exhausted(&view)
                 && !model_level.as_ref().is_some_and(|(_, _, level)| {
                     matches!(
                         level.input,
@@ -686,15 +687,13 @@ impl Engine {
                         .request(run, view.attempts[&attempt].step)
                         .await?;
                     let bytes = self.store.content(run, request.request.clone()).await?;
+                    let upstream = ports.model_admission(run, attempt, &request)?;
                     // This commit is the model admission's Stop/control linearization point.
                     if self
                         .publish(
                             Some(&claim),
                             &view,
-                            vec![Fact::ModelAttemptAdmitted {
-                                attempt,
-                                upstream: serde_json::json!({"request": request.request}),
-                            }],
+                            vec![Fact::ModelAttemptAdmitted { attempt, upstream }],
                             vec![],
                             now,
                         )
@@ -996,10 +995,7 @@ impl Engine {
                     self.publish(
                         Some(&claim),
                         &view,
-                        vec![Fact::RunTerminated {
-                            terminal,
-                            diagnostic,
-                        }],
+                        termination_facts(&view, terminal, diagnostic),
                         vec![],
                         now,
                     )
@@ -1757,7 +1753,52 @@ impl Engine {
     }
 }
 
+pub(super) fn termination_facts(
+    view: &RunView,
+    terminal: Terminal,
+    diagnostic: Option<String>,
+) -> Vec<Fact> {
+    let mut facts = Vec::new();
+    if terminal == Terminal::Failed && reconcile::budget_exhausted(view) {
+        facts.extend(
+            view.waits
+                .iter()
+                .filter(|(_, wait)| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && matches!(wait.reason, WaitReason::Child { .. })
+                })
+                .map(|(wait, _)| Fact::WaitCancelled {
+                    wait: *wait,
+                    diagnostic: "Run terminated at its token budget".into(),
+                }),
+        );
+    }
+    facts.push(Fact::RunTerminated {
+        terminal,
+        diagnostic,
+    });
+    facts
+}
+
 impl Engine {
+    async fn complete_at_budget(&self, view: &RunView, now: UnixMillis) -> Result<bool, RunError> {
+        if !reconcile::budget_exhausted(view)
+            || view.stopped
+            || view.cancelled_by_risk
+            || view.spec.budget.deadline.is_some_and(|at| now >= at)
+            || !matches!(view.spec.backend, BackendSpec::Model { .. })
+        {
+            return Ok(false);
+        }
+        let Some(step) = view.current_step else {
+            return Ok(false);
+        };
+        // Settlement reads the original request even after reopening without model ports.
+        let request = self.store.request(view.run, step).await?;
+        Ok(reconcile::complete_at_budget(view, &request, now))
+    }
+
     async fn accept_tool_loading(
         &self,
         view: &RunView,

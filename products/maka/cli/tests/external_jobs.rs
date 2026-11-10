@@ -27,6 +27,7 @@ use host::{Host, Result, Sandbox};
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::host::Client as HostClient;
+use maka_plugin_core::deployment::DeploymentRef;
 use maka_plugin_core::operation::{
     OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt, RecoveryRef,
 };
@@ -401,7 +402,7 @@ impl Rig {
             return Err("Node path cannot form an executable shebang".into());
         }
         let child = Command::new(&node).args(["--input-type=module", "-e",
-            "if(Number(process.versions.node.split('.')[0]) < 26 || typeof fetch !== 'function') process.exit(1)"])
+            "if(Number(process.versions.node.split('.')[0]) < 24 || typeof fetch !== 'function') process.exit(1)"])
             .env_clear().env("HOME", &self.sandbox.home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit())
             .spawn().map_err(|e| e.to_string())?;
         self.commands.push(child);
@@ -431,7 +432,7 @@ impl Rig {
         self.clients.push(sdk.clone());
         Ok((anchor, sdk))
     }
-    async fn configure(&mut self, anchor: &mut HostClient, sdk: &Client) -> Result<()> {
+    async fn configure(&mut self, anchor: &mut HostClient, sdk: &Client) -> Result<DeploymentRef> {
         let node = self.node().await?;
         let path = self.sandbox.workspace.join("external-codex-cli.mjs");
         tokio::fs::write(
@@ -497,6 +498,8 @@ impl Rig {
         )
         .await?;
         assert_eq!(configured["status"], "committed", "{configured}");
+        let committed: DeploymentRef = serde_json::from_value(configured["value"].clone())
+            .map_err(|error| error.to_string())?;
         loop {
             anchor.refresh().await?;
             let current = anchor.catalogue().describe("agent")?.registration_epoch;
@@ -505,7 +508,7 @@ impl Rig {
             }
             tokio::task::yield_now().await;
         }
-        Ok(())
+        Ok(committed)
     }
     async fn transcript(&mut self, pid: u64) -> Result<Transcript> {
         let descriptor = self.controller.resource(pid)?;
@@ -862,19 +865,10 @@ fn confirmed_effect(facts: &[Value], task: &Value, effect: &Value, title: &str, 
         .iter()
         .filter(|event| event["kind"] == "bound")
         .collect();
-    let first = bindings.first().expect("original Host effect Bound");
-    let reference: RecoveryRef = serde_json::from_value(first["reference"].clone())
+    assert_eq!(bindings.len(), 1, "one SessionCreate Host effect binding");
+    let reference: RecoveryRef = serde_json::from_value(bindings[0]["reference"].clone())
         .expect("complete original Host reference");
     reference.validate().expect("valid original Host reference");
-    // Native dispatch and receipt observation may each record the same binding.
-    for binding in bindings {
-        let actual: RecoveryRef =
-            serde_json::from_value(binding["reference"].clone()).expect("complete Bound reference");
-        assert_eq!(
-            actual, reference,
-            "every Bound retains the same full reference"
-        );
-    }
     assert_eq!(
         events
             .iter()
@@ -883,31 +877,58 @@ fn confirmed_effect(facts: &[Value], task: &Value, effect: &Value, title: &str, 
         1,
         "one canonical return for the original effect key"
     );
-    let observed: Vec<_> = events
+    let observed: Vec<OperationReply> = events
         .iter()
         .filter(|event| event["kind"] == "observed")
+        .map(|event| {
+            serde_json::from_value(event["observation"].clone())
+                .expect("complete original operation observation")
+        })
         .collect();
-    assert!(
-        !observed.is_empty(),
-        "original Host operation receipt observation"
-    );
+    let final_observation = observed
+        .last()
+        .expect("final original Host operation observation");
+    let created = receipt_value(final_observation)
+        .expect("final Host effect Recorded Returned Success with cleanup Confirmed");
+    let Receipt::Recorded {
+        outcome: final_outcome,
+        ..
+    } = &final_observation.receipt
+    else {
+        unreachable!("receipt_value requires a recorded success");
+    };
+    let cleanup = events
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "cleanup_observed")
+        .expect("original Host effect CleanupObserved");
+    let cleanup: OperationCleanup = serde_json::from_value(cleanup["cleanup"].clone())
+        .expect("typed original Host cleanup evidence");
+    assert_eq!(cleanup, OperationCleanup::Confirmed);
     assert_eq!(effect["title"], title);
-    for event in observed {
-        let observation: OperationReply = serde_json::from_value(event["observation"].clone())
-            .expect("complete original operation observation");
+    for observation in &observed {
         assert_eq!(
             observation.reference, reference,
             "Bound and Observed full reference"
         );
-        let created = receipt_value(&observation)
-            .expect("Host effect Recorded Returned Success with cleanup Confirmed");
-        assert_eq!(created["kind"], "created");
-        let child = &created["session"];
-        assert!(child["id"].as_str().is_some_and(|id| !id.trim().is_empty()));
-        assert_eq!(child["id"], effect["session"]);
-        assert_eq!(child["title"], title);
-        assert_eq!(child["parentSessionId"], parent);
+        if let Receipt::Recorded { outcome, .. } = &observation.receipt
+            && matches!(
+                outcome,
+                OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
+            )
+        {
+            assert_eq!(
+                outcome, final_outcome,
+                "known original business outcome cannot change"
+            );
+        }
     }
+    assert_eq!(created["kind"], "created");
+    let child = &created["session"];
+    assert!(child["id"].as_str().is_some_and(|id| !id.trim().is_empty()));
+    assert_eq!(child["id"], effect["session"]);
+    assert_eq!(child["title"], title);
+    assert_eq!(child["parentSessionId"], parent);
 }
 
 async fn connect_sdk(rig: &mut Rig, anchor: &HostClient) -> Result<Client> {
@@ -930,10 +951,14 @@ async fn run_case(crash: bool) {
     let outcome = AssertUnwindSafe(async {
         tokio::time::timeout(Duration::from_secs(180), async {
             let (mut anchor, bootstrap) = phase("default Host and Journal", rig.start()).await?;
-            phase("configure actual external runtime", rig.configure(&mut anchor, &bootstrap)).await?;
+            let committed_source = phase("configure actual external runtime", rig.configure(&mut anchor, &bootstrap)).await?;
             phase("close bootstrap SDK observer", bootstrap.close()).await?;
             rig.clients.pop();
             let sdk = phase("current SDK registration", connect_sdk(&mut rig, &anchor)).await?;
+            let metadata = phase("post-config source from public SDK",query(&sdk,"management","read",json!({}))).await?;
+            let post_config_source: DeploymentRef = serde_json::from_value(metadata["source"]["reference"].clone())
+                .map_err(|error| error.to_string())?;
+            assert_eq!(post_config_source,committed_source,"current source must equal the exact configured commit");
             let enabled = query(&sdk,"agent","externalAgents",json!({"inspect":true})).await?;
             assert!(enabled["runtimes"].as_array().unwrap().iter().any(|r| r["id"] == "codex" && r["enabled"] == true));
             let title = format!("external-effect-{}", Uuid::new_v4().simple());
@@ -950,7 +975,6 @@ async fn run_case(crash: bool) {
             assert!(isolated::closed_evidence(&descriptor).await.map_err(|e| e.to_string())?.is_none(), "original task must still be physically live");
             if crash {
                 let epoch = anchor.epoch();
-                let source = anchor.source().clone();
                 phase("close completed frontend calls, not the original native job",sdk.close()).await?;
                 rig.clients.pop();
                 assert!(isolated::closed_evidence(&descriptor).await.map_err(|e| e.to_string())?.is_none());
@@ -974,7 +998,7 @@ async fn run_case(crash: bool) {
                 drop(sdk);
                 let (mut reopened, recovery) = phase("same Root new Host epoch", rig.start()).await?;
                 assert_ne!(reopened.epoch(),epoch);
-                assert_eq!(reopened.source(),&source);
+                assert_eq!(reopened.source(),&post_config_source);
                 let blocked = phase("read original immutable transcript, not BackendScope rejection",
                     terminal_state(&recovery,&session,&run,"blocked")).await?;
                 let blockers = blocked["state"]["blockers"].as_array().ok_or("typed blockers missing")?;

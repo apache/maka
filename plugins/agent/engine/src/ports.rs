@@ -120,6 +120,14 @@ pub enum DispatchOutcome {
 /// Native fences replaced activations before returning a new driver claim. These
 /// methods execute/observe the Engine's decision; they do not select another action.
 pub trait DriverPorts: Send + Sync {
+    fn model_admission(
+        &self,
+        _run: RunId,
+        _attempt: ModelAttemptId,
+        request: &RequestSpec,
+    ) -> Result<serde_json::Value, RunError> {
+        Ok(serde_json::json!({"request": request.request}))
+    }
     fn external(&self) -> Option<Arc<dyn ExternalPorts>>;
     fn cells(&self) -> Option<Arc<dyn CellPorts>>;
     fn publication(&self) -> Option<Arc<dyn ExternalPublicationPorts>>;
@@ -206,6 +214,14 @@ pub trait DriverPorts: Send + Sync {
 pub type Capabilities = Arc<dyn DriverPorts>;
 
 /// One original admitted task's physical cleanup; no business or execution ports.
+pub trait ModelCleanupPorts: Send + Sync {
+    fn observe<'a>(
+        &'a self,
+        original: &'a maka_agent_state::ModelCleanupItem,
+    ) -> BoxFuture<'a, Result<maka_plugin_core::operation::OperationCleanup, RunError>>;
+    fn now(&self) -> UnixMillis;
+}
+
 pub trait ExternalCleanupSource: Send {
     /// First level, then actual source changes. Cancellation leaves issued work
     /// in this same source's custody for `close`, never a fresh observer/job.

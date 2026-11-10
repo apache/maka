@@ -38,8 +38,8 @@ pub mod usage;
 pub use store::{
     Admission, AdmissionGuard, AnswerPage, CallerFence, CallerStatus, Change, CleanupFrontier,
     Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
-    PublicationRead, ReadyRun, RunObservation, SessionObligation, SessionQuiescence,
-    SessionQuiescenceGuard, Store,
+    ModelCleanupItem, PublicationRead, ReadyCause, ReadyRun, RunObservation, SessionObligation,
+    SessionQuiescence, SessionQuiescenceGuard, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
@@ -172,5 +172,10 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 29,
         description: "original external task cleanup frontier",
         sql: include_str!("../migrations/0029_external_cleanup.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 30,
+        description: "indexed original model cleanup and final settlement",
+        sql: include_str!("../migrations/0030_model_cleanup.sql"),
     },
 ];

@@ -20,6 +20,8 @@
 use super::{Owner, RunAccess, driver_model::DriverModel, now};
 #[path = "driver_effects.rs"]
 mod effects;
+#[cfg(test)]
+mod tests;
 use futures_util::{FutureExt, future::BoxFuture};
 use maka_agent_authority::permissions::Access;
 use maka_agent_engine::{PreparedModel, RunError, cleanup::Evidence, ports::*};
@@ -823,6 +825,24 @@ impl DriverPorts for NativeDriver {
         })
     }
 
+    fn model_admission(
+        &self,
+        run: RunId,
+        attempt: ModelAttemptId,
+        request: &RequestSpec,
+    ) -> Result<serde_json::Value, RunError> {
+        self.model()?;
+        if run != self.access.execution().run_id {
+            return Err(RunError::InvalidInput("foreign model admission".into()));
+        }
+        super::cleanup_driver::model_admission(
+            &self.owner,
+            self.access.execution(),
+            attempt,
+            request,
+        )
+    }
+
     fn start_model(
         &self,
         run: RunId,
@@ -833,6 +853,12 @@ impl DriverPorts for NativeDriver {
     ) -> BoxFuture<'_, Result<ModelConnection, RunError>> {
         Box::pin(async move {
             let view = self.state.frontier(run).await?;
+            super::cleanup_driver::validate_model_reader_start(
+                &self.owner,
+                &view,
+                attempt,
+                &request,
+            )?;
             self.catalog_for_request(&view, &request).await?;
             let writer = self.owner.store.data_writer_for_work(
                 self.access.custody().as_ref(),

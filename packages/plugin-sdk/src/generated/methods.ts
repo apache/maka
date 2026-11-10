@@ -228,6 +228,11 @@ export type AgentCompactOutput_BlockerKind =
       diagnostic: string;
     }
   | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: AgentCompactOutput_ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
       kind: 'cleanup_unconfirmed';
       reference: AgentCompactOutput_RecoveryRef;
     }

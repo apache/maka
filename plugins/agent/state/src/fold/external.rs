@@ -275,13 +275,8 @@ impl RunView {
 
     pub(super) fn external_terminal_allowed(&self, terminal: &Terminal) -> bool {
         if self.cancelled_by_risk {
-            return *terminal == Terminal::Cancelled
-                && self.blockers.values().any(|blocker| {
-                    blocker.decision.as_ref().is_some_and(|scoped| {
-                        matches!(scoped.scope, RiskActionScope::RunCancellation)
-                            && matches!(scoped.decision, RiskDecision::CancelBlockedRun { .. })
-                    })
-                });
+            // The adjudicated blocker may already have left the bounded frontier.
+            return *terminal == Terminal::Cancelled;
         }
         let Some(task) = &self.external else {
             return true;

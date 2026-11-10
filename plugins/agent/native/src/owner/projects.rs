@@ -379,10 +379,15 @@ impl Owner {
         T: std::marker::Send + 'static,
         F: FnOnce(T) -> ProjectRecord + std::marker::Send + 'static,
     {
+        let root = self
+            .store
+            .owned_root()
+            .map_err(|_| "project_root_unavailable")?;
         let change = writer
             .prepare_result(|_| {
                 Ok(ProjectCompletion {
                     statement,
+                    root,
                     availability,
                     caller,
                     record,
@@ -738,7 +743,16 @@ impl ProjectAvailability {
     }
 }
 
+#[derive(Serialize)]
+#[serde(transparent)]
+struct ProjectCompletionValue {
+    result: Value,
+    #[serde(skip)]
+    notify: Option<Arc<maka_event_log::root::RootOwner>>,
+}
+
 struct ProjectCompletion<S, F> {
+    root: Arc<maka_event_log::root::RootOwner>,
     statement: S,
     availability: ProjectAvailability,
     caller: Option<maka_agent_state::CallerFence>,
@@ -750,7 +764,7 @@ where
     T: std::marker::Send + 'static,
     F: FnOnce(T) -> ProjectRecord + std::marker::Send + 'static,
 {
-    type Value = Value;
+    type Value = ProjectCompletionValue;
     type Output = Value;
     const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
@@ -762,14 +776,20 @@ where
             ..self
         })
     }
-    fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<Value>, StoreError> {
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
         if let Some(caller) = &self.caller {
             match caller.status(connection)? {
                 maka_agent_state::CallerStatus::Current => {}
                 maka_agent_state::CallerStatus::Unavailable
                 | maka_agent_state::CallerStatus::AuthorizationChanged => {
                     return Ok(Prepared {
-                        value: serde_json::to_value(ProjectResult::Unavailable)?,
+                        value: ProjectCompletionValue {
+                            result: serde_json::to_value(ProjectResult::Unavailable)?,
+                            notify: None,
+                        },
                         changed: false,
                         notification: maka_event_log::writeback::Notification::NONE,
                     });
@@ -785,13 +805,19 @@ where
             Err(_) => ProjectResult::Unavailable,
         };
         Ok(Prepared {
-            value: serde_json::to_value(result)?,
+            value: ProjectCompletionValue {
+                result: serde_json::to_value(result)?,
+                notify: prepared.changed.then_some(self.root),
+            },
             changed: prepared.changed,
             notification: prepared.notification,
         })
     }
-    fn committed(value: Value) -> Value {
-        value
+    fn committed(value: Self::Value) -> Value {
+        if let Some(root) = value.notify {
+            root.capability_source_changed();
+        }
+        value.result
     }
     fn isolated_rejection(error: &StoreError) -> bool {
         S::isolated_rejection(error)

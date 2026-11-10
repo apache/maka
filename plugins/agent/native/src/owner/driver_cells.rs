@@ -1341,9 +1341,18 @@ impl OwnedCellWait {
         cells_cleanup_confirmed: bool,
     ) -> Result<Option<ToolSettlement>, RunError> {
         if !Arc::ptr_eq(access, &self.port.run.access)
+            || self.port.parent.execution != *access.execution()
+            || self
+                .port
+                .parent
+                .custody
+                .as_ref()
+                .is_none_or(|custody| !Arc::ptr_eq(custody, access.custody()))
             || self.port.link.run != access.execution().run_id
             || self.port.link.attempt != key.attempt
             || self.port.parent.call.tool_call_id != key.call
+            || !matches!(&self.port.parent.call.origin, ToolOrigin::Provider { link } if *link == self.port.link)
+            || self.port.parent.operation_id != format!("{}:{}", key.attempt, key.call)
         {
             return Err(RunError::InvalidInput(
                 "Cell wait source differs from its original control".into(),
@@ -1352,15 +1361,36 @@ impl OwnedCellWait {
         if !cells_cleanup_confirmed {
             return Ok(None);
         }
-        let view = access
-            .fresh()
-            .await
-            .map_err(|error| RunError::Tool(persistence(error)))?;
+        self.port.run.check_work().map_err(RunError::Tool)?;
+        let view = self
+            .port
+            .run
+            .state
+            .frontier(access.execution().run_id)
+            .await?;
+        if view.run != access.execution().run_id
+            || view.spec != *access.spec()
+            || view.spec.session_id != access.execution().session_id
+            || view.spec.turn_id != access.execution().turn_id
+            || view
+                .attempts
+                .get(&key.attempt)
+                .is_none_or(|attempt| attempt.step != self.port.link.step)
+        {
+            return Err(RunError::InvalidInput(
+                "Cell wait observation differs from its original Run".into(),
+            ));
+        }
         let tool = view
             .tools
             .get(&tool_key(key))
             .ok_or_else(|| RunError::InvalidInput("Original Cell wait is unavailable".into()))?;
-        if !tool.admitted || tool.original.is_some() || tool.call.provider_executed {
+        if tool.key != *key
+            || tool.call.id != key.call
+            || !tool.admitted
+            || tool.original.is_some()
+            || tool.call.provider_executed
+        {
             return Err(RunError::InvalidInput(
                 "Cell wait has a different original admission".into(),
             ));
@@ -1370,7 +1400,6 @@ impl OwnedCellWait {
             // Wait cannot create a VM; no claim is made about any other Cell.
             return Ok(Some(ToolSettlement::Failed));
         };
-        self.port.run.check_work().map_err(RunError::Tool)?;
         let canonical = self
             .port
             .run
@@ -1390,6 +1419,89 @@ impl OwnedCellWait {
         }))
     }
 }
+#[cfg(test)]
+impl RunCells {
+    pub(super) async fn prepare_wait_read_failure(
+        self: &Arc<Self>,
+        parent: ToolCallContext,
+        input: &Value,
+        catalog: ToolCatalog,
+        cancellation: CancellationToken,
+    ) -> Result<
+        (
+            maka_agent_facts::tools::PreparedEffect,
+            super::driver::DispatchSource,
+        ),
+        ToolError,
+    > {
+        let port = NativeCellPort::new(self.clone(), parent).await?;
+        let observer = Arc::new(FailFirstCellRead {
+            port: port.clone(),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let effect = self
+            .coordinator
+            .prepare(
+                "wait",
+                input,
+                catalog,
+                observer,
+                cancellation,
+                CancellationToken::new(),
+            )
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        Ok((
+            effect,
+            super::driver::DispatchSource::CellWait(OwnedCellWait { port }),
+        ))
+    }
+}
+
+#[cfg(test)]
+struct FailFirstCellRead {
+    port: Arc<NativeCellPort>,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl CellPersistence for FailFirstCellRead {
+    fn owner(&self) -> CellOwner {
+        self.port.owner()
+    }
+    fn now(&self) -> UnixMillis {
+        self.port.now()
+    }
+    fn append(&self, changes: Vec<CellChange>, contents: Vec<CellContent>) -> CellFuture<'_, ()> {
+        self.port.append(changes, contents)
+    }
+    fn read(&self, cell: CellId) -> CellFuture<'_, Option<CellView>> {
+        Box::pin(async move {
+            let original = self.port.read(cell).await?;
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(ToolError::Persistence(
+                    "native-wait-original-read-once".into(),
+                ));
+            }
+            Ok(original)
+        })
+    }
+    fn content(&self, cell: CellId, reference: ContentRef) -> CellFuture<'_, Vec<u8>> {
+        self.port.content(cell, reference)
+    }
+    fn invoke(
+        &self,
+        cell: CellId,
+        operation: Uuid,
+        name: String,
+        input: Value,
+        catalog: ToolCatalog,
+        cancellation: CancellationToken,
+    ) -> ToolFuture<ToolOutput> {
+        self.port
+            .invoke(cell, operation, name, input, catalog, cancellation)
+    }
+}
+
 impl NativeCellPort {
     async fn new(run: Arc<RunCells>, parent: ToolCallContext) -> Result<Arc<Self>, ToolError> {
         run.access.check_context(&parent).await?;

@@ -427,7 +427,8 @@ fn blocker_attempt(reason: &BlockerKind) -> Option<ModelAttemptId> {
         | BlockerKind::OriginalAdmissionUnknown { tool }
         | BlockerKind::ToolCleanupUnconfirmed { tool, .. }
         | BlockerKind::ResourcesUnavailable { tool } => Some(tool.attempt),
-        BlockerKind::ProviderEffectUnknown { attempt, .. } => Some(*attempt),
+        BlockerKind::ProviderEffectUnknown { attempt, .. }
+        | BlockerKind::ModelCleanupUnconfirmed { attempt, .. } => Some(*attempt),
         _ => None,
     }
 }

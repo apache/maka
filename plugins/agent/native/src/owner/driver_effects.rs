@@ -567,26 +567,18 @@ impl OriginalEffects {
                 ) => {
                     // The control callback failed; its original Cell still owns
                     // uncertainty. Keep this batch private until source closure.
+                    let diagnostic = error.to_string();
                     material.batch = Some(
                         prepare_local_result(
                             self.access.execution(),
                             &material.key,
-                            ToolSuccess::from(ToolOutput::Text(error.to_string()))
+                            ToolSuccess::from(ToolOutput::Text(diagnostic.clone()))
                                 .reporting_error(true),
                             maka_agent_facts::tool_call::ToolSettlement::Unknown,
                         )
                         .await?,
                     );
-                    let error = match error {
-                        ToolError::OperationUnknown { message, .. } => {
-                            ToolError::OutcomeUnknown(message)
-                        }
-                        ToolError::OperationCleanupUnconfirmed { message, .. } => {
-                            ToolError::CleanupUnconfirmed(message)
-                        }
-                        error => error,
-                    };
-                    return Err(RunError::Tool(error));
+                    return Err(RunError::Tool(ToolError::OutcomeUnknown(diagnostic)));
                 }
                 result => result,
             }

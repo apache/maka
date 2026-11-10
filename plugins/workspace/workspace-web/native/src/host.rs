@@ -157,13 +157,18 @@ impl Handler for Service {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
                 return Err("web_closed".into());
             }
-            if !matches!(name.as_str(), "snapshot" | "capture") && context.operation().is_none() {
+            match name.as_str() {
+                "capture" => return encode(owner.capture().await?),
+                "snapshot" => {
+                    return encode(owner.repository.snapshot().await.map_err(message)?);
+                }
+                _ => {}
+            }
+            if context.operation().is_none() {
                 return Err("web_mutation_required".into());
             }
             let native = network::native_call(&owner, &context, &failure).await?;
             match name.as_str() {
-                "capture" => encode(owner.capture().await?),
-                "snapshot" => encode(owner.repository.snapshot().await.map_err(message)?),
                 "save" => {
                     let input: Set = serde_json::from_value(input).map_err(message)?;
                     match owner.repository.save(input.revision, input.settings).await {

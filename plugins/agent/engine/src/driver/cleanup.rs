@@ -22,6 +22,181 @@ use maka_agent_state::DriverPurpose;
 use maka_plugin_core::operation::OperationCleanup;
 
 impl Engine {
+    pub async fn drive_model_cleanup(
+        &self,
+        claim: DriverClaim,
+        ports: Arc<dyn ModelCleanupPorts>,
+        cancellation: CancellationToken,
+        cold_probe: bool,
+    ) -> Result<DriverExit, RunError> {
+        if claim.purpose() != DriverPurpose::LateModelCleanup {
+            return Err(RunError::InvalidInput("not a model cleanup claim".into()));
+        }
+        let run = claim.run();
+        let retirement = claim.retirement();
+        let mut after = None;
+        let mut unavailable = None;
+        loop {
+            let page = self
+                .store
+                .model_cleanups(&claim, after, 64, cold_probe)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            for original in page {
+                after = Some(original.attempt);
+                if cancellation.is_cancelled() || retirement.is_cancelled() {
+                    return Ok(DriverExit::Retired { run });
+                }
+                match ports.observe(&original).await {
+                    Ok(OperationCleanup::Confirmed) => {
+                        let head = Head::from(&self.store.frontier(run).await?);
+                        let publication = ModelCleanupPublication::claimed(
+                            self.store.clone(),
+                            claim.clone(),
+                            head,
+                            original.attempt,
+                            ports.now(),
+                        )?;
+                        publication.reconcile_claimed().await?;
+                    }
+                    Ok(_) | Err(_) => {
+                        unavailable.get_or_insert(original.attempt);
+                    }
+                }
+            }
+        }
+        if let Some(attempt) = unavailable {
+            return Err(RunError::Blocked(BlockerKind::ModelCleanupUnconfirmed {
+                attempt,
+                diagnostic: "original model cleanup source is unavailable".into(),
+            }));
+        }
+        Ok(DriverExit::Waiting { run, due_at: None })
+    }
+
+    pub async fn block_unavailable_model_cleanups(
+        &self,
+        claim: &DriverClaim,
+        at: UnixMillis,
+    ) -> Result<(), RunError> {
+        let view = self.store.original_driver_frontier(claim).await?;
+        let facts: Vec<_> = view.attempts.iter().filter(|(id, attempt)| {
+            attempt.admission.is_some() && attempt.cleanup != OperationCleanup::Confirmed
+                && !view.blockers.values().any(|blocker| blocker.resolved_by.is_none()
+                    && matches!(&blocker.reason, BlockerKind::ModelCleanupUnconfirmed { attempt, .. } if attempt == *id))
+        }).map(|(attempt, _)| Fact::Blocked {
+            blocker: BlockerId::new(), reason: BlockerKind::ModelCleanupUnconfirmed {
+                attempt: *attempt, diagnostic: "original model cleanup source is unavailable".into(),
+            },
+        }).collect();
+        if !facts.is_empty() {
+            match self.publish(Some(claim), &view, facts, vec![], at).await {
+                Ok(_) => {}
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    let result = publication.reconcile(&self.store).await;
+                    super::witness::settle_result(&self.store, &publication, result).await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn settle_closed_model(
+        &self,
+        claim: DriverClaim,
+        at: UnixMillis,
+    ) -> Result<DriverExit, RunError> {
+        if claim.purpose() != DriverPurpose::Business {
+            return Err(RunError::InvalidInput(
+                "canonical settlement requires its business claim".into(),
+            ));
+        }
+        loop {
+            if claim.retirement().is_cancelled() {
+                return Ok(DriverExit::Retired { run: claim.run() });
+            }
+            let view = self.store.original_driver_frontier(&claim).await?;
+            if view.terminal.is_some() {
+                return Ok(exit(&view));
+            }
+            if view.attempts.values().any(|attempt| {
+                attempt.admission.is_some() && attempt.cleanup != OperationCleanup::Confirmed
+            }) {
+                return Ok(exit(&view));
+            }
+            let action = match view.current_step {
+                Some(step) => {
+                    let request = self.store.request(view.run, step).await?;
+                    reconcile::model_settlement_action(&view, &request, at)
+                }
+                None => None,
+            };
+            let Some(action) = action else {
+                return Ok(exit(&view));
+            };
+            if !reconcile::budget_exhausted(&view)
+                && !self
+                    .store
+                    .queue()
+                    .steering(view.spec.session_id.clone(), view.run)
+                    .await?
+                    .entries
+                    .is_empty()
+            {
+                return Ok(exit(&view));
+            }
+            let terminal = match &action {
+                Action::Terminate(terminal) => Some(terminal.clone()),
+                _ => None,
+            };
+            let (facts, contents) = match action {
+                Action::Terminate(terminal) => (termination_facts(&view, terminal, None), vec![]),
+                Action::Satisfy(wait) => {
+                    let evidence = ContentBlob::json(
+                        &serde_json::json!({"run":view.run,"revision":view.revision,"at":at}),
+                    )?;
+                    (
+                        vec![Fact::WaitSatisfied {
+                            wait,
+                            evidence: evidence.reference().clone(),
+                        }],
+                        vec![evidence],
+                    )
+                }
+                Action::CancelWait(wait) => (
+                    vec![Fact::WaitCancelled {
+                        wait,
+                        diagnostic: "Original final reply settled".into(),
+                    }],
+                    vec![],
+                ),
+                _ => return Ok(exit(&view)),
+            };
+            match self.publish(Some(&claim), &view, facts, contents, at).await {
+                Ok(_) => {}
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    let result = publication.reconcile(&self.store).await;
+                    if matches!(
+                        super::witness::settle_result(&self.store, &publication, result).await?,
+                        PublicationResolution::NotCommitted
+                    ) {
+                        return Ok(DriverExit::Retired { run: view.run });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            if let Some(terminal) = terminal {
+                return Ok(DriverExit::Terminal {
+                    run: view.run,
+                    terminal,
+                });
+            }
+        }
+    }
+
     pub async fn drive_cleanup(
         &self,
         claim: DriverClaim,

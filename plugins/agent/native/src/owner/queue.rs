@@ -21,8 +21,9 @@ mod controls;
 use super::*;
 use futures_util::FutureExt;
 use maka_agent_facts::durable::*;
+use maka_agent_facts::tools::ToolError;
 use maka_agent_state::{
-    Admission,
+    Admission, ReadyCause,
     queue::{Consume, Placement as QueuePlacement},
 };
 use maka_plugin_core::operation::OperationCleanup;
@@ -50,22 +51,55 @@ impl Owner {
                 return;
             }
         };
+        let root = match self.store.owned_root() {
+            Ok(root) => root,
+            Err(_) => return,
+        };
+        let mut sources = root.capability_changes();
+        let mut cause = ReadyCause::CapabilitySourceChanged;
+        let mut cold_probe = true;
+        let mut authority_due: Option<UnixMillis> = None;
         loop {
             changes.borrow_and_update();
             if self.stop.is_cancelled() {
                 return;
             }
             let at = UnixMillis(now() as i64);
-            if let Err(error) = self.schedule_ready_at(at).await {
-                tracing::error!(%error, "Agent ready read failed");
+            promote_authority_due(at, &mut authority_due, &mut cause);
+            match self.reconcile_model_readers(cold_probe).await {
+                Ok(()) => cold_probe = false,
+                Err(_) => tracing::error!(
+                    stage = "model_cleanup_reconciliation_failed",
+                    "Agent model cleanup reconciliation failed"
+                ),
             }
-            let due = match self.durable.next_due_after(self.run_owner(), at).await {
+            if self.schedule_ready_at(at, cause).await.is_err() {
+                tracing::error!(
+                    stage = "ready_reconciliation_failed",
+                    "Agent ready reconciliation failed"
+                );
+            }
+            if cause == ReadyCause::CapabilitySourceChanged {
+                match self
+                    .durable
+                    .next_due_after_with_cause(self.run_owner(), at, cause)
+                    .await
+                {
+                    Ok(due) => authority_due = due,
+                    Err(_) => tracing::error!(
+                        stage = "authority_due_read_failed",
+                        "Agent source-driven due read failed"
+                    ),
+                }
+            }
+            let ordinary_due = match self.durable.next_due_after(self.run_owner(), at).await {
                 Ok(due) => due,
-                Err(error) => {
-                    tracing::error!(%error, "Agent due read failed");
+                Err(_) => {
+                    tracing::error!(stage = "due_read_failed", "Agent due read failed");
                     None
                 }
             };
+            let due = ordinary_due.into_iter().chain(authority_due).min();
             let deadline = async {
                 match due {
                     Some(due) => {
@@ -77,25 +111,41 @@ impl Owner {
                     None => std::future::pending::<()>().await,
                 }
             };
+            cause = ReadyCause::Ordinary;
             tokio::select! {
                 biased;
                 _ = self.stop.cancelled() => return,
+                changed = sources.changed() => {
+                    if changed.is_err() { return; }
+                    cause = ReadyCause::CapabilitySourceChanged;
+                },
                 changed = changes.changed() => if changed.is_err() { return; },
                 _ = self.wake_notify.notified() => {},
-                _ = deadline => {},
+                _ = deadline => {
+                    if authority_due.is_some_and(|due| due.0 <= now() as i64) {
+                        cause = ReadyCause::CapabilitySourceChanged;
+                        authority_due = None;
+                    }
+                },
             }
         }
     }
 
     pub(super) async fn schedule_ready(self: &Arc<Self>) -> Result<(), String> {
-        self.schedule_ready_at(UnixMillis(now() as i64)).await
+        self.reconcile_model_readers(false).await?;
+        self.schedule_ready_at(UnixMillis(now() as i64), ReadyCause::Ordinary)
+            .await
     }
-    async fn schedule_ready_at(self: &Arc<Self>, at: UnixMillis) -> Result<(), String> {
+    pub(super) async fn schedule_ready_at(
+        self: &Arc<Self>,
+        at: UnixMillis,
+        cause: ReadyCause,
+    ) -> Result<(), String> {
         let mut after = None;
         loop {
             let page = self
                 .durable
-                .ready_runs(self.run_owner(), at, after, 64)
+                .ready_runs_with_cause(self.run_owner(), at, after, 64, cause)
                 .await
                 .map_err(|e| e.to_string())?;
             if page.is_empty() {
@@ -382,9 +432,9 @@ impl Owner {
                 false
             };
             if admitted {
-                let cleanup = owner.clone().drive_local(claim, target, token).await;
+                let (cleanup, retry_ready) = owner.clone().drive_local(claim, target, token).await;
                 drop(activity);
-                owner.physical_availability_changed();
+                owner.physical_availability_changed_after(retry_ready);
                 return cleanup;
             }
             let mut state = owner.runs.state().await;
@@ -426,12 +476,25 @@ impl Owner {
         claim: maka_agent_state::DriverClaim,
         session: String,
         cancellation: CancellationToken,
-    ) -> OperationCleanup {
+    ) -> (OperationCleanup, bool) {
         let run = claim.run();
-        let view = match self.durable.frontier(run).await {
-            Ok(view) => view,
-            Err(error) => {
-                tracing::error!(%run, %error, "Agent Run read failed");
+        let initial = async {
+            let root = self
+                .store
+                .owned_root()
+                .map_err(|error| ("root_source_read_failed", RunError::from(error)))?;
+            let view = self
+                .durable
+                .frontier(run)
+                .await
+                .map_err(|error| ("run_frontier_read_failed", RunError::from(error)))?;
+            Ok::<_, (&'static str, RunError)>((root, view))
+        }
+        .await;
+        let (root, view) = match initial {
+            Ok(current) => current,
+            Err((stage, error)) => {
+                tracing::error!(%run, %error, stage, "Agent Run capability probe could not start");
                 claim.deactivate();
                 let mut runs = self.runs.state().await;
                 if runs
@@ -442,30 +505,16 @@ impl Owner {
                     runs.preparing.remove(&session);
                 }
                 drop(runs);
-                return OperationCleanup::Confirmed;
+                return (OperationCleanup::Confirmed, false);
             }
         };
+        let mut sources = root.capability_changes();
+        sources.borrow_and_update();
         let turn = view.spec.turn_id.clone();
         let (result, cleanup) = self
             .run_with_capabilities(view, claim.clone(), cancellation)
             .await;
         claim.deactivate();
-        let mut runs = self.runs.state().await;
-        if runs
-            .preparing
-            .get(&session)
-            .is_some_and(|preparing| preparing.run == run)
-        {
-            runs.preparing.remove(&session);
-        }
-        if runs
-            .controls
-            .get(&session)
-            .is_some_and(|control| control.execution.run_id == run)
-        {
-            runs.controls.remove(&session);
-        }
-        drop(runs);
         if matches!(&cleanup, OperationCleanup::Unconfirmed) {
             tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent original Root work remains unconfirmed");
         } else if let Err(error) = &result {
@@ -481,8 +530,117 @@ impl Owner {
                 RunError::Internal(_) => "worker_failed",
                 _ => "execution_failed",
             };
-            tracing::error!(stage = "queue_advance_failed", cause, consequence = "operation_failed", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent driver operation failed after physical settlement");
+            let error_variant = match error {
+                RunError::Blocked(_) => "blocked",
+                RunError::PublicationUncertain { .. } => "publication_uncertain",
+                RunError::Busy => "busy",
+                RunError::ContinuationChanged => "continuation_changed",
+                RunError::ReconciliationRequired(_) => "reconciliation_required",
+                RunError::InvalidInput(_) => "invalid_input",
+                RunError::ModelUnavailable => "model_unavailable",
+                RunError::IsolationUnavailable(_) => "isolation_unavailable",
+                RunError::CompactionFailed(_) => "compaction_failed",
+                RunError::Cancelled => "cancelled",
+                RunError::ModelIncomplete => "model_incomplete",
+                RunError::Commit(_) => "commit",
+                RunError::Store(_) => "store",
+                RunError::Model(_) => "model",
+                RunError::Tool(_) => "tool",
+                RunError::CleanupUnconfirmed => "cleanup_unconfirmed",
+                RunError::Internal(_) => "internal",
+                RunError::Json(_) => "json",
+                RunError::Preparation(_) => "preparation",
+                RunError::PreparationCleanup(_) => "preparation_cleanup",
+            };
+            let tool_error_variant = match error {
+                RunError::Tool(error) => match error {
+                    ToolError::Failed(_) => "failed",
+                    ToolError::Native(_) => "native",
+                    ToolError::Io { .. } => "io",
+                    ToolError::Persistence(_) => "persistence",
+                    ToolError::OutcomeUnknown(_) => "outcome_unknown",
+                    ToolError::OperationUnknown { .. } => "operation_unknown",
+                    ToolError::OperationCleanupUnconfirmed { .. } => {
+                        "operation_cleanup_unconfirmed"
+                    }
+                    ToolError::CleanupUnconfirmed(_) => "cleanup_unconfirmed",
+                },
+                _ => "none",
+            };
+            tracing::error!(stage = "queue_advance_failed", cause, error_variant, tool_error_variant, consequence = "operation_failed", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent driver operation failed after physical settlement");
         }
-        cleanup
+        let authority_unavailable = match &result {
+            Ok(maka_agent_engine::DriverExit::Blocked { blockers, .. }) => {
+                !blockers.is_empty()
+                    && blockers.iter().all(|(_, reason)| {
+                        matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
+                    })
+            }
+            Err(RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable { .. })) => true,
+            _ => false,
+        };
+        let retry = self
+            .finish_local_probe(run, &session, authority_unavailable, &sources)
+            .await;
+        drop(root);
+        (cleanup, retry)
+    }
+    pub(super) async fn finish_local_probe(
+        &self,
+        run: RunId,
+        session: &str,
+        authority_unavailable: bool,
+        sources: &tokio::sync::watch::Receiver<()>,
+    ) -> bool {
+        let mut runs = self.runs.state().await;
+        if runs
+            .preparing
+            .get(session)
+            .is_some_and(|preparing| preparing.run == run)
+        {
+            runs.preparing.remove(session);
+        }
+        if runs
+            .controls
+            .get(session)
+            .is_some_and(|control| control.execution.run_id == run)
+        {
+            runs.controls.remove(session);
+        }
+        drop(runs);
+        // The actual Root is retained by the probing caller until this check.
+        let changed = sources
+            .has_changed()
+            .expect("live probing Root retains its source sender");
+        !authority_unavailable || changed
+    }
+}
+
+fn promote_authority_due(at: UnixMillis, due: &mut Option<UnixMillis>, cause: &mut ReadyCause) {
+    if due.is_some_and(|due| due <= at) {
+        *due = None;
+        *cause = ReadyCause::CapabilitySourceChanged;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn canonical_authority_due_is_promoted_even_when_root_changes_always_win_select() {
+        let mut due = Some(UnixMillis(10));
+        for tick in 9..=11 {
+            let mut cause = ReadyCause::Ordinary;
+            promote_authority_due(UnixMillis(tick), &mut due, &mut cause);
+            assert_eq!(
+                cause,
+                if tick == 10 {
+                    ReadyCause::CapabilitySourceChanged
+                } else {
+                    ReadyCause::Ordinary
+                }
+            );
+        }
+        assert!(due.is_none());
     }
 }

@@ -210,6 +210,7 @@ fn intersect_tools(
 }
 
 pub(crate) struct Owner {
+    model_reader_process: maka_process::lifetime::ProcessIdentity,
     pub store: Arc<RootStore>,
     helper: std::path::PathBuf,
     pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
@@ -323,6 +324,11 @@ impl Owner {
         helper: std::path::PathBuf,
         pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
     ) -> Result<Arc<Self>, initialization::InitializationError> {
+        let model_reader_process =
+            tokio::task::spawn_blocking(maka_process::lifetime::ProcessIdentity::current)
+                .await
+                .map_err(|_| "agent_model_process_capture_worker_failed")?
+                .map_err(|_| "agent_model_process_capture_failed")?;
         let mut additional = Vec::new();
         let mut internal_bindings = BTreeMap::new();
         if !jsonschema_valid(&input) {
@@ -595,6 +601,7 @@ impl Owner {
             scheduler,
             recall,
             store: persistence.store().clone(),
+            model_reader_process,
             durable,
             services: context.services().clone(),
             wake_notify: tokio::sync::Notify::new(),
@@ -644,10 +651,18 @@ impl Owner {
         self.physical_changes.subscribe()
     }
     fn physical_availability_changed(&self) {
+        self.physical_availability_changed_after(true);
+    }
+    fn physical_availability_changed_after(&self, retry_ready: bool) {
         self.physical_changes.send_modify(|_| {});
         self.goals.execution_changed();
         self.scheduler.execution_changed();
-        self.wake_notify.notify_one();
+        if retry_ready {
+            self.wake_notify.notify_one();
+            if let Ok(root) = self.store.owned_root() {
+                root.capability_source_changed();
+            }
+        }
     }
     pub fn operation_id(&self, operation: &maka_plugin_core::operation::RecoveryRef) -> String {
         // Use the actual complete original reference. UUIDs alone do not name

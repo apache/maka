@@ -87,12 +87,9 @@ impl Owner {
                 {
                     let _ordered = owner.runs.session(&input.session_id).await;
                     let busy = owner.runs.state().await.busy(&input.session_id);
-                    if busy || !owner.durable
-                        .session_quiescence(owner.run_owner(), input.session_id.clone())
-                        .await.map_err(|error| error.to_string())?.is_quiescent()
-                    {
-                        return Err("agent_session_busy".into());
-                    }
+                    if busy { return Err("agent_session_busy".into()); }
+                    let _physical_fence = owner.store.try_session_work_fence(&input.session_id).await
+                        .map_err(|_| "agent_session_mcp_fence_unavailable")?.ok_or("agent_session_busy")?;
                     if owner.stop.is_cancelled() || context.scope().cancellation.is_cancelled() {
                         return Err("agent_session_mcp_cancelled".into());
                     }
@@ -112,7 +109,7 @@ impl Owner {
                         crate::mcp::require_compatible_floor(&floor).map_err(str::to_owned)?;
                     }
                     owner.mcp_projects.publish_client(&input.session_id, generation, opened.clone())?;
-                    owner.wake_notify.notify_one();
+                    owner.store.owned_root().map_err(|_| "agent_root_unavailable")?.capability_source_changed();
                 }
                 let ready = serde_json::to_value(SessionMcpAttached {
                     tools: opened.registrations.iter().map(|tool| tool.definition.name.clone()).collect(),
@@ -171,16 +168,13 @@ impl Owner {
                 return Err("agent_session_busy".into());
             }
         }
-        if !self
-            .durable
-            .session_quiescence(self.run_owner(), session.into())
-            .await
-            .map_err(|error| error.to_string())?
-            .is_quiescent()
-        {
-            return Err("agent_session_busy".into());
-        }
         let current = self.mutable_session(session).await?;
+        let _physical_fence = self
+            .store
+            .try_session_work_fence(session)
+            .await
+            .map_err(|_| "agent_session_mcp_fence_unavailable")?
+            .ok_or("agent_session_busy")?;
         if current.archived {
             return Err("agent_session_unavailable".into());
         }
@@ -204,7 +198,10 @@ impl Owner {
             return Ok(None);
         }
         self.mcp_projects.withdraw_client(session, generation);
-        self.wake_notify.notify_one();
+        self.store
+            .owned_root()
+            .map_err(|_| "agent_root_unavailable")?
+            .capability_source_changed();
         let runs = self.runs.state().await;
         if let Some(control) = runs
             .controls

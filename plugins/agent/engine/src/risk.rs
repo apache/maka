@@ -103,6 +103,7 @@ fn scope(
         | BlockerKind::ExternalTaskUnobservable { .. }
         | BlockerKind::ExternalEffectUnknown { .. }
         | BlockerKind::ToolCleanupUnconfirmed { .. }
+        | BlockerKind::ModelCleanupUnconfirmed { .. }
         | BlockerKind::CurrentAuthorityUnavailable { .. } => {
             Err(RiskActionError::UnsupportedAction)
         }

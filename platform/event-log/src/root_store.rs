@@ -169,7 +169,7 @@ impl RootStore {
         let mut store = Self {
             log,
             closed: Arc::new(AtomicBool::new(false)),
-            gates: gates::Gates::new(),
+            gates: gates::Gates::new(&owner),
             lifecycle: None,
             project_mutations: Arc::new(tokio::sync::Mutex::new(())),
         };

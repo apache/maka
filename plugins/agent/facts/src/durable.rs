@@ -327,6 +327,10 @@ pub enum BlockerKind {
         tool: ToolKey,
         diagnostic: String,
     },
+    ModelCleanupUnconfirmed {
+        attempt: ModelAttemptId,
+        diagnostic: String,
+    },
     CleanupUnconfirmed {
         reference: RecoveryRef,
     },

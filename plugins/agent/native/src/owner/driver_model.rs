@@ -2558,6 +2558,15 @@ impl DriverModel {
                     }
                 }
                 terminal_publication?;
+                #[cfg(test)]
+                if let Some(path) = std::env::var_os("MAKA_TEST_MODEL_CLEANUP_BARRIER") {
+                    tokio::fs::write(path, attempt.to_string())
+                        .await
+                        .map_err(|_| {
+                            RunError::Internal("model cleanup test barrier failed".into())
+                        })?;
+                    std::future::pending::<()>().await;
+                }
                 match received {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(error)) => Err(error),

@@ -40,6 +40,7 @@ pub(super) enum Key {
 }
 
 pub(super) struct Gates {
+    owner: Weak<crate::root::RootOwner>,
     pub(super) workspaces: super::workspace_fence::Registry,
     entries: Mutex<HashMap<Key, Weak<Registration>>>,
     stop: CancellationToken,
@@ -101,8 +102,9 @@ pub(super) struct ExclusivePins {
 }
 
 impl Gates {
-    pub(super) fn new() -> Arc<Self> {
+    pub(super) fn new(owner: &Arc<crate::root::RootOwner>) -> Arc<Self> {
         Arc::new(Self {
+            owner: Arc::downgrade(owner),
             workspaces: super::workspace_fence::Registry::default(),
             entries: Mutex::new(HashMap::new()),
             stop: CancellationToken::new(),
@@ -330,6 +332,9 @@ impl Drop for RecoveryPin {
         self.gates.changed.notify_waiters();
         if let Some(released) = self.released.take() {
             let _ = released.send(());
+        }
+        if let Some(owner) = self.gates.owner.upgrade() {
+            owner.capability_source_changed();
         }
     }
 }

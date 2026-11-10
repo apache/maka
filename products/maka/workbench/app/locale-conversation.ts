@@ -1197,6 +1197,11 @@ export const conversationMessages = {
     '尚未确认工具清理完成',
     '尚未確認工具清理完成',
   ],
+  'Model cleanup unconfirmed': [
+    'Model cleanup unconfirmed',
+    '尚未确认模型清理完成',
+    '尚未確認模型清理完成',
+  ],
   'Resource cleanup unconfirmed': [
     'Resource cleanup unconfirmed',
     '尚未确认资源清理完成',

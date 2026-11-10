@@ -45,6 +45,31 @@ pub(super) struct Registry {
 }
 struct Entry {
     access: Access,
+    registered: OnceLock<()>,
+}
+impl Drop for Entry {
+    fn drop(&mut self) {
+        // Failed probes never held custody and must not wake themselves.
+        if self.registered.get().is_none() {
+            return;
+        }
+        match &self.access {
+            Access::Exclusive(workspaces) => {
+                if let Some(owner) = workspaces
+                    .first()
+                    .and_then(|workspace| workspace.owner.upgrade())
+                {
+                    owner.capability_source_changed();
+                }
+            }
+            Access::Child { parent, .. } => {
+                if let Some(owner) = parent.owner.upgrade() {
+                    owner.capability_source_changed();
+                }
+            }
+            Access::Work(_) | Access::UnknownWork => {}
+        }
+    }
 }
 enum Access {
     UnknownWork,
@@ -213,7 +238,10 @@ impl Registry {
         live
     }
     fn register(&self, access: Access) -> Result<WorkspaceFence, StoreError> {
-        let entry = Arc::new(Entry { access });
+        let entry = Arc::new(Entry {
+            access,
+            registered: OnceLock::new(),
+        });
         if matches!(entry.access, Access::Work(_) | Access::UnknownWork) {
             let mut entries = self.entries.lock().unwrap();
             let mut live = Vec::new();
@@ -228,6 +256,7 @@ impl Registry {
                 .iter()
                 .all(|entry| matches!(entry.access, Access::Work(_) | Access::UnknownWork))
             {
+                entry.registered.set(()).expect("one physical registration");
                 entries.push(Arc::downgrade(&entry));
                 drop(entries);
                 drop(live);
@@ -261,6 +290,7 @@ impl Registry {
             if busy {
                 return Err(StoreError::SessionBusy);
             }
+            entry.registered.set(()).expect("one physical registration");
             entries.push(Arc::downgrade(&entry));
             return Ok(WorkspaceFence {
                 registration: entry,
@@ -510,5 +540,126 @@ impl ChildSlot {
     }
     pub(super) fn fence(&self) -> WorkspaceFence {
         self.fence.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn exclusive_child_and_recovery_release_notify_but_work_and_failed_probes_do_not()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().to_path_buf();
+        let (owner, directory) = tokio::task::spawn_blocking(move || {
+            let namespaces = root::RootNamespaces {
+                ownership: base.join("owners"),
+                control: base.join("control"),
+            };
+            let owner = Arc::new(root::RootOwner::create(&base.join("root"), &namespaces)?);
+            let directory = Dir::open_ambient_dir(&base, cap_std::ambient_authority())?;
+            Ok::<_, std::io::Error>((owner, directory))
+        })
+        .await??;
+        let store = RootStore::open(owner.clone(), crate::ROOT_MIGRATIONS).await?;
+        let workspace = store.workspace(directory).await?;
+        let mut changes = owner.capability_changes();
+        changes.borrow_and_update();
+        for access in [Access::UnknownWork, Access::Work(workspace.clone())] {
+            let gates = store.gates.clone();
+            let work = store
+                .log
+                .connection
+                .read(move |_| gates.workspaces.register(access))
+                .await?;
+            drop(work);
+            assert!(
+                !changes.has_changed()?,
+                "ordinary work release must not self-nudge preflight"
+            );
+        }
+        let exclusive = store.fence_workspace(&workspace).await?;
+        let last = exclusive.clone();
+        assert!(matches!(
+            store.fence_workspace(&workspace).await,
+            Err(StoreError::SessionBusy)
+        ));
+        assert!(
+            !changes.has_changed()?,
+            "failed exclusive probe did not hold custody"
+        );
+        drop(exclusive);
+        assert!(
+            !changes.has_changed()?,
+            "a cloned fence still holds custody"
+        );
+        drop(last);
+        assert!(
+            changes.has_changed()?,
+            "last exclusive custody release lost its source hint"
+        );
+        changes.borrow_and_update();
+
+        let gates = store.gates.clone();
+        let original = owner.clone();
+        let parent = workspace.clone();
+        let slot = store
+            .log
+            .connection
+            .read(move |_| {
+                ChildSlot::reserve(
+                    &gates,
+                    &original,
+                    parent.directory.try_clone()?,
+                    "reserved-child".into(),
+                )
+            })
+            .await?;
+        let last = slot.fence();
+        drop(slot);
+        assert!(!changes.has_changed()?);
+        drop(last);
+        assert!(
+            changes.has_changed()?,
+            "last child-slot custody release lost its source hint"
+        );
+        changes.borrow_and_update();
+
+        let gates = store.gates.clone();
+        let (recovery, released) = gates.recovery()?;
+        assert!(matches!(gates.start_work(), Err(StoreError::SessionBusy)));
+        assert!(!changes.has_changed()?);
+        drop(recovery);
+        released.await?;
+        assert!(
+            changes.has_changed()?,
+            "RecoveryPin release lost its source hint"
+        );
+        gates.start_work()?;
+        gates.finish_work();
+        changes.borrow_and_update();
+        store.shutdown().await?;
+        // An old gates/ticket must not keep a shut-down Root's ownership lease alive.
+        drop(workspace);
+        drop(store);
+        drop(owner);
+        assert!(changes.has_changed().is_err());
+        let base = temp.path().to_path_buf();
+        let reopened = Arc::new(
+            tokio::task::spawn_blocking(move || {
+                root::RootOwner::open(
+                    &base.join("root"),
+                    &root::RootNamespaces {
+                        ownership: base.join("owners"),
+                        control: base.join("control"),
+                    },
+                )
+            })
+            .await??,
+        );
+        drop(gates);
+        drop(reopened);
+        Ok(())
     }
 }

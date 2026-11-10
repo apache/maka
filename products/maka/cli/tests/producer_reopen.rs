@@ -31,6 +31,9 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
+use maka_agent_api::contract::{ContextReport, Execution, GoalView, HistoryPage};
+use maka_agent_facts::durable::ContentRef;
+use maka_agent_ports::session::history::{HistoryField, HistoryRowAddress, Role};
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_plugin_core::{
@@ -64,6 +67,7 @@ use uuid::Uuid;
 #[derive(Clone, Copy)]
 enum Producer {
     Goal,
+    GoalBudget,
     Scheduler,
 }
 
@@ -185,6 +189,7 @@ fn tool_text<'a>(messages: &'a [Value], id: &str) -> Result<&'a str> {
 }
 
 struct Model {
+    producer: Producer,
     marker: String,
     bootstrap: String,
     bootstrap_step: Mutex<u8>,
@@ -208,11 +213,7 @@ impl Model {
         if request.method() != hyper::Method::POST
             || !request.uri().path().ends_with("/chat/completions")
         {
-            return Err(format!(
-                "unexpected model request: {} {}",
-                request.method(),
-                request.uri()
-            ));
+            return Err("unexpected model request: other".into());
         }
         self.requests.fetch_add(1, Ordering::SeqCst);
         let bytes = request
@@ -226,22 +227,23 @@ impl Model {
             .as_array()
             .ok_or("model messages missing")?;
         let tools = body["tools"].as_array().ok_or("model tools missing")?;
-        let names = tools
-            .iter()
-            .map(|tool| {
-                tool["function"]["name"]
-                    .as_str()
-                    .ok_or_else(|| "direct function name missing".to_string())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        eprintln!("producer model tool names: {names:?}");
         let has_user = |marker: &str| {
             messages.iter().any(|message| {
                 message["role"] == "user" && message["content"].to_string().contains(marker)
             })
         };
         if has_user(&self.marker) {
-            self.producer_requests.fetch_add(1, Ordering::SeqCst);
+            let iteration = self.producer_requests.fetch_add(1, Ordering::SeqCst) + 1;
+            if matches!(self.producer, Producer::GoalBudget) {
+                assert!(
+                    iteration <= 2,
+                    "finite Goal must not dispatch a third iteration"
+                );
+                return Ok(sse(
+                    json!({"content":"Budgeted iteration complete."}),
+                    "stop",
+                ));
+            }
             held.store(true, Ordering::SeqCst);
             // Headers and an SSE comment only: no semantic item, finish or DONE.
             let first = futures_util::stream::once(async move {
@@ -388,13 +390,162 @@ async fn serve(
     }
 }
 
+fn work_metadata(value: &Value) -> Value {
+    let execution = &value["execution"];
+    let state = &execution["state"];
+    let waits: Vec<_> = state["waits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(4)
+        .map(|wait| {
+            json!({"kind":wait["kind"],"cell":wait["cell"],"task":wait["task"],
+            "attempt":wait["attempt"],"approval":wait["approval"],"run":wait["run"],
+            "blocker":wait["blocker"],"tool":wait["tool"].as_object().map(|_| {
+                json!({"attempt":wait["tool"]["attempt"],"call":wait["tool"]["call"]})
+            })})
+        })
+        .collect();
+    let blockers: Vec<_> = state["blockers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(4)
+        .map(|blocker| json!({"id":blocker["id"],"reason":{"kind":blocker["reason"]["kind"]}}))
+        .collect();
+    json!({"kind":value["kind"],"shared":value["shared"],
+        "execution":{"sessionId":execution["sessionId"],"turnId":execution["turnId"],
+            "runId":execution["runId"],"highWater":execution["highWater"],
+            "state":{"kind":state["kind"],"waits":waits,"blockers":blockers,
+                "waitCount":state["waits"].as_array().map(Vec::len),
+                "blockerCount":state["blockers"].as_array().map(Vec::len)}},
+        "pendingInteractions":value["pendingInteractions"]})
+}
+
+fn diagnostic(result: Result<Value>) -> Value {
+    match result {
+        Ok(value) => value,
+        Err(error) => json!({"diagnosticError":error.chars().take(512).collect::<String>()}),
+    }
+}
+
+async fn model_accept_snapshot(
+    client: &Client,
+    session: &str,
+    message: &str,
+    model: &Model,
+) -> Value {
+    let counts = json!({"requests":model.requests.load(Ordering::SeqCst),
+        "producerRequests":model.producer_requests.load(Ordering::SeqCst),
+        "eof":model.eof.load(Ordering::SeqCst)});
+    let goal = async {
+        let view: GoalView = serde_json::from_value(
+            query(client, "goal", json!({"sessionId":session})).await?,
+        ).map_err(|error| error.to_string())?;
+        Ok(json!({"enabled":view.enabled,"current":view.current.map(|goal| json!({
+            "id":goal.id,"revision":goal.revision,"status":goal.status,"iterations":goal.iterations,
+            "tokenBudget":goal.token_budget,"consumed":goal.consumed,"remainingTokens":goal.remaining_tokens,
+            "pending":goal.pending,"note":goal.note.chars().take(512).collect::<String>()
+        }))}))
+    }.await;
+    let observed = query(
+        client,
+        "work",
+        json!({
+            "sessionId":session,"target":{"kind":"message","messageId":message}
+        }),
+    )
+    .await;
+    let context = match &observed {
+        Ok(value) if value["kind"] == "delivered" => Some(diagnostic(async {
+            let execution: Execution = serde_json::from_value(value["execution"].clone())
+                .map_err(|error| error.to_string())?;
+            if execution.session_id != session {
+                return Err("diagnostic work returned a different Session".into());
+            }
+            let report: ContextReport = serde_json::from_value(query(client, "context", json!({
+                "sessionId":session,"runId":execution.run_id,"through":null
+            })).await?).map_err(|error| error.to_string())?;
+            if report.request.as_ref().is_some_and(|request|
+                request.execution.session_id != session || request.execution.run_id != execution.run_id
+                    || request.execution.turn_id != execution.turn_id)
+            {
+                return Err("diagnostic context returned a different original execution".into());
+            }
+            Ok(json!({"through":report.through,"request":report.request.map(|request| json!({
+                "execution":request.execution,"stepId":request.step_id,"attemptId":request.attempt_id,
+                "sequence":request.sequence,"state":request.state,"reportedInputTokens":request.reported_input_tokens
+            }))}))
+        }.await)),
+        _ => None,
+    };
+    json!({"countsAtDeadline":counts,"goal":diagnostic(goal),
+        "work":diagnostic(observed.map(|value| work_metadata(&value))),"context":context})
+}
+
+async fn failed_run_history(client: &Client, session: &str, execution: &Value) -> Result<Value> {
+    let execution: Execution =
+        serde_json::from_value(execution.clone()).map_err(|error| error.to_string())?;
+    if execution.session_id != session {
+        return Err("diagnostic failed Run belongs to a different Session".into());
+    }
+    let page: HistoryPage = serde_json::from_value(
+        query(
+            client,
+            "history",
+            json!({
+                "sessionId":session,"through":null,"position":{"kind":"tail"},
+                "includeThinking":false,"view":"conversation"
+            }),
+        )
+        .await?,
+    )
+    .map_err(|error| error.to_string())?;
+    let HistoryPage::Ready {
+        through,
+        chunks,
+        before,
+        after,
+    } = page;
+    let mut remaining = 2048;
+    let mut failures = Vec::new();
+    for row in chunks
+        .into_iter()
+        .filter(|row| {
+            row.role == Role::Failure
+                && row.field == HistoryField::Body
+                && row.run_id == Some(execution.run_id)
+                && row.turn_id.as_deref() == Some(execution.turn_id.as_str())
+        })
+        .take(4)
+    {
+        let HistoryRowAddress::Live { sequence, .. } = row.position else {
+            continue;
+        };
+        let text: String = row.text.chars().take(remaining).collect();
+        remaining -= text.chars().count();
+        failures.push(
+            json!({"runId":row.run_id,"turnId":row.turn_id,"sequence":sequence,
+            "offset":row.offset,"totalBytes":row.total_bytes,"text":text}),
+        );
+    }
+    Ok(
+        json!({"sessionId":session,"runId":execution.run_id,"turnId":execution.turn_id,
+        "through":through,"moreBefore":before.is_some(),"moreAfter":after.is_some(),"failures":failures}),
+    )
+}
+
 async fn work(
     client: &Client,
     session: &str,
     message: &str,
     terminal: Option<&str>,
+    model: Option<&Model>,
 ) -> Result<Value> {
-    phase("original message to Run", async {
+    let mut first = None;
+    let mut last = None;
+    let mut failed = None;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let value = query(
                 client,
@@ -402,6 +553,11 @@ async fn work(
                 json!({"sessionId":session,"target":{"kind":"message","messageId":message}}),
             )
             .await?;
+            let metadata = work_metadata(&value);
+            if model.is_some() {
+                first.get_or_insert_with(|| metadata.clone());
+                last = Some(metadata.clone());
+            }
             match value["kind"].as_str() {
                 Some("pending") => {}
                 Some("delivered") => {
@@ -410,17 +566,53 @@ async fn work(
                     if terminal.is_none_or(|expected| state == expected) {
                         return Ok(value["execution"].clone());
                     }
+                    if terminal == Some("completed")
+                        && state == "failed"
+                        && model.is_some_and(|model| matches!(model.producer, Producer::GoalBudget))
+                    {
+                        failed = Some(value["execution"].clone());
+                        return Err(format!("unexpected original Run: {metadata}"));
+                    }
                     assert!(
                         matches!(state, "admitted" | "running" | "waiting"),
-                        "unexpected original Run: {value}"
+                        "unexpected original Run: {metadata}"
                     );
                 }
-                _ => return Err(format!("original message unavailable: {value}")),
+                _ => return Err(format!("original message unavailable: {metadata}")),
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
+    .await;
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => {
+            if let Some(execution) = failed {
+                eprintln!("original message to Run: {error}");
+                let history = diagnostic(failed_run_history(client, session, &execution).await);
+                return Err(format!(
+                    "original message to Run: {error}; failureHistory={history}"
+                ));
+            }
+            Err(format!("original message to Run: {error}"))
+        }
+        Err(_) => {
+            let Some(model) = model else {
+                return Err("deadline: original message to Run".into());
+            };
+            let bootstrap_step = model
+                .bootstrap_step
+                .lock()
+                .map(|step| *step)
+                .map_err(|_| "bootstrap step lock poisoned");
+            let counts = json!({"requests":model.requests.load(Ordering::SeqCst),
+                "producerRequests":model.producer_requests.load(Ordering::SeqCst),
+                "eof":model.eof.load(Ordering::SeqCst),"bootstrapStep":bootstrap_step});
+            Err(format!(
+                "deadline: original message to Run; firstWork={first:?}; lastSuccessfulWork={last:?}; countsAtDeadline={counts}"
+            ))
+        }
+    }
 }
 
 async fn user_message(client: &Client, session: &str, message: &str, run: &Value) -> Result<Value> {
@@ -572,7 +764,7 @@ async fn body(
     .await?;
     assert_eq!(saved["kind"], "saved");
     let tool = match producer {
-        Producer::Goal => "GoalStatus",
+        Producer::Goal | Producer::GoalBudget => "GoalStatus",
         Producer::Scheduler => "ScheduledTask",
     };
     let created = mutate(client, "agent", "create", json!({"title":"Producer crash acceptance","automaticTitle":false,"labels":[],"tools":[tool],
@@ -586,8 +778,162 @@ async fn body(
     let target = json!({"sessionId":session_dto["id"],"workspace":session_dto["workspace"],"permissions":session_dto["permissions"],
         "boundaryRevision":session_dto["boundaryRevision"],"binding":session_dto["binding"]});
     let approval = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},"thinkingLevel":null});
+    if matches!(producer, Producer::GoalBudget) {
+        let created = mutate(
+            client,
+            "agent",
+            "changeGoal",
+            json!({
+                "kind":"create","sessionId":parent,"objective":model.marker,
+                "tokenBudget":110,"start":true,"approval":approval
+            }),
+            Attachments::new(),
+        )
+        .await?;
+        assert_eq!(created["kind"], "committed");
+        let id = created["goalId"].as_str().unwrap().to_owned();
+        let mut epochs = vec![epoch];
+        let mut executions: Vec<(String, Value)> = Vec::new();
+        // Both faults follow settled iterations, not an accounting commit seam.
+        for iteration in 1..=2usize {
+            let client = &clients[iteration - 1];
+            let message = format!("m_goal-{id}-{iteration}");
+            let settled = phase("finite Goal reaches its cumulative budget", async {
+                loop {
+                    let goal = query(client, "goal", json!({"sessionId":parent})).await?;
+                    assert_eq!(goal["enabled"], true);
+                    let current = &goal["current"];
+                    assert!(matches!(
+                        current["status"].as_str(),
+                        Some("active" | "budget_limited")
+                    ));
+                    if current["status"] == "budget_limited" && current["pending"] == false {
+                        return Ok(current.clone());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await?;
+            let budget = 110 * iteration;
+            assert_eq!(settled["id"], id);
+            assert_eq!(settled["objective"], model.marker);
+            assert_eq!(settled["iterations"], iteration);
+            assert_eq!(settled["tokenBudget"], budget);
+            assert_eq!(settled["consumed"], json!({"known":budget,"missing":0}));
+            assert_eq!(settled["remainingTokens"], 0);
+            let completed = work(client, &parent, &message, Some("completed"), Some(model)).await?;
+            assert_eq!(completed["sessionId"], parent);
+            assert!(
+                executions
+                    .iter()
+                    .all(|(_, prior)| prior["runId"] != completed["runId"])
+            );
+            executions.push((message, completed));
+            assert_eq!(model.requests.load(Ordering::SeqCst), iteration);
+            assert_eq!(model.producer_requests.load(Ordering::SeqCst), iteration);
+            phase("finite Goal SDK close ACK before crash", client.close()).await?;
+            phase(
+                "finite Goal Host SIGKILL/wait/EOF",
+                hosts[iteration - 1].sigkill(),
+            )
+            .await?;
+            let journal = phase(
+                "finite Goal independent reopened Journal",
+                Journal::open(
+                    &sandbox
+                        .directory
+                        .path()
+                        .join(format!("budget-client-{iteration}.db")),
+                ),
+            )
+            .await?;
+            hosts.push(Host::spawn(sandbox)?);
+            let (next, _) = phase(
+                "finite Goal same Root new Host ready",
+                hosts[iteration].ready(),
+            )
+            .await?;
+            let next_epoch = next.epoch();
+            assert!(epochs.iter().all(|epoch| *epoch != next_epoch));
+            assert_eq!(next.source(), &source);
+            epochs.push(next_epoch);
+            clients.push(Client::new(next, journal, "receipts".into())?);
+            let client = &clients[iteration];
+            let reopened = query(client, "goal", json!({"sessionId":parent})).await?;
+            assert_eq!(reopened["enabled"], true);
+            assert_eq!(reopened["current"], settled);
+            for (message, original) in &executions {
+                assert_eq!(
+                    work(client, &parent, message, Some("completed"), Some(model)).await?,
+                    *original
+                );
+            }
+            let next_message = format!("m_goal-{id}-{}", iteration + 1);
+            let undispatched = query(
+                client,
+                "work",
+                json!({
+                    "sessionId":parent,"target":{"kind":"message","messageId":next_message}
+                }),
+            )
+            .await?;
+            assert_eq!(undispatched["kind"], "missing");
+            assert_eq!(model.requests.load(Ordering::SeqCst), iteration);
+            assert_eq!(model.producer_requests.load(Ordering::SeqCst), iteration);
+            assert_eq!(
+                model.eof.load(Ordering::SeqCst),
+                0,
+                "finite streams are not held across faults"
+            );
+            if iteration == 1 {
+                let changed = mutate(client, "agent", "changeGoal", json!({
+                    "kind":"control","sessionId":parent,"goalId":id,"revision":reopened["current"]["revision"],
+                    "action":"set_budget","budget":{"tokenBudget":220}
+                }), Attachments::new()).await?;
+                assert_eq!(changed["kind"], "committed");
+                assert_eq!(changed["goalId"], id);
+                let enlarged = query(client, "goal", json!({"sessionId":parent})).await?;
+                let current = &enlarged["current"];
+                assert_eq!(current["id"], id);
+                assert_eq!(current["revision"], changed["revision"]);
+                assert_eq!(current["status"], "budget_limited");
+                assert_eq!(current["iterations"], 1);
+                assert_eq!(current["pending"], false);
+                assert_eq!(current["tokenBudget"], 220);
+                assert_eq!(current["consumed"], settled["consumed"]);
+                assert_eq!(current["remainingTokens"], 110);
+                assert_eq!(
+                    query(
+                        client,
+                        "work",
+                        json!({
+                            "sessionId":parent,"target":{"kind":"message","messageId":next_message}
+                        })
+                    )
+                    .await?["kind"],
+                    "missing"
+                );
+                assert_eq!(model.requests.load(Ordering::SeqCst), 1);
+                let observed = query(client, "observe", json!({"sessionId":parent})).await?;
+                let session_dto = &observed["session"];
+                assert_eq!(session_dto["id"], parent);
+                let target = json!({"sessionId":session_dto["id"],"workspace":session_dto["workspace"],
+                    "permissions":session_dto["permissions"],"boundaryRevision":session_dto["boundaryRevision"],
+                    "binding":session_dto["binding"]});
+                let renewed = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},
+                    "thinkingLevel":null});
+                let resumed = mutate(client, "agent", "changeGoal", json!({
+                    "kind":"control","sessionId":parent,"goalId":id,"revision":current["revision"],
+                    "action":"resume","approval":renewed
+                }), Attachments::new()).await?;
+                assert_eq!(resumed["kind"], "committed");
+                assert_eq!(resumed["goalId"], id);
+            }
+        }
+        return Ok(());
+    }
     let (domain_id, session, message) = match producer {
-        Producer::Goal => {
+        Producer::Goal | Producer::GoalBudget => {
             let result = mutate(
                 client,
                 "agent",
@@ -617,6 +963,7 @@ async fn body(
                 &parent,
                 sent["messageId"].as_str().unwrap(),
                 Some("completed"),
+                Some(model.as_ref()),
             )
             .await?;
             assert_eq!(*model.bootstrap_step.lock().unwrap(), 4);
@@ -674,15 +1021,24 @@ async fn body(
             (id, fire["sessionId"].as_str().unwrap().to_owned(), message)
         }
     };
-    phase("external physical model accept", async {
+    let accepted = phase("external physical model accept", async {
         match events.recv().await {
             Some("accepted") => Ok(()),
             other => Err(format!("expected producer accept: {other:?}")),
         }
     })
-    .await?;
+    .await;
+    if let Err(error) = accepted {
+        if matches!(producer, Producer::Goal) && error == "deadline: external physical model accept"
+        {
+            eprintln!("{error}");
+            let snapshot = model_accept_snapshot(client, &session, &message, model).await;
+            return Err(format!("{error}; modelAcceptSnapshot={snapshot}"));
+        }
+        return Err(error);
+    }
     assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
-    let original = work(client, &session, &message, None).await?;
+    let original = work(client, &session, &message, None, None).await?;
     assert!(
         matches!(
             original["state"]["kind"].as_str(),
@@ -693,7 +1049,7 @@ async fn body(
     let run = original["runId"].clone();
     let user = user_message(client, &session, &message, &run).await?;
     let domain = match producer {
-        Producer::Goal => {
+        Producer::Goal | Producer::GoalBudget => {
             assert_eq!(user["origin"]["kind"], "goal");
             assert_eq!(user["origin"]["goalId"], domain_id);
             let goal = query(client, "goal", json!({"sessionId":session})).await?;
@@ -735,10 +1091,9 @@ async fn body(
     assert!(before.iter().all(|record| record["run"] == run));
     let admitted = one(&before, "run_admitted").clone();
     assert_eq!(admitted["run"], run);
-    assert_eq!(
-        admitted["fact"]["spec"]["digest"].as_str().unwrap().len(),
-        64
-    );
+    let original_spec: ContentRef = serde_json::from_value(admitted["fact"]["spec"].clone())
+        .map_err(|error| error.to_string())?;
+    original_spec.validate().map_err(str::to_owned)?;
     one(&before, "model_attempt_prepared");
     assert_eq!(
         one(&before, "model_attempt_admitted")["fact"]["attempt"],
@@ -769,7 +1124,7 @@ async fn body(
     assert_ne!(second_epoch, epoch);
     assert_eq!(second_source, source);
     let client = &clients[1];
-    let recovered = work(client, &session, &message, Some("blocked")).await?;
+    let recovered = work(client, &session, &message, Some("blocked"), None).await?;
     assert_eq!(recovered["runId"], run);
     assert_eq!(recovered["turnId"], original["turnId"]);
     let blockers = recovered["state"]["blockers"].as_array().unwrap();
@@ -785,7 +1140,7 @@ async fn body(
     assert_eq!(by_run["execution"], recovered);
     assert_eq!(user_message(client, &session, &message, &run).await?, user);
     match producer {
-        Producer::Goal => {
+        Producer::Goal | Producer::GoalBudget => {
             let current = query(client, "goal", json!({"sessionId":session})).await?;
             assert_eq!(goal_identity(&current["current"]), domain);
             let rejected = mutate(
@@ -821,6 +1176,7 @@ async fn body(
         match producer {
             Producer::Goal => 1,
             Producer::Scheduler => 5,
+            Producer::GoalBudget => 2,
         }
     );
     // Leave blocked history for the existing read-only inspector, without a
@@ -834,6 +1190,11 @@ async fn body(
     );
     assert!(after.iter().all(|record| record["run"] == run));
     assert_eq!(one(&after, "run_admitted"), &admitted);
+    let reopened_spec: ContentRef =
+        serde_json::from_value(one(&after, "run_admitted")["fact"]["spec"].clone())
+            .map_err(|error| error.to_string())?;
+    reopened_spec.validate().map_err(str::to_owned)?;
+    assert_eq!(reopened_spec, original_spec);
     assert_eq!(one(&after, "step_prepared"), one(&before, "step_prepared"));
     assert_eq!(
         one(&after, "model_attempt_prepared"),
@@ -871,6 +1232,7 @@ async fn acceptance(producer: Producer) {
         .expect("owned empty Root/HOME/workspace");
     let nonce = Uuid::new_v4().simple().to_string();
     let model = Arc::new(Model {
+        producer,
         marker: format!("producer-{nonce}"),
         bootstrap: format!("proposal-{nonce}"),
         bootstrap_step: Mutex::new(0),
@@ -965,15 +1327,17 @@ async fn acceptance(producer: Producer) {
     match outcome {
         Ok(Ok(Ok(()))) => {
             assert!(cleanup.is_empty(), "{cleanup:?}");
-            assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
-            assert_eq!(model.eof.load(Ordering::SeqCst), 1);
+            let (requests, producer_requests, eof) = match producer {
+                Producer::Goal => (1, 1, 1),
+                Producer::Scheduler => (5, 1, 1),
+                Producer::GoalBudget => (2, 2, 0),
+            };
+            assert_eq!(model.requests.load(Ordering::SeqCst), requests);
             assert_eq!(
-                model.requests.load(Ordering::SeqCst),
-                match producer {
-                    Producer::Goal => 1,
-                    Producer::Scheduler => 5,
-                }
+                model.producer_requests.load(Ordering::SeqCst),
+                producer_requests
             );
+            assert_eq!(model.eof.load(Ordering::SeqCst), eof);
         }
         Ok(Ok(Err(error))) => panic!("producer acceptance: {error}; cleanup={cleanup:?}"),
         Ok(Err(error)) => panic!("bounded producer acceptance: {error}; cleanup={cleanup:?}"),
@@ -992,4 +1356,9 @@ async fn goal_iteration_one_reopens_original_blocked_run_without_redispatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduler_user_approved_due_fire_reopens_original_blocked_run_without_redispatch() {
     acceptance(Producer::Scheduler).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finite_goal_budget_remains_cumulative_across_two_host_reopens() {
+    acceptance(Producer::GoalBudget).await;
 }

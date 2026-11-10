@@ -84,6 +84,7 @@ struct Identity {
 
 /// Owns the durable root lease. It cannot be cloned or fabricated.
 pub struct RootOwner {
+    capability_changes: tokio::sync::watch::Sender<()>,
     pub(crate) operation_live: std::sync::Arc<crate::applications::operations::LiveOperations>,
     canonical_path: PathBuf,
     marker: Marker,
@@ -221,6 +222,13 @@ pub fn prepare_directory(path: &Path) -> io::Result<PathBuf> {
 }
 
 impl RootOwner {
+    /// Invalidates capability reads in this live Root; never a grant or a physical proof.
+    pub fn capability_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.capability_changes.subscribe()
+    }
+    pub fn capability_source_changed(&self) {
+        self.capability_changes.send_modify(|_| {});
+    }
     /// Initialize a nonexistent or empty disposable directory. Never adopt existing state.
     pub fn create(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
         let path = prepare_directory(path)?;
@@ -284,6 +292,7 @@ impl RootOwner {
         directory(&control_directory)?;
         let control_identity = directory_identity(&control_directory)?;
         Ok(Self {
+            capability_changes: tokio::sync::watch::channel(()).0,
             operation_live: std::sync::Arc::new(
                 crate::applications::operations::LiveOperations::default(),
             ),

@@ -44,8 +44,46 @@ pub struct ModelCleanupPublication {
 }
 
 impl ModelCleanupPublication {
+    pub(super) fn claimed(
+        store: Store,
+        claim: DriverClaim,
+        head: Head,
+        attempt: ModelAttemptId,
+        at: UnixMillis,
+    ) -> Result<Self, RunError> {
+        if claim.purpose() != maka_agent_state::DriverPurpose::LateModelCleanup {
+            return Err(RunError::InvalidInput("not a model cleanup claim".into()));
+        }
+        Ok(Self {
+            store,
+            publication: Arc::new(PendingPublication {
+                run: claim.run(),
+                claim: Some(claim),
+                head,
+                changes: vec![Change::new(
+                    Fact::ModelCleanupObserved {
+                        attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                    at,
+                )],
+                contents: vec![],
+                steering: None,
+            }),
+        })
+    }
     pub fn fact_id(&self) -> FactId {
         self.publication.changes[0].id
+    }
+
+    pub(super) async fn reconcile_claimed(&self) -> Result<FactId, RunError> {
+        let result = self.publication.reconcile(&self.store).await;
+        match settle_result(&self.store, &self.publication, result).await? {
+            PublicationResolution::Committed(_) => Ok(self.fact_id()),
+            PublicationResolution::NotCommitted => Err(RunError::Internal(
+                "original model cleanup publication fenced".into(),
+            )),
+        }
     }
 
     pub async fn reconcile(&self) -> Result<FactId, RunError> {
@@ -682,7 +720,7 @@ async fn settle(
     settle_result(store, publication, result).await
 }
 
-async fn settle_result(
+pub(super) async fn settle_result(
     store: &Store,
     publication: &PendingPublication,
     mut result: Result<PublicationResolution, StoreError>,
@@ -704,6 +742,382 @@ async fn settle_result(
                 result = publication.reconcile(store).await;
             }
             Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DriverExit, Engine,
+        reconcile::tests::{apply_policy_fact, model_closure, policy_view},
+    };
+    use futures_util::FutureExt;
+    use maka_agent_facts::{
+        context::ModelPurpose,
+        durable::*,
+        input::RunInput,
+        model::{ModelFinishReason, ModelToolCall, ToolInput},
+        tool_output::AcceptedToolResult,
+    };
+    use maka_agent_state::{Admission, DriverDomain, fold::tool_key};
+    use maka_event_log::{
+        root::{RootNamespaces, RootOwner},
+        root_store::RootStore,
+    };
+    use std::panic::AssertUnwindSafe;
+    type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    fn at() -> UnixMillis {
+        UnixMillis(1)
+    }
+
+    // Real Root/Store and original witness; typed model facts only, no provider/VM execution.
+    async fn fixture() -> TestResult<(
+        tempfile::TempDir,
+        RootStore,
+        Store,
+        DriverClaim,
+        ModelAttemptId,
+        ModelWitness,
+    )> {
+        let temp = tempfile::tempdir()?;
+        let base = temp.path().to_path_buf();
+        let owner = tokio::task::spawn_blocking(move || {
+            RootOwner::create(
+                &base.join("root"),
+                &RootNamespaces {
+                    ownership: base.join("owners"),
+                    control: base.join("control"),
+                },
+            )
+        })
+        .await??;
+        let mut migrations = maka_event_log::ROOT_MIGRATIONS.to_vec();
+        migrations.extend_from_slice(maka_agent_state::MIGRATIONS);
+        let root = RootStore::open(Arc::new(owner), &migrations).await?;
+        let data = root.data_writer()?;
+        let store = Store::new(data.clone(), DriverDomain::new(data)?)?;
+        let mut policy = policy_view(None);
+        let empty = ContentBlob::new(vec![]);
+        let input = ContentBlob::json(&RunInput::Message {
+            content: "typed provider cancellation fixture".to_string().into(),
+            request_fingerprint: None,
+            source_messages: vec![],
+        })?;
+        policy.spec.input = input.reference().clone();
+        let spec = ContentBlob::json(&policy.spec)?;
+        apply_policy_fact(
+            &mut policy,
+            Fact::RunAdmitted {
+                spec: spec.reference().clone(),
+            },
+        );
+        // Reuse only its typed request; the Store below never receives that helper's closure.
+        let (_, request, attempt) = model_closure(
+            policy.clone(),
+            ModelPurpose::Main,
+            ModelFinishReason::Stop,
+            Outcome::Success,
+            false,
+        );
+        let admission = Admission::new(policy.spec, at(), vec![empty, input]);
+        let run = admission.run();
+        store.admit(admission).await?;
+        let claim = store.claim(run).await?;
+        let encoded = ContentBlob::json(&request)?;
+        append(
+            &store,
+            &claim,
+            vec![
+                Fact::StepPrepared {
+                    step: request.step,
+                    request: encoded.reference().clone(),
+                    adjudications: vec![],
+                },
+                Fact::ModelAttemptPrepared {
+                    attempt,
+                    step: request.step,
+                },
+                Fact::ModelAttemptAdmitted {
+                    attempt,
+                    upstream: serde_json::json!({"typed":"original-model-source"}),
+                },
+            ],
+            vec![encoded],
+        )
+        .await?;
+        let witness = ModelWitness::new(store.clone(), claim.clone(), attempt);
+        Ok((temp, root, store, claim, attempt, witness))
+    }
+
+    async fn append(
+        store: &Store,
+        claim: &DriverClaim,
+        facts: Vec<Fact>,
+        contents: Vec<ContentBlob>,
+    ) -> TestResult<()> {
+        let view = store.frontier(claim.run()).await?;
+        store
+            .append(
+                claim,
+                (&view).into(),
+                facts
+                    .into_iter()
+                    .map(|fact| Change::new(fact, at()))
+                    .collect(),
+                contents,
+            )
+            .await?;
+        Ok(())
+    }
+    fn call(attempt: ModelAttemptId) -> (ToolKey, ModelPart) {
+        let key = ToolKey {
+            attempt,
+            call: "server-side-effect".into(),
+        };
+        let part = ModelPart::ToolCall {
+            call: ModelToolCall {
+                id: key.call.clone(),
+                name: "server_tool".into(),
+                input: ToolInput::Json(serde_json::json!({})),
+                provider_options: None,
+                provider_executed: true,
+            },
+        };
+        (key, part)
+    }
+    fn cancel(blocker: BlockerId, decision: &RiskDecision) -> Vec<Fact> {
+        vec![
+            Fact::Blocked {
+                blocker,
+                reason: BlockerKind::UnsupportedProtocol {
+                    protocol: "typed-control-source".into(),
+                    version: 1,
+                },
+            },
+            Fact::RiskAdjudicated {
+                blocker,
+                decision: decision.clone(),
+                scope: RiskActionScope::RunCancellation,
+            },
+        ]
+    }
+    async fn drain(store: &Store, claim: &DriverClaim) -> TestResult<()> {
+        let exit = Engine::new(store.clone())
+            .current_authority_unavailable(
+                claim.clone(),
+                AuthorityStage::BackendScope,
+                "typed cancellation has no execution ports".into(),
+                at(),
+            )
+            .await?;
+        assert!(
+            matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Cancelled,
+                    ..
+                }
+            ),
+            "canonical provider cancellation reblocked after its decision retired"
+        );
+        Ok(())
+    }
+    async fn check_acceptance(
+        store: &Store,
+        claim: &DriverClaim,
+        key: &ToolKey,
+        risk: BlockerId,
+        decision: &RiskDecision,
+    ) -> TestResult<ContentRef> {
+        let view = store.frontier(claim.run()).await?;
+        let tool = &view.tools[&tool_key(key)];
+        let accepted = tool
+            .accepted
+            .as_ref()
+            .ok_or("provider tool acceptance missing")?;
+        assert!(accepted.outcome == AcceptedResult::RiskAdjudicated { blocker: risk });
+        let encoded: AcceptedToolResult =
+            serde_json::from_slice(&store.content(claim.run(), accepted.result.clone()).await?)?;
+        assert!(
+            encoded
+                == AcceptedToolResult::RiskAdjudicated {
+                    blocker: risk,
+                    decision: decision.clone()
+                },
+            "accepted content changed the actual cancellation identity or decision"
+        );
+        assert!(
+            tool.provider_result.is_none()
+                && !tool.admitted
+                && tool.original.is_none()
+                && tool.local_returned.is_none()
+                && tool.receipt.is_none(),
+            "logical acceptance fabricated a provider result or physical receipt"
+        );
+        assert!(view.attempts[&key.attempt].cleanup != OperationCleanup::Confirmed);
+        Ok(accepted.result.clone())
+    }
+
+    #[tokio::test]
+    async fn accepted_provider_call_does_not_reblock_when_its_cancel_row_retires() -> TestResult<()>
+    {
+        let (_temp, root, store, claim, attempt, witness) = fixture().await?;
+        let result = AssertUnwindSafe(async {
+            let (key, part) = call(attempt);
+            witness.part(0, part, None, at()).await?;
+            let provider_risk = BlockerId::new();
+            append(
+                &store,
+                &claim,
+                vec![Fact::Blocked {
+                    blocker: provider_risk,
+                    reason: BlockerKind::ProviderEffectUnknown {
+                        attempt,
+                        call: key.call.clone(),
+                    },
+                }],
+                vec![],
+            )
+            .await?;
+            let risk = BlockerId::new();
+            let decision = RiskDecision::CancelBlockedRun {
+                diagnostic: "explicit sibling cancellation".into(),
+            };
+            append(&store, &claim, cancel(risk, &decision), vec![]).await?;
+            assert!(
+                store
+                    .frontier(claim.run())
+                    .await?
+                    .blockers
+                    .contains_key(&risk)
+            );
+            drain(&store, &claim).await?;
+            let bounded = store.frontier(claim.run()).await?;
+            assert!(
+                !bounded.blockers.contains_key(&risk),
+                "no-pending-tool cancellation row must still retire"
+            );
+            assert!(
+                bounded.blockers[&provider_risk].decision.is_none()
+                    && bounded.blockers[&provider_risk].resolved_by.is_none(),
+                "whole-run cancellation rewrote the separate unknown-provider evidence"
+            );
+            let accepted = check_acceptance(&store, &claim, &key, risk, &decision).await?;
+            let revision = bounded.revision;
+            drain(&store, &claim).await?;
+            assert!(store.frontier(claim.run()).await?.revision == revision);
+            assert!(check_acceptance(&store, &claim, &key, risk, &decision).await? == accepted);
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test]
+    async fn late_provider_witness_part_restores_the_original_retired_run_cancellation()
+    -> TestResult<()> {
+        let (_temp, root, store, claim, attempt, witness) = fixture().await?;
+        let result = AssertUnwindSafe(async {
+            let risk = BlockerId::new();
+            let decision = RiskDecision::CancelBlockedRun {
+                diagnostic: "explicit pre-part cancellation".into(),
+            };
+            append(&store, &claim, cancel(risk, &decision), vec![]).await?;
+            append(
+                &store,
+                &claim,
+                vec![Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic: "control cut before terminal publication".into(),
+                }],
+                vec![],
+            )
+            .await?;
+            let cut = store.frontier(claim.run()).await?;
+            assert!(
+                cut.cancelled_by_risk && cut.tools.is_empty() && !cut.blockers.contains_key(&risk)
+            );
+            assert!(
+                cut.terminal.is_none()
+                    && cut.attempts[&attempt].closed.is_none()
+                    && cut.attempts[&attempt].interrupted.is_some()
+            );
+            assert!(
+                !store
+                    .frontier(claim.run())
+                    .await?
+                    .blockers
+                    .contains_key(&risk),
+                "ordinary frontier revived a retired decision"
+            );
+            let (key, part) = call(attempt);
+            let late = witness.part(0, part, None, at()).await?;
+            let bounded = store.frontier(claim.run()).await?;
+            let original = bounded
+                .blockers
+                .get(&risk)
+                .ok_or("late provider call lost the actual original decision")?;
+            assert!(
+                original
+                    .decision
+                    .as_ref()
+                    .is_some_and(|scoped| scoped.decision == decision
+                        && matches!(scoped.scope, RiskActionScope::RunCancellation))
+            );
+            assert!(bounded.tools[&tool_key(&key)].accepted.is_none());
+            let provider_risk = BlockerId::new();
+            append(
+                &store,
+                &claim,
+                vec![Fact::Blocked {
+                    blocker: provider_risk,
+                    reason: BlockerKind::ProviderEffectUnknown {
+                        attempt,
+                        call: key.call.clone(),
+                    },
+                }],
+                vec![],
+            )
+            .await?;
+            drain(&store, &claim).await?;
+            check_acceptance(&store, &claim, &key, risk, &decision).await?;
+            let final_view = store.frontier(claim.run()).await?;
+            assert!(!final_view.blockers.contains_key(&risk));
+            assert!(
+                store
+                    .fact(claim.run(), late)
+                    .await?
+                    .is_some_and(|recorded| matches!(recorded.fact,
+                Fact::ModelObserved { attempt: original, .. } if original == attempt))
+            );
+            let history = store.history(claim.run(), 0, 64).await?;
+            assert!(
+                history
+                    .iter()
+                    .filter(|fact| matches!(fact.fact, Fact::ModelAttemptAdmitted { .. }))
+                    .count()
+                    == 1
+            );
+            assert!(
+                !history
+                    .iter()
+                    .any(|fact| matches!(fact.fact, Fact::ModelCleanupObserved { .. }))
+            );
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
         }
     }
 }

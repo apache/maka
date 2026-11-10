@@ -33,6 +33,9 @@ use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+pub(crate) mod tests;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum WorkKey {
     Prepare,
@@ -358,18 +361,22 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
         let reason = BlockerKind::CodeCellRecoveryUnavailable {
             cell: cell.id.as_uuid().to_string(),
         };
-        let acknowledged = view.blockers.values().any(|b| {
-            b.decision
-                .as_ref()
-                .is_some_and(|d| matches!(d.scope, RiskActionScope::RunCancellation))
-                || (b.reason == reason && b.decision.is_some())
-        });
+        let acknowledged = view.cancelled_by_risk
+            || view.blockers.values().any(|b| {
+                b.decision
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.scope, RiskActionScope::RunCancellation))
+                    || (b.reason == reason && b.decision.is_some())
+            });
         if running
             && !(fenced && acknowledged)
             && !live.cells_observed.contains(&cell.id)
             && !live.work.contains(&WorkKey::Cell(cell.id))
         {
             return Some(Action::ObserveCell(cell.id));
+        }
+        if running && live.work.contains(&WorkKey::Cell(cell.id)) {
+            return Some(Action::Idle);
         }
         if fenced && running && !acknowledged && cell.vm_uncertainty.is_none() {
             return Some(Action::Idle);
@@ -543,13 +550,86 @@ fn publication_action(view: &RunView, live: &Live, stopped: bool) -> Option<Acti
     }
     None
 }
+pub(crate) fn budget_exhausted(view: &RunView) -> bool {
+    view.spec
+        .budget
+        .tokens
+        .is_some_and(|limit| view.tokens >= limit)
+}
+
+// Only the canonical final reply may settle at the limit; next() still requires cleanup ACKs.
+pub(crate) fn complete_at_budget(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
+    budget_exhausted(view) && final_model_response(view, request, now)
+}
+
+pub(crate) fn final_model_response(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
+    final_reply(view, request, now)
+        && !view.waits.values().any(|wait| {
+            wait.satisfied.is_none()
+                && wait.cancelled.is_none()
+                && matches!(wait.reason, WaitReason::Child { .. })
+        })
+}
+
+pub(crate) fn model_settlement_action(
+    view: &RunView,
+    request: &RequestSpec,
+    now: UnixMillis,
+) -> Option<Action> {
+    let final_response = final_model_response(view, request, now);
+    if final_response || (budget_exhausted(view) && final_reply(view, request, now)) {
+        Some(next(view, &Live::default(), now, None, final_response))
+    } else {
+        None
+    }
+}
+
+fn final_reply(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
+    if view.stopped
+        || view.cancelled_by_risk
+        || view.spec.budget.deadline.is_some_and(|at| now >= at)
+        || !matches!(view.spec.backend, BackendSpec::Model { .. })
+        || matches!(view.spec.trigger, Trigger::ContextCompact)
+        || !view.replans.is_empty()
+        || view.blockers.values().any(|blocker| {
+            active(blocker)
+                && !matches!(
+                    &blocker.reason,
+                    BlockerKind::CurrentAuthorityUnavailable { .. }
+                )
+        })
+        || view.current_step != Some(request.step)
+        || request.accounting.purpose != maka_agent_facts::context::ModelPurpose::Main
+        || view.tools.values().any(|tool| tool.accepted.is_none())
+        || view
+            .cells
+            .values()
+            .any(|cell| cell.pending() || !cell.notifications.is_empty())
+    {
+        return false;
+    }
+    let Some(attempt) = view.current_attempt.and_then(|id| view.attempts.get(&id)) else {
+        return false;
+    };
+    attempt.step == request.step
+        && attempt.admission.is_some()
+        && !attempt.has_tools
+        && attempt.closed.as_ref().is_some_and(|closed| {
+            closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                && closed.diagnostic.is_none()
+                && matches!(closure_protocol(closed), Ok(protocol)
+                    if protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Stop)
+        })
+}
+
 pub(crate) fn next(
     view: &RunView,
     live: &Live,
     now: UnixMillis,
     model: Option<&ModelLevel>,
+    complete_at_budget: bool,
 ) -> Action {
-    let action = next_action(view, live, now, model);
+    let action = next_action(view, live, now, model, complete_at_budget);
     if !matches!(action, Action::Terminate(Terminal::Completed)) {
         return action;
     }
@@ -603,18 +683,21 @@ pub(crate) fn next(
     action
 }
 
-fn next_action(view: &RunView, live: &Live, now: UnixMillis, model: Option<&ModelLevel>) -> Action {
+fn next_action(
+    view: &RunView,
+    live: &Live,
+    now: UnixMillis,
+    model: Option<&ModelLevel>,
+    complete_at_budget: bool,
+) -> Action {
     if view.terminal.is_some() || matches!(view.spec.backend, BackendSpec::Historical {}) {
         return Action::Idle;
     }
     let deadline = view.spec.budget.deadline.is_some_and(|at| now >= at);
-    let exhausted = view
-        .spec
-        .budget
-        .tokens
-        .is_some_and(|limit| view.tokens >= limit);
-    let finish = view.finish_requested();
-    let interrupted_fence = view.stopped || view.cancelled_by_risk || deadline || exhausted;
+    let exhausted = budget_exhausted(view);
+    let finish = view.finish_requested() || complete_at_budget;
+    let interrupted_fence =
+        view.stopped || view.cancelled_by_risk || deadline || (exhausted && !complete_at_budget);
     let fenced = interrupted_fence || finish;
     for (id, pending) in &view.waits {
         if pending.satisfied.is_some() || pending.cancelled.is_some() {
@@ -629,6 +712,14 @@ fn next_action(view: &RunView, live: &Live, now: UnixMillis, model: Option<&Mode
                         | WaitReason::Operation { .. }
                 ))
         {
+            if exhausted
+                && !view.stopped
+                && !view.cancelled_by_risk
+                && !deadline
+                && matches!(pending.reason, WaitReason::Child { .. })
+            {
+                continue;
+            }
             return Action::CancelWait(*id);
         }
         let ready = pending.due_at.is_some_and(|due| now >= due) || match &pending.reason {
@@ -694,7 +785,7 @@ fn next_action(view: &RunView, live: &Live, now: UnixMillis, model: Option<&Mode
         }
     }
     if fenced {
-        if finish && !interrupted_fence {
+        if finish && !interrupted_fence && !complete_at_budget {
             if let Some((attempt, _)) = view.attempts.iter().find(|(id, attempt)| {
                 attempt.admission.is_some()
                     && live.work.contains(&WorkKey::Model(**id))
@@ -769,14 +860,16 @@ fn next_action(view: &RunView, live: &Live, now: UnixMillis, model: Option<&Mode
             }
         }
         let only_cleanup = live.only_cleanup(view);
-        if !live.work.is_empty() && (!only_cleanup || finish) {
+        if !live.work.is_empty() && (!only_cleanup || (finish && !complete_at_budget)) {
             return Action::Idle;
         }
         if let Some(action) = cell_action(view, live, interrupted_fence) {
             return action;
         }
         for tool in view.tools.values() {
-            if adjudicated_tool(view, tool).is_some() {
+            if (view.cancelled_by_risk && tool.accepted.is_some())
+                || adjudicated_tool(view, tool).is_some()
+            {
                 continue;
             }
             let reason = if tool.call.provider_executed && tool.provider_result.is_none() {
@@ -867,7 +960,7 @@ fn next_action(view: &RunView, live: &Live, now: UnixMillis, model: Option<&Mode
         }
         return Action::Terminate(if view.stopped || view.cancelled_by_risk {
             Terminal::Cancelled
-        } else if finish && !deadline && !exhausted {
+        } else if finish && !deadline && (!exhausted || complete_at_budget) {
             Terminal::Completed
         } else {
             Terminal::Failed

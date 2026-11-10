@@ -285,6 +285,25 @@ async fn model_response(
         .map_err(|error| error.to_string())
 }
 
+fn model_row_label(choice: &Value) -> Result<String> {
+    Ok(format!(
+        "Use {} · {}",
+        choice["label"]
+            .as_str()
+            .ok_or("model choice omitted label")?,
+        choice["sourceName"]
+            .as_str()
+            .ok_or("model choice omitted source name")?
+    ))
+}
+
+fn model_identity(choice: &Value) -> Value {
+    let selection = &choice["selection"];
+    json!({"label":choice["label"],"sourceName":choice["sourceName"],
+        "kind":selection["kind"],"connectionId":selection["connectionId"],
+        "modelId":selection["modelId"],"thinkingLevel":selection["thinkingLevel"]})
+}
+
 async fn phase<T>(name: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(STEP, future)
         .await
@@ -471,7 +490,7 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 }}), Attachments::new())).await?;
             assert_eq!(configured["kind"], "committed");
             let connection = configured["connection"]["connectionId"].as_str().ok_or("missing connection id")?;
-            let detail = phase("read loopback credential target", api.query("settings", "connection", json!({"connectionId":connection}))).await?;
+            let detail = phase("read loopback credential target", api.query("settings", "connection", json!({"connectionId":connection,"includeEditingFacts":true}))).await?;
             assert_eq!(detail["kind"], "ready");
             let secret: Arc<dyn ReadResource> = Arc::new(FixtureKey);
             let credential = phase("store dummy loopback credential", mutate(api, "settings", "saveCredential",
@@ -484,6 +503,9 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
             let model_choice = choices["choices"].as_array().ok_or("missing model choices")?.iter()
                 .find(|choice| choice["selection"]["connectionId"] == connection && choice["selection"]["modelId"] == "gpt-4.1")
                 .ok_or("configured loopback model is not a UI choice")?.clone();
+            eprintln!("desktop setup model page kind={} revision={} count={:?} next={} choice={} expected_label={:?} fixture_enabled={} fixture_enabled_model_ids={}",
+                choices["kind"], choices["revision"], choices["choices"].as_array().map(Vec::len), choices["next"],
+                model_identity(&model_choice), model_row_label(&model_choice)?, detail["enabled"], detail["editing"]["enabledModelIds"]);
             let title = format!("desktop-seed-{}", Uuid::new_v4().simple());
             let created = phase("create real idle seed Session", mutate(api, "agent", "create", json!({
                 "backend":null,"automaticTitle":false,"tools":[],"title":title,"labels":[],
@@ -681,6 +703,8 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                     "Choose model",
                     "Retry model catalog",
                     "Retry model policy",
+                    "Focus message composer",
+                    "Edit current model settings",
                     "Dismiss action feedback",
                     "Chat",
                     "Trajectory",
@@ -832,18 +856,148 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
 
         click("Choose model and effort")?;
         models_pane("pending draft's real models pane")?;
-        let choose = format!(
-            "Use {} · {}",
-            model_choice["label"]
-                .as_str()
-                .ok_or("model choice omitted label")?,
-            model_choice["sourceName"]
-                .as_str()
-                .ok_or("model choice omitted source name")?
-        );
-        wait_native(native, &errors, "actual loopback model row", || {
-            Ok(bounds(&choose)?.len() == 1)
-        })?;
+        let setup_label = model_row_label(&model_choice)?;
+        let mut choose = setup_label.clone();
+        let mut presentations = None;
+        let row_started = Instant::now();
+        let row = wait_native(native, &errors, "actual loopback model row", || {
+            if presentations.is_none() {
+                let page = runtime.block_on(async {
+                    tokio::time::timeout(
+                        STEP.saturating_sub(row_started.elapsed()),
+                        observer.as_ref().unwrap().query(
+                            "agent",
+                            "models",
+                            json!({"kind":"start","query":""}),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| "deadline reading current model presentation")?
+                })?;
+                assert_eq!(page["kind"], "ready");
+                let matches = page["choices"]
+                    .as_array()
+                    .ok_or("current model catalog omitted choices")?
+                    .iter()
+                    .filter(|choice| choice["selection"] == model_choice["selection"])
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "authorized model selection must remain unique"
+                );
+                let current = matches[0];
+                assert_eq!(current["sourceName"], model_choice["sourceName"]);
+                let current_label = model_row_label(current)?;
+                choose = current_label.clone();
+                eprintln!(
+                    "desktop current model presentation revision={} choice={} exact_label={current_label:?}",
+                    page["revision"],
+                    model_identity(current)
+                );
+                // The UI may retain its opening snapshot while metadata adopts a display name.
+                let mut labels = vec![current_label];
+                if labels[0] != setup_label {
+                    labels.push(setup_label.clone());
+                }
+                presentations = Some(labels);
+            }
+            let mut visible = None;
+            for label in presentations.as_ref().unwrap() {
+                let targets = bounds(label)?;
+                assert!(
+                    targets.len() <= 1,
+                    "model presentation has duplicate native rows"
+                );
+                if targets.len() == 1 {
+                    assert!(
+                        visible.is_none(),
+                        "one selection has multiple live model presentations"
+                    );
+                    visible = Some(label.clone());
+                }
+            }
+            if let Some(label) = visible {
+                choose = label;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        });
+        if let Err(error) = row {
+            diagnose("actual loopback model row failure");
+            eprintln!(
+                "desktop model row expected_label={choose:?} choice={} bounds={:?}",
+                model_identity(&model_choice),
+                bounds(&choose)
+            );
+            // Failure-only reads: each gets one explicit three-second observation budget.
+            let (models, connections) = runtime.block_on(async {
+                tokio::join!(
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        observer.as_ref().unwrap().query(
+                            "agent",
+                            "models",
+                            json!({"kind":"start","query":""})
+                        )
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        observer.as_ref().unwrap().query(
+                            "settings",
+                            "connections",
+                            json!({"kind":"start"})
+                        )
+                    ),
+                )
+            });
+            match models {
+                Ok(Ok(page)) => {
+                    let rows = page["choices"].as_array();
+                    eprintln!(
+                        "desktop fresh models kind={} revision={} count={:?} next={}",
+                        page["kind"],
+                        page["revision"],
+                        rows.map(Vec::len),
+                        page["next"]
+                    );
+                    for choice in rows.into_iter().flatten().take(8) {
+                        let label = model_row_label(choice);
+                        let visible = label.as_ref().map(|label| bounds(label));
+                        eprintln!(
+                            "desktop fresh model choice={} exact_label={label:?} bounds={visible:?}",
+                            model_identity(choice)
+                        );
+                    }
+                }
+                Ok(Err(_)) => eprintln!(
+                    "desktop fresh models status=query_error; detail omitted from metadata-only diagnostic"
+                ),
+                Err(_) => eprintln!("desktop fresh models status=three_second_timeout"),
+            }
+            match connections {
+                Ok(Ok(page)) => {
+                    let rows = page["connections"].as_array();
+                    let fixture = rows.into_iter().flatten()
+                        .find(|row| row["basis"]["connectionId"] == model_choice["selection"]["connectionId"])
+                        .map(|row| json!({"connectionId":row["basis"]["connectionId"],"revision":row["basis"]["revision"],
+                            "enabled":row["enabled"],"enabledModelCount":row["enabledModelCount"]}));
+                    eprintln!(
+                        "desktop fresh connections kind={} revision={} count={:?} next={} fixture_summary={fixture:?}",
+                        page["kind"],
+                        page["revision"],
+                        rows.map(Vec::len),
+                        page["next"]
+                    );
+                }
+                Ok(Err(_)) => eprintln!(
+                    "desktop fresh connections status=query_error; detail omitted from metadata-only diagnostic"
+                ),
+                Err(_) => eprintln!("desktop fresh connections status=three_second_timeout"),
+            }
+            return Err(error);
+        }
         paint("actual GPU frame with loopback model row")?;
         click(&choose)?;
         wait_native(
@@ -877,25 +1031,57 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
 
         let mut original_message = None;
         let mut completed_session = None;
+        let mut first_completion_snapshot = None;
+        let mut last_completion_snapshot = None;
         let completion = wait_native(
             native,
             &errors,
             "UI first send materializes one Session and completes its original Run",
             || {
+                let mut snapshot = json!({
+                    "stage":"sessions", "addedCount":null, "sessionId":null,
+                    "messageId":null, "runId":null, "history":null, "work":null,
+                });
                 let completed = runtime.block_on(phase("observe actual UI submission", async {
                 let api = observer.as_ref().unwrap();
                 let after = sessions(api).await?;
+                snapshot["seedRowEqualsOriginal"] = json!(after.get(&seed_id) == Some(&seed));
                 assert_eq!(after.get(&seed_id), Some(&seed), "UI submission mutated seed");
                 assert!(before.keys().all(|id| after.contains_key(id)));
                 let added = after.iter().filter(|(id, _)| !before.contains_key(*id)).collect::<Vec<_>>();
+                snapshot["addedCount"] = json!(added.len());
                 assert!(added.len() <= 1, "UI submission created duplicate Sessions");
                 let Some((id, created)) = added.first().copied() else { return Ok(None); };
+                snapshot["sessionId"] = json!(id);
+                snapshot["workspaceEqualsSeed"] = json!(created["workspace"] == seed["workspace"]);
                 assert_eq!(created["workspace"], seed["workspace"]);
+                snapshot["stage"] = json!("history");
                 let history = api.query("agent", "history", json!({"sessionId":id,"position":{"kind":"start"},"view":"conversation"})).await?;
+                snapshot["history"] = json!({
+                    "kind":history["kind"], "through":history["through"],
+                    "afterIsNull":history.get("after").map(Value::is_null),
+                });
                 assert_eq!(history["kind"], "ready");
                 assert!(history.get("after").ok_or("history omitted after")?.is_null());
                 let chunks = history["chunks"].as_array().ok_or("history omitted chunks")?;
                 let users = chunks.iter().filter(|row| row["role"] == "user" && row["field"] == "body").collect::<Vec<_>>();
+                snapshot["history"]["chunkCount"] = json!(chunks.len());
+                snapshot["history"]["userBodyCount"] = json!(users.len());
+                snapshot["history"]["assistantBodyCount"] = json!(chunks.iter()
+                    .filter(|row| row["role"] == "assistant" && row["field"] == "body").count());
+                snapshot["history"]["assistantFinalOutputCount"] = json!(chunks.iter()
+                    .filter(|row| row["role"] == "assistant" && row["finalOutput"] == true).count());
+                snapshot["history"]["assistantRows"] = json!(chunks.iter()
+                    .filter(|row| row["role"] == "assistant").take(4)
+                    .map(|row| json!({
+                        "role":row["role"], "field":row["field"], "runId":row["runId"],
+                        "modelPart":row.get("modelPart").map(|part| json!({
+                            "stepId":part["stepId"], "attemptId":part["attemptId"], "ordinal":part["ordinal"],
+                        })),
+                        "offset":row["offset"], "totalBytes":row["totalBytes"],
+                        "finalOutput":row["finalOutput"] == true,
+                        "textEqualsExpected":row["text"] == format!("desktop-reply-{nonce}"),
+                    })).collect::<Vec<_>>());
                 if users.is_empty() { return Ok(None); }
                 assert_eq!(users.len(), 1, "UI must submit the original nonce once");
                 let user = users[0];
@@ -903,12 +1089,23 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 assert_eq!(user["offset"], 0);
                 let message = user["messageId"].as_str().ok_or("user message omitted id")?.to_owned();
                 let run = user["runId"].as_str().ok_or("user message omitted Run")?.to_owned();
+                snapshot["messageId"] = json!(message);
+                snapshot["runId"] = json!(run);
                 let identity = (message.clone(), run.clone());
                 match &original_message {
                     Some(original) => assert_eq!(original, &identity, "UI submission changed its original identity"),
                     None => original_message = Some(identity),
                 }
+                snapshot["stage"] = json!("work");
                 let work = api.query("agent", "work", json!({"sessionId":id,"target":{"kind":"message","messageId":message}})).await?;
+                snapshot["work"] = json!({
+                    "kind":work["kind"], "runId":work["execution"]["runId"],
+                    "highWater":work["execution"]["highWater"],
+                    "stateKind":work["execution"]["state"]["kind"],
+                    "waitKinds":work["execution"]["state"]["waits"].as_array().map(|waits|
+                        waits.iter().take(8).map(|wait| &wait["kind"]).collect::<Vec<_>>()),
+                    "pendingInteractions":work["pendingInteractions"],
+                });
                 if work["kind"] == "pending" { return Ok(None); }
                 assert_eq!(work["kind"], "delivered");
                 assert_eq!(work["execution"]["runId"], run);
@@ -922,13 +1119,28 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 assert_eq!(replies.len(), 1);
                 assert_eq!(replies[0]["text"], format!("desktop-reply-{nonce}"));
                 assert_eq!(replies[0]["runId"], run);
+                snapshot["stage"] = json!("observe new Session");
                 let observed = api.query("agent", "observe", json!({"sessionId":id})).await?;
+                snapshot["backendEqualsOriginalSelection"] = json!(observed["session"]["backend"] == model_choice["selection"]);
                 assert_eq!(observed["session"]["backend"], model_choice["selection"]);
+                snapshot["stage"] = json!("observe seed Session");
                 let original = api.query("agent", "observe", json!({"sessionId":seed_id})).await?;
+                snapshot["seedSessionEqualsOriginal"] = json!(original["session"] == seed_session);
                 assert_eq!(original["session"], seed_session);
+                snapshot["stage"] = json!("complete");
                 Ok(Some(id.clone()))
-            }))?;
-                if let Some(id) = completed {
+            }));
+                if let Some((message, run)) = &original_message {
+                    snapshot["originalMessageId"] = json!(message);
+                    snapshot["originalRunId"] = json!(run);
+                }
+                snapshot["fixture"] = json!({
+                    "nonceRequests":model.as_ref().unwrap().nonce_requests.load(Ordering::Relaxed),
+                    "includesAux":true,
+                });
+                first_completion_snapshot.get_or_insert_with(|| snapshot.clone());
+                last_completion_snapshot = Some(snapshot);
+                if let Some(id) = completed? {
                     completed_session = Some(id);
                     Ok(true)
                 } else {
@@ -938,6 +1150,12 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
         );
         if completion.is_err() {
             diagnose("first-send completion failure");
+            eprintln!(
+                "desktop first-send completion snapshots={}",
+                json!({
+                    "first":first_completion_snapshot, "last":last_completion_snapshot,
+                })
+            );
         }
         completion?;
         assert_ne!(completed_session.as_deref(), Some(seed_id.as_str()));
@@ -967,8 +1185,28 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
             native,
             &errors,
             "selected new Session's model settings root",
-            || Ok(bounds("Close model selection")?.len() == 1 && bounds("Choose model")?.len() == 1),
+            || {
+                for label in [
+                    "Choose model",
+                    "Edit current model settings",
+                    "Manage external agents",
+                    "Manage connections and models",
+                ] {
+                    if bounds(label)?.len() != 1 {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
         )?;
+        assert!(
+            bounds("Close model selection")?.is_empty(),
+            "Desktop root has no terminal close header"
+        );
+        assert!(
+            bounds("Back to model settings")?.is_empty(),
+            "Desktop root has no models-pane back header"
+        );
         paint("actual GPU frame of selected Session's model settings")?;
         click("Choose model")?;
         models_pane("persisted new Session's real models pane")?;

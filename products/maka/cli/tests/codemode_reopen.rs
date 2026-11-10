@@ -31,6 +31,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
+use maka_agent_facts::execution::CodeLanguage;
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::host::Client as HostClient;
@@ -481,16 +482,15 @@ impl Model {
 
     fn answer(&mut self, body: &Value, observed: &mpsc::UnboundedSender<()>) -> String {
         let messages = body["messages"].as_array().expect("actual model messages");
-        let main = messages.iter().any(|message| {
+        if !messages.iter().any(|message| {
             message["role"] == "user" && message["content"].to_string().contains(&self.nonce)
-        });
-        let tools = body["tools"].as_array();
-        let code_mode =
-            tools.is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == "exec"));
-        if !main || !code_mode {
+        }) || !body["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == "exec"))
+        {
             return sse(json!({"content":"auxiliary complete"}), "stop");
         }
-        let tools = tools.unwrap();
+        let tools = body["tools"].as_array().unwrap();
         for (name, field) in [("exec", "code"), ("wait", "cell_id")] {
             let tool = tools
                 .iter()
@@ -502,10 +502,6 @@ impl Model {
                     .is_some()
             );
         }
-        eprintln!(
-            "codemode model step {:?}, original call {}",
-            self.step, self.pending
-        );
         if self.step == Step::Interrupted {
             assert!(
                 self.reopened,
@@ -706,21 +702,68 @@ async fn serve(
     }
 }
 
+fn work_metadata(value: &Value) -> Value {
+    let execution = &value["execution"];
+    let state = &execution["state"];
+    let waits: Vec<_> = state["waits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|wait| {
+            json!({"kind":wait["kind"],"cell":wait["cell"],"task":wait["task"],
+            "attempt":wait["attempt"],"approval":wait["approval"],"run":wait["run"],
+            "blocker":wait["blocker"],"tool":wait["tool"].as_object().map(|_| {
+                json!({"attempt":wait["tool"]["attempt"],"call":wait["tool"]["call"]})
+            })})
+        })
+        .collect();
+    let blockers: Vec<_> = state["blockers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|blocker| json!({"id":blocker["id"],"reason":{"kind":blocker["reason"]["kind"]}}))
+        .collect();
+    json!({"kind":value["kind"],"shared":value["shared"],
+        "execution":{"sessionId":execution["sessionId"],"turnId":execution["turnId"],
+            "runId":execution["runId"],"highWater":execution["highWater"],
+            "state":{"kind":state["kind"],"waits":waits,"blockers":blockers}},
+        "pendingInteractions":value["pendingInteractions"]})
+}
+
+#[derive(Debug, Default)]
+struct WorkObservations {
+    first: Option<Result<Value>>,
+    last: Option<Result<Value>>,
+}
+
 async fn execution(
     client: &Client,
     session: &str,
     target: &Value,
     cell: Option<&Value>,
+    mut observations: Option<&mut WorkObservations>,
 ) -> Result<Value> {
     loop {
-        let work = phase(
-            "original Run observation",
-            client.query(
-                "agent",
-                "work",
-                json!({"sessionId":session,"target":target}),
-            ),
-        )
+        let work = phase("original Run observation", async {
+            let work = client
+                .query(
+                    "agent",
+                    "work",
+                    json!({"sessionId":session,"target":target}),
+                )
+                .await;
+            if let Some(observations) = observations.as_deref_mut() {
+                let metadata = work
+                    .as_ref()
+                    .map(work_metadata)
+                    .map_err(|error| error.clone());
+                if observations.first.is_none() {
+                    observations.first = Some(metadata.clone());
+                }
+                observations.last = Some(metadata);
+            }
+            work
+        })
         .await?;
         match work["kind"].as_str() {
             Some("pending") => {}
@@ -735,10 +778,15 @@ async fn execution(
                         return Ok(execution.clone());
                     }
                     (_, Some("admitted" | "running" | "waiting")) => {}
-                    _ => return Err(format!("unexpected original Run: {work}")),
+                    _ => return Err(format!("unexpected original Run: {}", work_metadata(&work))),
                 }
             }
-            _ => return Err(format!("original Run unavailable: {work}")),
+            _ => {
+                return Err(format!(
+                    "original Run unavailable: {}",
+                    work_metadata(&work)
+                ));
+            }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -847,6 +895,7 @@ async fn case(
     model: &Arc<Mutex<Model>>,
     observed: &mut mpsc::UnboundedReceiver<()>,
     base: &str,
+    language: CodeLanguage,
 ) -> Result<()> {
     hosts.push(Host::spawn(sandbox)?);
     let (first, _) = phase("first default Host ready", hosts[0].ready()).await?;
@@ -869,7 +918,7 @@ async fn case(
         "expectedCatalogRevision":catalog["revision"],"connection":{
             "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
             "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
-            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":"javascript","apiProtocol":"openai-chat-completions"}}
+            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
         }
     }), Attachments::new()).await?;
     assert_eq!(connection["kind"], "committed");
@@ -907,7 +956,7 @@ async fn case(
         Err(_) => {
             let diagnostic = tokio::time::timeout(Duration::from_secs(5), clients[0].query(
                 "agent", "work", json!({"sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]}})
-            )).await;
+            )).await.map(|result| result.map(|work| work_metadata(&work)));
             eprintln!("draftReady pending; original public work: {diagnostic:?}");
             match tokio::time::timeout_at(draft_deadline, observed.recv()).await {
                 Ok(Some(())) => {}
@@ -933,6 +982,7 @@ async fn case(
             session,
             &json!({"kind":"message","messageId":sent["messageId"]}),
             Some(&draft),
+            None,
         ),
     )
     .await?;
@@ -1007,7 +1057,10 @@ async fn case(
     let vm = one_event(&before, &run, &draft, "vm_bound");
     assert_eq!(
         vm["item"]["recorded"]["fact"]["event"]["binding"]["runtime"],
-        "maka.javascript.v8-host"
+        match language {
+            CodeLanguage::JavaScript => "maka.javascript.v8-host",
+            CodeLanguage::Python => "maka.python.monty-child",
+        }
     );
     let source_blob =
         maka_agent_state::ContentBlob::new(model.lock().unwrap().draft_code.as_bytes().to_vec());
@@ -1083,11 +1136,24 @@ async fn case(
         .await?,
         "receipts".into(),
     )?);
-    let completed = phase(
+    let mut observations = WorkObservations::default();
+    let completion = phase(
         "same Run interrupted notification, old wait, and new exec",
-        execution(&clients[1], session, &target, None),
+        execution(&clients[1], session, &target, None, Some(&mut observations)),
     )
-    .await?;
+    .await;
+    let completed = match completion {
+        Ok(completed) => completed,
+        Err(error) => {
+            let waiting = work_metadata(&json!({"kind":"delivered","execution":waiting}));
+            let state = model.lock().map(|state| {
+                json!({"step":format!("{:?}", state.step),"pending":state.pending,"reopened":state.reopened})
+            }).map_err(|_| "model state lock poisoned");
+            return Err(format!(
+                "{error}; pre-reopen work metadata: {waiting}; post-reopen original work: {observations:?}; model={state:?}"
+            ));
+        }
+    };
     assert_eq!(completed["runId"], run);
     assert_eq!(completed["turnId"], waiting["turnId"]);
     assert_eq!(
@@ -1201,6 +1267,73 @@ async fn case(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn javascript_cell_cold_root_preserves_accepted_values_and_never_replays_known_child() {
+    cold_root(CodeLanguage::JavaScript).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_cell_cold_root_preserves_accepted_values_and_never_replays_known_child() {
+    cold_root(CodeLanguage::Python).await;
+}
+
+fn cell_scripts(language: CodeLanguage, command: &str, nonce: &str) -> (String, String, String) {
+    match language {
+        CodeLanguage::JavaScript => (
+            format!("store('a',1); text({{stage:'baselineReady',nonce:{nonce}}});"),
+            format!(
+                "if(load('a')!==1 || load('b')!==undefined) throw new Error('baseline not canonical');\nconst child=await tools.Shell({{command:{command},login:false,timeout_ms:10000}});\nstore('a',2); store('b',3); text({{stage:'draftReady',nonce:{nonce},a:load('a'),b:load('b'),child}});\nawait yield_control(); await new Promise(resolve=>setTimeout(resolve,600000));"
+            ),
+            format!(
+                "const a=load('a'); const b_missing=load('b')===undefined; if(a!==1 || !b_missing) throw new Error('interrupted draft leaked'); text({{stage:'canonicalRead',nonce:{nonce},a,b_missing}});"
+            ),
+        ),
+        CodeLanguage::Python => (
+            format!(
+                r#"store("a", 1)
+text({{"stage": "baselineReady", "nonce": {nonce}}})
+"#
+            ),
+            format!(
+                r#"import asyncio
+
+if load("a") != 1 or load("b") is not None:
+    raise ValueError("baseline not canonical")
+
+child = await tools.Shell({{
+    "command": {command},
+    "login": False,
+    "timeout_ms": 10000,
+}})
+store("a", 2)
+store("b", 3)
+text({{
+    "stage": "draftReady",
+    "nonce": {nonce},
+    "a": load("a"),
+    "b": load("b"),
+    "child": child,
+}})
+await yield_control()
+await asyncio.sleep(600)
+"#
+            ),
+            format!(
+                r#"a = load("a")
+b_missing = load("b") is None
+if a != 1 or not b_missing:
+    raise ValueError("interrupted draft leaked")
+text({{
+    "stage": "canonicalRead",
+    "nonce": {nonce},
+    "a": a,
+    "b_missing": b_missing,
+}})
+"#
+            ),
+        ),
+    }
+}
+
+async fn cold_root(language: CodeLanguage) {
     let sandbox = Sandbox::new()
         .await
         .expect("owned HOME, Root, workspace and external Journal");
@@ -1210,16 +1343,11 @@ async fn javascript_cell_cold_root_preserves_accepted_values_and_never_replays_k
     );
     let command = serde_json::to_string(&format!("python3 -c \"{script}\"")).unwrap();
     let quoted_nonce = serde_json::to_string(&nonce).unwrap();
+    let (baseline_code, draft_code, read_code) = cell_scripts(language, &command, &quoted_nonce);
     let model = Arc::new(Mutex::new(Model {
-        baseline_code: format!(
-            "store('a',1); text({{stage:'baselineReady',nonce:{quoted_nonce}}});"
-        ),
-        draft_code: format!(
-            "if(load('a')!==1 || load('b')!==undefined) throw new Error('baseline not canonical');\nconst child=await tools.Shell({{command:{command},login:false,timeout_ms:10000}});\nstore('a',2); store('b',3); text({{stage:'draftReady',nonce:{quoted_nonce},a:load('a'),b:load('b'),child}});\nawait yield_control(); await new Promise(resolve=>setTimeout(resolve,600000));"
-        ),
-        read_code: format!(
-            "const a=load('a'); const b_missing=load('b')===undefined; if(a!==1 || !b_missing) throw new Error('interrupted draft leaked'); text({{stage:'canonicalRead',nonce:{quoted_nonce},a,b_missing}});"
-        ),
+        baseline_code,
+        draft_code,
+        read_code,
         nonce,
         step: Step::Baseline,
         serial: 0,
@@ -1244,7 +1372,7 @@ async fn javascript_cell_cold_root_preserves_accepted_values_and_never_replays_k
     let mut inspectors = Vec::new();
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
         tokio::select! {
-            result = case(&sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
+            result = case(&sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base, language) => result,
             result = &mut server => { server_collected = true; Err(format!("loopback model ended: {result:?}")) },
         }
     })).catch_unwind().await;

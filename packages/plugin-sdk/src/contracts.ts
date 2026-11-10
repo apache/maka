@@ -775,6 +775,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'cleanup_unconfirmed',
                       },
                       reference: {
@@ -4609,6 +4626,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'cleanup_unconfirmed',
                       },
                       reference: {
@@ -5999,6 +6033,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'cleanup_unconfirmed',
                       },
                       reference: {
@@ -6854,6 +6905,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
                   },
                   {
                     type: 'object',
@@ -9194,6 +9262,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
                   },
                   {
                     type: 'object',
@@ -38891,6 +38976,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
                   },
                   {
                     type: 'object',

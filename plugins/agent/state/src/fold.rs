@@ -35,6 +35,9 @@ use serde_json::Value;
 mod external;
 pub use external::{ExternalClosure, ExternalTask};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunView {
@@ -991,11 +994,25 @@ impl RunView {
                 let current = self.attempts.get_mut(attempt).ok_or_else(|| {
                     StoreError::InvalidTransition("cleanup has no original model attempt".into())
                 })?;
+                require(
+                    current.admission.is_some(),
+                    "cleanup requires the original model admission",
+                )?;
                 current.cleanup = match (&current.cleanup, cleanup) {
                     (OperationCleanup::Confirmed, _) => OperationCleanup::Confirmed,
                     (_, OperationCleanup::Unconfirmed) => current.cleanup.clone(),
                     _ => cleanup.clone(),
                 };
+                if current.cleanup == OperationCleanup::Confirmed {
+                    for blocker in self.blockers.values_mut() {
+                        if blocker.decision.is_none()
+                            && blocker.resolved_by.is_none()
+                            && matches!(&blocker.reason, BlockerKind::ModelCleanupUnconfirmed { attempt: id, .. } if id == attempt)
+                        {
+                            blocker.resolved_by = Some(recorded.id);
+                        }
+                    }
+                }
             }
             Fact::ModelInterrupted {
                 attempt,
@@ -1296,21 +1313,27 @@ impl RunView {
                     is_error: *is_error,
                 };
                 if let Some(existing) = &current.local_returned {
-                    if existing != &returned {
+                    if existing != &returned
+                        && (existing.settlement
+                            != maka_agent_facts::tool_call::ToolSettlement::Unknown
+                            || returned.settlement
+                                == maka_agent_facts::tool_call::ToolSettlement::Unknown)
+                    {
                         return Err(StoreError::EventConflict);
                     }
-                } else {
-                    self.tools
-                        .get_mut(&tool_key(tool))
-                        .expect("validated tool")
-                        .local_returned = Some(returned);
                 }
-                for blocker in self.blockers.values_mut() {
-                    if blocker.decision.is_none()
-                        && blocker.resolved_by.is_none()
-                        && matches!(&blocker.reason,BlockerKind::OriginalAdmissionUnknown{tool:key} if key==tool)
-                    {
-                        blocker.resolved_by = Some(recorded.id);
+                self.tools
+                    .get_mut(&tool_key(tool))
+                    .expect("validated tool")
+                    .local_returned = Some(returned);
+                if *settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown {
+                    for blocker in self.blockers.values_mut() {
+                        if blocker.decision.is_none()
+                            && blocker.resolved_by.is_none()
+                            && matches!(&blocker.reason,BlockerKind::OriginalAdmissionUnknown{tool:key} if key==tool)
+                        {
+                            blocker.resolved_by = Some(recorded.id);
+                        }
                     }
                 }
             }
@@ -1745,7 +1768,11 @@ impl RunView {
                         )?;
                     }
                 }
-                if matches!(current.reason, BlockerKind::ToolCleanupUnconfirmed { .. }) {
+                if matches!(
+                    current.reason,
+                    BlockerKind::ToolCleanupUnconfirmed { .. }
+                        | BlockerKind::ModelCleanupUnconfirmed { .. }
+                ) {
                     require(
                         matches!(scope, RiskActionScope::RunCancellation),
                         "unconfirmed local tool cleanup permits only whole-run cancellation",
@@ -1964,8 +1991,11 @@ impl RunView {
                     current.admitted
                         && current.original.is_none()
                         && current.prohibited_before_host.is_none()
-                        && current.local_returned.is_none(),
-                    "original admission blocker requires an admitted tool without original lookup or prevention proof",
+                        && current.local_returned.as_ref().is_none_or(|returned| {
+                            returned.settlement
+                                == maka_agent_facts::tool_call::ToolSettlement::Unknown
+                        }),
+                    "original admission blocker requires an admitted tool without known local return, original lookup or prevention proof",
                 )
             }
             BlockerKind::CodeCellRecoveryUnavailable { cell } => {
@@ -1983,6 +2013,20 @@ impl RunView {
                 require(
                     !diagnostic.trim().is_empty(),
                     "empty tool cleanup diagnostic",
+                )
+            }
+            BlockerKind::ModelCleanupUnconfirmed {
+                attempt,
+                diagnostic,
+            } => {
+                let original = self.attempt(attempt)?;
+                require(
+                    original.admission.is_some() && original.cleanup != OperationCleanup::Confirmed,
+                    "model cleanup blocker requires an unconfirmed original admission",
+                )?;
+                require(
+                    !diagnostic.trim().is_empty(),
+                    "empty model cleanup diagnostic",
                 )
             }
             BlockerKind::CleanupUnconfirmed { reference } => {
@@ -2112,6 +2156,7 @@ pub(crate) fn blocker_covers(reason: &BlockerKind, tool: &Tool) -> bool {
         | BlockerKind::ToolCleanupUnconfirmed { tool: key, .. } => *key == tool.key,
         BlockerKind::CleanupUnconfirmed { reference } => tool.original.as_ref() == Some(reference),
         BlockerKind::CurrentAuthorityUnavailable { .. }
+        | BlockerKind::ModelCleanupUnconfirmed { .. }
         | BlockerKind::ExternalEffectUnknown { .. }
         | BlockerKind::ExternalPublicationUnavailable { .. }
         | BlockerKind::ExternalPublicationItem { .. }

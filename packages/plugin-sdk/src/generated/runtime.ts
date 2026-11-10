@@ -1273,6 +1273,11 @@ export type BlockerKind =
       diagnostic: string;
     }
   | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
       kind: 'cleanup_unconfirmed';
       reference: RecoveryRef;
     }

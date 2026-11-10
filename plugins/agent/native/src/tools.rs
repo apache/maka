@@ -259,6 +259,8 @@ fn catalog_inner(
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
+    let agent_contract = maka_agent_api::contract::contract();
+    let questions_contract = maka_interactions_api::questions::contract();
     let tool_names = ToolNames::Configured(
         selected
             .iter()
@@ -283,14 +285,14 @@ fn catalog_inner(
             };
             let contract = binding.contract();
             let resource_read = contract == &file_contract && selection.method == "readText";
-            let supported = if contract == &maka_agent_api::contract::contract() {
+            let supported = if contract == &agent_contract {
                 matches!(selection.method.as_str(),
                     "models" | "list" | "observe" | "history" | "create" | "fork" |
                     "send" | "stop" | "continueRun" | "pendingInteractions" | "interaction" |
                     "respond" | "queue" | "editQueue" | "work" | "execution")
             } else {
-                resource_read || (contract == &maka_skills_api::contract() && matches!(selection.method.as_str(), "search" | "load"))
-                    || (contract == &maka_interactions_api::questions::contract() && selection.method == "ask")
+                resource_read || (contract == &skill_contract && matches!(selection.method.as_str(), "search" | "load"))
+                    || (contract == &questions_contract && selection.method == "ask")
                     || contract == &maka_plugin_core::deployment::management::deployment_manager_contract()
             };
             if supported && selection.result == ToolResult::Json {
