@@ -381,8 +381,8 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
 async fn compact_cell_tool_result_reads_the_original_observation() {
     use maka_agent_facts::{
         cells::{CellReply, CellReplyState},
-        model::prompt_source::source::{JsonSource, SourceBytes, json as stream},
-        tool_output::{DurableToolProjection, ReturnedToolResult},
+        model::prompt_source::source::json as stream,
+        tool_output::DurableToolProjection,
     };
     use maka_agent_state::session_history::tool_result_source::ToolResultReader;
 
@@ -409,46 +409,47 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
             },
             &tool.call,
         );
-        let observation = ContentBlob::json(&CellObservation::Completed {
+        let observed = CellObservation::Completed {
             cell_id: cell,
             content: vec![],
             result: json!({"answer":"original evidence"}),
-        })?;
-        let returned = ContentBlob::json(&ToolReturn {
-            schema_version: SCHEMA_VERSION,
-            artifacts: vec![],
-            body: ReturnedToolResult {
-                output: ToolOutput::Cell(Box::new(CellReply {
-                    cell,
-                    state: CellReplyState::Completed {
-                        result: observation.reference().clone(),
-                    },
-                    observation: Value::Null,
-                })),
-                projection: DurableToolProjection::Text {
-                    text: "Done".into(),
-                },
-                is_error: false,
-                loaded_tools: Default::default(),
-            },
-        })?;
-        let reference = returned.reference().clone();
-        let fact = Fact::LocalToolReturned {
-            tool,
-            settlement: ToolSettlement::Returned,
-            result: reference.clone(),
-            is_error: false,
-            cell_observation: Some(observation.reference().clone()),
         };
-        rig.append(vec![fact.clone()], vec![observation, returned])
-            .await?;
+        let observation = ContentBlob::json(&observed)?;
+        let success = ToolSuccess::projected(
+            ToolOutput::Cell(Box::new(CellReply {
+                cell,
+                state: CellReplyState::Completed {
+                    result: observation.reference().clone(),
+                },
+                observation: serde_json::to_value(observed)?,
+            })),
+            DurableToolProjection::Text {
+                text: "Done".into(),
+            },
+        );
+        let fact = super::super::effects::publish_return_for_test(
+            &driver.state,
+            &driver.access,
+            &tool,
+            success,
+            Some(observation),
+        )
+        .await?;
+        let Fact::LocalToolReturned {
+            result: reference, ..
+        } = &fact
+        else {
+            return Err("missing local return".into());
+        };
+        let persisted = driver.state.content(run, reference.clone()).await?;
+        assert!(!String::from_utf8(persisted)?.contains("original evidence"));
         let stop = CancellationToken::new();
         let cut = history.capture().await?;
         let reader = ToolResultReader::live(&history, &cut, run, &stop);
         let work = resources.acquire_work().await?;
         let budget = work.budget();
         let value = reader
-            .result(&fact, &reference, budget.clone())
+            .result(&fact, reference, budget.clone())
             .await?
             .value(budget.clone())
             .await?;
@@ -457,32 +458,6 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
             .ok_or("missing original observation")?;
         assert!(stream::text_eq(&answer.text()?, "original evidence", budget.clone()).await?);
 
-        let payload = json!({"answer":"shared payload"});
-        let result = ReturnedToolResult {
-            output: ToolOutput::Json(payload.clone()),
-            projection: DurableToolProjection::Json { value: payload },
-            is_error: false,
-            loaded_tools: Default::default(),
-        };
-        let encoded = serde_json::to_vec(&ToolReturn {
-            schema_version: SCHEMA_VERSION,
-            artifacts: vec![],
-            body: result.clone(),
-        })?;
-        let decoded: ToolReturn<ReturnedToolResult> = serde_json::from_slice(&encoded)?;
-        assert_eq!(decoded.body, result);
-        let source = JsonSource::new(SourceBytes::Inline(encoded.into()));
-        let maka_agent_state::session_history::tool_result_source::ToolResultSource::Returned {
-            body,
-            ..
-        } = ToolResultReader::returned(source, budget.clone()).await?
-        else {
-            return Err("missing projected tool result".into());
-        };
-        let answer = stream::field(&body, &["projection", "value", "answer"], budget.clone())
-            .await?
-            .ok_or("missing shared projection")?;
-        assert!(stream::text_eq(&answer.text()?, "shared payload", budget).await?);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()
@@ -498,11 +473,10 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_operation_receipt_survives_snapshot_transfer() {
     use maka_agent_facts::{
-        model::prompt_source::source::json as stream,
-        tool_output::{DurableToolProjection, OperationProjection, StoredOperationReturn},
+        model::prompt_source::source::json as stream, tool_output::DurableToolProjection,
     };
     use maka_agent_state::session_history::tool_result_source::{
-        ToolResultReader, ToolResultSource,
+        ToolProjectionSource, ToolResultReader, ToolResultSource,
     };
     use maka_plugin_core::operation::{
         OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
@@ -559,56 +533,36 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
             unreachable!()
         };
         *cleanup = OperationCleanup::Unconfirmed;
-        let projection =
-            OperationProjection::record(&reply, DurableToolProjection::Json { value })?;
-        let (recorded, material) = maka_agent_state::operation::record_reply(reply)?;
-        let material = material.unwrap();
-        assert_eq!(
-            material.reference(),
-            ContentBlob::json(&outcome)?.reference()
-        );
-        let returned = ContentBlob::json(&ToolReturn {
-            schema_version: SCHEMA_VERSION,
-            artifacts: vec![],
-            body: StoredOperationReturn {
-                operation: recorded.clone(),
-                projection,
-                is_error: false,
-                loaded_tools: Default::default(),
-            },
-        })?;
-        let result = returned.reference().clone();
-        let fact = Fact::HostToolResultRecorded {
-            tool: tool.clone(),
-            reference: reference.clone(),
-            result: result.clone(),
-            is_error: false,
-        };
         rig.append(
             vec![
-                Fact::ToolOriginalBound {
-                    tool: tool.clone(),
-                    reference,
-                },
-                Fact::OperationObserved {
-                    tool: tool.clone(),
-                    reply: legacy.clone(),
-                },
-                Fact::OperationObserved {
-                    tool: tool.clone(),
-                    reply: recorded.clone(),
-                },
-                fact.clone(),
+                Fact::ToolOriginalBound { tool: tool.clone(), reference },
+                Fact::OperationObserved { tool: tool.clone(), reply: legacy },
             ],
-            vec![material, returned],
-        )
-        .await?;
-        assert_eq!(
-            driver.state.frontier(run).await?.tools[&maka_agent_state::fold::tool_key(&tool)]
-                .receipt
-                .as_ref(),
-            Some(&recorded.receipt)
+            vec![],
+        ).await?;
+        let success = ToolSuccess::projected(
+            ToolOutput::Operation(Box::new(reply)),
+            DurableToolProjection::Json { value },
         );
+        let fact = super::super::effects::publish_return_for_test(
+            &driver.state, &driver.access, &tool, success, None,
+        ).await?;
+        let Fact::HostToolResultRecorded { result, .. } = &fact else {
+            return Err("missing Host return".into());
+        };
+        let persisted = driver.state.content(run, result.clone()).await?;
+        assert!(!String::from_utf8(persisted)?.contains("shared operation evidence"));
+        let view = driver.state.frontier(run).await?;
+        let expected = ContentBlob::json(&outcome)?;
+        assert!(matches!(
+            &view.tools[&maka_agent_state::fold::tool_key(&tool)].receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: maka_agent_facts::operation::RecordedOperationResult::Referenced { content, is_error: false },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            }) if content == expected.reference()
+        ));
 
         let stop = CancellationToken::new();
         let captured = history
@@ -650,34 +604,21 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
         let resources = driver.owner.services.model_preparation_resources();
         let work = resources.acquire_work().await?;
         let budget = work.budget();
-        let ToolResultSource::Returned { body, .. } =
-            reader.result(&fact, &result, budget.clone()).await?
-        else {
+        let ToolResultSource::Returned(returned) = reader.result(&fact, result, budget.clone()).await? else {
             return Err("missing shared return".into());
         };
-        for path in [
-            &[
-                "output", "value", "receipt", "outcome", "result", "value", "answer",
-            ][..],
-            &["projection", "value", "answer"][..],
+        let fields = returned.fields(budget.clone()).await?;
+        let output = fields.value(budget.clone()).await?;
+        let Some(ToolProjectionSource::Json(projection)) = fields.projection(budget.clone()).await? else {
+            return Err("missing shared projection".into());
+        };
+        for (source, path) in [
+            (output, &["receipt", "outcome", "result", "value", "answer"][..]),
+            (projection.value(budget.clone()).await?, &["answer"][..]),
         ] {
-            let answer = stream::field(&body, path, budget.clone())
-                .await?
-                .ok_or("missing shared result")?;
-            assert!(
-                stream::text_eq(&answer.text()?, "shared operation evidence", budget.clone())
-                    .await?
-            );
+            let answer = stream::field(&source, path, budget.clone()).await?.ok_or("missing shared result")?;
+            assert!(stream::text_eq(&answer.text()?, "shared operation evidence", budget.clone()).await?);
         }
-        let original = reader.operation_reply(&legacy, budget.clone()).await?;
-        let answer = stream::field(
-            &original,
-            &["receipt", "outcome", "result", "value", "answer"],
-            budget.clone(),
-        )
-        .await?
-        .ok_or("missing legacy result")?;
-        assert!(stream::text_eq(&answer.text()?, "shared operation evidence", budget).await?);
         root.shutdown().await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))

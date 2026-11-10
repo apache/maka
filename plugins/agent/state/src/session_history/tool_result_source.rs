@@ -55,75 +55,304 @@ pub struct ToolResultReader {
     stop: CancellationToken,
 }
 pub enum ToolResultSource {
-    Returned {
-        envelope: JsonSource,
-        body: JsonSource,
-        reader: Option<ToolResultReader>,
-    },
-    External {
-        body: JsonSource,
-    },
+    Returned(ReturnedToolSource),
+    External { body: JsonSource },
     Direct(JsonSource),
+}
+pub struct ReturnedToolSource {
+    body: JsonSource,
+    reader: Option<ToolResultReader>,
 }
 pub struct ImportedToolResult {
     pub call_id: pull::TextSource,
     pub name: pull::TextSource,
     pub result: ToolResultSource,
 }
-impl ToolResultSource {
-    pub fn returned(self) -> Option<JsonSource> {
-        match self {
-            Self::Returned { envelope, .. } => Some(envelope),
-            Self::External { .. } | Self::Direct(_) => None,
-        }
-    }
+
+enum OutputSource {
+    Inline(JsonSource),
+    Operation {
+        reply: JsonSource,
+        reader: ToolResultReader,
+    },
+}
+
+pub struct ToolResultFields {
+    output: OutputSource,
+    projection: Option<JsonValue>,
+    is_error: Option<JsonValue>,
+    cell_reader: Option<ToolResultReader>,
+}
+
+pub enum ToolProjectionSource {
+    Text(JsonValue),
+    Json(JsonProjectionSource),
+    Content(JsonSource),
+    Failure,
+}
+
+pub struct JsonProjectionSource(JsonProjection);
+
+enum JsonProjection {
+    Inline(JsonSource),
+    FromOutput(JsonSource),
+    FromOperation {
+        reply: JsonSource,
+        reader: ToolResultReader,
+        part: OperationProjectionPart,
+    },
+}
+
+enum OperationProjectionPart {
+    Result,
+    Receipt,
+}
+
+impl JsonProjectionSource {
     pub async fn value(self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
-        match self {
-            Self::Returned { body, reader, .. } => {
-                let value = required(&body, &["output", "value"], &budget).await?.source;
-                let Some(reader) = reader else {
-                    return Ok(value);
-                };
-                let format = required(&body, &["output", "format"], &budget)
-                    .await?
-                    .text()?;
-                if !json::text_eq(&format, "cell", budget.clone()).await?
-                    || json::field(&value, &["observation"], budget.clone())
-                        .await?
-                        .is_some()
-                {
-                    return Ok(value);
+        match self.0 {
+            JsonProjection::Inline(value) => Ok(value),
+            JsonProjection::FromOutput(output) => {
+                let (format, value) = output_fields(&output, &budget).await?;
+                if json::text_eq(&format, "json", budget.clone()).await? {
+                    Ok(value)
+                } else if json::text_eq(&format, "operation", budget.clone()).await? {
+                    Ok(
+                        required(&value, &["receipt", "outcome", "result", "value"], &budget)
+                            .await?
+                            .source,
+                    )
+                } else {
+                    Err(invalid("shared projection requires a returned JSON value"))
                 }
-                let state = required(&value, &["state"], &budget).await?.source;
-                let kind = required(&state, &["kind"], &budget).await?.text()?;
-                if !json::text_eq(&kind, "completed", budget.clone()).await? {
-                    return Err(invalid("Cell result has no original observation"));
+            }
+            JsonProjection::FromOperation {
+                reply,
+                reader,
+                part,
+            } => {
+                let (reply, result) = reader.operation_source(reply, &budget).await?;
+                match part {
+                    OperationProjectionPart::Receipt => Ok(reply),
+                    OperationProjectionPart::Result => {
+                        let result = result.ok_or_else(|| {
+                            invalid("shared projection has no original success value")
+                        })?;
+                        Ok(required(&result, &["value"], &budget).await?.source)
+                    }
                 }
-                let reference =
-                    reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
-                let observation = reader.source(&reference).await?;
-                let end = value
-                    .bytes()
-                    .len()
-                    .and_then(|size| size.checked_sub(1))
-                    .ok_or_else(|| invalid("Cell reply has no bounded object bytes"))?;
-                let parts = [
-                    value.bytes().slice(0..end)?,
-                    SourceBytes::Inline((&b",\"observation\":"[..]).into()),
-                    observation.bytes().clone(),
-                    SourceBytes::Inline((&b"}"[..]).into()),
-                ];
-                Ok(JsonSource::new(SourceBytes::Source(Arc::new(
-                    JoinedJson::new(parts.into())?,
-                ))))
             }
-            Self::External { body } => {
-                Ok(required(&body, &["output", "value"], &budget).await?.source)
-            }
-            Self::Direct(source) => Ok(source),
         }
     }
 }
+
+impl ToolProjectionSource {
+    /// The archive codec consumes a tagged projection, never the return body.
+    pub async fn into_json(self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
+        let (prefix, value): (&'static [u8], _) = match self {
+            Self::Text(value) => (b"{\"kind\":\"text\",\"text\":", value.source),
+            Self::Json(value) => (b"{\"kind\":\"json\",\"value\":", value.value(budget).await?),
+            Self::Content(parts) => (b"{\"kind\":\"content\",\"parts\":", parts),
+            Self::Failure => return Ok(JsonSource::new(literal(b"{\"kind\":\"failure\"}"))),
+        };
+        joined_json(vec![literal(prefix), value.into_bytes(), literal(b"}")])
+    }
+}
+
+impl ToolResultSource {
+    pub async fn fields(
+        &self,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<Option<ToolResultFields>> {
+        match self {
+            Self::Returned(returned) => Ok(Some(returned.fields(budget).await?)),
+            Self::External { body } => Ok(Some(ToolResultFields::read(body, None, budget).await?)),
+            Self::Direct(_) => Ok(None),
+        }
+    }
+
+    pub async fn value(self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
+        match self {
+            Self::Direct(source) => Ok(source),
+            source => {
+                source
+                    .fields(budget.clone())
+                    .await?
+                    .expect("returned result")
+                    .value(budget)
+                    .await
+            }
+        }
+    }
+}
+
+impl ReturnedToolSource {
+    pub async fn fields(&self, budget: Arc<dyn SourceBudget>) -> io::Result<ToolResultFields> {
+        ToolResultFields::read(&self.body, self.reader.as_ref(), budget).await
+    }
+}
+
+impl ToolResultFields {
+    async fn read(
+        body: &JsonSource,
+        reader: Option<&ToolResultReader>,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<Self> {
+        let [output, operation, projection, is_error, cell_error] = json::fields(
+            body,
+            &["output", "operation", "projection", "is_error", "isError"],
+            budget,
+        )
+        .await?
+        .try_into()
+        .expect("one field per requested name");
+        let output = match operation {
+            Some(reply) => OutputSource::Operation {
+                reply: reply.source,
+                reader: reader
+                    .cloned()
+                    .ok_or_else(|| invalid("shared operation return has no original Run scope"))?,
+            },
+            None => OutputSource::Inline(present(output)?.source),
+        };
+        Ok(Self {
+            output,
+            projection: projection.filter(|value| value.kind != JsonKind::Null),
+            is_error: is_error.or(cell_error),
+            cell_reader: reader.cloned(),
+        })
+    }
+
+    pub fn inline_output(&self) -> Option<&JsonSource> {
+        match &self.output {
+            OutputSource::Inline(output) => Some(output),
+            OutputSource::Operation { .. } => None,
+        }
+    }
+
+    pub async fn is_error(&self, budget: Arc<dyn SourceBudget>) -> io::Result<bool> {
+        let value = self
+            .is_error
+            .as_ref()
+            .ok_or_else(|| invalid("canonical tool result has no error flag"))?;
+        json::bool_value(&value.source, budget).await
+    }
+
+    pub async fn projection(
+        &self,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<Option<ToolProjectionSource>> {
+        let Some(projection) = &self.projection else {
+            return Ok(None);
+        };
+        let mut source = projection.source.clone();
+        if let OutputSource::Operation { reply, reader } = &self.output {
+            let [kind, inline] = json::fields(&source, &["kind", "projection"], budget.clone())
+                .await?
+                .try_into()
+                .expect("one field per requested name");
+            let kind = present(kind)?.text()?;
+            if json::text_eq(&kind, "inline", budget.clone()).await? {
+                source = present(inline)?.source;
+            } else {
+                let part = if json::text_eq(&kind, "result", budget.clone()).await? {
+                    OperationProjectionPart::Result
+                } else if json::text_eq(&kind, "receipt", budget.clone()).await? {
+                    OperationProjectionPart::Receipt
+                } else {
+                    return Err(invalid("unsupported shared operation projection"));
+                };
+                return Ok(Some(ToolProjectionSource::Json(JsonProjectionSource(
+                    JsonProjection::FromOperation {
+                        reply: reply.clone(),
+                        reader: reader.clone(),
+                        part,
+                    },
+                ))));
+            }
+        }
+        let [kind, text, value, parts] =
+            json::fields(&source, &["kind", "text", "value", "parts"], budget.clone())
+                .await?
+                .try_into()
+                .expect("one field per requested name");
+        let kind = present(kind)?.text()?;
+        let projection = if json::text_eq(&kind, "text", budget.clone()).await? {
+            ToolProjectionSource::Text(present(text)?)
+        } else if json::text_eq(&kind, "json", budget.clone()).await? {
+            ToolProjectionSource::Json(JsonProjectionSource(JsonProjection::Inline(
+                present(value)?.source,
+            )))
+        } else if json::text_eq(&kind, "content", budget.clone()).await? {
+            ToolProjectionSource::Content(present(parts)?.source)
+        } else if json::text_eq(&kind, "failure", budget.clone()).await? {
+            ToolProjectionSource::Failure
+        } else if json::text_eq(&kind, "from_output", budget.clone()).await? {
+            let output = self
+                .inline_output()
+                .ok_or_else(|| invalid("shared projection requires an inline output"))?;
+            ToolProjectionSource::Json(JsonProjectionSource(JsonProjection::FromOutput(
+                output.clone(),
+            )))
+        } else {
+            return Err(invalid("unsupported durable projection kind"));
+        };
+        Ok(Some(projection))
+    }
+
+    pub async fn value(&self, budget: Arc<dyn SourceBudget>) -> io::Result<JsonSource> {
+        let output = match &self.output {
+            OutputSource::Operation { reply, reader } => {
+                return Ok(reader.operation_source(reply.clone(), &budget).await?.0);
+            }
+            OutputSource::Inline(output) => output,
+        };
+        let (format, value) = output_fields(output, &budget).await?;
+        let Some(reader) = &self.cell_reader else {
+            return Ok(value);
+        };
+        if !json::text_eq(&format, "cell", budget.clone()).await? {
+            return Ok(value);
+        }
+        let [observation, state] = json::fields(&value, &["observation", "state"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        if observation.is_some() {
+            return Ok(value);
+        }
+        let state = present(state)?.source;
+        let kind = required(&state, &["kind"], &budget).await?.text()?;
+        if !json::text_eq(&kind, "completed", budget.clone()).await? {
+            return Err(invalid("Cell result has no original observation"));
+        }
+        let reference =
+            reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
+        let observation = reader.source(&reference).await?;
+        let end = value
+            .bytes()
+            .len()
+            .and_then(|size| size.checked_sub(1))
+            .ok_or_else(|| invalid("Cell reply has no bounded object bytes"))?;
+        joined_json(vec![
+            value.bytes().slice(0..end)?,
+            literal(b",\"observation\":"),
+            observation.into_bytes(),
+            literal(b"}"),
+        ])
+    }
+}
+async fn output_fields(
+    output: &JsonSource,
+    budget: &Arc<dyn SourceBudget>,
+) -> io::Result<(pull::TextSource, JsonSource)> {
+    let [format, value] = json::fields(output, &["format", "value"], budget.clone())
+        .await?
+        .try_into()
+        .expect("one field per requested name");
+    Ok((present(format)?.text()?, present(value)?.source))
+}
+
 impl ToolResultReader {
     pub fn live(
         history: &SessionHistory,
@@ -430,123 +659,37 @@ impl ToolResultReader {
             }
         }
         if returned {
-            let body = Self::returned_body(&source, budget, Some(self)).await?;
-            return Ok(ToolResultSource::Returned {
-                envelope: source,
-                body,
-                reader: Some(self.clone()),
-            });
+            return Self::read_return(source, Some(self.clone()), budget).await;
         }
         Ok(ToolResultSource::Direct(source))
     }
-    /// Decode an already scoped ToolReturn, including an imported part with no
-    /// execution Fact. This never invents a Run or resolves a bare reference.
+
+    /// Decode an already scoped ToolReturn without inventing a Run.
     pub async fn returned(
         envelope: JsonSource,
         budget: Arc<dyn SourceBudget>,
     ) -> io::Result<ToolResultSource> {
-        let body = Self::returned_body(&envelope, budget, None).await?;
-        Ok(ToolResultSource::Returned {
-            envelope,
-            body,
-            reader: None,
-        })
+        Self::read_return(envelope, None, budget).await
     }
-    async fn returned_body(
-        envelope: &JsonSource,
+
+    async fn read_return(
+        envelope: JsonSource,
+        reader: Option<Self>,
         budget: Arc<dyn SourceBudget>,
-        reader: Option<&Self>,
-    ) -> io::Result<JsonSource> {
-        let mut fields = json::fields(envelope, &["schemaVersion", "body"], budget.clone())
+    ) -> io::Result<ToolResultSource> {
+        let [version, body] = json::fields(&envelope, &["schemaVersion", "body"], budget.clone())
             .await?
-            .into_iter();
-        let version = present(fields.next().flatten())?;
-        if json::u64_value(&version.source, budget.clone()).await? != u64::from(SCHEMA_VERSION) {
+            .try_into()
+            .expect("one field per requested name");
+        if json::u64_value(&present(version)?.source, budget).await? != u64::from(SCHEMA_VERSION) {
             return Err(invalid("unsupported canonical ToolReturn schema"));
         }
-        let body = present(fields.next().flatten())?.source;
-        let mut fields = json::fields(
-            &body,
-            &[
-                "operation",
-                "projection",
-                "output",
-                "is_error",
-                "loaded_tools",
-            ],
-            budget.clone(),
-        )
-        .await?
-        .into_iter();
-        let operation = fields.next().flatten();
-        let projection = fields.next().flatten();
-        let output = fields.next().flatten();
-        let is_error = fields.next().flatten();
-        let loaded_tools = fields.next().flatten();
-        let Some(projection) = projection.filter(|projection| projection.kind == JsonKind::Object)
-        else {
-            if operation.is_some() {
-                return Err(invalid("shared operation return has no projection"));
-            }
-            return Ok(body);
-        };
-        let kind = required(&projection.source, &["kind"], &budget)
-            .await?
-            .text()?;
-        let (output, projection) = if let Some(operation) = operation {
-            let reader = reader
-                .ok_or_else(|| invalid("shared operation return has no original Run scope"))?;
-            let (reply, result) = reader.operation_source(operation.source, &budget).await?;
-            let projection = if json::text_eq(&kind, "result", budget.clone()).await? {
-                let result = result
-                    .ok_or_else(|| invalid("shared projection has no original success value"))?;
-                json_projection(required(&result, &["value"], &budget).await?.source)?
-            } else if json::text_eq(&kind, "receipt", budget.clone()).await? {
-                json_projection(reply.clone())?
-            } else if json::text_eq(&kind, "inline", budget.clone()).await? {
-                required(&projection.source, &["projection"], &budget)
-                    .await?
-                    .source
-            } else {
-                return Err(invalid("unsupported shared operation projection"));
-            };
-            let output = joined_json(vec![
-                literal(b"{\"format\":\"operation\",\"value\":"),
-                reply.into_bytes(),
-                literal(b"}"),
-            ])?;
-            (output, projection)
-        } else if json::text_eq(&kind, "from_output", budget.clone()).await? {
-            let output = present(output)?.source;
-            let format = required(&output, &["format"], &budget).await?.text()?;
-            let value = if json::text_eq(&format, "operation", budget.clone()).await? {
-                required(
-                    &output,
-                    &["value", "receipt", "outcome", "result", "value"],
-                    &budget,
-                )
-                .await?
-            } else if json::text_eq(&format, "json", budget.clone()).await? {
-                required(&output, &["value"], &budget).await?
-            } else {
-                return Err(invalid("shared projection requires a returned JSON value"));
-            };
-            (output, json_projection(value.source)?)
-        } else {
-            return Ok(body);
-        };
-        joined_json(vec![
-            literal(b"{\"output\":"),
-            output.into_bytes(),
-            literal(b",\"projection\":"),
-            projection.into_bytes(),
-            literal(b",\"is_error\":"),
-            present(is_error)?.source.into_bytes(),
-            literal(b",\"loaded_tools\":"),
-            present(loaded_tools)?.source.into_bytes(),
-            literal(b"}"),
-        ])
+        Ok(ToolResultSource::Returned(ReturnedToolSource {
+            body: present(body)?.source,
+            reader,
+        }))
     }
+
     fn cancelled(&self) -> io::Result<()> {
         if self.stop.is_cancelled() {
             return Err(io::Error::new(
@@ -637,14 +780,6 @@ fn joined_json(parts: Vec<SourceBytes>) -> io::Result<JsonSource> {
     Ok(JsonSource::new(SourceBytes::Source(Arc::new(
         JoinedJson::new(parts)?,
     ))))
-}
-
-fn json_projection(value: JsonSource) -> io::Result<JsonSource> {
-    joined_json(vec![
-        literal(b"{\"kind\":\"json\",\"value\":"),
-        value.into_bytes(),
-        literal(b"}"),
-    ])
 }
 
 struct JoinedJson {

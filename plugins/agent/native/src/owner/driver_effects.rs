@@ -895,6 +895,26 @@ async fn prepare_result(
     prepare_local_result(execution, key, result, settlement).await
 }
 
+#[cfg(test)]
+pub(super) async fn publish_return_for_test(
+    state: &maka_agent_state::Store,
+    access: &RunAccess,
+    key: &ToolKey,
+    result: ToolSuccess,
+    original_evidence: Option<ContentBlob>,
+) -> Result<Fact, RunError> {
+    let mut batch = prepare_local_result(
+        access.execution(),
+        key,
+        result,
+        maka_agent_facts::tool_call::ToolSettlement::Returned,
+    )
+    .await?;
+    batch.contents.extend(original_evidence);
+    batch.publish(state, access).await?;
+    Ok(batch.changes.pop().expect("published return").fact)
+}
+
 async fn prepare_local_result(
     execution: &ExecutionIdentity,
     key: &ToolKey,
