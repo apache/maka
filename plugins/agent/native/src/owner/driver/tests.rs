@@ -3356,3 +3356,124 @@ mod replay_origin_regressions {
 }
 
 mod tool_history;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compacted_history_checks_the_producing_requests_original_cut() {
+    use maka_agent_engine::ports::{Preparation, PreparedStep};
+    use maka_agent_facts::{
+        context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
+        history_snapshot::RequestSource,
+    };
+    let mut rig = Rig::new().unwrap();
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let NativeBackend::Model { model, .. } = &driver.backend else {
+            unreachable!()
+        };
+        let mut summary_request = None;
+        for purpose in [Preparation::Initial, Preparation::Summary] {
+            let view = driver.state.frontier(run).await?;
+            let PreparedStep {
+                request,
+                mut contents,
+                ..
+            } = model.prepare_step(&view, purpose, driver).await?;
+            let body = ContentBlob::json(&request)?;
+            contents.push(body.clone());
+            let attempt = ModelAttemptId::new();
+            rig.append(
+                vec![
+                    Fact::StepPrepared {
+                        step: request.step,
+                        request: body.reference().clone(),
+                        adjudications: vec![],
+                    },
+                    Fact::ModelAttemptPrepared {
+                        attempt,
+                        step: request.step,
+                    },
+                    Fact::ModelAttemptAdmitted {
+                        attempt,
+                        upstream: json!({"test":"compaction-cut"}),
+                    },
+                    Fact::ModelClosed {
+                        attempt,
+                        outcome: maka_agent_facts::accounting::Outcome::Success,
+                        diagnostic: None,
+                        usage: Default::default(),
+                        protocol: json!({
+                            "finishReason":"stop", "providerOptions":null, "responseId":null,
+                            "model":null, "timestamp":null, "compaction":null,
+                            "summary": (request.accounting.purpose == ModelPurpose::Summary)
+                                .then(|| json!({"kind":"text","summary":{"text":"Continue the original task."}})),
+                        }),
+                    },
+                    Fact::ModelCleanupObserved {
+                        attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                ],
+                contents,
+            )
+            .await?;
+            summary_request = Some(request);
+        }
+        let summary = summary_request.unwrap();
+        let capture: RequestSource = serde_json::from_slice(
+            &driver
+                .state
+                .content(run, summary.source_capture.clone())
+                .await?,
+        )?;
+        assert_ne!(
+            capture.cut.digest, capture.current.digest,
+            "the original request cut must differ from its later live frontier"
+        );
+        for (digest, accepted) in [
+            (summary.source_digest.clone(), true),
+            (capture.current.digest.clone(), false),
+        ] {
+            let baseline = ContentBlob::json(&CompactedContext {
+                source_capture: summary.source_capture.clone(),
+                checkpoint: ContextCheckpoint {
+                    mode: CheckpointMode::Standalone,
+                    covered_through: capture.current.through_sequence,
+                    source_digest: digest,
+                    previous_checkpoint_id: None,
+                    summary: CheckpointContent::Text("Continue the original task.".into()),
+                    summary_step_id: summary.step,
+                },
+                native: None,
+            })?;
+            let published = rig.append(
+                vec![Fact::ContextCompacted {
+                    baseline: baseline.reference().clone(),
+                }],
+                vec![baseline],
+            ).await;
+            if accepted {
+                published?;
+                let view = driver.state.frontier(run).await?;
+                model.prepare_step(&view, Preparation::Initial, driver).await?;
+            } else {
+                let error = published.err().ok_or("checkpoint with the later frontier digest was accepted")?;
+                assert!(error.to_string().contains("original frozen summary source"), "{error}");
+            }
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&outcome, Ok(Ok(Ok(())))),
+        "compaction source regression: {outcome:?}"
+    );
+    assert!(
+        cleanup.is_empty(),
+        "compaction fixture cleanup: {cleanup:?}"
+    );
+}
