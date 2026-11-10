@@ -508,6 +508,33 @@ fn valid_summary(
         && matches!(&protocol.summary,Some(SummaryResult::Text{summary}) if !summary.text.trim().is_empty()))
 }
 
+pub(crate) fn validate_legacy_lookup_resolution(
+    c: &Connection,
+    view: &RunView,
+    evidence: &ContentRef,
+) -> Result<(), StoreError> {
+    let summary: ModelAttemptId =
+        serde_json::from_slice(&sql::owned_content(c, view.run, evidence)?)?;
+    let current = view
+        .current_step
+        .ok_or_else(|| invalid("compaction recovery has no current request"))?;
+    let main = sql::request(c, view.run, current)?;
+    let attempt = sql::model_attempt(c, view.run, summary)?;
+    let original = sql::request(c, view.run, attempt.step)?;
+    if view.stopped
+        || view.has_unsettled_recovery()
+        || main.accounting.purpose != ModelPurpose::Main
+        || main.compaction_recovery != Some(summary)
+        || original.accounting.purpose != ModelPurpose::Summary
+        || !valid_summary(c, view.run, &original, &attempt)?
+    {
+        return Err(invalid(
+            "compaction lookup recovery requires its original successful Summary",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn deferred_summary(
     c: &Connection,
     view: &RunView,
@@ -581,12 +608,7 @@ pub(crate) fn deferred_summary(
     let attempt = if let Some(attempt) = view.attempts.get(&marker) {
         attempt.clone()
     } else {
-        let body: String = c.query_row(
-            "SELECT body FROM agent_attempts WHERE run=? AND key=?",
-            params![view.run.to_string(), marker.to_string()],
-            |r| r.get(0),
-        )?;
-        serde_json::from_str(&body)?
+        sql::model_attempt(c, view.run, marker)?
     };
     if attempt.step != summary_step || !valid_summary(c, view.run, &summary.request, &attempt)? {
         return Err(invalid(

@@ -864,6 +864,7 @@ pub enum SendRejection {
     ModelUnavailable,
     SkillsUnavailable,
     TurnStopped,
+    OriginalOperationUnsettled,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2111,7 +2112,6 @@ pub fn contract() -> Contract {
                     method::<ContinueRun, ContinuationResult>(MethodMode::Mutation),
                 ),
                 ("stop".into(), method::<Stop, Stopped>(MethodMode::Mutation)),
-                ("adjudicateRisk".into(), method::<AdjudicateRisk, ExecutionResult>(MethodMode::Mutation)),
                 (
                     "computerApps".into(),
                     method::<SessionRead, ComputerApps>(MethodMode::Query),

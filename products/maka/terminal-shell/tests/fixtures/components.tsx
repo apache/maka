@@ -187,8 +187,6 @@ function CompletionComposer(props: { prediction?: boolean; switchBackend?: boole
     continuation: () => null,
     continuing: () => false,
     continueRun: unexpected,
-    adjudicating: () => false,
-    adjudicateRisk: unexpected,
     backend: selectedBackend,
     modelDetails: () => ({
       kind: 'ready',

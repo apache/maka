@@ -166,7 +166,7 @@ fn observe(
         ),
         (
             SessionObligation::CellNotification,
-            "SELECT EXISTS(SELECT 1 FROM agent_cell_notifications n LEFT JOIN agent_runs r ON r.run=n.run WHERE n.session=?2 AND n.consumed_step IS NULL AND (n.run IS NULL OR (r.owner=?1 AND r.local=1 AND json_extract(r.terminal,'$') IS NOT 'cancelled')))",
+            "SELECT EXISTS(SELECT 1 FROM agent_cell_notifications n LEFT JOIN agent_runs r ON r.run=n.run WHERE n.session=?2 AND n.consumed_step IS NULL AND (n.run IS NULL OR (r.owner=?1 AND r.local=1 AND r.terminal IS NULL)))",
         ),
     ];
     for (obligation, sql) in checks {

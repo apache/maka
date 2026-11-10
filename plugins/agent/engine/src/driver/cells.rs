@@ -23,6 +23,39 @@ use maka_agent_facts::cells::{
 };
 use maka_agent_facts::tool_output::{ReturnedToolResult, ToolOutput};
 impl Engine {
+    pub(super) async fn resolve_recovered_cells(
+        &self,
+        claim: &DriverClaim,
+        view: &RunView,
+        at: UnixMillis,
+    ) -> Result<bool, RunError> {
+        let Some((blocker, cell)) = view.blockers.iter().find_map(|(id, blocker)| {
+            let BlockerKind::CodeCellRecoveryUnavailable { cell } = &blocker.reason else {
+                return None;
+            };
+            if blocker.decision.is_some() || blocker.resolved_by.is_some() {
+                return None;
+            }
+            view.recovery_cell(cell)
+                .filter(|cell| !cell.has_unsettled_effects())
+                .map(|cell| (*id, cell.id))
+        }) else {
+            return Ok(false);
+        };
+        let evidence = ContentBlob::json(&cell)?;
+        self.publish(
+            Some(claim),
+            view,
+            vec![Fact::BlockerResolved {
+                blocker,
+                evidence: evidence.reference().clone(),
+            }],
+            vec![evidence],
+            at,
+        )
+        .await
+    }
+
     pub(super) async fn launch_cell(
         &self,
         claim: &DriverClaim,

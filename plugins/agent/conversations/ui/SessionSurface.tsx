@@ -593,10 +593,6 @@ export function createConversationUi(
         (method !== 'continueRun' ||
           (original.correlation.sourceRunId === input.sourceRunId &&
             original.correlation.sourceHighWater === input.sourceHighWater)) &&
-        (method !== 'adjudicateRisk' ||
-          (original.correlation.runId === input.runId &&
-            original.correlation.blockerId === input.blockerId &&
-            original.correlation.expectedHighWater === input.expectedHighWater)) &&
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
@@ -2385,13 +2381,6 @@ export function createConversationUi(
                         original.method === 'continueRun' && original.sessionId === id(),
                     )
                   }
-                  riskPending={() =>
-                    !controlsKnown() ||
-                    controls().some(
-                      (original) =>
-                        original.method === 'adjudicateRisk' && original.sessionId === id(),
-                    )
-                  }
                   fork={async (action) => {
                     await changeBrowsedSession(action, id());
                   }}
@@ -2901,8 +2890,6 @@ function projectComposerSession(
     continuation: owner.continuation,
     continuing: owner.continuing,
     continueRun: owner.continueRun,
-    adjudicating: owner.adjudicating,
-    adjudicateRisk: owner.adjudicateRisk,
     metrics: owner.metrics,
     contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,

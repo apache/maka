@@ -94,7 +94,7 @@ impl Owner {
                 ContinuationRejection::SourceNotTerminal,
             ));
         }
-        if actual.spec.origin != RunOrigin::Local {
+        if actual.spec.origin != RunOrigin::Local || actual.blocks_followup() {
             return Ok(ContinuationReadiness::Rejected(
                 ContinuationRejection::SafetyCheckFailed,
             ));

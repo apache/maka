@@ -221,7 +221,6 @@ export type RuntimeProtocol =
   | AgentExecutionResult
   | AgentContinueRun
   | AgentContinuationResult
-  | AgentAdjudicateRisk
   | AgentUploadAttachment
   | AgentAttachment
   | AgentAttachmentUploadResult
@@ -1172,16 +1171,14 @@ export type AgentExecutionState =
   | {
       kind: 'waiting';
       waits: WaitReason[];
-    }
-  | {
-      kind: 'blocked';
-      blockers: AgentRunBlocker[];
+      authorityUnavailable: boolean;
     }
   | {
       kind: 'completed';
     }
   | {
       kind: 'failed';
+      reason?: BlockerKind | null;
     }
   | {
       kind: 'cancelled';
@@ -1307,24 +1304,6 @@ export type AuthorityStage =
   | 'tool_bindings'
   | 'backend_scope'
   | 'input_codec';
-export type RiskActionKind =
-  | 'record_external_observation'
-  | 'authorize_replan'
-  | 'cancel_blocked_run';
-export type RiskActionScope =
-  | {
-      kind: 'tool';
-      tool: ToolKey;
-    }
-  | {
-      kind: 'model_replan';
-      attempt: ModelAttemptId;
-      base_step: StepId;
-    }
-  | {
-      kind: 'run_cancellation';
-    };
-export type StepId = string;
 export type SettingsModelsRead =
   | {
       kind: 'start';
@@ -1360,6 +1339,7 @@ export type UsageOrigin =
       source: UsageAuxiliarySource;
       [k: string]: unknown | undefined;
     };
+export type StepId = string;
 export type ModelPurpose = 'main' | 'summary';
 export type UsageAuxiliarySource =
   | {
@@ -3386,32 +3366,6 @@ export type AgentContinuationRejection =
   | 'already_continued'
   | 'workspace_changed'
   | 'safety_check_failed';
-export type AgentRiskDecisionInput =
-  | {
-      kind: 'record_external_observation';
-      evidence: AgentRiskEvidenceInput;
-    }
-  | {
-      kind: 'authorize_replan';
-      evidence: AgentRiskEvidenceInput;
-    }
-  | {
-      kind: 'cancel_blocked_run';
-      diagnostic: string;
-    };
-/**
- * User-supplied evidence bytes. Native stores and pins the immutable content in
- * the same control transaction; callers cannot select a canonical ContentRef.
- */
-export type AgentRiskEvidenceInput =
-  | {
-      kind: 'text';
-      text: string;
-    }
-  | {
-      kind: 'json';
-      value: unknown;
-    };
 export type AgentAttachmentUploadResult =
   | {
       kind: 'uploaded';
@@ -4083,7 +4037,11 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSendRejection = 'model_unavailable' | 'skills_unavailable' | 'turn_stopped';
+export type AgentSendRejection =
+  | 'model_unavailable'
+  | 'skills_unavailable'
+  | 'turn_stopped'
+  | 'original_operation_unsettled';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -6086,14 +6044,6 @@ export interface ToolKey {
   attempt: ModelAttemptId;
   call: string;
 }
-/**
- * A durable blocker is an observation, never permission to replay an operation.
- */
-export interface AgentRunBlocker {
-  id: BlockerId;
-  reason: BlockerKind;
-  offeredActions: OfferedRiskAction[];
-}
 export interface ExternalPublicationKey {
   publication: ExternalPublicationId;
   index: number;
@@ -6101,10 +6051,6 @@ export interface ExternalPublicationKey {
 export interface ContentRef {
   digest: string;
   bytes: number;
-}
-export interface OfferedRiskAction {
-  kind: RiskActionKind;
-  scope: RiskActionScope;
 }
 export interface AgentAnswerPage {
   text: string;
@@ -7616,16 +7562,6 @@ export interface AgentContinueRun {
   sourceHighWater: number;
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
-}
-export interface AgentAdjudicateRisk {
-  sessionId: string;
-  runId: RunId;
-  /**
-   * Compare against the Run-local observation used for this decision.
-   */
-  expectedHighWater: number;
-  blockerId: BlockerId;
-  decision: AgentRiskDecisionInput;
 }
 export interface AgentUploadAttachment {
   sessionId: string;

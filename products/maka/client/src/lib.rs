@@ -58,7 +58,6 @@ const CONTROL_METHODS: &[&str] = &[
     "selectBackend",
     "compact",
     "continueRun",
-    "adjudicateRisk",
     "setCompactionPrompt",
     "markRead",
     "markBotRead",
@@ -137,7 +136,7 @@ fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
 fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Result<Value> {
     let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
-        "stop" | "adjudicateRisk" => Some("runId"),
+        "stop" => Some("runId"),
         "continueRun" => Some("sourceRunId"),
         "respond" | "requestSystemPermission" => Some("requestId"),
         "stopComputerApp" => Some("operationId"),
@@ -164,40 +163,20 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
             Value::String(target.to_owned())
         };
     }
-    if matches!(method, "continueRun" | "adjudicateRisk") {
-        let fence = if method == "continueRun" {
-            "sourceHighWater"
-        } else {
-            "expectedHighWater"
-        };
-        correlation[fence] = input
-            .get(fence)
+    if method == "continueRun" {
+        correlation["sourceHighWater"] = input
+            .get("sourceHighWater")
             .and_then(Value::as_u64)
             .filter(|revision| (1..=9_007_199_254_740_991).contains(revision))
             .ok_or("agent Run control requires an exact observation fence")?
             .into();
-        if method == "continueRun" {
-            correlation["model"] = input
-                .get("model")
-                .filter(|model| model.is_object())
-                .ok_or("Run continuation requires an explicit model")?
-                .clone();
-            if let Some(thinking) = input.get("thinkingLevel") {
-                correlation["thinkingLevel"] = thinking.clone();
-            }
-        } else {
-            let blocker = input
-                .get("blockerId")
-                .and_then(Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok())
-                .filter(|id| !id.is_nil())
-                .ok_or("risk adjudication requires a durable blocker UUID")?;
-            correlation["blockerId"] = blocker.to_string().into();
-            correlation["decision"] = input
-                .get("decision")
-                .filter(|decision| decision.is_object())
-                .ok_or("risk adjudication requires an explicit decision")?
-                .clone();
+        correlation["model"] = input
+            .get("model")
+            .filter(|model| model.is_object())
+            .ok_or("Run continuation requires an explicit model")?
+            .clone();
+        if let Some(thinking) = input.get("thinkingLevel") {
+            correlation["thinkingLevel"] = thinking.clone();
         }
     }
     if method == "requestSystemPermission" {

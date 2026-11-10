@@ -175,12 +175,15 @@ impl<M: TextEngine> Core<M> {
         {
             return SourcePosition::Pending;
         }
-        // A newly measured row may still have its parent's old 50pt spacer
-        // layout. Fixed heights and actual clipping settle normally once clean.
+        // A newly measured row may still have its parent's old spacer layout.
+        // An unstyled holder gets its frame from the child laid out in its place.
         let mut ancestor = cell;
         while ancestor != reader {
             let node = &self.nodes[ancestor as usize];
-            if node.layout.is_none_or(|layout| self.layout.dirty(layout)) {
+            if node
+                .layout
+                .is_none_or(|layout| self.layout.dirty(self.layout.laid_out(layout)))
+            {
                 return SourcePosition::Pending;
             }
             ancestor = node.parent;

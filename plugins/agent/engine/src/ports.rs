@@ -53,10 +53,6 @@ pub enum Preparation {
     Notifications {
         attempt: ModelAttemptId,
     },
-    Replan {
-        attempt: Option<ModelAttemptId>,
-        adjudications: Vec<ReplanInput>,
-    },
     Steering {
         attempt: ModelAttemptId,
     },
@@ -68,11 +64,6 @@ pub enum Preparation {
     ToolContinuation {
         attempt: ModelAttemptId,
     },
-}
-#[derive(Clone, Debug)]
-pub struct ReplanInput {
-    pub basis: AdjudicationBasis,
-    pub decision: RiskDecision,
 }
 pub struct PreparedStep {
     pub notifications: Vec<maka_agent_state::cells::PendingNotification>,

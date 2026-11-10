@@ -95,7 +95,6 @@ impl Handler for Agent {
             method.as_str(),
             "markRead"
                 | "stop"
-                | "adjudicateRisk"
                 | "stopComputerApp"
                 | "editQueue"
                 | "uploadAttachment"
@@ -210,18 +209,6 @@ impl Handler for Agent {
                                 .prepare_stop_run(&input.session_id, input.run_id, operation)
                                 .await?;
                             complete_control(&context, encode(Stopped { requested })?, change)
-                        }
-                        "adjudicateRisk" => {
-                            if !matches!(
-                                context.scope().identity,
-                                maka_capabilities::call::Identity::Remote { .. }
-                            ) {
-                                return Err("agent_risk_adjudication_requires_user_control".into());
-                            }
-                            let (value, change) = owner
-                                .prepare_adjudicate_risk(decode(input)?, operation)
-                                .await?;
-                            complete_control(&context, encode(value)?, change)
                         }
                         "stopComputerApp" => {
                             let (value, change) = owner

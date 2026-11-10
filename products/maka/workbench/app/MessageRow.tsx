@@ -174,7 +174,7 @@ export function MessageRow({
         // On the desktop the replies between tool calls carry no actions, so
         // only the final reply (or one already showing its source) has a row.
         const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
-        const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
+        const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
         if (sender())
           return (
