@@ -20,18 +20,24 @@
 //! Task timing owns durable plans; Agent remains the only execution owner.
 mod dispatch;
 mod repository;
+#[cfg(test)]
+mod storage_fault;
 mod tools;
 use super::*;
 use maka_capabilities::storage::Data;
 use maka_capabilities::storage::Mutation;
 use maka_capabilities::storage::Namespace;
 use maka_capabilities::storage::Store;
+#[cfg(not(test))]
+use maka_host_runtime::storage::Storage;
 use maka_scheduler::{
     plan::TaskPlan,
     task::{Creator, Outcome, Run, Status},
 };
 use repository::Saved;
 use std::sync::{OnceLock, Weak};
+#[cfg(test)]
+use storage_fault::Storage;
 use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -55,7 +61,7 @@ fn pause_plan(plan: &Plan, at: i64) -> Plan {
     paused
 }
 pub(crate) struct Scheduler {
-    pub(super) storage: Arc<maka_host_runtime::storage::Storage>,
+    pub(super) storage: Arc<Storage>,
     pub(super) gate: Mutex<()>,
     pub(super) wake: Notify,
     changed: tokio::sync::watch::Sender<u64>,
@@ -65,7 +71,7 @@ pub(crate) struct Scheduler {
 impl Scheduler {
     pub fn new(store: Arc<RootStore>, prefix: String) -> Self {
         Self {
-            storage: Arc::new(maka_host_runtime::storage::Storage::new(
+            storage: Arc::new(Storage::new(
                 store,
                 prefix,
                 Namespace::new(

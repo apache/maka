@@ -19,6 +19,209 @@
 
 use super::*;
 
+#[tokio::test]
+async fn discovery_records_recover_a_committed_outcome_without_its_acknowledgement() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut f, bot) = fixture(&listener, false).await;
+        let task = create(&f, &bot, "Lost settlement acknowledgement").await;
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut socket, _) = next(&listener).await;
+        let worker = f
+            .owner
+            .scheduler
+            .investigation
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap();
+        let committed = f.owner.scheduler.storage.unknown_after("investigation");
+        finish(
+            &mut socket,
+            json!({"kind":"no_report","note":"durable-result-marker"}),
+        )
+        .await;
+        committed.await.unwrap();
+        reopen(&mut f).await;
+        let done = settled(&f, &task).await;
+        assert_eq!(done["task"]["fireCount"], 1);
+        assert_eq!(done["task"]["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(done["task"]["runs"][0]["sessionId"], worker.session_id);
+        assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = next(&listener).await;
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+        assert_eq!(page["records"].as_array().unwrap().len(), 1, "{page}");
+        assert_eq!(
+            page["records"][0]["content"]["result"]["note"],
+            "durable-result-marker"
+        );
+        quiet(&f, &listener, &mut socket, &bot).await;
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut socket, _) = next(&listener).await;
+        finish(
+            &mut socket,
+            json!({"kind":"no_report","note":"next independent investigation"}),
+        )
+        .await;
+        loop {
+            if detail(&f, &task).await["task"]["runs"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            f.query("botOutbox", json!({})).await.unwrap()["messages"],
+            json!([])
+        );
+        close(&f).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn discovery_records_recover_an_uncertain_notified_receipt_without_resending() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (mut f, bot) = fixture(&listener, false).await;
+        let task = create(&f, &bot, "Lost decision acknowledgement").await;
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut worker, _) = next(&listener).await;
+        finish(&mut worker, json!({"kind":"report","text":"A durable finding"})).await;
+        let (mut socket, _) = next(&listener).await;
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+        let record = page["records"][0]["id"].clone();
+        let input = json!({"messageId":"uncertain-publication","messages":[{"text":"The finding is actionable."}],
+            "discovery":{"record":record,"reason":"verified against the source"}});
+        let committed = f.owner.scheduler.storage.unknown_after("notified");
+        service_tools::named_tool_response(&mut socket, "SendUser", input.clone()).await;
+        committed.await.unwrap();
+        let original = f.query("botOutbox", json!({})).await.unwrap()["messages"].clone();
+        assert_eq!(original.as_array().unwrap().len(), 1);
+        reopen(&mut f).await;
+        assert_eq!(f.query("botOutbox", json!({})).await.unwrap()["messages"], original);
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = next(&listener).await;
+        service_tools::named_tool_response(&mut socket, "SendUser", input).await;
+        let (mut socket, sent) = next(&listener).await;
+        assert!(sent["messages"].to_string().contains("Already sent"), "{sent}");
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list","related":record})).await;
+        assert_eq!(page["records"].as_array().unwrap().len(), 2, "{page}");
+        assert_eq!(page["records"][0]["content"]["kind"], "notified");
+        assert_eq!(page["records"][1]["content"]["kind"], "investigation");
+        assert_eq!(f.query("botOutbox", json!({})).await.unwrap()["messages"], original);
+        quiet(&f, &listener, &mut socket, &bot).await;
+        close(&f).await;
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_records_serialize_a_bot_append_with_investigation_settlement() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (f, bot) = fixture(&listener, false).await;
+        let task = create(&f, &bot, "Concurrent records").await;
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut worker, _) = next(&listener).await;
+        finish(&mut worker, json!({"kind":"no_report","note":"original investigation"})).await;
+        settled(&f, &task).await;
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = next(&listener).await;
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+        let original = page["records"][0]["id"].clone();
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut worker, _) = next(&listener).await;
+        let (entered, release) = f.owner.scheduler.storage.hold_before("investigation");
+        finish(&mut worker, json!({"kind":"no_report","note":"concurrent investigation"})).await;
+        entered.await.unwrap();
+        let previous = service_tools::facts(&f, &bot).await.len();
+        service_tools::named_tool_response(&mut socket, "DiscoveryMemory",
+            json!({"action":"withhold","record":original,"reason":"still not actionable"})).await;
+        // The settlement has read the old head; admit the competing Bot write.
+        loop {
+            let facts = service_tools::facts(&f, &bot).await;
+            if facts.iter().skip(previous).any(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "DiscoveryMemory")) { break; }
+            tokio::task::yield_now().await;
+        }
+        let replied_while_held = tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
+        release.send(()).unwrap();
+        assert!(replied_while_held.is_err(), "the Bot append must wait for the settlement's head update");
+        let (mut socket, sent) = next(&listener).await;
+        assert_eq!(output(&sent)["recorded"], true, "{sent}");
+        loop {
+            if detail(&f, &task).await["task"]["runs"].as_array().unwrap().len() == 2 { break; }
+            tokio::task::yield_now().await;
+        }
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+        let records = page["records"].as_array().unwrap();
+        assert_eq!(records.len(), 3, "{page}");
+        assert_eq!(records.iter().map(|r| r["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), [3, 2, 1]);
+        assert_eq!(records.iter().filter(|r| r["content"]["kind"] == "withheld").count(), 1);
+        assert_eq!(records.iter().filter(|r| r["content"]["kind"] == "investigation").count(), 2);
+        quiet(&f, &listener, &mut socket, &bot).await;
+        close(&f).await;
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_records_reject_feedback_and_publication_after_project_relocation() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(&format!("http://{}/v1", listener.local_addr().unwrap()),
+            None, None, None, |settings| {
+                settings.bot = true;
+                settings.scheduled_tasks = true;
+                settings.recall = true;
+            }).await;
+        let roots = f.query("directories", json!({"kind":"roots"})).await.unwrap();
+        let source = roots["roots"][0]["path"].clone();
+        let registered = f.mutation(2, "project", json!({"kind":"register","path":source,"expected":null}), Uuid::new_v4()).await.unwrap();
+        assert_eq!(registered["kind"], "committed");
+        let opened = f.mutation(2, "openBot", json!({"workspace":{"kind":"project","project":registered["project"]["reference"],"path":source}}), Uuid::new_v4()).await.unwrap();
+        let bot = opened["sessionId"].as_str().unwrap().to_owned();
+        let task = create(&f, &bot, "Relocated source").await;
+        change(&f, "trigger_now", &task, json!({})).await;
+        let (mut worker, _) = next(&listener).await;
+        finish(&mut worker, json!({"kind":"report","text":"Finding under the original binding"})).await;
+        let (mut socket, _) = next(&listener).await;
+        let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+        let record = page["records"][0]["id"].clone();
+        quiet(&f, &listener, &mut socket, &bot).await;
+        let before = f.owner.session(&bot).await.unwrap().configuration;
+        let project = f.query("projects", json!({"kind":"directory","path":source})).await.unwrap()["location"]["project"]["reference"].clone();
+        let moved = f.mutation(2, "project", json!({"kind":"relocate","project":project,"path":roots["roots"][1]["path"],"destination":null}), Uuid::new_v4()).await.unwrap();
+        assert_eq!(moved["kind"], "committed", "{moved}");
+        let after = f.owner.session(&bot).await.unwrap().configuration;
+        assert_eq!(after.permissions, before.permissions);
+        assert_eq!(after.binding.id, before.binding.id);
+        assert_eq!(after.binding.permission_epoch, before.binding.permission_epoch + 1);
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = next(&listener).await;
+        let (mut socket, rejected) = memory(&listener, &mut socket,
+            json!({"action":"feedback","record":record,"note":"Do not use the old source"})).await;
+        assert!(rejected.to_string().contains("discovery_record_unavailable"), "{rejected}");
+        service_tools::named_tool_response(&mut socket, "SendUser",
+            json!({"messageId":"old-binding-report","messages":[{"text":"Stale source finding"}],
+                "discovery":{"record":record,"reason":"old source"}})).await;
+        let (mut socket, rejected) = next(&listener).await;
+        assert!(output(&rejected).to_string().contains("discovery_record_unavailable"), "{rejected}");
+        assert_eq!(f.query("botOutbox", json!({})).await.unwrap()["messages"], json!([]));
+        quiet(&f, &listener, &mut socket, &bot).await;
+        close(&f).await;
+    }).await.unwrap();
+}
+
 async fn next(listener: &TcpListener) -> (TcpStream, Value) {
     let (mut socket, _) = listener.accept().await.unwrap();
     let sent = request(&mut socket).await;
@@ -48,7 +251,7 @@ async fn memory(
 async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream, bot: &str) {
     service_tools::named_tool_response(socket, "sleep", json!({})).await;
     loop {
-        if !f.owner.runs.lock().await.controls.contains_key(bot) {
+        if f.query("observe", json!({"sessionId":bot})).await.unwrap()["run"].is_null() {
             break;
         }
         tokio::task::yield_now().await;
