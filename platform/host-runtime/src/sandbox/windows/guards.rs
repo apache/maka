@@ -20,9 +20,10 @@
 use super::store;
 use maka_event_log::root::{
     FileLease,
-    windows::{account_home, create_private_file, open_nofollow, publish_file, validate_private},
+    windows::{create_private_file, open_nofollow, publish_file, validate_private},
 };
 use maka_sandbox::{
+    account_home,
     filesystem::{Access, Compiled, Rule, Scope},
     windows::{
         acl::{Removal, Target},
@@ -448,6 +449,45 @@ mod tests {
         windows::ExecutionJob,
     };
     use std::os::windows::io::AsHandle;
+
+    #[test]
+    fn registry_root_uses_os_account_even_with_overridden_home() {
+        const EXPECTED: &str = "MAKA_TEST_GUARD_REGISTRY_ACCOUNT_HOME";
+        if let Some(expected) = std::env::var_os(EXPECTED) {
+            assert_eq!(
+                registry_root().unwrap(),
+                PathBuf::from(expected).join(".maka-sandbox-guards"),
+            );
+            return;
+        }
+        let home = account_home().unwrap();
+        let overridden = tempfile::tempdir().unwrap();
+        assert_ne!(home, overridden.path());
+        let qualified = concat!(
+            module_path!(),
+            "::registry_root_uses_os_account_even_with_overridden_home"
+        );
+        let test = qualified.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(EXPECTED, home)
+            .env("HOME", overridden.path())
+            .env("USERPROFILE", overridden.path())
+            .env("HOMEDRIVE", overridden.path())
+            .env("HOMEPATH", overridden.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child must actually execute the registry lookup regression",
+        );
+    }
 
     #[test]
     fn protection_outlives_peer_settlement_and_a_lost_host_until_its_native_tree_exits() {

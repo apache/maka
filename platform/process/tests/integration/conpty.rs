@@ -19,7 +19,7 @@
 
 #![cfg(windows)]
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_process::pty::{self, PtyCommand, PtyIo};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},

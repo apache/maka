@@ -1782,7 +1782,7 @@ mod model_recovery {
             RootStore::open(Arc::new(owner), &migrations).await?,
         ))
     }
-    async fn bootstrap(base: &Path, base_url: String) -> TestResult<Boot> {
+    async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -1833,7 +1833,7 @@ mod model_recovery {
                         agent.application_ref(),
                         json!({
                             "permissions":{"access":"read_only","requestPermissions":false},
-                            "workspaceRoots":[{"label":"model test","path":base.join("workspace")}], "tools":[]
+                            "workspaceRoots":[{"label":"model test","path":base.join("workspace")}], "tools":[], "todo":todo
                         }),
                         BTreeMap::new(),
                     ),
@@ -2108,7 +2108,7 @@ mod model_recovery {
             let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
                 let base = rig.directory.path().to_path_buf();
                 let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-                let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?)).await?;
+                let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
                 boot.replay = true;
                 wire = Some(tokio::spawn(serve_replay(
                     listener, posts.clone(), requests_tx, stop.clone(),
@@ -2259,6 +2259,292 @@ mod model_recovery {
                 "replay fixture did not physically settle"
             );
         }
+    }
+
+    // Only this fixture uses the counter; capture changes at the actual HTTP boundary.
+    static GROUPING_REQUESTS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn grouping_observation(
+        binding: &maka_agent_facts::execution::ModelBinding,
+        model: &mut maka_agent_ports::provider::Model,
+    ) -> maka_agent_facts::context::ModelRequestContext {
+        let mut context = replay_observation(binding, model);
+        model.adapter = "chat-completions".into();
+        model.protocol = maka_agent_ports::model::ProviderKind::OpenaiCompatible {
+            name: "deepseek".into(),
+        };
+        model.provider_options = json!({"maka":{"openAiChatReasoningField":"reasoning_content"}});
+        model.info.capabilities.get_or_insert_default().reasoning = Some(true);
+        if binding.connection_slug == "batch-source"
+            && GROUPING_REQUESTS.load(Ordering::SeqCst) == 0
+        {
+            context
+                .codex
+                .as_mut()
+                .expect("fixture Codex observation")
+                .compatibility = None;
+        }
+        context
+    }
+
+    async fn serve_grouped_reasoning(
+        listener: tokio::net::TcpListener,
+        requests: tokio::sync::mpsc::Sender<Value>,
+        stop: CancellationToken,
+    ) -> TestResult<()> {
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |request: axum::extract::Request| {
+                let requests = requests.clone();
+                async move {
+                    let bytes = match axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await {
+                        Ok(bytes) => bytes,
+                        Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
+                    };
+                    let value: Value = match serde_json::from_slice(&bytes) {
+                        Ok(value) => value,
+                        Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
+                    };
+                    let index = GROUPING_REQUESTS.fetch_add(1, Ordering::SeqCst);
+                    if requests.send(value).await.is_err() {
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let (delta, finish) = if index < 2 {
+                        let n = index + 1;
+                        (json!({"role":"assistant","reasoning_content":format!("thinking-{n}"),
+                            "content":format!("visible-{n}"),"tool_calls":[{
+                                "index":0,"id":format!("todo-call-{n}"),"type":"function",
+                                "function":{"name":"todo_read","arguments":"{}"}
+                            }]}), "tool_calls")
+                    } else {
+                        (json!({"role":"assistant","content":
+                            if index == 2 { "source-finished" } else { "target-finished" }}), "stop")
+                    };
+                    let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":format!("batch-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":if index < 3 { "llama3.2" } else { "llama3.1" },
+                            "choices":[{"index":0,"delta":delta,"finish_reason":null}]}),
+                        json!({"id":format!("batch-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":if index < 3 { "llama3.2" } else { "llama3.1" },
+                            "choices":[{"index":0,"delta":{},"finish_reason":finish}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}})
+                    );
+                    (axum::http::StatusCode::OK, [("content-type", "text/event-stream")], body)
+                        .into_response()
+                }
+            }),
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await?;
+        Ok(())
+    }
+
+    async fn completed_message(
+        client: &HostClient,
+        session: &str,
+        message: &Value,
+    ) -> TestResult<RunId> {
+        loop {
+            let work = call(
+                client,
+                "agent",
+                "work",
+                json!({
+                    "sessionId":session,"target":{"kind":"message","messageId":message}
+                }),
+            )
+            .await?;
+            match work["execution"]["state"]["kind"].as_str() {
+                Some("completed") => {
+                    return Ok(serde_json::from_value(work["execution"]["runId"].clone())?);
+                }
+                Some("failed" | "cancelled") => {
+                    return Err(format!("fixture Run failed: {work}").into());
+                }
+                _ => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tail_replay_keeps_reasoning_with_tool_calls_and_resets_the_step_producer() {
+        use maka_agent_engine::preparation;
+        use maka_agent_facts::{
+            context::RequestContextEvidence,
+            model::prompt_source::source::{
+                AssistantRecipe, MessageRecipe, ReplayOrigin, json as source_json,
+            },
+        };
+        GROUPING_REQUESTS.store(0, Ordering::SeqCst);
+        let mut rig = Rig::new().expect("owned grouping fixture");
+        let stop = CancellationToken::new();
+        let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(4);
+        let mut wire: Option<JoinHandle<TestResult<()>>> = None;
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
+            let base = rig.directory.path().to_path_buf();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), true).await?;
+            wire = Some(tokio::spawn(serve_grouped_reasoning(listener, requests_tx, stop.clone())));
+            rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true,
+                Some(grouping_observation)).await?;
+            let client = rig.client.as_ref().ok_or("Host client missing")?;
+            let mut selections = Vec::new();
+            for (slug, model) in [("batch-source", "llama3.2"), ("batch-target", "llama3.1")] {
+                let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+                let connection = call(client, "settings", "create", json!({
+                    "expectedCatalogRevision":catalog["revision"],
+                    "connection":{"slug":slug,"name":slug,
+                        "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                        "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":[model],
+                        "modelOverrides":{(model):{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+                })).await?;
+                assert_eq!(connection["kind"], "committed");
+                let models = call(client, "agent", "models", json!({"kind":"start"})).await?;
+                let selection = models["choices"].as_array().ok_or("model choices missing")?
+                    .iter().find(|choice| choice["selection"]["connectionId"]
+                        == connection["connection"]["connectionId"])
+                    .ok_or("fixture model not selectable")?["selection"].clone();
+                selections.push(selection);
+            }
+            let created = call(client, "agent", "create", json!({
+                "title":"Reasoning and tool-call grouping","automaticTitle":false,
+                "labels":[],"tools":["todo_read"],
+                "workspace":{"kind":"directory","path":base.join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("session missing")?.to_owned();
+            let source = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Use the checklist twice.",
+                "backend":selections[0],"delivery":"queue"
+            })).await?;
+            assert_eq!(source["kind"], "queued");
+            let source_run = completed_message(client, &session, &source["messageId"]).await?;
+            let target = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Continue from the recorded tool outcomes.",
+                "backend":selections[1],"delivery":"queue"
+            })).await?;
+            assert_eq!(target["kind"], "queued");
+            let target_run = completed_message(client, &session, &target["messageId"]).await?;
+            assert_ne!(source_run, target_run);
+
+            let mut sent = Vec::new();
+            for _ in 0..4 {
+                sent.push(requests_rx.recv().await.ok_or("HTTP request missing")?);
+            }
+            assert_eq!(GROUPING_REQUESTS.load(Ordering::SeqCst), 4);
+            assert_eq!(sent[3]["model"], "llama3.1");
+            let messages = sent[3]["messages"].as_array().ok_or("ChatCompletions messages missing")?;
+            let mut previous_result = None;
+            for n in 1..=2 {
+                let id = format!("todo-call-{n}");
+                let calls: Vec<_> = messages.iter().enumerate().filter(|(_, message)| {
+                    message["role"] == "assistant" && message["tool_calls"].as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == id))
+                }).collect();
+                assert_eq!(calls.len(), 1, "one assistant batch must own {id}: {}", sent[3]);
+                let (index, assistant) = calls[0];
+                assert_eq!(assistant["reasoning_content"], format!("thinking-{n}"));
+                assert_eq!(assistant["content"], format!("visible-{n}"));
+                assert_eq!(assistant["tool_calls"][0]["function"]["name"], "todo_read");
+                assert_eq!(messages[index + 1]["role"], "tool");
+                assert_eq!(messages[index + 1]["tool_call_id"], id);
+                if let Some(previous) = previous_result { assert!(index > previous); }
+                previous_result = Some(index + 1);
+            }
+            let finished = messages.iter().find(|message| message["role"] == "assistant"
+                && message["content"] == "source-finished").ok_or("source final output missing")?;
+            assert!(finished.get("reasoning_content").is_none(), "finish inherited earlier reasoning");
+            assert_eq!(messages.iter().filter(|message| message.get("reasoning_content").is_some()).count(), 2);
+
+            let owner = rig.captured.lock().unwrap().clone().ok_or("Native owner missing")?;
+            let original = facts(&owner.durable, source_run).await?;
+            assert_eq!(original.iter().filter(|fact| fact["fact"]["kind"] == "tool_result_accepted").count(), 2);
+            assert_eq!(original.iter().filter(|fact| fact["fact"]["kind"] == "local_tool_returned").count(), 2,
+                "the fixture must dispatch the real checklist reader, not replay rejected tool calls");
+            let mut contexts = Vec::new();
+            for fact in original.iter().filter(|fact| fact["fact"]["kind"] == "step_prepared") {
+                let step: StepId = serde_json::from_value(fact["fact"]["step"].clone())?;
+                let request = owner.durable.request(source_run, step).await?;
+                if request.accounting.purpose == ModelPurpose::Main {
+                    let evidence: RequestContextEvidence = serde_json::from_slice(
+                        &owner.durable.content(source_run, request.provenance.clone()).await?)?;
+                    contexts.push(evidence.model_context.and_then(|context| context.codex)
+                        .ok_or("source observation absent")?);
+                }
+            }
+            assert_eq!(contexts.len(), 3, "fixture must cross two real tool-result/StepPrepared boundaries");
+            assert!(contexts[0].compatibility.is_none());
+            assert_eq!(contexts[1].compatibility.as_ref().map(|value| value.comp_hash.as_str()), Some("3000"));
+
+            let view = owner.durable.frontier(target_run).await?;
+            let attempt = &view.attempts[&view.current_attempt.ok_or("target attempt missing")?];
+            let request = owner.durable.request(target_run, attempt.step).await?;
+            let frozen: Value = serde_json::from_slice(
+                &owner.durable.content(target_run, request.request.clone()).await?)?;
+            let current = owner.mutable_session(&session).await?;
+            let scope = owner.current_work_scope(&session, &current.configuration).await?;
+            let (lease, effects) = scope.accept(CancellationToken::new());
+            rig.lease = Some(lease);
+            rig.work_effects = Some(effects);
+            let history = owner.durable.session_history(owner.run_owner(), session.clone());
+            let cut = history.capture().await?;
+            let resources = owner.services.model_preparation_resources();
+            let prompt = preparation::restore_prompt(
+                preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
+                resources.clone(), &history, &cut, target_run,
+                &serde_json::from_value(frozen["prompt"].clone())?,
+                &serde_json::from_value(frozen["layout"].clone())?,
+                &CancellationToken::new(),
+            ).await?;
+            let checked = async {
+                let mut cursor = prompt.recipes().ok_or("frozen recipes missing")?.open(0);
+                let mut found = Vec::new();
+                while let Some(message) = cursor.next().await? {
+                    if let MessageRecipe::Assistant { content, .. } = message {
+                        let mut parts = content.open(0);
+                        while let Some(part) = parts.next().await? {
+                            if let AssistantRecipe::Reasoning { provider_options, .. } = part {
+                                found.push(provider_options);
+                            }
+                        }
+                    }
+                }
+                assert_eq!(found.len(), 2);
+                assert!(found[0].is_none(), "incompatible first-step provider options were not stripped");
+                let second = found[1].as_ref().ok_or("compatible second-step provider options disappeared")?;
+                assert_eq!(second.replay_origin(), ReplayOrigin::observed("llama3.2", Some(&contexts[1])),
+                    "the first attempt's unhashed producer leaked into the second batch");
+                let work = resources.acquire_work().await?;
+                let field = source_json::field(second, &["maka", "openAiChatReasoningField"], work.budget())
+                    .await?.ok_or("recorded reasoning field missing")?;
+                assert!(source_json::text_eq(&field.text()?, "reasoning_content", work.budget()).await?);
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            }.await;
+            prompt.close().await?;
+            checked?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })).catch_unwind().await;
+        drop(requests_rx);
+        stop.cancel();
+        let wire_ok = match wire {
+            Some(task) => matches!(task.await, Ok(Ok(()))),
+            None => true,
+        };
+        let cleanup =
+            AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
+                .catch_unwind()
+                .await;
+        assert!(
+            matches!(result, Ok(Ok(Ok(())))),
+            "grouped TailReplay regression failed: {result:?}"
+        );
+        assert!(wire_ok, "grouping HTTP fixture did not settle");
+        assert!(
+            matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
+            "grouping Root did not settle"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2448,7 +2734,7 @@ mod model_recovery {
         let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
         let base = rig.directory.path().to_path_buf();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-        let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?)).await?;
+        let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
         wire = Some(tokio::spawn(serve(listener, posts.clone(), stop.clone())));
         let path = base.join("boot.json");
         tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;
