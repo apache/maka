@@ -177,7 +177,7 @@ async fn tree_window(
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::Page, String> {
     use wire::{Position, SourcePosition};
-    let reverse = matches!(&position, Position::Tail | Position::Before { .. });
+    let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
         Position::Row { position, field } => Some(wire::Cursor {
             position: position.clone(),
@@ -207,36 +207,39 @@ async fn tree_window(
         _ => None,
     };
     let mut cache = source::Cache::default();
-    if !matches!(&position, Position::Event { .. }) {
-        if let Some(anchor) = &anchor {
-            let selected = source::selected(tree, &anchor.position, &mut cache, stop).await?;
-            if selected.row.chunk.field != anchor.field
-                || (!include_thinking && anchor.field == wire::HistoryField::Thinking)
-            {
-                return Err("agent_cursor_invalid".into());
-            }
+    if let Some(anchor) = &anchor {
+        let selected = source::selected(tree, &anchor.position, &mut cache, stop).await?;
+        if !matches!(&position, Position::Event { .. })
+            && (selected.row.chunk.field != anchor.field
+                || (!include_thinking && anchor.field == wire::HistoryField::Thinking))
+        {
+            return Err("agent_cursor_invalid".into());
+        }
+        if matches!(&position, Position::Row { .. } | Position::Event { .. })
+            && !selected.row.visible
+        {
+            reverse = true;
         }
     }
-    let positions = tree
-        .positions(
-            anchor.as_ref().map(|cursor| cursor.position.clone()),
-            reverse,
-            include_thinking,
-            16,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+    let rows = source::window(
+        tree,
+        anchor.as_ref().map(|cursor| cursor.position.clone()),
+        reverse,
+        include_thinking,
+        16,
+        &mut cache,
+        stop,
+    )
+    .await?;
     let mut chunks = Vec::new();
     let mut remaining = 32 * 1024;
-    'rows: for qualified in positions {
+    'rows: for selected in rows {
         if stop.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }
-        let mut selected = source::selected(tree, &qualified.address, &mut cache, stop).await?;
-        selected.row.chunk.order = qualified.order;
         let anchored = anchor
             .as_ref()
-            .filter(|cursor| cursor.position == qualified.address);
+            .filter(|cursor| cursor.position == selected.row.chunk.position);
         let source_position = match (&position, anchored) {
             (Position::Before { .. }, Some(cursor)) => {
                 if cursor.offset == 0 {
@@ -324,11 +327,17 @@ async fn tree_window(
     });
     if let Some(first) = chunks.first() {
         if first.offset == 0
-            && tree
-                .positions(Some(first.position.clone()), true, include_thinking, 2)
-                .await
-                .map_err(|error| error.to_string())?
-                .len()
+            && source::window(
+                tree,
+                Some(first.position.clone()),
+                true,
+                include_thinking,
+                2,
+                &mut cache,
+                stop,
+            )
+            .await?
+            .len()
                 <= 1
         {
             before = None;
@@ -336,11 +345,17 @@ async fn tree_window(
     }
     if let Some(last) = chunks.last() {
         if last.offset + last.text.len() as u64 == last.total_bytes
-            && tree
-                .positions(Some(last.position.clone()), false, include_thinking, 2)
-                .await
-                .map_err(|error| error.to_string())?
-                .len()
+            && source::window(
+                tree,
+                Some(last.position.clone()),
+                false,
+                include_thinking,
+                2,
+                &mut cache,
+                stop,
+            )
+            .await?
+            .len()
                 <= 1
         {
             after = None;

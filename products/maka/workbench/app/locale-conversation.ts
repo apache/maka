@@ -110,7 +110,6 @@ export const conversationMessages = {
   ],
   'Send options': ['Send options', '发送选项', '傳送選項'],
   'Add to queue': ['Add to queue', '加入队列', '加入佇列'],
-  'Send after this turn': ['Send after this turn', '本轮结束后发送', '本輪結束後傳送'],
   'Use suggestion': ['Use suggestion', '使用建议', '使用建議'],
   'Right arrow to use · Esc to dismiss': [
     'Right arrow to use · Esc to dismiss',
@@ -155,19 +154,19 @@ export const conversationMessages = {
     '已收到 · 等待下一步处理',
     '已收到 · 等待下一步處理',
   ],
-  'Child conversations': ['Child conversations', '子会话', '子對話'],
-  'Close child conversations': ['Close child conversations', '关闭子会话', '關閉子對話'],
-  'No child conversations.': ['No child conversations.', '没有子会话。', '沒有子對話。'],
+  'Child conversations': ['Child conversations', '子对话', '子對話'],
+  'Close child conversations': ['Close child conversations', '关闭子对话', '關閉子對話'],
+  'No child conversations.': ['No child conversations.', '没有子对话。', '沒有子對話。'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Load more children of {name}': [
     'Load more children of {name}',
-    '加载 {name} 的更多子会话',
+    '加载 {name} 的更多子对话',
     '載入 {name} 的更多子對話',
   ],
   'Refresh children of {name}': [
     'Refresh children of {name}',
-    '刷新 {name} 的子会话',
+    '刷新 {name} 的子对话',
     '重新整理 {name} 的子對話',
   ],
   'The conversation list changed. Refresh to continue.': [
@@ -349,7 +348,7 @@ export const conversationMessages = {
     '仅允许本次原始调用，不授权后续调用。',
     '僅允許本次原始呼叫，不授權後續呼叫。',
   ],
-  'Attach files': ['Attach files', '添加附件', '新增附件'],
+  'Attach files…': ['Attach files…', '添加附件…', '新增附件…'],
   'Attachment state needs attention. Your draft is kept.': [
     'Attachment state needs attention. Your draft is kept.',
     '附件状态需要处理，草稿已保留。',
@@ -1850,7 +1849,6 @@ export const conversationMessages = {
   '{message} {detail}': ['{message} {detail}', '{message} {detail}', '{message} {detail}'],
   Sandbox: ['Sandbox', '沙箱', '沙箱'],
   'Sandbox and approvals': ['Sandbox and approvals', '沙箱与审批', '沙箱與審批'],
-  'Close sandbox settings': ['Close sandbox settings', '关闭沙箱设置', '關閉沙箱設定'],
   'Choose a conversation to change sandbox settings.': [
     'Choose a conversation to change sandbox settings.',
     '选择对话后可更改沙箱设置。',
@@ -1882,18 +1880,21 @@ export const conversationMessages = {
     '在工作区内读写文件。',
     '在工作區內讀寫檔案。',
   ],
-  'Approval requests': ['Approval requests', '审批请求', '審批請求'],
   'Ask for approval': ['Ask for approval', '请求审批', '請求審批'],
-  'Do not ask for approval': ['Do not ask for approval', '不请求审批', '不請求審批'],
-  'Tools outside this policy are blocked when approval requests are off.': [
-    'Tools outside this policy are blocked when approval requests are off.',
-    '关闭审批请求时，超出当前策略的工具操作将被阻止。',
-    '關閉審批請求時，超出目前策略的工具操作將被阻止。',
+  'When off, anything outside the sandbox is blocked.': [
+    'When off, anything outside the sandbox is blocked.',
+    '关闭后，超出沙箱的操作直接阻止。',
+    '關閉後，超出沙箱的操作直接阻止。',
   ],
-  'Applies to this conversation. Changing either setting clears earlier approvals.': [
-    'Applies to this conversation. Changing either setting clears earlier approvals.',
-    '仅作用于当前对话。更改任一设置会清除先前的授权。',
-    '僅作用於目前對話。變更任一設定會清除先前的授權。',
+  'No sandbox; reads and writes any file.': [
+    'No sandbox; reads and writes any file.',
+    '不使用沙箱，可读写任意文件。',
+    '不使用沙箱，可讀寫任意檔案。',
+  ],
+  'Applies to this conversation; changing it clears earlier approvals.': [
+    'Applies to this conversation; changing it clears earlier approvals.',
+    '仅作用于此对话；更改会清除已有授权。',
+    '僅作用於此對話；變更會清除已有授權。',
   ],
   'Sandbox settings rejected: {reason}': [
     'Sandbox settings rejected: {reason}',

@@ -92,6 +92,7 @@ export function createBotTranscriptCore(
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
   let cursor = 0;
+  let latest: BotTranscriptMessage | null = null;
 
   const catchUp = async (through: number) => {
     while (alive && cursor < through) {
@@ -101,6 +102,7 @@ export function createBotTranscriptCore(
       for (const message of page.messages) {
         cursor = message.sequence;
         if (!message.turnId) continue;
+        latest = message;
         next.set(message.turnId, [...(next.get(message.turnId) ?? []), message]);
       }
       byTurn = next;
@@ -222,6 +224,7 @@ export function createBotTranscriptCore(
       return fromKnown() === 'bot';
     },
     forTurn: (turnId: string): BotTranscriptMessage[] => byTurn.get(turnId) ?? [],
+    latest: () => latest,
     close() {
       alive = false;
       const previous = stream;

@@ -36,13 +36,14 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
-  controlHoverStyle,
-  controlStyle,
   secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
+  floatingStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
@@ -530,27 +531,16 @@ export function MessageRow({
             accessibilityLabel={props.label}
             disabled={props.disabled}
             onSelect={props.select}
-            style={{ ...controlStyle, minWidth: 160 }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlHoverStyle()}
+            style={{ ...menuRowStyle(), minWidth: 160 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
           </MenuItem>
         );
         return (
-          <ContextMenu
-            offset={4}
-            margin={8}
-            popupStyle={{
-              padding: 4,
-              backgroundColor: C.surface,
-              borderWidth: 1,
-              borderColor: C.line,
-              borderRadius: 12,
-            }}
-            trigger={message}
-          >
+          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={message}>
             <Each
               of={menu.commands().filter((command) => command.action() !== null)}
               key={(command) => command.kind}

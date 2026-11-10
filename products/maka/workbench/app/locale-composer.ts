@@ -65,6 +65,7 @@ export const composerMessages = {
   'Add to message': ['Add to message', '添加到消息', '新增至訊息'],
   'Reference a workspace file': ['Reference a workspace file', '引用工作区文件', '參照工作區檔案'],
   'Use a skill': ['Use a skill', '使用技能', '使用技能'],
+  'Commands and skills': ['Commands and skills', '命令和技能', '命令和技能'],
   'Message commands': ['Message commands', '消息命令', '訊息命令'],
   'Searching files…': ['Searching files…', '正在搜索文件…', '正在搜尋檔案…'],
   'Loading skills…': ['Loading skills…', '正在加载技能…', '正在載入技能…'],

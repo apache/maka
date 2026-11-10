@@ -21,10 +21,19 @@ import { Text, View, windowSize } from 'nsh';
 import { Select } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { C, captionTextStyle, controlStyle, textTooltip, toolbarControlStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  floatingStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
+  textTooltip,
+  toolbarControlStyle,
+} from './ui';
 
 export type RecentWorkspace = { path: string };
-const name = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+const parts = (path: string) => path.split(/[\\/]/).filter(Boolean);
+const name = (path: string) => parts(path).at(-1) ?? path;
 
 export function RecentWorkspaces(props: {
   path(): string;
@@ -32,10 +41,14 @@ export function RecentWorkspaces(props: {
   open(): boolean;
   changed(open: boolean): void;
   choose(workspace: RecentWorkspace): void;
-  forget(path: string): void;
   browse(): void;
   disabled(): boolean;
 }) {
+  // Folders that share a name also show their parent's.
+  const parent = (path: string) =>
+    props.recent().filter((item) => name(item.path) === name(path)).length > 1
+      ? (parts(path).at(-2) ?? '')
+      : '';
   return (
     <Select
       style={{ minWidth: 0, flexShrink: 1 }}
@@ -46,20 +59,15 @@ export function RecentWorkspaces(props: {
         ...props.recent().map((item) => ({
           value: item.path,
           title: tr('Use folder {path}', { path: item.path }),
-          group: 'recent',
         })),
         {
           value: 'browse',
           title: tr('Choose another folder…'),
           ...(props.recent().length ? { group: 'actions' } : {}),
         },
-        ...(props.recent().some((item) => item.path === props.path())
-          ? [{ value: 'forget', title: tr('Remove this folder from recents'), group: 'actions' }]
-          : []),
       ]}
       onChange={({ value }) => {
         if (value === 'browse') props.browse();
-        else if (value === 'forget') props.forget(props.path());
         else {
           const selected = props.recent().find((item) => item.path === value);
           if (selected) props.choose(selected);
@@ -72,15 +80,9 @@ export function RecentWorkspaces(props: {
       offset={8}
       margin={8}
       popupStyle={{
-        width: 392,
-        maxWidth: Math.max(0, windowSize().width - 16),
+        ...floatingStyle(),
+        width: 260,
         maxHeight: Math.min(380, windowSize().height - 32),
-        padding: 6,
-        minHeight: 0,
-        backgroundColor: C.surface,
-        borderWidth: 1,
-        borderColor: C.line,
-        borderRadius: 12,
       }}
       trigger={
         <View
@@ -115,48 +117,28 @@ export function RecentWorkspaces(props: {
         </View>
       }
       itemStyle={{ padding: 0 }}
-      itemClass={`rounded-lg focus:bg-[${C.raised}]`}
-      renderGroup={(group) =>
-        group.title === 'recent' ? (
-          <Text style={{ color: C.muted, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 }}>
-            {tr('Recent folders')}
-          </Text>
-        ) : (
-          <View style={{ height: 1, backgroundColor: C.line, margin: 4 }} />
-        )
-      }
+      itemClass={`rounded-lg focus:bg-[${C.floatingRaised}]`}
+      renderGroup={() => <View style={menuSeparatorStyle()} />}
       renderItem={(item) => (
         <View
-          tooltip={item.group === 'recent' ? textTooltip(() => item.value) : undefined}
-          style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            gap: 10,
-            paddingHorizontal: 10,
-            paddingVertical: 8,
-            minHeight: item.group === 'recent' ? 54 : 36,
-          }}
+          tooltip={item.value === 'browse' ? undefined : textTooltip(() => item.value)}
+          style={menuRowStyle()}
         >
-          <Icon name={item.value === 'forget' ? 'close' : 'folder'} color={C.secondary} />
-          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-            <Text style={[{ fontSize: 13, color: C.text }, { numberOfLines: 1 }]}>
-              {item.group === 'recent' ? name(item.value) : item.title}
+          <Icon name={item.value === 'browse' ? 'plus' : 'folder'} color={C.secondary} />
+          <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', gap: 8 }}>
+            <Text
+              style={[{ ...captionTextStyle, color: C.text, flexShrink: 1 }, { numberOfLines: 1 }]}
+            >
+              {item.value === 'browse' ? item.title : name(item.value)}
             </Text>
-            <If when={item.group === 'recent'}>
+            <If when={item.value !== 'browse' && parent(item.value)}>
               <Text
                 style={[
-                  {
-                    fontSize: 12,
-                    color: C.muted,
-                    width: '100%',
-                    textOverflow: 'ellipsis-middle',
-                  },
+                  { ...captionTextStyle, color: C.muted, flexShrink: 1 },
                   { numberOfLines: 1 },
                 ]}
               >
-                {item.value}
+                {parent(item.value)}
               </Text>
             </If>
           </View>

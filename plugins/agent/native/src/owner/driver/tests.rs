@@ -427,7 +427,7 @@ impl Rig {
                 "selectBackend",
             ]
         } else {
-            &["create"]
+            &["create", "history", "source", "search"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -3247,3 +3247,5 @@ mod replay_origin_regressions {
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
     }
 }
+
+mod tool_history;

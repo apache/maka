@@ -46,6 +46,10 @@ import {
   compact,
   controlFocusStyle,
   controlStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
   toolbarControlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
@@ -949,7 +953,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               <ContextMenu
                 offset={8}
                 margin={8}
-                popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
+                popupStyle={floatingStyle()}
                 trigger={primaryButton()}
               >
                 <Each
@@ -960,7 +964,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     <>
                       <MenuItem
                         accessibilityLabel={tr('Add to queue')}
-                        tooltip={textTooltip(() => tr('Send after this turn'))}
                         disabled={sendDisabled() || completion.isCommand()}
                         onSelect={inputAction(completion.send, {
                           owner: owner().sessionId,
@@ -970,14 +973,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           quotes: owner().quotes(),
                           delivery: 'queue' as const,
                         })}
-                        style={{
-                          ...controlStyle,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 8,
-                        }}
-                        hoverStyle={{ backgroundColor: C.raised }}
-                        focusStyle={controlFocusStyle()}
+                        style={menuRowStyle()}
+                        hoverStyle={menuRowHoverStyle()}
+                        focusStyle={menuRowHoverStyle()}
                       >
                         <Icon name="queue" color={C.secondary} />
                         <Text style={{ ...captionTextStyle, color: C.text }}>
@@ -988,22 +986,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         accessibilityLabel={
                           owner().stopping() ? tr('Stopping…') : tr('Stop response')
                         }
-                        tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
                         disabled={owner().stopping()}
                         onSelect={inputAction(owner().stop, owner().run())}
-                        style={{
-                          ...controlStyle,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 8,
-                        }}
-                        hoverStyle={{ backgroundColor: C.raised }}
-                        focusStyle={controlFocusStyle()}
+                        style={menuRowStyle()}
+                        hoverStyle={menuRowHoverStyle()}
+                        focusStyle={menuRowHoverStyle()}
                       >
                         <Icon name="stop" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>
+                        <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                           {tr('Stop response')}
                         </Text>
+                        <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
                       </MenuItem>
                     </>
                   )}

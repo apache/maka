@@ -25,7 +25,7 @@ import { Button, Tooltip } from 'nsh/base';
 import { pixelRatio, platform, windowSize } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 
-import { C, controlStyle, captionTextStyle } from './ui';
+import { C, controlStyle, captionTextStyle, richTooltipStyle, tooltipTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
 
@@ -139,27 +139,17 @@ function NavigationMark(props: {
           offset={12}
           margin={16}
           style={{
+            ...richTooltipStyle(),
             width: Math.min(300, Math.max(0, windowSize().width - 32)),
             maxHeight: 100,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-            borderRadius: 8,
-            backgroundColor: C.surface,
-            borderWidth: 1,
-            borderColor: C.line,
             pointerEvents: 'none',
           }}
         >
-          <Text
-            style={[
-              { ...captionTextStyle, color: C.text, fontWeight: '500' },
-              { numberOfLines: 3 },
-            ]}
-          >
+          <Text style={[{ ...tooltipTextStyle(), fontWeight: '500' }, { numberOfLines: 3 }]}>
             {props.item().label || tr('Recorded turn')}
           </Text>
           <If when={props.busy}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
+            <Text style={{ ...tooltipTextStyle(), color: C.muted }}>{tr('Navigating…')}</Text>
           </If>
         </Tooltip>
       }
