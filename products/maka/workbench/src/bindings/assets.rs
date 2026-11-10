@@ -69,8 +69,14 @@ pub(super) struct HostAssets(pub(super) Arc<Owner>);
 
 impl Assets for HostAssets {
     fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
-        if uri == "asset:/maka/desktop-icon.png" {
-            return Ok(include_bytes!("../../app/assets/maka.png").to_vec());
+        let icon: Option<&[u8]> = match uri {
+            "asset:/maka/tray-line.svg" => Some(include_bytes!("../../app/assets/tray-line.svg")),
+            "asset:/maka/tray-bold.svg" => Some(include_bytes!("../../app/assets/tray-bold.svg")),
+            "asset:/maka/tray-tile.svg" => Some(include_bytes!("../../app/assets/tray-tile.svg")),
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            return Ok(icon.to_vec());
         }
         if let Some(encoded) = uri.strip_prefix("asset:/plugin/") {
             return super::plugins::asset(&self.0, encoded);

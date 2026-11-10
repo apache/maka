@@ -74,7 +74,7 @@ async function setup(
     main: windowRef(),
     other: windowRef(),
     gets: [],
-    icon: 'asset:/maka/desktop-icon.png',
+    icon: 'asset:/maka/tray-line.svg',
     tray: null,
     trayUpdates: 0,
     menu: [],
@@ -191,7 +191,11 @@ async function setup(
       export const errorText = value => value; export const renderText = value => String(value);`,
     host: 'export const uiHost = {};',
     'nsh/base': "export const Button = 'Button';",
-    appearance: 'export const initializeAppearance = () => {};',
+    appearance: `import { signal } from 'nsh';
+      // fixture ${id}
+      export const initializeAppearance = () => {};
+      export const appearance = { trayIcon: signal('line') };
+      globalThis.__desktopFixture.trayIcon = appearance.trayIcon;`,
     ui: 'export const C = {};',
     Loading: "export const LoadingState = 'LoadingState';",
     locale: `import { signal } from 'nsh';
@@ -334,6 +338,8 @@ test('locale updates do not resubscribe close; repeated owner cleanup and remoun
     assert.equal(h.tray.menu[0].label, `${locale}:Open Maka`);
     assert.equal(h.tray.menu[2].label, `${locale}:Quit Maka`);
   }
+  h.trayIcon.set('bold');
+  assert.equal(h.tray.icon, 'asset:/maka/tray-bold.svg');
   assert.equal(h.main.subscriptions, 1);
   assert.equal(h.main.listeners.size, 1);
   for (let i = 0; i < 3; i++) {

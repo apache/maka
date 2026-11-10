@@ -21,7 +21,6 @@ import { cleanup, effect, host, platform } from 'nsh';
 import { isAvailable, Tray, Window } from 'nsh/desktop';
 import { appearance } from './appearance';
 import { tr } from './locale';
-import { trayIconArtwork } from './trayIcon';
 
 /** The Bootstrap owner outlives replaceable UI contributions. */
 export function nativeDesktop() {
@@ -34,7 +33,7 @@ export function nativeDesktop() {
   cleanup(() => Tray.set(null));
   effect(() => {
     Tray.set({
-      icon: trayIconArtwork[appearance.trayIcon()],
+      icon: `asset:/maka/tray-${appearance.trayIcon()}.svg`,
       tooltip: 'Maka',
       onClick: () => main.focus(),
       menu: [
