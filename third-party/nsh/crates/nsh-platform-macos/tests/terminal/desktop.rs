@@ -33,14 +33,17 @@ use nsh_platform_macos::{
 use nsh_terminal::{DevicePixels, NativeSurface, size};
 
 const APP: &str = r#"
-import { View, Text, mount } from "nsh";
+import { View, mount } from "nsh";
 import { Input } from "nsh/base";
 import { Tray, Window } from "nsh/desktop";
 function App() {
   const main = Window.get("main");
   main.focus();
   Tray.set({ tooltip: "NSH terminal isolation" });
-  const extra = Window.open(() => <Text>Secondary</Text>, {
+  const extra = Window.open(() => <Input
+    autoFocus ref={input => input?.focus()}
+    defaultValue="secondary" style={{height: 40}}
+  />, {
     id: "terminal-secondary", title: "NSH terminal secondary",
     defaultSize: { width: 160, height: 100 }
   });

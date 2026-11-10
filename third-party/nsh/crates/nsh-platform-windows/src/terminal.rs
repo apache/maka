@@ -738,7 +738,7 @@ mod tests {
     fn pixel_terminal_ignores_desktop_windows_and_tray_but_keeps_editing() {
         use super::TerminalSurface;
         use nsh_core::{
-            Command, ModalAnimation, ModalConfig, MountItem, ROOT_ID,
+            Command, InputConfig, ModalAnimation, ModalConfig, MountItem, ROOT_ID,
             desktop::{DesktopCommand, OpenWindow, Tray, WindowRequest},
         };
         use nsh_engine::{App, Bundle, EngineConfig};
@@ -769,7 +769,7 @@ mod tests {
             Arc::new(|| {}),
         )
         .unwrap();
-        let until = |done: &mut dyn FnMut() -> bool| {
+        let until = |phase: &str, done: &mut dyn FnMut() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 terminal.pump_with_draw(true);
@@ -777,11 +777,20 @@ mod tests {
                 if done() {
                     break;
                 }
-                assert!(Instant::now() < deadline, "terminal did not settle");
+                assert!(
+                    Instant::now() < deadline,
+                    "{phase}: terminal did not settle; text={:?} target={:?} pending={} active={}",
+                    terminal.editor_text(),
+                    terminal.text_input_target(),
+                    terminal.has_pending(),
+                    terminal.is_active()
+                );
                 std::thread::yield_now();
             }
         };
-        until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+        until("initial autofocus", &mut || {
+            terminal.editor_text().as_deref() == Some("terminal")
+        });
         let surface = terminal.view.surface();
         let desktop = |id, command| {
             surface.mounter.borrow_mut().apply(
@@ -811,6 +820,7 @@ mod tests {
         desktop(ROOT_ID, DesktopCommand::SetTray(None));
 
         // Inactive is still a terminal, not a desktop surface.
+        let mut expected = String::from("terminal");
         for (window, active) in [(2000, false), (2002, true)] {
             surface.terminal_active.set(Some(active));
             desktop(ROOT_ID, DesktopCommand::SetTray(Some(tray.clone())));
@@ -829,6 +839,35 @@ mod tests {
                     kind: ViewKind::Modal,
                 },
             );
+            let input = window + 1;
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                for item in [
+                    MountItem::Create {
+                        id: input,
+                        kind: ViewKind::Input,
+                    },
+                    MountItem::Input {
+                        id: input,
+                        config: Box::new(InputConfig {
+                            auto_focus: true,
+                            ..Default::default()
+                        }),
+                    },
+                    MountItem::InputValue {
+                        id: input,
+                        text: "secondary".into(),
+                        count: 0,
+                    },
+                    MountItem::Insert {
+                        parent: window,
+                        child: input,
+                        before: None,
+                    },
+                ] {
+                    mounter.apply(surface, &item);
+                }
+            }
             let insert = || {
                 surface.mounter.borrow_mut().apply(
                     surface,
@@ -853,9 +892,16 @@ mod tests {
             }
             surface.mounter.borrow_mut().end_batch(surface);
             desktop(window, DesktopCommand::Request(WindowRequest::Focus));
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Command {
+                    id: input,
+                    command: Command::Focus,
+                },
+            );
             assert_eq!(
                 terminal.editor_text().as_deref(),
-                Some("terminal"),
+                Some(expected.as_str()),
                 "rejected Window.open stole the terminal editor's focus"
             );
             assert!(
@@ -867,6 +913,13 @@ mod tests {
                 !unsafe { IsWindowVisible(surface.hwnd()) }.as_bool(),
                 "terminal exposed its buffer window"
             );
+            let end = expected.encode_utf16().count();
+            terminal.set_selected_text_range(end..end).unwrap();
+            assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
+            expected.push('!');
+            until("focus restored after ordinary Dialog", &mut || {
+                terminal.editor_text().as_deref() == Some(expected.as_str())
+            });
         }
         {
             let _scope = terminal.scope();
@@ -887,9 +940,13 @@ mod tests {
         for (id, reload) in [(2000, false), (2002, true)] {
             if reload {
                 terminal.load_with_config(config.clone());
-                until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+                expected = String::from("terminal");
+                until("reload editor", &mut || {
+                    terminal.editor_text().as_deref() == Some(expected.as_str())
+                });
             } else {
                 let mut mounter = surface.mounter.borrow_mut();
+                mounter.apply(surface, &MountItem::Delete { id: id + 1 });
                 mounter.apply(surface, &MountItem::Remove { id });
                 mounter.apply(surface, &MountItem::Delete { id });
                 mounter.end_batch(surface);
@@ -929,11 +986,15 @@ mod tests {
                 mounter.apply(surface, &MountItem::Delete { id });
                 mounter.end_batch(surface);
             }
-            until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+            until("dialog close restores editor", &mut || {
+                terminal.editor_text().as_deref() == Some(expected.as_str())
+            });
         }
         terminal.set_selected_text_range(8..8).unwrap();
         assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
-        until(&mut || terminal.editor_text().as_deref() == Some("terminal!"));
+        until("final paste", &mut || {
+            terminal.editor_text().as_deref() == Some("terminal!")
+        });
         terminal.shutdown();
     }
 
