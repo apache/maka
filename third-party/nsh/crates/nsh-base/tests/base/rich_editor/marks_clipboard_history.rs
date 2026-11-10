@@ -379,11 +379,21 @@ fn copy_writes_markdown() {
     );
 }
 
-/// Nothing selected: Copy is not the editor's to take, so the page's
+/// Where Copy is Ctrl+C, the key stays the editor's with nothing selected:
+/// its plugins hear it, and Copy right after Select All reaches the editor.
+#[test]
+fn ctrl_c_stays_the_editors_with_nothing_selected() {
+    let mut app = start(paragraphs(&["hello"]));
+    focus(&mut app);
+    assert!(app.claims_key("mod+c").unwrap());
+    assert!(app.claims_key("mod+x").unwrap());
+}
+
+/// Nothing selected: Command+C is not the editor's to take, so the page's
 /// selected output gets it.
 #[test]
 fn copy_with_nothing_selected_is_left_to_the_page() {
-    let mut app = start(paragraphs(&["hello"]));
+    let mut app = start_on(paragraphs(&["hello"]), Os::MacOs, true);
     focus(&mut app);
     assert!(!app.claims_key("mod+c").unwrap());
     // With a selection it is the editor's, and copies as before.

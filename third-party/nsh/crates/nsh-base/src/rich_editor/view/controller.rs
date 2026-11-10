@@ -202,9 +202,13 @@ pub(crate) struct Rv {
     pub(crate) table_preview: Signal<Option<TablePreview>>,
 }
 
-/// Copy and Cut (`mod+c`, `mod+x`). The editor takes them only while
-/// something is selected: with nothing selected they would copy nothing and
-/// keep the page's selection off the clipboard.
+/// Copy and Cut (`mod+c`, `mod+x`). Where Command has its own key, the editor
+/// takes them only while something is selected: with nothing selected they
+/// would copy nothing and keep the page's selection off the clipboard. Where
+/// the key is Ctrl it stays the editor's whatever the selection: the
+/// editor's plugins hear Ctrl+C there (an app's interrupt), and the platform
+/// fires keys from a keymap that lags the selection, so Copy right after
+/// Select All must find the same binding.
 fn copy_or_cut(event: &KeyEvent) -> bool {
     event.mod_key && !event.alt && !event.shift && matches!(event.key.as_str(), "c" | "x")
 }
@@ -352,7 +356,9 @@ impl Rv {
                 return;
             }
             let tab_navigation = rv.props.tab_navigation.get();
-            let copying = copying.get();
+            // Short-circuits so the table is not rebuilt, under new binding
+            // ids, each time a selection starts or ends where the key is Ctrl.
+            let copying = key_label("mod+c") == key_label("ctrl+c") || copying.get();
             for spec in keys::key_table(editable.get()) {
                 if tab_navigation
                     && spec.event.key == "Tab"
