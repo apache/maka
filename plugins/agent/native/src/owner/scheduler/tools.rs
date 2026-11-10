@@ -105,7 +105,7 @@ impl ToolPreparer for Scheduler {
                     if cancellation.is_cancelled() {
                         return Err(failed("Scheduled task cancelled"));
                     }
-                    let runs = owner.runs.lock().await;
+                    let runs = owner.runs.state().await;
                     if runs.closing || !owner.settings.scheduled_tasks {
                         return Err(failed("Scheduled tasks unavailable"));
                     }
@@ -133,26 +133,20 @@ impl Owner {
             .await
             .map_err(|error| error.to_string())?
             .ok_or("agent_session_unavailable")?;
-        let boundary = self
-            .tool_store(&context)?
-            .invocation_boundary(
-                &context.invocation.session_id,
-                &context.invocation.invocation_id,
-            )
+        let view = self
+            .durable
+            .frontier(context.execution.run_id)
             .await
-            .map_err(reason)?
-            .ok_or("scheduler_invocation_unavailable")?
-            .0;
-        if boundary.invocation != context.invocation
-            || matches!(
-                boundary.state,
-                maka_event_log::turns::InvocationState::Ended { .. }
-            )
+            .map_err(reason)?;
+        if view.spec.session_id != context.execution.session_id
+            || view.spec.turn_id != context.execution.turn_id
+            || view.stopped
+            || view.terminal.is_some()
         {
             return Err("scheduler_invocation_closed".into());
         }
         let identity = hex::encode(Sha256::digest(
-            serde_json::to_vec(&(&context.invocation, &context.operation_id)).map_err(reason)?,
+            serde_json::to_vec(&(&context.execution, &context.operation_id)).map_err(reason)?,
         ));
         let key = format!("tool:{identity}");
         let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&input).map_err(reason)?));
@@ -171,7 +165,7 @@ impl Owner {
         }
         let mut catalog = self.scheduler.load().await?;
         if let Input::List { after } = &input {
-            let mut tasks = catalog.plans.values().filter(|saved| after.as_ref().is_none_or(|after| saved.plan.task.id > *after) && matches!(&saved.plan.task.created_by, Creator::Agent { session_id } if session_id == &context.invocation.session_id))
+            let mut tasks = catalog.plans.values().filter(|saved| after.as_ref().is_none_or(|after| saved.plan.task.id > *after) && matches!(&saved.plan.task.created_by, Creator::Agent { session_id } if session_id == &context.execution.session_id))
                 .take(21).map(Saved::summary).collect::<Vec<_>>();
             let more = tasks.len() > 20;
             tasks.truncate(20);
@@ -192,11 +186,11 @@ impl Owner {
                 let effect = if matches!(effect, Target::Reminder) {
                     ScheduledEffect::Reminder
                 } else {
-                    let runs = self.runs.lock().await;
+                    let runs = self.runs.state().await;
                     let control = runs
                         .controls
-                        .get(&context.invocation.session_id)
-                        .filter(|control| control.invocation == context.invocation)
+                        .get(&context.execution.session_id)
+                        .filter(|control| control.execution == context.execution)
                         .ok_or("scheduler_invocation_closed")?;
                     let accepted = control
                         .basis
@@ -248,7 +242,7 @@ impl Owner {
                         expires_at,
                     },
                     Creator::Agent {
-                        session_id: context.invocation.session_id,
+                        session_id: context.execution.session_id,
                     },
                     timezone,
                     now() as i64,
@@ -274,7 +268,7 @@ impl Owner {
                 if saved.revision != revision {
                     return Err("scheduler_revision_changed".into());
                 }
-                if !matches!(&saved.plan.task.created_by, Creator::Agent { session_id } if session_id == &context.invocation.session_id)
+                if !matches!(&saved.plan.task.created_by, Creator::Agent { session_id } if session_id == &context.execution.session_id)
                 {
                     return Err("scheduler_task_outside_conversation".into());
                 }
@@ -284,8 +278,18 @@ impl Owner {
                         let Some(approval) = &saved.plan.authorization else {
                             return Err("scheduler_user_approval_required".into());
                         };
-                        if let Approval::Execution { basis } = approval {
-                            self.validate_background(basis).await?;
+                        if let Approval::Execution { approval } = approval {
+                            let basis = self
+                                .approve_background(
+                                    &approval.target,
+                                    approval.model.clone(),
+                                    approval.thinking_level,
+                                    BackgroundKind::Schedule {
+                                        task_id: saved.plan.task.id.clone(),
+                                    },
+                                )
+                                .await?;
+                            self.validate_background(&basis).await?;
                         }
                         Some(saved.plan.resume(now() as i64).map_err(reason)?)
                     }

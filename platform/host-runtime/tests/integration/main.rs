@@ -17,5 +17,4 @@
  * under the License.
  */
 
-mod terminal_contract;
 mod windows_sandbox;

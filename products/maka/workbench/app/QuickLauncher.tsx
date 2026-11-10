@@ -37,10 +37,11 @@ type Navigation = {
 
 async function openBot(): Promise<string> {
   const { reply } = (await host.mutation('agent', 'openBot', {})) as { reply: OperationReply };
-  const value =
-    reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'returned'
-      ? (reply.receipt.outcome.value as { kind: string; sessionId?: string })
-      : null;
+  if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+    throw new Error(tr('Maka Bot could not be opened'));
+  const result = reply.receipt.outcome.result;
+  if (result.kind === 'failure') throw new Error(result.diagnostic);
+  const value = result.value as { kind: string; sessionId?: string };
   if (value?.kind !== 'opened' || !value.sessionId)
     throw new Error(tr('Maka Bot could not be opened'));
   return value.sessionId;

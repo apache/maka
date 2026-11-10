@@ -42,7 +42,7 @@ pub struct Command {
 }
 impl Command {
     pub fn validate(&self) -> Result<(), Error> {
-        if !std::path::Path::new(&self.executable).is_absolute()
+        if self.executable.is_empty()
             || self.executable.contains('\0')
             || self.args.iter().any(|arg| arg.contains('\0'))
             || self.env.iter().any(|(key, value)| {

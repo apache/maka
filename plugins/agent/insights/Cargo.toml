@@ -24,6 +24,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+maka-plugin-core.workspace = true
+maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 serde.workspace = true

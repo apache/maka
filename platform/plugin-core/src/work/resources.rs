@@ -1,0 +1,161 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum ResourceError {
+    #[error("work resources closed")]
+    Closed,
+    #[error("resource cleanup is unconfirmed: {0}")]
+    CleanupUnconfirmed(String),
+}
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio_util::task::{TaskTracker, task_tracker::TaskTrackerToken};
+
+#[derive(Default)]
+pub struct Resources {
+    state: Mutex<State>,
+    tasks: TaskTracker,
+}
+#[derive(Default)]
+struct State {
+    closed: bool,
+    failure: Option<String>,
+    retained: Vec<Box<dyn std::any::Any + Send>>,
+}
+
+impl Resources {
+    /// Observe settlement without closing admission. Callers deciding retirement
+    /// must independently fence every producer before relying on this result.
+    pub fn is_idle(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.failure.is_none() && self.tasks.is_empty()
+    }
+    /// Running owners, independent of cleanup failures already reported by completed owners.
+    /// Retirement callers must fence producers before checking this observation.
+    pub fn has_pending(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+    pub fn reserve(self: &Arc<Self>) -> Result<Ticket, ResourceError> {
+        let state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(ResourceError::Closed);
+        }
+        Ok(Ticket {
+            group: self.clone(),
+            _token: self.tasks.token(),
+            state: TicketState::Reserved,
+        })
+    }
+    /// Seal original admission and inspect actual worker settlement without a
+    /// timeout. `false` means still pending, never a failed cleanup receipt.
+    pub fn seal(&self) -> Result<bool, ResourceError> {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        self.tasks.close();
+        match &state.failure {
+            Some(error) => Err(ResourceError::CleanupUnconfirmed(error.clone())),
+            None => Ok(self.tasks.is_empty()),
+        }
+    }
+    pub async fn finish(&self) -> Result<(), ResourceError> {
+        self.state.lock().unwrap().closed = true;
+        self.tasks.close();
+        tokio::time::timeout(Duration::from_secs(5), self.tasks.wait())
+            .await
+            .map_err(|_| {
+                ResourceError::CleanupUnconfirmed("plugin resources did not settle".into())
+            })?;
+        match &self.state.lock().unwrap().failure {
+            Some(error) => Err(ResourceError::CleanupUnconfirmed(error.clone())),
+            None => Ok(()),
+        }
+    }
+    /// Close admission and await every original owner, including after a sibling
+    /// has reported failure. Run sealing requires settlement, not a timed poll.
+    pub async fn settle(&self) -> Result<(), ResourceError> {
+        self.state.lock().unwrap().closed = true;
+        self.tasks.close();
+        self.tasks.wait().await;
+        match &self.state.lock().unwrap().failure {
+            Some(error) => Err(ResourceError::CleanupUnconfirmed(error.clone())),
+            None => Ok(()),
+        }
+    }
+}
+pub struct Ticket {
+    group: Arc<Resources>,
+    _token: TaskTrackerToken,
+    state: TicketState,
+}
+enum TicketState {
+    Reserved,
+    Started,
+    Settled,
+}
+impl Ticket {
+    pub fn start(&mut self) {
+        self.state = TicketState::Started;
+    }
+    /// Record failed custody without completing this ticket or its worker.
+    /// Admission owners still fence their producers; settlement waits for the
+    /// original started ticket even after the group has observed this failure.
+    pub fn record_failure(&self, error: String) {
+        self.group
+            .state
+            .lock()
+            .expect("resource state lock poisoned")
+            .failure
+            .get_or_insert(error);
+    }
+
+    /// Preserve original custody when losing an observation cannot establish
+    /// actual resource cleanup. A failed group never emits a successful receipt.
+    pub fn unconfirmed(mut self, error: String, custody: impl std::any::Any + Send) {
+        let mut state = self.group.state.lock().unwrap();
+        state.failure.get_or_insert(error);
+        state.retained.push(Box::new(custody));
+        self.state = TicketState::Settled;
+    }
+    pub fn complete(mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            self.group
+                .state
+                .lock()
+                .unwrap()
+                .failure
+                .get_or_insert(error);
+        }
+        self.state = TicketState::Settled;
+    }
+}
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        if matches!(self.state, TicketState::Started) {
+            self.group
+                .state
+                .lock()
+                .unwrap()
+                .failure
+                .get_or_insert_with(|| "plugin resource worker disappeared".into());
+        }
+    }
+}

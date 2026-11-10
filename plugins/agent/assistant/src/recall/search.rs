@@ -108,7 +108,7 @@ pub async fn search(
                 session: hit.session,
                 anchor: Anchor {
                     message_id: hit.message.message_id.clone(),
-                    position: hit.message.position,
+                    position: hit.message.position.clone(),
                     turn_id: hit.message.turn_id.clone(),
                 },
                 messages: vec![hit.message],

@@ -28,15 +28,48 @@ enum State {
     Ready(Arc<Servers>),
     Closing(Option<Arc<Servers>>),
 }
+pub(super) fn current(
+    snapshots: &Snapshots,
+    session: &str,
+    base: Arc<Catalog>,
+) -> Result<Arc<Catalog>, String> {
+    let Some(client) = snapshots.clients.get(session) else {
+        return Ok(base);
+    };
+    match &client.state {
+        State::Ready(servers) => compose(base, client.generation, servers),
+        State::Closing(_) | State::Opening => Ok(base),
+    }
+}
+fn compose(
+    base: Arc<Catalog>,
+    generation: ClientGeneration,
+    servers: &Servers,
+) -> Result<Arc<Catalog>, String> {
+    let revision = maka_agent_facts::artifact::content_digest(
+        &serde_json::to_vec(&(&generation, &base.revision)).expect("MCP lease identity"),
+    );
+    let mut catalog = Catalog::with_layer(
+        base,
+        revision,
+        &servers.names.keys().cloned().collect(),
+        servers.live_bindings.clone(),
+        None,
+    )?;
+    Arc::get_mut(&mut catalog)
+        .expect("new client composition is uniquely owned")
+        .client_mcp = Some(generation);
+    Ok(catalog)
+}
 impl Projects {
     pub fn begin_client(&self, session: &str, generation: ClientGeneration) -> Result<(), String> {
         if let Some(error) = self
-            .cleanup_failure
+            .cleanup_failures
             .lock()
             .expect("MCP cleanup state")
-            .clone()
+            .first()
         {
-            return Err(error);
+            return Err(error.message().to_owned());
         }
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         if snapshots.clients.contains_key(session) {
@@ -90,28 +123,7 @@ impl Projects {
         if let Ok(catalog) = self.catalog(Some(&revision)) {
             return Ok(catalog);
         }
-        let tools = base
-            .tools
-            .clone()
-            .with_additional(servers.registrations.clone())
-            .map_err(|_| "agent_mcp_catalog_invalid")?;
-        let mut definitions = base.definitions.as_ref().clone();
-        definitions.extend(
-            servers
-                .registrations
-                .iter()
-                .map(|tool| tool.definition.clone()),
-        );
-        let mut bindings = base.bindings.as_ref().clone();
-        bindings.extend(servers.bindings.clone());
-        let catalog = Arc::new(Catalog {
-            revision: Some(revision.clone()),
-            client_mcp: Some(generation),
-            _parent: Some(base),
-            tools,
-            definitions: Arc::new(definitions),
-            bindings: Arc::new(bindings),
-        });
+        let catalog = compose(base, generation, &servers)?;
         let scope = format!("client:{session}");
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         if !snapshots.clients.get(session).is_some_and(|client| {
@@ -128,6 +140,7 @@ impl Projects {
                     acquired: AtomicU64::new(0),
                     catalog,
                     servers: None,
+                    overrides: BTreeSet::new(),
                 })
             })
             .clone();
@@ -161,9 +174,9 @@ impl Projects {
         {
             snapshots.clients.remove(session);
             let scope = format!("client:{session}");
-            snapshots
-                .revisions
-                .retain(|_, snapshot| snapshot.scope != scope);
+            snapshots.revisions.retain(|_, snapshot| {
+                snapshot.scope != scope || Arc::strong_count(&snapshot.catalog) > 1
+            });
         }
     }
     pub(super) async fn close_clients(&self) -> Result<(), String> {
@@ -181,7 +194,8 @@ impl Projects {
         let mut failure = None;
         for server in servers {
             if let Err(error) = server.close().await {
-                failure.get_or_insert(error);
+                failure.get_or_insert(error.message.clone());
+                self.retain_transport_cleanup(error);
             }
         }
         failure.map_or(Ok(()), Err)
@@ -211,6 +225,9 @@ impl Projects {
             .collect()
     }
     pub fn client_cleanup_failed(&self, error: String) {
-        *self.cleanup_failure.lock().expect("MCP cleanup state") = Some(error);
+        self.cleanup_failures
+            .lock()
+            .expect("MCP cleanup state")
+            .push(CleanupFailure::Work(error));
     }
 }

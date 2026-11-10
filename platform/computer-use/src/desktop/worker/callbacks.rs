@@ -31,14 +31,14 @@ use crate::invocation::{
     BrowserAuthorization, BrowserEffectScope, BrowserHostEffects, BrowserPreparationBinding,
     CheckedSettlementFuture, HostEffectFuture, HostUncertaintyFuture, OperationSettlement,
 };
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 use crate::invocation::{BrowserServices, HostEffectFactory, SettlementFuture};
 #[cfg(feature = "native-desktop")]
 use crate::invocation::{BrowserServicesFuture, BrowserServicesProvider};
 use futures_util::FutureExt;
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 use std::sync::{Weak, atomic::AtomicBool};
 use std::{
     collections::{HashMap, HashSet},
@@ -52,7 +52,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 use tokio::sync::mpsc;
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -61,7 +61,7 @@ mod files;
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(0);
 type Rejected = Box<dyn FnOnce(ToolError) + Send>;
 pub(super) type ParentSender = Arc<dyn Fn(ParentMessage) -> Result<(), ToolError> + Send + Sync>;
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 pub(super) type WorkerSender = Arc<dyn Fn(WorkerMessage) -> Result<(), ToolError> + Send + Sync>;
 
 fn failed(message: impl Into<String>) -> ToolError {
@@ -76,7 +76,7 @@ fn allocate(counter: &AtomicU64) -> Result<u64, ToolError> {
         .map(|id| id + 1)
         .map_err(|_| failed("Browser callback identity exhausted"))
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 fn outcome_unknown(error: &ToolError) -> bool {
     matches!(
         error,
@@ -95,6 +95,7 @@ pub(super) struct ScopeIdentity {
     pub epoch: String,
     pub session: String,
     pub turn: String,
+    pub execution: crate::ExecutionCorrelation,
     pub operation_id: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,7 +305,9 @@ impl ParentCapabilities {
         let routing = expected
             .filter(|expected| *expected == &observed)
             .ok_or_else(|| failed("Browser session preparation invocation identity mismatch"))
-            .and_then(|expected| preparation.check_scope(&expected.turn, &expected.operation_id));
+            .and_then(|expected| {
+                preparation.check_scope(&expected.turn, &expected.execution, &expected.operation_id)
+            });
         let authorization = self.authorization.clone();
         Box::pin(async move {
             routing?;
@@ -686,7 +689,7 @@ impl ParentCallbacks {
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let prepared = binding
-                .check_turn(&token.key.identity.turn)
+                .check_scope(&token.key.identity.turn, &token.key.identity.execution)
                 .and_then(|()| effect_preparation_scope(&state, &token, effect_id));
             match prepared {
                 Ok((scope, lifetime, invocation_id)) => {
@@ -764,6 +767,7 @@ impl ParentCallbacks {
             if state.closed.is_some()
                 || scope.phase != ParentScopePhase::Accepting
                 || request.turn_id != token.key.identity.turn
+                || request.execution != token.key.identity.execution
                 || request.browser_id != document.browser_id
                 || request.generation != document.generation
                 || request.opener_tab_id.to_string() != document.tab_id
@@ -1138,7 +1142,14 @@ impl ParentCallbacks {
             }
         }
     }
-    pub fn seal_matching(&self, owner: &str, epoch: Option<&str>, turn: Option<&str>) {
+    pub fn seal_matching(
+        &self,
+        owner: &str,
+        epoch: Option<&str>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) {
         let identities = {
             let state = self.0.state.lock().unwrap();
             state
@@ -1151,7 +1162,9 @@ impl ParentCallbacks {
                         .values()
                         .map(|(identity, _)| identity.clone()),
                 )
-                .filter(|identity| matches_identity(identity, owner, epoch, turn))
+                .filter(|identity| {
+                    matches_identity(identity, owner, epoch, session, turn, execution)
+                })
                 .collect::<HashSet<_>>()
         };
         for identity in identities {
@@ -1313,33 +1326,33 @@ impl Drop for EffectBridge {
     }
 }
 
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct PreparedServices {
     grant: ScopeGrant,
     scope: Arc<RemoteScope>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct PendingPrepare {
     invocation_id: u64,
     key: ScopeKey,
     reply: oneshot::Sender<Result<PreparedServices, ToolError>>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct WorkerScope {
     token: ScopeToken,
     scope: Weak<RemoteScope>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 enum PendingEffectWork {
     Future(HostEffectFuture),
     Scoped(HostEffectFactory),
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct PendingEffect {
     scope: Arc<RemoteScope>,
     phase: EffectPhase,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 enum EffectPhase {
     Queued {
         work: PendingEffectWork,
@@ -1353,18 +1366,18 @@ enum EffectPhase {
     },
     TerminalUncertain,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 enum RetentionAck {
     Pending,
     Accepted,
     Rejected(ToolError),
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 enum RetentionFuture {
     Known(SettlementFuture),
     Checked(CheckedSettlementFuture),
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl Future for RetentionFuture {
     type Output = Result<(), ToolError>;
 
@@ -1375,26 +1388,26 @@ impl Future for RetentionFuture {
         }
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct PendingRetention {
     scope: Arc<RemoteScope>,
     work: RetentionWork,
     ack: RetentionAck,
     uncertain: Option<ToolError>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 enum RetentionWork {
     Running,
     Completed,
     Retained { _pending: RetentionFuture },
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct NativePendingNotice {
     id: u64,
     identity: ScopeIdentity,
     reply: oneshot::Sender<Result<(), ToolError>>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 #[derive(Default)]
 struct WorkerState {
     files: HashMap<Job, oneshot::Sender<Result<files::Reply, ToolError>>>,
@@ -1407,7 +1420,7 @@ struct WorkerState {
     retained: HashMap<Job, PendingRetention>,
     closed: Option<ToolError>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct WorkerInner {
     send: WorkerSender,
     state: Mutex<WorkerState>,
@@ -1415,10 +1428,10 @@ struct WorkerInner {
     changed: Notify,
     emission: Mutex<()>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 #[derive(Clone)]
 pub(super) struct WorkerCallbacks(Arc<WorkerInner>);
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl WorkerCallbacks {
     pub fn new(send: WorkerSender) -> Self {
         Self(Arc::new(WorkerInner {
@@ -1835,7 +1848,14 @@ impl WorkerCallbacks {
         }
     }
     #[cfg(feature = "native-desktop")]
-    pub fn seal_matching(&self, owner: &str, epoch: Option<&str>, turn: Option<&str>) {
+    pub fn seal_matching(
+        &self,
+        owner: &str,
+        epoch: Option<&str>,
+        session: Option<&str>,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) {
         let identities = self
             .0
             .state
@@ -1844,7 +1864,7 @@ impl WorkerCallbacks {
             .scopes
             .values()
             .map(|scope| scope.token.key.identity.clone())
-            .filter(|identity| matches_identity(identity, owner, epoch, turn))
+            .filter(|identity| matches_identity(identity, owner, epoch, session, turn, execution))
             .collect::<HashSet<_>>();
         for identity in identities {
             self.seal(&identity);
@@ -1984,7 +2004,7 @@ impl WorkerCallbacks {
             })
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 fn worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<Arc<RemoteScope>, ToolError> {
     known_worker_scope(state, token)?;
     state
@@ -1993,7 +2013,7 @@ fn worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<Arc<RemoteSco
         .and_then(|entry| entry.scope.upgrade())
         .ok_or_else(|| failed("Remote browser scope capability expired"))
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 fn known_worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<(), ToolError> {
     if state
         .scopes
@@ -2009,10 +2029,14 @@ fn matches_identity(
     identity: &ScopeIdentity,
     owner: &str,
     epoch: Option<&str>,
+    session: Option<&str>,
     turn: Option<&str>,
+    execution: Option<&crate::ExecutionCorrelation>,
 ) -> bool {
     identity.owner == owner
         && epoch.is_none_or(|epoch| identity.epoch == epoch)
+        && session.is_none_or(|session| identity.session == session)
+        && execution.is_none_or(|execution| &identity.execution == execution)
         && turn.is_none_or(|turn| identity.turn == turn)
 }
 #[cfg(feature = "native-desktop")]
@@ -2037,7 +2061,7 @@ impl BrowserServicesProvider for RemoteServices {
         Box::pin(async move { worker.prepare(invocation_id, key, cancellation).await })
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct RemoteScope {
     token: ScopeToken,
     invocation_id: u64,
@@ -2045,7 +2069,7 @@ struct RemoteScope {
     worker: WorkerCallbacks,
     sealed: AtomicBool,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl Drop for RemoteScope {
     fn drop(&mut self) {
         let _ = (self.worker.0.send)(WorkerMessage::Release {
@@ -2053,7 +2077,7 @@ impl Drop for RemoteScope {
         });
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl RemoteScope {
     fn check_attachment(
         &self,
@@ -2107,7 +2131,7 @@ impl RemoteScope {
         })
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl BrowserAttachmentAuthorization for RemoteScope {
     fn check(
         &self,
@@ -2120,7 +2144,7 @@ impl BrowserAttachmentAuthorization for RemoteScope {
         self.check_attachment(AttachmentCheck::Metadata, cancellation)
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl BrowserHostEffects for RemoteScope {
     fn supports_lease_children(&self) -> bool {
         self.lease_children && !self.sealed.load(Ordering::SeqCst)
@@ -2190,7 +2214,7 @@ impl BrowserHostEffects for RemoteScope {
         self.enqueue_effect(PendingEffectWork::Scoped(factory), rejected)
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl RemoteScope {
     fn enqueue_effect(&self, work: PendingEffectWork, rejected: Rejected) -> Result<(), ToolError> {
         let scoped = matches!(&work, PendingEffectWork::Scoped(_));
@@ -2234,7 +2258,7 @@ impl RemoteScope {
         Ok(())
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl RemoteScope {
     fn retain_rpc(&self, pending: RetentionFuture) -> Result<(), (ToolError, RetentionFuture)> {
         let _emission = self.worker.0.emission.lock().unwrap();
@@ -2290,13 +2314,13 @@ impl RemoteScope {
         Ok(())
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct RemoteEffectScope {
     worker: WorkerCallbacks,
     token: ScopeToken,
     effect_id: u64,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 fn current_worker_effect(
     state: &WorkerState,
     token: &ScopeToken,
@@ -2317,7 +2341,7 @@ fn current_worker_effect(
     }
     Ok(())
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl BrowserEffectScope for RemoteEffectScope {
     fn check_session_preparation(
         &self,
@@ -2328,7 +2352,7 @@ impl BrowserEffectScope for RemoteEffectScope {
         let token = self.token.clone();
         let effect_id = self.effect_id;
         Box::pin(async move {
-            binding.check_turn(&token.key.identity.turn)?;
+            binding.check_scope(&token.key.identity.turn, &token.key.identity.execution)?;
             let (id, response) = {
                 let _emission = worker.0.emission.lock().unwrap();
                 let id = allocate(&worker.0.next)?;
@@ -2376,7 +2400,7 @@ impl BrowserEffectScope for RemoteEffectScope {
     }
 }
 
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl OperationSettlement for RemoteScope {
     fn retain(&self, pending: SettlementFuture) -> Result<(), (ToolError, SettlementFuture)> {
         match self.retain_rpc(RetentionFuture::Known(pending)) {
@@ -2401,14 +2425,14 @@ impl OperationSettlement for RemoteScope {
         }
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct EffectCustody {
     worker: WorkerCallbacks,
     token: ScopeToken,
     id: u64,
     pending: Option<HostEffectFuture>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl EffectCustody {
     fn new(worker: WorkerCallbacks, token: ScopeToken, id: u64, pending: HostEffectFuture) -> Self {
         Self {
@@ -2446,7 +2470,7 @@ impl EffectCustody {
         }
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl Drop for EffectCustody {
     fn drop(&mut self) {
         if let Some(pending) = self.pending.take() {
@@ -2472,7 +2496,7 @@ impl Drop for EffectCustody {
         }
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct RetentionCustody {
     worker: WorkerCallbacks,
     token: ScopeToken,
@@ -2480,7 +2504,7 @@ struct RetentionCustody {
     pending: Option<RetentionFuture>,
     failure: Option<ToolError>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl RetentionCustody {
     async fn run(mut self) {
         let outcome = AssertUnwindSafe(self.pending.as_mut().unwrap())
@@ -2516,7 +2540,7 @@ impl RetentionCustody {
         }
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl Drop for RetentionCustody {
     fn drop(&mut self) {
         if let Some(pending) = self.pending.take() {
@@ -2602,546 +2626,5 @@ impl crate::NativeInterruptionObserver for RemoteNativeObserver {
                 )
                 .await
         })
-    }
-}
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod scoped_effect_tests {
-    use super::*;
-    use futures_util::poll;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
-
-    #[derive(Default)]
-    struct ServicesAuthority(AtomicUsize);
-    impl BrowserAuthorization for ServicesAuthority {
-        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            panic!("callback service preparation cannot request content permission");
-        }
-        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(()) })
-        }
-    }
-    #[derive(Default)]
-    struct ActualEffectScope {
-        bindings: Mutex<Vec<BrowserPreparationBinding>>,
-        started: Notify,
-        wait_for_cancel: bool,
-        failure: Option<ToolError>,
-    }
-    impl BrowserEffectScope for ActualEffectScope {
-        fn check_session_preparation(
-            &self,
-            binding: BrowserPreparationBinding,
-            cancellation: CancellationToken,
-        ) -> AuthorizationFuture {
-            self.bindings.lock().unwrap().push(binding);
-            self.started.notify_one();
-            let wait = self.wait_for_cancel;
-            let failure = self.failure.clone();
-            Box::pin(async move {
-                if wait {
-                    cancellation.cancelled().await;
-                }
-                failure.map_or(Ok(()), Err)
-            })
-        }
-    }
-    struct QueuedScopedEffect {
-        factory: HostEffectFactory,
-        uncertainty: HostUncertaintyFuture,
-    }
-    #[derive(Default)]
-    struct ScopedHost(Mutex<Vec<QueuedScopedEffect>>);
-    impl BrowserHostEffects for ScopedHost {
-        fn spawn(&self, _: HostEffectFuture) -> Result<(), ToolError> {
-            panic!("scoped work cannot fall back to unguarded effects");
-        }
-        fn spawn_custodied(
-            &self,
-            _: HostEffectFuture,
-            _: HostUncertaintyFuture,
-            _: Rejected,
-        ) -> Result<(), ToolError> {
-            panic!("scoped work requires its actual effect scope");
-        }
-        fn spawn_scoped_custodied(
-            &self,
-            factory: HostEffectFactory,
-            uncertainty: HostUncertaintyFuture,
-            _: Rejected,
-        ) -> Result<(), ToolError> {
-            // The fixture controls this admission boundary. It does not model
-            // the real Host resource ledger or claim a native lease is valid.
-            self.0.lock().unwrap().push(QueuedScopedEffect {
-                factory,
-                uncertainty,
-            });
-            Ok(())
-        }
-    }
-    struct Fixture {
-        parent: ParentCallbacks,
-        worker: WorkerCallbacks,
-        parent_messages: mpsc::UnboundedReceiver<ParentMessage>,
-        worker_messages: mpsc::UnboundedReceiver<WorkerMessage>,
-        faults: mpsc::UnboundedReceiver<CallbackFault>,
-    }
-    fn identity() -> ScopeIdentity {
-        ScopeIdentity {
-            owner: "transport-owner".into(),
-            epoch: "transport-epoch".into(),
-            session: "session".into(),
-            turn: "turn".into(),
-            operation_id: "completed-input-operation".into(),
-        }
-    }
-    fn key() -> ScopeKey {
-        ScopeKey {
-            identity: identity(),
-            access: BrowserAccess::Read {
-                document: crate::BrowserDocument {
-                    browser_id: "browser".into(),
-                    generation: "generation".into(),
-                    tab_id: "opener".into(),
-                    url: "https://fixture.test/".into(),
-                },
-            },
-        }
-    }
-    fn binding() -> BrowserPreparationBinding {
-        BrowserPreparationBinding {
-            native_owner: uuid::Uuid::from_u128(37),
-            native_epoch: "actual-native-epoch".into(),
-            browser_id: "browser".into(),
-            generation: "generation".into(),
-            turn_id: "turn".into(),
-            tab_id: "actual-retained-tab".into(),
-            subject: crate::BrowserLeaseSubject::PhysicalClaim {
-                claim_id: "actual-retained-claim".into(),
-            },
-        }
-    }
-    impl Fixture {
-        fn new() -> Self {
-            let (parent_sender, parent_messages) = mpsc::unbounded_channel();
-            let (worker_sender, worker_messages) = mpsc::unbounded_channel();
-            let (fault, faults) = mpsc::unbounded_channel();
-            Self {
-                parent: ParentCallbacks::new(
-                    Arc::new(move |message| {
-                        // Exercise the actual closed DTOs, never serialize a future.
-                        let bytes = serde_json::to_vec(&message).unwrap();
-                        parent_sender
-                            .send(serde_json::from_slice(&bytes).unwrap())
-                            .map_err(|_| failed("fixture parent closed"))
-                    }),
-                    fault,
-                ),
-                worker: WorkerCallbacks::new(Arc::new(move |message| {
-                    let bytes = serde_json::to_vec(&message).unwrap();
-                    worker_sender
-                        .send(serde_json::from_slice(&bytes).unwrap())
-                        .map_err(|_| failed("fixture worker closed"))
-                })),
-                parent_messages,
-                worker_messages,
-                faults,
-            }
-        }
-        async fn worker_message(&mut self) -> WorkerMessage {
-            tokio::time::timeout(Duration::from_secs(2), self.worker_messages.recv())
-                .await
-                .unwrap()
-                .unwrap()
-        }
-        async fn parent_message(&mut self) -> ParentMessage {
-            tokio::time::timeout(Duration::from_secs(2), self.parent_messages.recv())
-                .await
-                .unwrap()
-                .unwrap()
-        }
-        async fn prepare(
-            &mut self,
-            host: Arc<dyn BrowserHostEffects>,
-        ) -> (BrowserServices, Arc<ServicesAuthority>) {
-            let worker = self.worker.clone();
-            let waiting =
-                tokio::spawn(
-                    async move { worker.prepare(11, key(), CancellationToken::new()).await },
-                );
-            let WorkerMessage::Prepare {
-                request_id, key, ..
-            } = self.worker_message().await
-            else {
-                panic!("expected existing service preparation");
-            };
-            let authority = Arc::new(ServicesAuthority::default());
-            self.parent
-                .prepare(
-                    11,
-                    request_id,
-                    key,
-                    &identity(),
-                    ParentCapabilities {
-                        authorization: Some(authority.clone()),
-                        effects: Some(host),
-                        ..Default::default()
-                    },
-                    CancellationToken::new(),
-                )
-                .await
-                .unwrap();
-            let prepared = self.parent_message().await;
-            self.worker.handle(prepared).unwrap();
-            (waiting.await.unwrap().unwrap(), authority)
-        }
-        async fn start(
-            &mut self,
-            services: &BrowserServices,
-            host: &ScopedHost,
-            actual: Arc<ActualEffectScope>,
-        ) -> (
-            ScopeToken,
-            u64,
-            HostEffectFuture,
-            HostUncertaintyFuture,
-            Arc<dyn BrowserEffectScope>,
-            oneshot::Sender<Result<(), ToolError>>,
-        ) {
-            let (scope_sender, scope_receiver) = oneshot::channel();
-            let (finish, finished) = oneshot::channel();
-            services
-                .effects
-                .as_ref()
-                .unwrap()
-                .spawn_scoped_guarded(
-                    Box::new(move |scope| {
-                        scope_sender.send(scope).ok().unwrap();
-                        Box::pin(async move { finished.await.unwrap() })
-                    }),
-                    Box::new(|error| panic!("unexpected fixture refusal: {error}")),
-                )
-                .unwrap();
-            let frame = self.worker_message().await;
-            let WorkerMessage::EffectScoped { token, id } = frame.clone() else {
-                panic!("expected a distinct scoped effect request");
-            };
-            self.parent.handle(frame).unwrap();
-            assert!(
-                effect_preparation_scope(&self.parent.0.state.lock().unwrap(), &token, id).is_err()
-            );
-            let queued = host.0.lock().unwrap().pop().unwrap();
-            let mut pending = (queued.factory)(actual);
-            assert!(poll!(pending.as_mut()).is_pending());
-            let admit = self.parent_message().await;
-            assert!(
-                matches!(&admit, ParentMessage::Admit { token: actual, id: effect } if actual == &token && *effect == id)
-            );
-            self.worker.handle(admit).unwrap();
-            let scope = tokio::time::timeout(Duration::from_secs(2), scope_receiver)
-                .await
-                .unwrap()
-                .unwrap();
-            (token, id, pending, queued.uncertainty, scope, finish)
-        }
-    }
-
-    #[tokio::test]
-    async fn real_callback_bridge_mints_proxy_only_after_host_admission_and_retires_at_terminal() {
-        let mut fixture = Fixture::new();
-        let host = Arc::new(ScopedHost::default());
-        let (services, authority) = fixture.prepare(host.clone()).await;
-        let called = Arc::new(AtomicUsize::new(0));
-        let observed = called.clone();
-        let (scope_sender, scope_receiver) = oneshot::channel();
-        let (finish, finished) = oneshot::channel();
-        services
-            .effects
-            .as_ref()
-            .unwrap()
-            .spawn_scoped_guarded(
-                Box::new(move |scope| {
-                    observed.fetch_add(1, Ordering::SeqCst);
-                    scope_sender.send(scope).ok().unwrap();
-                    Box::pin(async move {
-                        finished.await.unwrap();
-                        Ok(())
-                    })
-                }),
-                Box::new(|error| panic!("unexpected fixture refusal: {error}")),
-            )
-            .unwrap();
-        assert_eq!(called.load(Ordering::SeqCst), 0);
-        let frame = fixture.worker_message().await;
-        let WorkerMessage::EffectScoped { token, id } = frame.clone() else {
-            panic!("expected scoped request");
-        };
-        fixture.parent.handle(frame).unwrap();
-        assert_eq!(called.load(Ordering::SeqCst), 0);
-        let actual = Arc::new(ActualEffectScope::default());
-        let queued = host.0.lock().unwrap().pop().unwrap();
-        let mut pending = (queued.factory)(actual.clone());
-        assert_eq!(called.load(Ordering::SeqCst), 0);
-        assert!(poll!(pending.as_mut()).is_pending());
-        let admitted = fixture.parent_message().await;
-        fixture.worker.handle(admitted).unwrap();
-        let scope = tokio::time::timeout(Duration::from_secs(2), scope_receiver)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(called.load(Ordering::SeqCst), 1);
-        let requested = binding();
-        let mut checking =
-            scope.check_session_preparation(requested.clone(), CancellationToken::new());
-        assert!(poll!(checking.as_mut()).is_pending());
-        let check = fixture.worker_message().await;
-        assert!(
-            matches!(&check, WorkerMessage::CheckEffectPreparation { effect_id, binding, .. } if *effect_id == id && binding == &requested)
-        );
-        fixture.parent.handle(check).unwrap();
-        let checked = fixture.parent_message().await;
-        fixture.worker.handle(checked).unwrap();
-        checking.await.unwrap();
-        assert_eq!(*actual.bindings.lock().unwrap(), vec![requested]);
-        assert_eq!(
-            authority.0.load(Ordering::SeqCst),
-            1,
-            "only initial services use ordinary content checks"
-        );
-        finish.send(()).unwrap();
-        let terminal = fixture.worker_message().await;
-        assert!(matches!(
-            &terminal,
-            WorkerMessage::EffectFinished { result: Ok(()), .. }
-        ));
-        assert!(
-            scope
-                .check_session_preparation(binding(), CancellationToken::new())
-                .await
-                .is_err(),
-            "local capability closes before terminal frame is observed by parent"
-        );
-        fixture.parent.handle(terminal).unwrap();
-        pending.await.unwrap();
-        assert!(
-            effect_preparation_scope(&fixture.parent.0.state.lock().unwrap(), &token, id).is_err()
-        );
-        assert!(fixture.worker_messages.try_recv().is_err());
-        assert!(fixture.faults.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn real_callback_bridge_refuses_foreign_old_and_sealed_effect_scope_without_host_check() {
-        let mut fixture = Fixture::new();
-        let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
-        let actual = Arc::new(ActualEffectScope::default());
-        let (token, effect_id, pending, _, scope, finish) =
-            fixture.start(&services, &host, actual.clone()).await;
-        let mut foreign = token.clone();
-        foreign.key.identity.epoch = "old-epoch".into();
-        assert!(
-            fixture
-                .parent
-                .handle(WorkerMessage::CheckEffectPreparation {
-                    token: foreign,
-                    id: 900,
-                    effect_id,
-                    binding: binding(),
-                })
-                .is_err()
-        );
-        for (id, wrong_effect, requested) in [
-            (901, effect_id + 1, binding()),
-            (902, effect_id, {
-                let mut wrong = binding();
-                wrong.turn_id = "old-turn".into();
-                wrong
-            }),
-        ] {
-            fixture
-                .parent
-                .handle(WorkerMessage::CheckEffectPreparation {
-                    token: token.clone(),
-                    id,
-                    effect_id: wrong_effect,
-                    binding: requested,
-                })
-                .unwrap();
-            assert!(matches!(
-                fixture.parent_message().await,
-                ParentMessage::Checked {
-                    result: Err(Failure::Failed(_)),
-                    ..
-                }
-            ));
-        }
-        fixture.parent.seal(&identity());
-        let sealed = fixture.parent_message().await;
-        fixture.worker.handle(sealed).unwrap();
-        assert!(
-            scope
-                .check_session_preparation(binding(), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(actual.bindings.lock().unwrap().is_empty());
-        assert!(fixture.worker_messages.try_recv().is_err());
-        finish.send(Ok(())).unwrap();
-        let terminal = fixture.worker_message().await;
-        fixture.parent.handle(terminal).unwrap();
-        pending.await.unwrap();
-        assert!(fixture.faults.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn cancelled_scope_check_preserves_actual_cleanup_uncertainty_and_physical_tail() {
-        let mut fixture = Fixture::new();
-        let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
-        let actual_error = uncertain("actual scoped check cleanup");
-        let ToolError::CleanupUnconfirmed(expected_cleanup) =
-            super::super::authorization_cleanup(Err(actual_error.clone())).unwrap()
-        else {
-            panic!("existing authorization classifier must preserve cleanup uncertainty");
-        };
-        let actual = Arc::new(ActualEffectScope {
-            wait_for_cancel: true,
-            failure: Some(actual_error),
-            ..Default::default()
-        });
-        let (_, _, mut pending, mut uncertainty, scope, finish) =
-            fixture.start(&services, &host, actual.clone()).await;
-        let cancellation = CancellationToken::new();
-        let mut checking = scope.check_session_preparation(binding(), cancellation.clone());
-        assert!(poll!(checking.as_mut()).is_pending());
-        let check = fixture.worker_message().await;
-        fixture.parent.handle(check).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), actual.started.notified())
-            .await
-            .unwrap();
-        cancellation.cancel();
-        assert!(matches!(checking.await, Err(ToolError::Failed(_))));
-        let cancel = fixture.worker_message().await;
-        assert!(matches!(&cancel, WorkerMessage::CancelCheck { .. }));
-        fixture.parent.handle(cancel).unwrap();
-        let checked = fixture.parent_message().await;
-        assert!(
-            matches!(&checked, ParentMessage::Checked { result: Err(Failure::CleanupUnconfirmed(message)), .. } if message == &expected_cleanup)
-        );
-        fixture.worker.handle(checked).unwrap();
-        let fault = tokio::time::timeout(Duration::from_secs(2), fixture.faults.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(fault.invocation_id, Some(11));
-        assert!(
-            matches!(fault.error, ToolError::CleanupUnconfirmed(message) if message == expected_cleanup)
-        );
-        assert!(matches!(
-            poll!(uncertainty.as_mut()),
-            Poll::Ready(ToolError::CleanupUnconfirmed(_))
-        ));
-        assert!(
-            poll!(pending.as_mut()).is_pending(),
-            "uncertainty does not fabricate the physical terminal"
-        );
-        assert!(fixture.parent.has_unsettled());
-        let mut closed_check = scope.check_session_preparation(binding(), CancellationToken::new());
-        assert!(poll!(closed_check.as_mut()).is_pending());
-        let check = fixture.worker_message().await;
-        fixture.parent.handle(check).unwrap();
-        let checked = fixture.parent_message().await;
-        fixture.worker.handle(checked).unwrap();
-        assert!(closed_check.await.is_err());
-        finish.send(Ok(())).unwrap();
-        let terminal = fixture.worker_message().await;
-        fixture.parent.handle(terminal).unwrap();
-        pending.await.unwrap();
-        assert!(
-            fixture.parent.has_unsettled(),
-            "unconfirmed authority cleanup remains retained"
-        );
-    }
-
-    #[tokio::test]
-    async fn dropping_actual_bridge_closes_narrow_scope_without_faking_effect_completion() {
-        let mut fixture = Fixture::new();
-        let host = Arc::new(ScopedHost::default());
-        let (services, _) = fixture.prepare(host.clone()).await;
-        let actual = Arc::new(ActualEffectScope::default());
-        let (token, id, pending, _, scope, finish) =
-            fixture.start(&services, &host, actual.clone()).await;
-        drop(pending);
-        assert!(
-            effect_preparation_scope(&fixture.parent.0.state.lock().unwrap(), &token, id).is_err()
-        );
-        let mut checking = scope.check_session_preparation(binding(), CancellationToken::new());
-        assert!(poll!(checking.as_mut()).is_pending());
-        let check = fixture.worker_message().await;
-        fixture.parent.handle(check).unwrap();
-        let checked = fixture.parent_message().await;
-        fixture.worker.handle(checked).unwrap();
-        assert!(checking.await.is_err());
-        assert!(actual.bindings.lock().unwrap().is_empty());
-        assert!(fixture.parent.has_unsettled());
-        finish.send(Ok(())).unwrap();
-        let terminal = fixture.worker_message().await;
-        fixture.parent.handle(terminal).unwrap();
-        assert!(!fixture.parent.has_unsettled());
-    }
-
-    struct LegacyHost;
-    impl BrowserHostEffects for LegacyHost {
-        fn spawn(&self, _: HostEffectFuture) -> Result<(), ToolError> {
-            panic!("scoped effects cannot fall back to an ordinary Host implementation");
-        }
-    }
-    #[tokio::test]
-    async fn legacy_host_default_refuses_scoped_effect_without_calling_child_factory() {
-        let mut fixture = Fixture::new();
-        let (services, _) = fixture.prepare(Arc::new(LegacyHost)).await;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed = calls.clone();
-        let (rejected, rejection) = oneshot::channel();
-        services
-            .effects
-            .as_ref()
-            .unwrap()
-            .spawn_scoped_guarded(
-                Box::new(move |_| {
-                    observed.fetch_add(1, Ordering::SeqCst);
-                    Box::pin(async { Ok(()) })
-                }),
-                Box::new(move |error| {
-                    rejected.send(error).ok().unwrap();
-                }),
-            )
-            .unwrap();
-        let effect = fixture.worker_message().await;
-        assert!(matches!(&effect, WorkerMessage::EffectScoped { .. }));
-        fixture.parent.handle(effect).unwrap();
-        let refused = fixture.parent_message().await;
-        assert!(matches!(
-            &refused,
-            ParentMessage::Rejected {
-                error: Failure::Failed(_),
-                ..
-            }
-        ));
-        fixture.worker.handle(refused).unwrap();
-        assert!(matches!(rejection.await.unwrap(), ToolError::Failed(_)));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let declined = fixture.worker_message().await;
-        assert!(matches!(&declined, WorkerMessage::EffectDeclined { .. }));
-        fixture.parent.handle(declined).unwrap();
-        assert!(!fixture.parent.has_unsettled());
-        assert!(!fixture.worker.has_unsettled());
-        assert!(fixture.faults.try_recv().is_err());
     }
 }

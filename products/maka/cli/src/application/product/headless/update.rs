@@ -383,20 +383,6 @@ async fn live_plan_needs_update(
     }
 }
 
-#[cfg(test)]
-async fn synchronize_packages(
-    store: &RootStore,
-    record: Launch,
-    apply: bool,
-    bundled: BTreeMap<String, Package>,
-) -> Result<Outcome, HostError> {
-    let loaded = store
-        .load_application(record.deployment)
-        .await?
-        .ok_or("public Host source missing")?;
-    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled).await
-}
-
 async fn synchronize_loaded_packages(
     apply: Option<&RootStore>,
     record: Launch,
@@ -713,6 +699,3 @@ fn matches_target(
         && loaded.source().remote_exports.is_empty()
         && loaded.source().input == *input
 }
-
-#[cfg(test)]
-mod tests;

@@ -52,6 +52,8 @@ export function checkStagedWithBiome({
   const paths = output.toString('utf8').split('\0').filter(Boolean);
 
   for (const path of paths) {
+    // Rust is checked by rustfmt; Biome has no Rust formatter.
+    if (path.endsWith('.rs')) continue;
     // Git reports the exact blob size, including sources larger than Node's
     // default child-process buffer.
     const size = Number(

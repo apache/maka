@@ -21,7 +21,12 @@ use super::*;
 use crate::search;
 use maka_web_api::{search::Query, settings};
 
-pub(super) async fn run(owner: Arc<Web>, input: Value, context: Context) -> Result<Value, String> {
+pub(super) async fn run(
+    owner: Arc<Web>,
+    input: Value,
+    context: Context,
+    failure: network::Failure,
+) -> Result<Value, String> {
     let input: Key = serde_json::from_value(input).map_err(message)?;
     let credential = owner
         .repository
@@ -42,6 +47,7 @@ pub(super) async fn run(owner: Arc<Web>, input: Value, context: Context) -> Resu
         owner: owner.clone(),
         caller: context.scope().clone(),
         revision: credential.revision,
+        failure: failure.clone(),
     };
     let http = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
     let result = search::Search::new(http)
@@ -62,6 +68,7 @@ pub(super) async fn run(owner: Arc<Web>, input: Value, context: Context) -> Resu
             settings::CheckOutcome::NetworkError
         }
         Err(search::Error::Settlement(error)) => {
+            failure.observe(&error);
             owner.stopping.cancel();
             return Err(message(error));
         }

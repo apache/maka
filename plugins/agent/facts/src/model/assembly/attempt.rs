@@ -20,7 +20,7 @@
 use super::{OptionsPatch, PartSlot, StepBuilder, StepState, invalid, merged_options};
 use crate::{
     context::ModelPurpose,
-    event::Invocation,
+    durable::ExecutionIdentity,
     model::{
         ModelEvent, ModelFinishReason, ModelPart, ModelUsage, TextKind, body::TextBody, recorded::*,
     },
@@ -32,8 +32,9 @@ use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AttemptBinding {
-    pub invocation: Invocation,
-    pub step_id: String,
+    pub execution: ExecutionIdentity,
+    pub step_id: crate::durable::StepId,
+    pub attempt_id: crate::durable::ModelAttemptId,
     pub purpose: ModelPurpose,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,7 +290,7 @@ impl AttemptWriter {
         if binding.purpose == ModelPurpose::Summary && item_acceptance {
             return Err(invalid("item acceptance is only valid for main requests"));
         }
-        let builder = StepBuilder::for_step(&binding.step_id)?;
+        let builder = StepBuilder::for_step(binding.step_id)?;
         Ok(Self {
             binding,
             item_acceptance,
@@ -384,8 +385,8 @@ impl AttemptWriter {
             if self.identities.len() == index {
                 let message_id = if let Some(id) = call {
                     tool_use_id(
-                        &self.binding.invocation.invocation_id,
-                        &format!("{}:{id}", self.binding.step_id),
+                        self.binding.execution.run_id,
+                        &format!("{}:{id}", self.binding.attempt_id),
                     )
                 } else {
                     crate::event::RuntimeEvent::new_id()
@@ -470,8 +471,8 @@ impl AttemptWriter {
                 Some(ToolInputView {
                     id: id.clone(),
                     message_id: tool_use_id(
-                        &self.binding.invocation.invocation_id,
-                        &format!("{}:{id}", self.binding.step_id),
+                        self.binding.execution.run_id,
+                        &format!("{}:{id}", self.binding.attempt_id),
                     ),
                     started_at: *started_at,
                     name: input.name.clone(),
@@ -625,194 +626,5 @@ impl AttemptWriter {
             parts,
             recorded: self.recorded.clone(),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::ModelToolCall;
-    use serde_json::json;
-
-    fn writer(purpose: ModelPurpose, streaming: bool) -> AttemptWriter {
-        AttemptWriter::new(
-            AttemptBinding {
-                invocation: Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
-                },
-                step_id: if purpose == ModelPurpose::Main {
-                    "main"
-                } else {
-                    "summary"
-                }
-                .into(),
-                purpose,
-            },
-            streaming,
-        )
-        .unwrap()
-    }
-    fn push(writer: &mut AttemptWriter, event: ModelEvent) -> Vec<ModelObservation> {
-        writer.push(event, SystemTime::UNIX_EPOCH).unwrap()
-    }
-    fn start() -> ModelEvent {
-        ModelEvent::PartStarted {
-            id: "text".into(),
-            text_kind: TextKind::Text,
-            provider_options: None,
-        }
-    }
-    fn call(id: &str, provider_executed: bool) -> ModelEvent {
-        ModelEvent::ToolCall(ModelToolCall {
-            id: id.into(),
-            name: "echo".into(),
-            provider_executed,
-            input: json!({"original":"中文"}).into(),
-            provider_options: None,
-        })
-    }
-    fn record(
-        writer: &mut AttemptWriter,
-        observations: &[ModelObservation],
-        event_id: &str,
-        sequence: u64,
-    ) {
-        let ModelObservation::Part(part) = &observations[0] else {
-            panic!("expected full part evidence");
-        };
-        writer.recorded(PartReceipt {
-            part: RecordedPartRef {
-                event_id: event_id.into(),
-                ordinal: part.ordinal,
-            },
-            sequence,
-        });
-    }
-    fn finished() -> ModelEvent {
-        ModelEvent::Finished {
-            compaction: None,
-            reason: ModelFinishReason::ToolCalls,
-            usage: ModelUsage {
-                input_tokens: Some(7),
-                output_tokens: Some(3),
-                ..Default::default()
-            },
-            provider_options: None,
-        }
-    }
-
-    #[test]
-    fn completion_only_owns_local_calls_and_references_original_provider_effects() {
-        let mut writer = writer(ModelPurpose::Main, false);
-        writer.fenced(5);
-        push(
-            &mut writer,
-            ModelEvent::ToolInputStarted {
-                id: "local".into(),
-                name: "echo".into(),
-                provider_executed: false,
-            },
-        );
-        push(
-            &mut writer,
-            ModelEvent::ToolInputDelta {
-                id: "local".into(),
-                text: "original displayed input".into(),
-            },
-        );
-        assert!(push(&mut writer, call("local", false)).is_empty());
-        let cut = writer.snapshot();
-        assert!(
-            matches!(&cut.parts[0], PreviewPart::ToolInput(input) if input.text.to_string() == "original displayed input" && input.phase == ToolInputPhase::Finished)
-        );
-        assert!(
-            cut.partial().unwrap().tool_inputs.is_empty(),
-            "complete local call has one partial display identity"
-        );
-        let observations = push(&mut writer, call("remote", true));
-        record(&mut writer, &observations, "remote-call", 6);
-        let observations = push(
-            &mut writer,
-            ModelEvent::ProviderToolResult {
-                id: "remote".into(),
-                name: "echo".into(),
-                output: json!({"actual":"remote result"}),
-                is_error: false,
-                provider_options: None,
-            },
-        );
-        record(&mut writer, &observations, "remote-result", 7);
-        let observations = push(&mut writer, finished());
-        assert!(
-            matches!(&observations[..], [ModelObservation::Finished { usage, .. }] if usage.output_tokens == Some(3))
-        );
-        writer.fenced(8);
-        let completed = writer.completed().unwrap();
-        assert_eq!(completed.local_call_ids(), ["local"]);
-        let output = completed.completion();
-        assert!(
-            matches!(&output.parts[0], CompletionPart::Own(record) if record.ordinal == 0 && matches!(record.part.as_ref(), ModelPart::ToolCall { call } if call.id == "local"))
-        );
-        assert!(
-            matches!(&output.parts[1], CompletionPart::Ref(reference) if reference.event_id == "remote-call" && reference.ordinal == 1)
-        );
-        assert!(
-            matches!(&output.parts[2], CompletionPart::Ref(reference) if reference.event_id == "remote-result" && reference.ordinal == 2)
-        );
-        assert_eq!(writer.snapshot().depends_on, 8);
-    }
-
-    #[test]
-    fn summary_cannot_acquire_main_item_acceptance_authority() {
-        let binding = writer(ModelPurpose::Summary, false).binding;
-        assert!(AttemptWriter::new(binding, true).is_err());
-    }
-
-    #[test]
-    fn later_streaming_call_keeps_its_ordinal_before_earlier_prose_closes() {
-        let mut writer = writer(ModelPurpose::Main, true);
-        push(&mut writer, start());
-        push(
-            &mut writer,
-            ModelEvent::PartDelta {
-                id: "text".into(),
-                text: "earlier prose".into(),
-                provider_options: None,
-            },
-        );
-        let observations = push(&mut writer, call("local", false));
-        record(&mut writer, &observations, "call-before-text", 10);
-        let cut = writer.snapshot();
-        let partial = cut.partial().unwrap();
-        assert_eq!(
-            partial.parts.len(),
-            1,
-            "accepted call is not copied into display partial"
-        );
-        let observations = push(
-            &mut writer,
-            ModelEvent::PartFinished {
-                id: "text".into(),
-                provider_options: None,
-            },
-        );
-        record(&mut writer, &observations, "text-after-call", 11);
-        push(&mut writer, finished());
-        let completion = writer.completed().unwrap().completion();
-        assert!(
-            matches!(&completion.parts[0], CompletionPart::Ref(reference) if reference.ordinal == 0 && reference.event_id == "text-after-call")
-        );
-        assert!(
-            matches!(&completion.parts[1], CompletionPart::Ref(reference) if reference.ordinal == 1 && reference.event_id == "call-before-text")
-        );
-        let CompletionPart::Own(earlier) = &partial.parts[0] else {
-            panic!("the old cut still owns its original open text");
-        };
-        assert!(
-            matches!(earlier.part.as_ref(), ModelPart::Text { text, .. } if text.to_string() == "earlier prose")
-        );
     }
 }

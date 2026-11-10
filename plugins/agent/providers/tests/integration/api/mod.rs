@@ -33,8 +33,6 @@ use maka_agent_ports::provider::Resolve;
 use maka_providers::api::ApiProviders;
 use serde_json::json;
 
-mod discovery;
-mod effects;
 mod policy;
 
 fn snapshot() -> std::sync::Arc<maka_providers::catalog::Snapshot> {

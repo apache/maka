@@ -21,7 +21,71 @@ use super::*;
 use crate::sessions::SessionMutation;
 use serde::Serialize;
 
+mod prepared;
+
+/// A delayed metadata CAS on one original Root/Session, not authorization to
+/// read history or admit work. Execute it in the bound writer's transaction.
+pub struct SessionRevisionGuard {
+    owner: Weak<root::RootOwner>,
+    session: Arc<str>,
+    expected: u64,
+}
+
+impl SessionRevisionGuard {
+    pub fn session_id(&self) -> &str {
+        &self.session
+    }
+
+    pub fn same_root(&self, writer: &DataWriter) -> bool {
+        self.owner
+            .upgrade()
+            .is_some_and(|owner| writer.matches_owner(&owner))
+    }
+
+    /// Only SQL on the original physical actor: caller policy and actual writer
+    /// affinity must already be bound before enqueueing the containing statement.
+    pub fn validate(&self, connection: &SqliteConnection) -> Result<(), StoreError> {
+        let _owner = self.owner.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        if !super::catalog::session_visible(connection, &self.session)? {
+            return Err(StoreError::SessionNotFound);
+        }
+        let actual =
+            crate::workspace_bindings::current_session_revision(connection, &self.session)?
+                .ok_or(StoreError::SessionNotFound)?;
+        if actual != self.expected {
+            return Err(StoreError::SessionRevisionConflict {
+                expected: self.expected,
+                actual,
+            });
+        }
+        Ok(())
+    }
+}
+
 impl SessionStore {
+    pub fn revision_guard(
+        &self,
+        writer: &DataWriter,
+        expected: u64,
+    ) -> Result<SessionRevisionGuard, StoreError> {
+        if expected == 0 || expected > 9_007_199_254_740_991 {
+            return Err(StoreError::InvalidTransition(
+                "invalid expected Session revision".into(),
+            ));
+        }
+        let owner = self.owner()?.owned_root()?;
+        if !writer.matches_owner(&owner) {
+            return Err(StoreError::InvalidTransition(
+                "foreign Root data writer".into(),
+            ));
+        }
+        Ok(SessionRevisionGuard {
+            owner: Arc::downgrade(&owner),
+            session: self.id.clone(),
+            expected,
+        })
+    }
+
     pub async fn update_session_metadata<T, F>(
         &self,
         id: &str,
@@ -32,70 +96,95 @@ impl SessionStore {
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
-        self.mutate_metadata(id, expected, None, update).await
-    }
-
-    pub async fn update_session_permissions<T, F>(
-        &self,
-        id: &str,
-        expected: u64,
-        now: u64,
-        update: F,
-    ) -> Result<SessionMutation<T>, StoreError>
-    where
-        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
-        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
-    {
-        crate::sessions::validate_time(now)?;
-        self.mutate_metadata(id, expected, Some(now), update).await
+        self.mutate_metadata(id, expected, update).await
     }
 
     async fn mutate_metadata<T, F>(
         &self,
         id: &str,
         expected: u64,
-        permission_time: Option<u64>,
         update: F,
     ) -> Result<SessionMutation<T>, StoreError>
     where
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
+        let (custody, change) = match self.metadata_change(id, expected, update).await {
+            Ok(change) => change,
+            Err(StoreError::SessionRevisionConflict { expected, actual }) => {
+                return Ok(SessionMutation::RevisionConflict { expected, actual });
+            }
+            Err(error) => return Err(error),
+        };
+        let commits = custody.commits.session(id);
+        custody
+            .connection
+            .run(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                match change.validate(&tx) {
+                    Ok(()) => {}
+                    Err(StoreError::SessionRevisionConflict { expected, actual }) => {
+                        return Ok(SessionMutation::RevisionConflict { expected, actual });
+                    }
+                    Err(error) => return Err(error),
+                }
+                let (record, changed) = change.apply(&tx)?;
+                if changed {
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
+                    commits.metadata();
+                }
+                Ok(SessionMutation::Committed(Box::new(record)))
+            })
+            .await
+    }
+
+    async fn metadata_change<T, F>(
+        &self,
+        id: &str,
+        expected: u64,
+        update: F,
+    ) -> Result<(EventLog, crate::sessions::metadata::MetadataChange<T>), StoreError>
+    where
+        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
+        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
+    {
         self.check_session(id)?;
-        if self.execution.is_some() {
-            return Err(StoreError::InvalidTransition(
-                "execution scope cannot change Session configuration".into(),
-            ));
-        }
         if expected == 0 || expected > 9_007_199_254_740_991 {
             return Err(StoreError::InvalidTransition(
                 "invalid expected Session revision".into(),
             ));
         }
         let owner = self.owner()?;
+        let accepted = if let Some(pins) = &self.work {
+            self.work_lifetime()?;
+            Some(pins.custody()?)
+        } else {
+            None
+        };
         let access = self
             .gates
             .write([gates::Key::Session(id.to_owned())])
             .await?;
-        let record = owner
-            .get_session::<T>(id)
-            .await?
-            .ok_or(StoreError::SessionNotFound)?;
-        if record.revision != expected {
-            return Ok(SessionMutation::RevisionConflict {
-                expected,
-                actual: record.revision,
-            });
-        }
-        let mut normalized = serde_json::to_value(&record.configuration)?;
-        let old = crate::workspace_bindings::attached(&normalized)?;
-        crate::workspace_bindings::normalize(&mut normalized, record.workspace_binding.as_ref())?;
-        let mut candidate: T = serde_json::from_value(normalized)?;
-        update(&mut candidate)?;
-        let new = crate::workspace_bindings::attached(&serde_json::to_value(&candidate)?)?;
-        let attachment_changed = old.as_ref().map(|reference| reference.id)
-            != new.as_ref().map(|reference| reference.id);
-        let work = if attachment_changed {
+        let selected = id.to_owned();
+        let scoped = match &accepted {
+            Some(custody) => owner.scoped(custody.clone()),
+            None => owner.scoped(owner.clone()),
+        };
+        let change = scoped
+            .connection
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                crate::sessions::metadata::preview_metadata(&tx, &selected, expected, false, update)
+            })
+            .await?;
+        let strong_boundary = change.requires_work_fence()?;
+        let work = if strong_boundary {
             Some(
                 self.gates
                     .try_write([gates::Key::Work(id.to_owned())])?
@@ -104,26 +193,30 @@ impl SessionStore {
         } else {
             None
         };
-        let binding = self
-            .gates
-            .read(
-                old.iter()
-                    .chain(new.iter())
-                    .map(|reference| gates::Key::Binding(reference.id)),
+        let binding = if accepted.is_some() && !strong_boundary {
+            None
+        } else {
+            Some(
+                self.gates
+                    .read(change.binding_ids().map(gates::Key::Binding))
+                    .await?,
             )
-            .await?;
-        // The policy closure runs once. Root relocation between the snapshot and
-        // pin acquisition changes effective revision and is rejected by this CAS.
-        // Release Session admission last so a following owner cannot race the
-        // completed attachment change's Work pin teardown.
-        owner
-            .scoped(Arc::new((work, binding, access)))
-            .bind_session(self.id.clone())
-            .mutate_session_metadata(id, expected, false, permission_time, None, move |current| {
-                *current = candidate;
-                Ok(())
+        };
+        let custody = owner
+            .scoped(Arc::new((accepted, work, binding, access)))
+            .bind_session(self.id.clone());
+        let change = custody
+            .connection
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                change.validate(&tx)?;
+                Ok(change)
             })
-            .await
+            .await?;
+        Ok((custody, change))
     }
 }
 
@@ -141,36 +234,6 @@ impl RootStore {
         self.session(id)
             .await?
             .update_session_metadata(id, expected, update)
-            .await
-    }
-
-    pub async fn update_session_permissions<T, F>(
-        &self,
-        id: &str,
-        expected: u64,
-        now: u64,
-        update: F,
-    ) -> Result<SessionMutation<T>, StoreError>
-    where
-        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
-        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
-    {
-        self.session(id)
-            .await?
-            .update_session_permissions(id, expected, now, update)
-            .await
-    }
-
-    pub async fn set_session_read_marker<T: DeserializeOwned + Send + 'static>(
-        &self,
-        id: &str,
-        message_id: &str,
-    ) -> Result<SessionRecord<T>, StoreError> {
-        self.session(id)
-            .await?
-            .scoped()
-            .await?
-            .set_session_read_marker(id, message_id)
             .await
     }
 }

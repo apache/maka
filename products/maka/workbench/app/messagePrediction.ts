@@ -177,7 +177,9 @@ export function createMessagePrediction(options: Options) {
         const receipt = event.reply.receipt;
         if (receipt.kind !== 'recorded' || receipt.outcome.kind !== 'returned')
           throw new Error('Message prediction did not return a result.');
-        const result = receipt.outcome.value as Result;
+        if (receipt.outcome.result.kind === 'failure')
+          throw new Error(receipt.outcome.result.diagnostic);
+        const result = receipt.outcome.result.value as Result;
         if (
           result.sourceTurnId !== ticket.source.turnId ||
           result.policyRevision !== ticket.revision

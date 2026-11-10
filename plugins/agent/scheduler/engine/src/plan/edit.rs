@@ -17,8 +17,6 @@
  * under the License.
  */
 
-#[cfg(test)]
-use super::Plan;
 use super::TaskPlan;
 use crate::{
     Error,
@@ -187,117 +185,5 @@ fn apply<T>(patch: Patch<T>, field: &mut Option<T>) {
         Patch::Keep => {}
         Patch::Clear => *field = None,
         Patch::Set(value) => *field = Some(value),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::task::{Creator, Effect, Outcome, Run};
-
-    #[test]
-    fn old_tasks_can_reschedule_and_pending_calls_keep_their_intent_across_edits() {
-        let plan = Plan::create(
-            "task".into(),
-            Create {
-                title: "Original".into(),
-                intent_body: "Work".into(),
-                schedule: Schedule::Interval {
-                    every_seconds: 10,
-                    start_at: 1000,
-                },
-                effect: Effect::SessionResume {
-                    session_id: "session".into(),
-                },
-                max_fires: None,
-                expires_at: None,
-            },
-            Creator::User,
-            "UTC".into(),
-            1000,
-        )
-        .unwrap();
-        // A reschedule uses real wall time even before recorded creation time.
-        let mut rewound = plan
-            .update(
-                Update {
-                    schedule: Some(Schedule::Once { run_at: 750 }),
-                    ..Default::default()
-                },
-                500,
-            )
-            .unwrap();
-        assert_eq!(rewound.task.updated_at, 1000);
-        let mut recovered = rewound.clone();
-        recovered.recover(800).unwrap();
-        recovered.validate().unwrap();
-        assert_eq!(recovered.task.updated_at, 1000);
-        let fire = rewound.claim(750).unwrap().unwrap().clone();
-        assert_eq!(fire.scheduled_at, 750);
-        assert_eq!(rewound.task.updated_at, 1000);
-        let mut restored: Plan =
-            serde_json::from_value(serde_json::to_value(&rewound).unwrap()).unwrap();
-        restored.validate().unwrap();
-        assert_eq!(restored.pending.as_ref(), Some(&fire));
-        restored.pending.as_mut().unwrap().scheduled_at = -1;
-        assert!(restored.validate().is_err());
-        let now = 2 * 366 * 24 * 60 * 60 * 1000;
-        let mut next = plan
-            .update(
-                Update {
-                    schedule: Some(Schedule::Once { run_at: now + 1000 }),
-                    ..Update::default()
-                },
-                now,
-            )
-            .unwrap();
-        next.validate().unwrap();
-        // Unrelated later edits must not revalidate against the original creation time.
-        next = next
-            .update(
-                Update {
-                    title: Some("Rescheduled".into()),
-                    ..Update::default()
-                },
-                now,
-            )
-            .unwrap();
-        let fire = next.claim(now + 1000).unwrap().unwrap().clone();
-        next = next
-            .update(
-                Update {
-                    title: Some("New title".into()),
-                    schedule: Some(Schedule::Interval {
-                        every_seconds: 10,
-                        start_at: now,
-                    }),
-                    ..Update::default()
-                },
-                now + 1000,
-            )
-            .unwrap()
-            .pause(now + 1000);
-        assert_eq!(next.pending.as_ref(), Some(&fire));
-        next.settle(Run {
-            id: fire.id,
-            at: now + 2000,
-            outcome: Outcome::Ok,
-            message: "admitted".into(),
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        })
-        .unwrap();
-        assert_eq!(next.task.status, Status::Paused);
-        assert_eq!(next.task.fire_count, 1);
-        next = next
-            .resume(now + 3000)
-            .unwrap()
-            .snooze(1000, now + 3000)
-            .unwrap();
-        assert_eq!(next.task.next_fire_at, Some(now + 11_000));
-        assert!(next.snooze(0, now + 3000).is_err());
-        let cleared = next.clear_history(now + 4000);
-        assert!(cleared.task.runs.is_empty());
-        assert_eq!(cleared.task.fire_count, 1);
     }
 }

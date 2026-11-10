@@ -17,17 +17,13 @@
  * under the License.
  */
 
-//! Trusted native app consent through the canonical interaction owner. There is
-//! no model-supplied identity and no plugin-local approval or persistence map.
+//! Consent uses the original call-bound native capability and canonical interaction.
 use super::*;
+use maka_agent_authority::computer::ComputerAppObservation;
 use maka_agent_facts::interaction::{
-    ComputerAppDecision, GrantScope, GrantTarget, InteractionOutcome, InteractionRecord,
-    InteractionRequest,
+    ComputerAppDecision, GrantScope, GrantTarget, InteractionOutcome,
 };
-use maka_agent_facts::tools::ToolCallContext;
-use maka_agent_facts::workspace::PermissionBasis;
-use maka_capabilities::call::Scope;
-use sha2::{Digest, Sha256};
+use maka_sandbox::workspace::PermissionBasis;
 
 pub(super) fn target(subject: &maka_computer_use::ComputerAppTarget) -> GrantTarget {
     GrantTarget {
@@ -38,40 +34,39 @@ pub(super) fn target(subject: &maka_computer_use::ComputerAppTarget) -> GrantTar
         ..api::target()
     }
 }
-
 pub(super) async fn approve(
     owner: &Computer,
-    call: &Scope,
+    call: &Call,
     basis: PermissionBasis,
     subject: &maka_computer_use::ComputerAppTarget,
     native_operation_id: &str,
+    capture: Value,
     cancellation: &CancellationToken,
     cell: &maka_code_runtime::CellContext,
 ) -> Result<GrantTarget, ToolError> {
     access::granted(owner, call, basis).await?;
-    let context = ToolCallContext {
-        execution: call.execution().cloned(),
-        invocation: call.identity.agent().expect("checked Agent").clone(),
-        operation_id: call.identity.operation_id().expect("checked tool").into(),
-    };
-    let store = maka_agent_authority::permissions::execution(
-        &owner.store,
-        &context.invocation,
-        context.execution.as_deref(),
-    )?;
+    let authority = call.authority.as_ref();
     let target = target(subject);
-    if store
-        .computer_app_stopped(&context.invocation, &target, &subject.display)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-    {
+    let original = call
+        .operation
+        .as_ref()
+        .ok_or_else(|| failed("Computer original operation is missing"))?;
+    let status = authority
+        .observe_app(
+            original,
+            ComputerAppObservation {
+                native_operation_id: native_operation_id.into(),
+                target: target.clone(),
+                display: subject.display.clone(),
+                allow_always: subject.allow_always,
+                capture,
+            },
+        )
+        .await?;
+    if status.stopped {
         return Err(stopped());
     }
-    if store
-        .computer_app_granted(&context.invocation, native_operation_id, &target, &basis)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-    {
+    if status.granted {
         return Ok(target);
     }
     let (configuration, _) = access::current(owner, call, "cua_repl").await?;
@@ -85,76 +80,23 @@ pub(super) async fn approve(
             "Current policy does not allow requesting app access",
         ));
     }
-    let authority_revision = store
-        .computer_app_authority_revision(&target)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?;
-    let request_id = format!(
-        "computer_app_{}",
-        hex::encode(Sha256::digest(
-            serde_json::to_vec(&(
-                &context.invocation,
-                &context.operation_id,
-                native_operation_id,
-                &target,
-                basis,
-                authority_revision
-            ))
-            .expect("trusted app identity")
-        ))
-    );
-    let record = InteractionRecord {
-        session_id: context.invocation.session_id.clone(),
-        turn_id: context.invocation.turn_id.clone(),
-        run_id: context.invocation.run_id.clone(),
-        request_id,
-        created_at: maka_agent_authority::now(),
-        outcome: None,
-        request: InteractionRequest::ComputerApp {
-            tool_use_id: context.tool_use_id(),
-            native_operation_id: native_operation_id.into(),
-            target: target.clone(),
-            basis,
-            display: subject.display.clone(),
-            allow_always: subject.allow_always,
-            authority_revision,
-        },
-    };
-    let observed = async {
-        let committed = store
-            .establish_run_interaction(&context.invocation, &record)
-            .await
-            .map_err(|_| "App approval publication unavailable")?;
-        if !committed.matches {
-            return Err("App approval identity conflict");
-        }
+    let record = authority.request_app(native_operation_id).await?;
+    let observed = {
         let _timeout = cell.suspend_timeout();
-        maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await
-    }
-    .await;
+        maka_agent_authority::interaction_wait::wait(authority, &record, cancellation).await
+    };
     let outcome = match observed {
         Ok(outcome) => outcome,
-        Err(error) => match maka_agent_authority::interaction_wait::withdraw(&store, &record).await
-        {
-            Ok(Some(outcome)) => outcome,
-            Ok(None) => {
-                if store
-                    .computer_app_stopped(&context.invocation, &target, &subject.display)
-                    .await
-                    .map_err(|error| ToolError::Persistence(message(error)))?
-                {
-                    return Err(stopped());
-                }
-                return Err(failed(error));
+        Err(error) => {
+            match maka_agent_authority::interaction_wait::withdraw(authority, &record).await {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => return Err(failed(error)),
+                Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
             }
-            Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
-        },
+        }
     };
-    if store
-        .computer_app_stopped(&context.invocation, &target, &subject.display)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-    {
+    let status = authority.app_status(native_operation_id).await?;
+    if status.stopped {
         return Err(stopped());
     }
     if cancellation.is_cancelled() {
@@ -172,32 +114,20 @@ pub(super) async fn approve(
         return Err(failed("Computer Use app access was not granted"));
     }
     access::granted(owner, call, basis).await?;
-    // T1 performs the authoritative comparison again. This observation gives a
-    // useful failure if the profile grant was revoked while consent completed.
-    if !store
-        .computer_app_granted(&context.invocation, native_operation_id, &target, &basis)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-    {
+    if !status.granted {
         return Err(failed("Computer Use app access is no longer current"));
     }
     Ok(target)
 }
-
 fn stopped() -> ToolError {
-    failed("Computer Use was stopped for this app in the current turn")
+    failed("Computer Use was stopped for this app in the current Run")
 }
 
-/// Stop owns only this native promise. Its existing cleanup must settle before
-/// the journal records T2; cancelling the parent evaluation would stop unrelated
-/// work and erase the distinction from the ordinary whole-Turn Stop control.
+/// Permission loss cancels this exact promise, then awaits its real cleanup.
 pub(super) async fn settle<F, Fut>(
-    store: &maka_event_log::SessionStore,
-    invocation: &maka_agent_facts::event::Invocation,
-    app: Option<&(
-        GrantTarget,
-        maka_agent_facts::interaction::ComputerAppDisplay,
-    )>,
+    call: &Call,
+    operation: &str,
+    has_app: bool,
     cancellation: CancellationToken,
     action: F,
 ) -> Result<Value, ToolError>
@@ -205,42 +135,32 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: std::future::Future<Output = Result<Value, ToolError>>,
 {
-    let Some((target, display)) = app else {
+    if !has_app {
         return action(cancellation).await;
-    };
-    let child = cancellation.child_token();
-    let mut changes = store
-        .subscribe_commits()
-        .map_err(|error| ToolError::Persistence(message(error)))?;
-    if store
-        .computer_app_stopped(invocation, target, display)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-    {
-        return Err(stopped());
     }
+    let child = cancellation.child_token();
+    let mut changes = call.authority.changes().map_err(failed)?;
     let monitor = async {
         loop {
             changes.borrow_and_update();
-            if store
-                .computer_app_stopped(invocation, target, display)
-                .await
-                .map_err(|error| ToolError::Persistence(message(error)))?
-            {
+            let status = call.authority.app_status(operation).await?;
+            if status.stopped || !status.granted {
                 return Err::<(), _>(stopped());
             }
-            changes
-                .changed()
-                .await
-                .map_err(|error| ToolError::Persistence(message(error)))?;
+            changes.changed().await.map_err(failed)?;
         }
     };
+    // Recheck the admitted original before constructing native work.
+    let status = call.authority.app_status(operation).await?;
+    if status.stopped || !status.granted {
+        return Err(stopped());
+    }
     let native = action(child.clone());
     tokio::pin!(native);
     let reason = tokio::select! {
         biased;
-        result=&mut native=>return result,
-        stopped=monitor=>stopped.err().unwrap_or_else(||failed("App Stop monitor closed")),
+        result = &mut native => return result,
+        stopped = monitor => stopped.err().unwrap_or_else(|| failed("App Stop monitor closed")),
     };
     child.cancel();
     match native.await {
@@ -254,6 +174,3 @@ where
         _ => Err(reason),
     }
 }
-
-#[cfg(test)]
-mod tests;

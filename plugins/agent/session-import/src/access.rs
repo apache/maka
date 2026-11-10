@@ -22,14 +22,37 @@
 use crate::Error;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::execution::CollaborationMode;
-use maka_agent_facts::execution::SandboxMode;
-use maka_agent_facts::execution::WorkspaceTarget;
 use maka_agent_ports::remote::Views;
 use maka_agent_ports::remote::WorkspaceViewInput;
 use maka_capabilities::filesystem::ReadDirectory;
 use maka_capabilities::filesystem::database;
+use maka_sandbox::Mode as SandboxMode;
+use maka_sandbox::workspace::WorkspaceTarget;
 
 pub trait ReadSource: Send + Sync {
+    fn open_file(
+        &self,
+        path: String,
+    ) -> BoxFuture<'_, Result<maka_capabilities::filesystem::PinnedFile, Error>> {
+        Box::pin(async move {
+            let path = std::path::Path::new(&path);
+            let parent = path
+                .parent()
+                .and_then(|value| value.to_str())
+                .ok_or(Error::Invalid("source media has no directory"))?;
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(Error::Invalid("source media filename is invalid"))?;
+            let directory = self.directory(parent.into()).await?;
+            Ok(directory
+                .open_file(maka_capabilities::filesystem::OpenFile {
+                    path: name.into(),
+                    symlinks: maka_capabilities::filesystem::Symlinks::Reject,
+                })
+                .await?)
+        })
+    }
     fn directory(&self, path: String) -> BoxFuture<'_, Result<ReadDirectory, Error>>;
     fn query_database(
         &self,

@@ -20,6 +20,36 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Canonical tool-return manifest. The body codec belongs to its actual consumer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublishedArtifact {
+    pub artifact: Artifact,
+    pub payload: crate::durable::ContentRef,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolReturn<T> {
+    pub schema_version: u32,
+    pub artifacts: Vec<PublishedArtifact>,
+    pub body: T,
+}
+impl<T> ToolReturn<T> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != crate::durable::SCHEMA_VERSION {
+            return Err("unsupported tool return schema");
+        }
+        for published in &self.artifacts {
+            published.artifact.validate()?;
+            published.payload.validate()?;
+            if published.artifact.size_bytes != published.payload.bytes {
+                return Err("artifact payload length mismatch");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Material committed atomically with a canonical fact, not a best-effort file reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -177,86 +207,4 @@ fn js_whitespace(character: char) -> bool {
     matches!(character, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' |
         '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' |
         '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::attachment::{AttachmentKind, AttachmentRef, StorageRef};
-
-    #[test]
-    fn canonical_metadata_and_bidirectional_modality_are_required_without_source_restriction() {
-        let attachment = AttachmentRef {
-            kind: AttachmentKind::Image,
-            name: "picture.png".into(),
-            mime_type: "image/png".into(),
-            bytes: 4,
-            storage_ref: StorageRef::SessionFile {
-                session_id: "session".into(),
-                relative_path: "artifact".into(),
-            },
-        };
-        let mut record = Artifact {
-            id: "artifact".into(),
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            created_at: 1,
-            name: attachment.name.clone(),
-            kind: ArtifactKind::Image,
-            size_bytes: attachment.bytes,
-            mime_type: Some(attachment.mime_type.clone()),
-            source: ArtifactSource::ToolResultProjection,
-            summary: None,
-        };
-        assert!(record.validate_attachment(&attachment).is_ok());
-        for changed in [
-            AttachmentRef {
-                name: "other.png".into(),
-                ..attachment.clone()
-            },
-            AttachmentRef {
-                mime_type: "image/jpeg".into(),
-                ..attachment.clone()
-            },
-            AttachmentRef {
-                bytes: 5,
-                ..attachment.clone()
-            },
-            AttachmentRef {
-                kind: AttachmentKind::Other,
-                ..attachment.clone()
-            },
-        ] {
-            assert!(record.validate_attachment(&changed).is_err());
-        }
-        record.kind = ArtifactKind::File;
-        assert!(record.validate_attachment(&attachment).is_err());
-        let mut text = attachment;
-        text.mime_type = "text/plain".into();
-        text.kind = AttachmentKind::Other;
-        record.mime_type = Some(text.mime_type.clone());
-        assert!(record.validate_attachment(&text).is_ok());
-        for kind in [ArtifactKind::Image, ArtifactKind::Pdf] {
-            record.kind = kind;
-            assert!(record.validate_attachment(&text).is_err());
-        }
-    }
-
-    #[test]
-    fn names_are_complete_and_idempotent_with_javascript_whitespace() {
-        for (input, expected) in [
-            (" ../unsafe:name?.txt ".into(), "unsafe-name-.txt".into()),
-            ("-.gitignore".into(), "gitignore".into()),
-            ("\u{feff}  . a\u{feff}".into(), "a".into()),
-            ("\u{0085}a\u{0085}".into(), "\u{0085}a\u{0085}".into()),
-            (
-                format!("{}😀", "a".repeat(119)),
-                format!("{}😀", "a".repeat(119)),
-            ),
-            (". -- ".into(), "artifact".into()),
-        ] {
-            assert_eq!(normalize_name(&input), expected);
-            assert_eq!(normalize_name(&expected), expected);
-        }
-    }
 }

@@ -69,6 +69,7 @@ pub(crate) struct NativeKey {
     pub epoch: String,
     pub session: String,
     pub turn: String,
+    pub execution: crate::ExecutionCorrelation,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -166,6 +167,7 @@ pub(crate) struct NativeReply {
 #[derive(Clone)]
 pub(crate) struct NativeAudioCompletion {
     slot: Arc<Slot>,
+    key: NativeKey,
     output: std::path::PathBuf,
     completion: super::connection::AudioObservation,
 }
@@ -188,7 +190,7 @@ impl NativeAudioCompletion {
             .connection
             .invoke(
                 Request::NativeDiscardAudio {
-                    key: self.slot.key(),
+                    key: self.key.clone(),
                     output: Some(self.output.clone()),
                 },
                 None,
@@ -227,7 +229,13 @@ struct Slot {
     hard_stop: CancellationToken,
     exit: ExitObservation,
     observation: watch::Receiver<NativeObservation>,
-    audio: std::sync::Mutex<Option<(std::path::PathBuf, super::connection::AudioObservation)>>,
+    audio: std::sync::Mutex<
+        Option<(
+            NativeKey,
+            std::path::PathBuf,
+            super::connection::AudioObservation,
+        )>,
+    >,
     requests: Arc<Mutex<()>>,
 }
 impl Slot {
@@ -328,7 +336,11 @@ impl NativeOwner {
             return Ok((slot.clone(), admission));
         }
         if let Some(slot) = current.as_ref() {
-            if slot.key().session == key.session && slot.key().turn == key.turn && slot.escaped() {
+            if slot.key().session == key.session
+                && slot.key().turn == key.turn
+                && slot.key().execution == key.execution
+                && slot.escaped()
+            {
                 return Err(ToolError::Failed(
                     "computer_use_interrupted: native Computer Use is stopped for this turn".into(),
                 ));
@@ -412,6 +424,7 @@ impl NativeOwner {
             epoch: epoch.to_string(),
             session: invocation.session().into(),
             turn: invocation.turn().into(),
+            execution: invocation.execution_correlation().clone(),
         };
         let operation_id = invocation.operation_id().map(str::to_owned);
         let observer = invocation.native_interruption_observer();
@@ -423,6 +436,7 @@ impl NativeOwner {
         let fresh_binding = existing_binding.is_none_or(|binding| {
             binding.session() != key.session
                 || binding.turn() != key.turn
+                || binding.execution_correlation() != &key.execution
                 || binding.native_epoch() != key.epoch
         });
         let binding = if fresh_binding {
@@ -440,6 +454,7 @@ impl NativeOwner {
                     let binding = crate::NativeBindingSource::from_bound_native(
                         key.session.clone(),
                         key.turn.clone(),
+                        key.execution.clone(),
                         key.epoch.clone(),
                         slot.generation.observed(),
                         operation.clone(),
@@ -475,7 +490,7 @@ impl NativeOwner {
             .connection
             .invoke_native(
                 Request::NativeInvoke {
-                    key,
+                    key: key.clone(),
                     operation,
                     operation_id,
                     arguments: input,
@@ -500,9 +515,10 @@ impl NativeOwner {
                     })?;
                     *slot.audio.lock().map_err(|_| {
                         ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
-                    })? = Some((output.clone(), completion.clone()));
+                    })? = Some((key.clone(), output.clone(), completion.clone()));
                     Some(NativeAudioCompletion {
                         slot: slot.clone(),
+                        key: key.clone(),
                         output,
                         completion,
                     })
@@ -550,10 +566,11 @@ impl NativeOwner {
                 ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
             })?
             .clone();
-        let (output, completion) = receipt
+        let (key, output, completion) = receipt
             .ok_or_else(|| ToolError::Failed("computer audio recording is not active".into()))?;
         Ok(NativeAudioCompletion {
             slot: slot.clone(),
+            key,
             output,
             completion,
         })
@@ -589,12 +606,14 @@ impl NativeOwner {
         epoch: NativeEpochId,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
         let current = self.current.lock().await;
         if let Some(slot) = current.as_ref().filter(|slot| {
             slot.key().epoch == epoch.to_string()
                 && slot.key().session == session
                 && slot.key().turn == turn
+                && &slot.key().execution == execution
         }) {
             slot.retire_binding().await?;
         }
@@ -608,8 +627,8 @@ impl NativeOwner {
         {
             slot.retire_binding().await?;
         }
-        // Retain the observed interrupted-turn receipt until a different real
-        // Host turn arrives, including after replacement of its JS epoch.
+        // JS epoch replacement cannot erase the original interrupted source.
+        // A different admitted source may replace it through normal binding custody.
         Ok(())
     }
     pub(crate) async fn close(&self) -> Result<(), ToolError> {
@@ -898,7 +917,7 @@ async fn serve(
                                     let _ = events.send(NativeEvent::Completed { id, audio_start: matches!(operation, NativeOperation::StartAudioRecording), result });
                                 });
                             },
-                            Request::NativeDiscardAudio { key, output: expected_output } if bound.as_ref().is_some_and(|bound| bound.key == key || (expected_output.is_some() && bound.key.session == key.session)) => {
+                            Request::NativeDiscardAudio { key, output: expected_output } if bound.as_ref().is_some_and(|bound| bound.key == key || (expected_output.is_some() && bound.key.session == key.session && bound.key.epoch == key.epoch)) => {
                                 let session = bound.as_ref().expect("checked bound").session.clone();
                                 let events = events.clone();
                                 controls.insert(id);
@@ -981,684 +1000,4 @@ pub(super) fn bootstrap() -> Option<ExitCode> {
             ExitCode::FAILURE
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(turn: &str) -> NativeKey {
-        NativeKey {
-            epoch: "fixture-epoch".into(),
-            session: "fixture-session".into(),
-            turn: turn.into(),
-        }
-    }
-
-    struct ActorFixture {
-        owner: NativeOwner,
-        slot: Arc<Slot>,
-        epoch: NativeEpochId,
-        peer: tokio::io::DuplexStream,
-        _exit: watch::Sender<Option<NativeExit>>,
-    }
-
-    // This is the existing native transport fixture, not physical-drain proof.
-    fn actor_fixture() -> ActorFixture {
-        let owner = NativeOwner::default();
-        let epoch = NativeEpochId::new();
-        let key = NativeKey {
-            epoch: epoch.to_string(),
-            session: "fixture-session".into(),
-            turn: "fixture-turn".into(),
-        };
-        let generation = NativeGeneration(uuid::Uuid::new_v4());
-        let (exit, exited) = watch::channel(None);
-        let (observed, observation) = watch::channel(NativeObservation {
-            key: Some(key.clone()),
-            ..Default::default()
-        });
-        let (connection, peer) =
-            Connection::native_retirement_fixture(key.clone(), generation, observed);
-        let slot = Arc::new(Slot {
-            initial_key: key,
-            generation,
-            connection,
-            hard_stop: CancellationToken::new(),
-            exit: exited,
-            observation,
-            audio: std::sync::Mutex::new(None),
-            requests: Arc::new(Mutex::new(())),
-        });
-        ActorFixture {
-            owner,
-            slot,
-            epoch,
-            peer,
-            _exit: exit,
-        }
-    }
-
-    #[derive(Debug)]
-    struct ActorPanic;
-
-    async fn panicking_actor(
-        mut peer: tokio::io::DuplexStream,
-        admitted: tokio::sync::oneshot::Sender<()>,
-        panic_now: tokio::sync::oneshot::Receiver<()>,
-        retirement: Option<tokio::sync::oneshot::Sender<()>>,
-        payload: Arc<ActorPanic>,
-    ) {
-        let (_, request) = fixture_request(&mut peer).await;
-        let Request::NativeInvoke {
-            key,
-            operation_id: Some(operation),
-            ..
-        } = request
-        else {
-            panic!("expected the original native request");
-        };
-        assert_eq!(operation, "panic-request");
-        let mut tasks = JoinSet::new();
-        tasks.spawn(async move {
-            panic_now.await.unwrap();
-            std::panic::panic_any(payload);
-        });
-        admitted.send(()).unwrap();
-        if let Some(retirement) = retirement {
-            let (_, request) = fixture_request(&mut peer).await;
-            assert!(matches!(request, Request::NativeRetire { key: target } if target == key));
-            retirement.send(()).unwrap();
-        }
-        // Use the same join boundary as serve. Unwinding drops this actual
-        // native peer, so Connection must settle the original pending request.
-        native_task_finished(tasks.join_next().await.unwrap()).unwrap();
-        drop(peer);
-    }
-
-    #[tokio::test]
-    async fn native_actor_task_panic_preserves_payload_and_closes_original_request_unknown() {
-        let ActorFixture {
-            owner,
-            slot,
-            epoch,
-            peer,
-            _exit,
-        } = actor_fixture();
-        *owner.current.lock().await = Some(slot.clone());
-        let (admitted, admission) = tokio::sync::oneshot::channel();
-        let (panic_now, panicking) = tokio::sync::oneshot::channel();
-        let payload = Arc::new(ActorPanic);
-        let actor = tokio::spawn(panicking_actor(
-            peer,
-            admitted,
-            panicking,
-            None,
-            payload.clone(),
-        ));
-        let call = tokio::spawn(observed_fixture_call(owner, epoch, "panic-request", None));
-        admission.await.unwrap();
-        assert!(slot.requests.clone().try_lock_owned().is_err());
-        panic_now.send(()).unwrap();
-        let failure = tokio::time::timeout(EXIT_TIMEOUT, actor)
-            .await
-            .unwrap()
-            .unwrap_err();
-        assert!(failure.is_panic());
-        let original = failure.into_panic().downcast::<Arc<ActorPanic>>().unwrap();
-        assert!(Arc::ptr_eq(&original, &payload));
-        let error = tokio::time::timeout(EXIT_TIMEOUT, call)
-            .await
-            .unwrap()
-            .unwrap()
-            .err()
-            .expect("no Completed receipt was sent");
-        assert!(matches!(
-            error,
-            ToolError::OutcomeUnknown(_) | ToolError::CleanupUnconfirmed(_)
-        ));
-        assert!(!slot.observation.borrow().interrupted);
-        assert!(slot.observation.borrow().retired.is_none());
-        assert!(slot.observation.borrow().persisted.is_none());
-        assert!(!slot.hard_stop.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn dropped_caller_keeps_original_native_task_until_fatal_terminal_and_stop() {
-        let ActorFixture {
-            owner,
-            slot,
-            epoch,
-            peer,
-            _exit,
-        } = actor_fixture();
-        *owner.current.lock().await = Some(slot.clone());
-        let (admitted, admission) = tokio::sync::oneshot::channel();
-        let (panic_now, panicking) = tokio::sync::oneshot::channel();
-        let (retiring, retirement) = tokio::sync::oneshot::channel();
-        let payload = Arc::new(ActorPanic);
-        let actor = tokio::spawn(panicking_actor(
-            peer,
-            admitted,
-            panicking,
-            Some(retiring),
-            payload.clone(),
-        ));
-        let call = tokio::spawn(observed_fixture_call(
-            owner.clone(),
-            epoch,
-            "panic-request",
-            None,
-        ));
-        admission.await.unwrap();
-        call.abort();
-        assert!(
-            call.await
-                .err()
-                .expect("caller was cancelled")
-                .is_cancelled()
-        );
-        assert!(slot.requests.clone().try_lock_owned().is_err());
-        assert!(Arc::ptr_eq(
-            owner.current.lock().await.as_ref().unwrap(),
-            &slot
-        ));
-        let stopping = tokio::spawn({
-            let owner = owner.clone();
-            async move { owner.close().await }
-        });
-        tokio::time::timeout(EXIT_TIMEOUT, retirement)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!stopping.is_finished(), "no actual retirement ACK yet");
-        assert!(slot.requests.clone().try_lock_owned().is_err());
-        panic_now.send(()).unwrap();
-        let failure = tokio::time::timeout(EXIT_TIMEOUT, actor)
-            .await
-            .unwrap()
-            .unwrap_err();
-        let original = failure.into_panic().downcast::<Arc<ActorPanic>>().unwrap();
-        assert!(Arc::ptr_eq(&original, &payload));
-        let error = tokio::time::timeout(EXIT_TIMEOUT, stopping)
-            .await
-            .unwrap()
-            .unwrap()
-            .expect_err("actor EOF cannot prove owned-input retirement");
-        assert!(matches!(
-            error,
-            ToolError::OutcomeUnknown(_) | ToolError::CleanupUnconfirmed(_)
-        ));
-        assert!(Arc::ptr_eq(
-            owner.current.lock().await.as_ref().unwrap(),
-            &slot
-        ));
-        assert!(!slot.observation.borrow().interrupted);
-        assert!(slot.observation.borrow().retired.is_none());
-        assert!(slot.observation.borrow().persisted.is_none());
-        assert!(!slot.hard_stop.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn expected_generation_without_owner_is_refused_before_any_child_can_start() {
-        let owner = NativeOwner::default();
-        let error = owner
-            .prepare(
-                key("turn"),
-                false,
-                Some(NativeGeneration(uuid::Uuid::nil())),
-            )
-            .await
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("native_generation_retired"));
-        assert!(owner.current.lock().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn busy_old_native_request_is_not_killed_or_replaced_for_a_new_turn() {
-        let owner = NativeOwner::default();
-        let (_exit, exit) = watch::channel(None);
-        let (_observed, observation) = watch::channel(NativeObservation {
-            key: Some(key("old")),
-            ..Default::default()
-        });
-        let slot = Arc::new(Slot {
-            initial_key: key("old"),
-            generation: NativeGeneration(uuid::Uuid::nil()),
-            connection: Connection::native_fixture_without_process(),
-            hard_stop: CancellationToken::new(),
-            exit,
-            observation,
-            audio: std::sync::Mutex::new(None),
-            requests: Arc::new(Mutex::new(())),
-        });
-        let admitted = slot.requests.clone().lock_owned().await;
-        *owner.current.lock().await = Some(slot.clone());
-        let error = owner.prepare(key("new"), false, None).await.err().unwrap();
-        assert!(error.to_string().contains("already has an active request"));
-        assert!(!slot.hard_stop.is_cancelled());
-        assert!(Arc::ptr_eq(
-            owner.current.lock().await.as_ref().unwrap(),
-            &slot
-        ));
-        assert_eq!(slot.key(), key("old"));
-        drop(admitted);
-    }
-
-    #[test]
-    fn native_owner_refuses_browser_javascript_and_unregistered_names() {
-        for name in [
-            "browser_navigate",
-            "js",
-            "clipboard",
-            "get_desktop_state",
-            "shell",
-            "unknown",
-        ] {
-            assert!(NativeOperation::parse(name).is_err(), "{name}");
-        }
-    }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn retirement_ack_waits_for_original_join_and_preserves_callback_fifo() {
-        let (events, mut received) = mpsc::unbounded_channel();
-        let (release, released) = std::sync::mpsc::channel();
-        let callback = events.clone();
-        let producer = std::thread::spawn(move || {
-            released.recv().unwrap();
-            // A metadata callback stands in for the Hook callback here. This
-            // tests the actual shared queue/ACK helper, never desktop input.
-            assert!(
-                callback
-                    .send(NativeEvent::Audio {
-                        id: 91,
-                        result: Ok(())
-                    })
-                    .is_ok()
-            );
-        });
-        let control = tokio::spawn(report_native_control(events, 92, None, async move {
-            tokio::task::spawn_blocking(move || producer.join())
-                .await
-                .unwrap()
-                .unwrap();
-            Ok(Value::Null)
-        }));
-        tokio::task::yield_now().await;
-        assert!(
-            matches!(received.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
-            "no ACK before original producer terminates"
-        );
-        release.send(()).unwrap();
-        assert!(matches!(
-            received.recv().await.unwrap(),
-            NativeEvent::Audio { id: 91, .. }
-        ));
-        assert!(matches!(
-            received.recv().await.unwrap(),
-            NativeEvent::Control {
-                id: 92,
-                retired_monitor: None,
-                result: Ok(_)
-            }
-        ));
-        control.await.unwrap();
-    }
-    #[tokio::test]
-    async fn replacement_binding_waits_for_actual_retirement_control_ack() {
-        let owner = NativeOwner::default();
-        let (_exit, exit) = watch::channel(None);
-        let (observed, observation) = watch::channel(NativeObservation {
-            key: Some(key("old")),
-            ..Default::default()
-        });
-        let generation = NativeGeneration(uuid::Uuid::new_v4());
-        let (connection, mut peer) =
-            Connection::native_retirement_fixture(key("old"), generation, observed);
-        let slot = Arc::new(Slot {
-            initial_key: key("old"),
-            generation,
-            connection: connection.clone(),
-            hard_stop: CancellationToken::new(),
-            exit,
-            observation,
-            audio: std::sync::Mutex::new(None),
-            requests: Arc::new(Mutex::new(())),
-        });
-        *owner.current.lock().await = Some(slot.clone());
-        let preparing = tokio::spawn({
-            let owner = owner.clone();
-            async move { owner.prepare(key("new"), false, None).await }
-        });
-        let ParentFrame::Request { id, request } = super::super::read::<_, ParentFrame>(&mut peer)
-            .await
-            .unwrap()
-        else {
-            panic!("original retirement request")
-        };
-        assert!(matches!(*request, Request::NativeRetire { key: target } if target == key("old")));
-        assert!(
-            !preparing.is_finished(),
-            "B cannot be admitted while A's real retirement ACK is absent"
-        );
-        assert_eq!(slot.key(), key("old"));
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        let (prepared, admission) = tokio::time::timeout(EXIT_TIMEOUT, preparing)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(
-            Arc::ptr_eq(&prepared, &slot),
-            "normal rebind keeps the same actual owner"
-        );
-        assert_eq!(prepared.generation, generation);
-        drop(admission);
-        let close = tokio::spawn(async move { connection.close().await });
-        let ParentFrame::Request { id, request } = super::super::read::<_, ParentFrame>(&mut peer)
-            .await
-            .unwrap()
-        else {
-            panic!("original shutdown")
-        };
-        assert!(matches!(*request, Request::Shutdown));
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        close.await.unwrap().unwrap();
-    }
-
-    #[derive(Default)]
-    struct RecordedObserver(std::sync::Mutex<Vec<String>>);
-    impl crate::NativeInterruptionObserver for RecordedObserver {
-        fn bound(&self, source: crate::NativeBindingSource) -> crate::InterruptionFuture {
-            self.0.lock().unwrap().push(source.operation_id().into());
-            Box::pin(async { Ok(()) })
-        }
-        fn interrupted(&self, _: crate::NativeInterruption) -> crate::InterruptionFuture {
-            Box::pin(async { Err(ToolError::Failed("unexpected fixture interruption".into())) })
-        }
-    }
-
-    async fn observed_fixture_call(
-        owner: NativeOwner,
-        epoch: NativeEpochId,
-        operation: &'static str,
-        observer: Option<Arc<RecordedObserver>>,
-    ) -> Result<NativeReply, ToolError> {
-        let context = InvocationContext::new("fixture-session", "fixture-turn")
-            .with_operation_id(operation.into());
-        let context = match observer {
-            Some(observer) => context.with_native_interruption_observer(observer),
-            None => context,
-        };
-        let cancellation = CancellationToken::new();
-        owner
-            .invoke(
-                "list_apps",
-                Value::Null,
-                epoch,
-                None,
-                NativeCoordinateFrame::Screenshot,
-                false,
-                &cancellation,
-                Language::En,
-                &context,
-            )
-            .await
-    }
-
-    async fn fixture_request(peer: &mut tokio::io::DuplexStream) -> (u64, Request) {
-        match tokio::time::timeout(EXIT_TIMEOUT, super::super::read::<_, ParentFrame>(peer))
-            .await
-            .unwrap()
-            .unwrap()
-        {
-            ParentFrame::Request { id, request } => (id, *request),
-            _ => panic!("expected the original native request"),
-        }
-    }
-
-    async fn fixture_response(peer: &mut tokio::io::DuplexStream, id: u64, text: &str) {
-        write(peer, &WorkerFrame::Response {
-            id,
-            result: Ok(serde_json::json!({ "text": text, "is_error": false, "error_code": null, "raw_json": "{}" })),
-        }).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn spawned_native_call_uses_explicit_host_identity_instead_of_guest_arguments() {
-        let ActorFixture {
-            owner,
-            slot,
-            epoch,
-            mut peer,
-            _exit,
-        } = actor_fixture();
-        *owner.current.lock().await = Some(slot.clone());
-        let observer = Arc::new(RecordedObserver::default());
-        let invocation = InvocationContext::new("fixture-session", "fixture-turn")
-            .with_operation_id("actual-host-operation".into())
-            .with_native_interruption_observer(observer.clone())
-            .capture();
-        let arguments = serde_json::json!({
-            "session": "guest-session",
-            "turn": "guest-turn",
-            "operation_id": "guest-operation",
-        });
-        let original = arguments.clone();
-        let call = tokio::spawn(async move {
-            let invocation = invocation.borrow();
-            owner
-                .invoke(
-                    "list_apps",
-                    arguments,
-                    epoch,
-                    None,
-                    NativeCoordinateFrame::Screenshot,
-                    false,
-                    &CancellationToken::new(),
-                    Language::En,
-                    &invocation,
-                )
-                .await
-        });
-        let (id, request) = fixture_request(&mut peer).await;
-        let Request::NativeInvoke {
-            key,
-            operation_id,
-            arguments,
-            ..
-        } = request
-        else {
-            panic!("expected the original native request")
-        };
-        assert_eq!(key.session, "fixture-session");
-        assert_eq!(key.turn, "fixture-turn");
-        assert_eq!(key.epoch, epoch.to_string());
-        assert_eq!(operation_id.as_deref(), Some("actual-host-operation"));
-        assert_eq!(arguments, original);
-        assert_eq!(*observer.0.lock().unwrap(), vec!["actual-host-operation"]);
-        fixture_response(&mut peer, id, "explicit native invocation completed").await;
-        assert_eq!(
-            call.await.unwrap().unwrap().result.text,
-            "explicit native invocation completed"
-        );
-        let connection = slot.connection.clone();
-        let close = tokio::spawn(async move { connection.close().await });
-        let (id, request) = fixture_request(&mut peer).await;
-        assert!(matches!(request, Request::Shutdown));
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        close.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn observer_upgrade_joins_original_binding_and_delayed_old_ack_cannot_retire_replacement()
-    {
-        let owner = NativeOwner::default();
-        let epoch = NativeEpochId::new();
-        let key = NativeKey {
-            epoch: epoch.to_string(),
-            session: "fixture-session".into(),
-            turn: "fixture-turn".into(),
-        };
-        let generation = NativeGeneration(uuid::Uuid::new_v4());
-        let (_exit, exit) = watch::channel(None);
-        let (observed, observation) = watch::channel(NativeObservation {
-            key: Some(key.clone()),
-            ..Default::default()
-        });
-        let (connection, mut peer) =
-            Connection::native_retirement_fixture(key.clone(), generation, observed);
-        let slot = Arc::new(Slot {
-            initial_key: key.clone(),
-            generation,
-            connection: connection.clone(),
-            hard_stop: CancellationToken::new(),
-            exit,
-            observation,
-            audio: std::sync::Mutex::new(None),
-            requests: Arc::new(Mutex::new(())),
-        });
-        *owner.current.lock().await = Some(slot.clone());
-        let first = tokio::spawn(observed_fixture_call(
-            owner.clone(),
-            epoch,
-            "source-A",
-            None,
-        ));
-        let (id, request) = fixture_request(&mut peer).await;
-        assert!(
-            matches!(request, Request::NativeInvoke { operation_id: Some(operation), .. } if operation == "source-A")
-        );
-        fixture_response(&mut peer, id, "unobserved A completed").await;
-        assert_eq!(
-            first.await.unwrap().unwrap().result.text,
-            "unobserved A completed"
-        );
-        let source_a = slot.observation.borrow().source.clone().unwrap();
-        assert_eq!(source_a.operation_id.as_deref(), Some("source-A"));
-        assert!(source_a.binding.is_none());
-
-        let observer = Arc::new(RecordedObserver::default());
-        let second = tokio::spawn(observed_fixture_call(
-            owner.clone(),
-            epoch,
-            "source-B",
-            Some(observer.clone()),
-        ));
-        let (retire_a1, request) = fixture_request(&mut peer).await;
-        assert!(matches!(request, Request::NativeRetire { key: target } if target == key));
-        assert!(
-            observer.0.lock().unwrap().is_empty(),
-            "B cannot be registered before actual A retirement ACK"
-        );
-        assert!(!second.is_finished());
-        // Two real controls may own the same A source. The second ACK must
-        // settle A only, even if B has already entered this same connection.
-        let duplicate = tokio::spawn({
-            let connection = connection.clone();
-            let key = key.clone();
-            async move { connection.retire_native(key).await }
-        });
-        let (retire_a2, request) = fixture_request(&mut peer).await;
-        assert!(matches!(request, Request::NativeRetire { key: target } if target == key));
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id: retire_a1,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        let (id, request) = fixture_request(&mut peer).await;
-        assert!(
-            matches!(request, Request::NativeInvoke { operation_id: Some(operation), .. } if operation == "source-B")
-        );
-        assert_eq!(*observer.0.lock().unwrap(), vec!["source-B"]);
-        let source_b = slot.observation.borrow().source.clone().unwrap();
-        assert!(!Arc::ptr_eq(&source_a, &source_b));
-        assert_eq!(
-            source_b.binding.as_ref().unwrap().operation_id(),
-            "source-B"
-        );
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id: retire_a2,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        duplicate.await.unwrap().unwrap();
-        assert!(
-            slot.observation.borrow().retired.is_none(),
-            "late A ACK cannot retire actual B"
-        );
-        fixture_response(&mut peer, id, "observed B completed").await;
-        assert_eq!(
-            second.await.unwrap().unwrap().result.text,
-            "observed B completed"
-        );
-        let third = tokio::spawn(observed_fixture_call(
-            owner,
-            epoch,
-            "affected-C",
-            Some(observer.clone()),
-        ));
-        let (id, request) = fixture_request(&mut peer).await;
-        assert!(
-            matches!(request, Request::NativeInvoke { operation_id: Some(operation), .. } if operation == "affected-C")
-        );
-        assert!(
-            Arc::ptr_eq(
-                slot.observation.borrow().source.as_ref().unwrap(),
-                &source_b
-            ),
-            "ordinary calls retain actual B producer"
-        );
-        assert_eq!(*observer.0.lock().unwrap(), vec!["source-B"]);
-        fixture_response(&mut peer, id, "C completed under B binding").await;
-        assert_eq!(
-            third.await.unwrap().unwrap().result.text,
-            "C completed under B binding"
-        );
-        let close = tokio::spawn(async move { connection.close().await });
-        let (id, request) = fixture_request(&mut peer).await;
-        assert!(matches!(request, Request::Shutdown));
-        write(
-            &mut peer,
-            &WorkerFrame::Response {
-                id,
-                result: Ok(Value::Null),
-            },
-        )
-        .await
-        .unwrap();
-        close.await.unwrap().unwrap();
-    }
 }

@@ -27,19 +27,25 @@ pub(crate) use cleanup::Cleanup;
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 /// Captured launch data shared by native pipe and PTY transports. It deliberately
 /// does not try to reverse-engineer platform-specific std::Command internals.
 pub struct Command {
+    #[cfg(target_os = "macos")]
+    pub(crate) private_stdio: bool,
+    #[cfg(unix)]
+    pub(crate) external_owner: Option<PathBuf>,
     pub(crate) executable: PathBuf,
     pub(crate) args: Vec<Argument>,
-    pub(crate) cwd: PathBuf,
+    pub(crate) cwd: WorkingDirectory,
+    pub(crate) selection: OnceLock<Arc<()>>,
     pub(crate) directory: Option<std::sync::Arc<crate::directory::Directory>>,
     pub(crate) environment: BTreeMap<OsString, OsString>,
-    sandbox: maka_sandbox::Sandbox,
-    network_route: maka_network::Policy,
+    pub(crate) sandbox: maka_sandbox::Sandbox,
+    pub(crate) network_route: maka_network::Policy,
     #[cfg(unix)]
     proxy: Option<maka_network::proxy::Proxy>,
     #[cfg(target_os = "macos")]
@@ -58,6 +64,27 @@ pub struct Command {
     files: Vec<std::fs::File>,
     #[cfg(target_os = "linux")]
     pub(crate) mount_lease: Option<maka_sandbox::launch::MountLease>,
+}
+
+pub(crate) enum WorkingDirectory {
+    Captured(PathBuf),
+    PrivateWorkspace,
+}
+impl WorkingDirectory {
+    pub(crate) fn is_absolute(&self) -> bool {
+        match self {
+            Self::Captured(path) => path.is_absolute(),
+            Self::PrivateWorkspace => false,
+        }
+    }
+    pub(crate) fn captured(&self) -> &PathBuf {
+        match self {
+            Self::Captured(path) => path,
+            Self::PrivateWorkspace => {
+                unreachable!("private command must be consumed by its TaskOwner")
+            }
+        }
+    }
 }
 
 /// Only successful platform preparation can construct a native launch. Keeping
@@ -97,10 +124,29 @@ impl Argument {
 
 impl Command {
     pub fn new(executable: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+        Self::with_directory(executable.into(), WorkingDirectory::Captured(cwd.into()))
+    }
+
+    /// No ambient or placeholder cwd. Only TaskOwner may consume this command.
+    pub fn private_task(executable: impl Into<PathBuf>) -> Self {
+        Self::with_directory(executable.into(), WorkingDirectory::PrivateWorkspace)
+    }
+
+    /// Selected launch data, never permission to read or execute this path.
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    fn with_directory(executable: PathBuf, cwd: WorkingDirectory) -> Self {
         Self {
-            executable: executable.into(),
+            #[cfg(unix)]
+            external_owner: None,
+            #[cfg(target_os = "macos")]
+            private_stdio: false,
+            executable,
             args: Vec::new(),
-            cwd: cwd.into(),
+            cwd,
+            selection: OnceLock::new(),
             directory: None,
             environment: crate::environment::inherit(std::env::vars_os()),
             sandbox: maka_sandbox::Sandbox::Disabled,
@@ -199,6 +245,11 @@ impl Command {
     /// than race it against cancellation. Filesystem preparation runs off the
     /// async scheduler; the owner's admission fence covers preparation and spawn.
     pub(crate) async fn prepare(self) -> Result<Prepared, maka_agent_facts::tools::ToolError> {
+        if matches!(self.cwd, WorkingDirectory::PrivateWorkspace) {
+            return Err(crate::failed(
+                "private command requires its original TaskOwner",
+            ));
+        }
         if matches!(self.sandbox, maka_sandbox::Sandbox::Disabled) {
             return Ok(Prepared(self));
         }
@@ -289,7 +340,7 @@ impl Command {
                     network.clone(),
                     command.network_route.clone(),
                     command.executable.clone(),
-                    command.cwd.clone(),
+                    command.cwd.captured().clone(),
                 )
                 .await
                 .map_err(crate::launch_error)?;
@@ -360,19 +411,23 @@ impl Command {
         #[cfg(target_os = "linux")]
         let launch = if _private_network {
             self.sandbox.prepare_with_private_network(
-                &self.cwd,
+                self.cwd.captured(),
                 self.directory.as_ref().map(|dir| &dir.file),
             )?
         } else {
-            self.sandbox
-                .prepare_captured(&self.cwd, self.directory.as_ref().map(|dir| &dir.file))?
+            self.sandbox.prepare_captured(
+                self.cwd.captured(),
+                self.directory.as_ref().map(|dir| &dir.file),
+            )?
         };
         #[cfg(windows)]
-        let launch = self.sandbox.prepare(&self.cwd)?;
+        let launch = self.sandbox.prepare(self.cwd.captured())?;
         #[cfg(target_os = "macos")]
         let launch = match self.proxy_address {
-            Some(address) => self.sandbox.prepare_with_proxy(&self.cwd, address)?,
-            None => self.sandbox.prepare(&self.cwd)?,
+            Some(address) => self
+                .sandbox
+                .prepare_with_proxy(self.cwd.captured(), address)?,
+            None => self.sandbox.prepare(self.cwd.captured())?,
         };
         match launch {
             maka_sandbox::launch::Launch::Direct => {}
@@ -434,6 +489,10 @@ impl Command {
 }
 
 impl Prepared {
+    #[cfg(unix)]
+    pub(crate) fn take_external_owner(&mut self) -> Option<PathBuf> {
+        self.0.external_owner.take()
+    }
     /// A failed/cancelled startup still owns every acquired preparation guard.
     /// Attempt every cleanup before reporting a sticky unconfirmed result.
     pub(crate) async fn abort(mut self) -> Result<(), maka_agent_facts::tools::ToolError> {
@@ -485,7 +544,7 @@ impl Prepared {
         crate::bootstrap::protocol::Plan {
             executable: self.0.executable,
             args: self.0.args,
-            cwd: self.0.cwd,
+            cwd: self.0.cwd.captured().clone(),
             environment: self.0.environment.into_iter().collect(),
         }
     }
@@ -496,12 +555,26 @@ impl Prepared {
     }
 
     #[cfg(unix)]
+    pub(crate) fn isolate_stdio(
+        &self,
+        command: &mut tokio::process::Command,
+    ) -> std::io::Result<()> {
+        #[cfg(target_os = "macos")]
+        if self.0.private_stdio {
+            crate::stdio_exec::install(command)?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = command;
+        Ok(())
+    }
+
+    #[cfg(unix)]
     pub(crate) fn unix(&mut self) -> tokio::process::Command {
         let plan = &mut self.0;
         let mut command = tokio::process::Command::new(&plan.executable);
         command
             .args(&plan.args)
-            .current_dir(&plan.cwd)
+            .current_dir(plan.cwd.captured())
             .env_clear()
             .envs(&plan.environment);
         if let Some(directory) = plan.directory.clone() {

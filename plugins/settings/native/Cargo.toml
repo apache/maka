@@ -31,6 +31,7 @@ maka-skills-api.workspace = true
 maka-workspace-api.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
+maka-agent-state.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 maka-config.workspace = true

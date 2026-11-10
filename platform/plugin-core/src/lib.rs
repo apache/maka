@@ -19,15 +19,25 @@
 
 //! Shared plugin declarations and composition planning. No business or platform policy.
 
+pub mod authorization;
 pub mod composition;
+pub mod computer;
 pub mod contract;
 pub mod deployment;
+pub mod http;
 pub mod json;
 pub mod operation;
 pub mod package;
 pub mod plan;
 pub mod runtime;
 mod schema;
+pub mod scope;
+pub mod shell_result;
+pub mod shell_run;
+pub mod storage;
+pub mod terminal;
+pub mod wire_schema;
+pub mod work;
 pub use schema::Schema;
 
 #[derive(Debug, thiserror::Error)]
@@ -121,9 +131,6 @@ pub(crate) fn validate_value(
         .validate(value)
         .map_err(|error| Error::Composition(format!("configuration: {error}")))
 }
-
-pub mod scope;
-pub mod wire_schema;
 
 /// Validate a stable package or entry identifier.
 pub fn identifier(value: &str) -> Result<(), Error> {

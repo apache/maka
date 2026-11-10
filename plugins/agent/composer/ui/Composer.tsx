@@ -76,8 +76,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       !owner.editable() ||
       owner.loading() ||
       owner.recovering() ||
-      owner.resuming() ||
-      owner.invocation() !== null ||
+      owner.continuing() ||
+      owner.run() !== null ||
       owner.draft() !== '' ||
       owner.attachments.files().length > 0 ||
       completion.composing() ||
@@ -161,7 +161,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const confirming = () =>
     !!props.session()?.loading() ||
     !!props.session()?.recovering() ||
-    !!props.session()?.resuming() ||
+    !!props.session()?.continuing() ||
     !!pending()?.sending();
   const warning = () => (confirming() ? '' : blocked());
   const cannotSend = () =>
@@ -182,25 +182,22 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     completion.composing() ||
     !!props.session()?.draft().trim() ||
     !!props.session()?.attachments.files().length;
-  const running = () =>
-    props.session()?.connected() === true && props.session()?.invocation() != null;
-  const resumeSource = () => {
-    const value = props.session()?.resumable();
-    return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
-      ? value.source
-      : null;
+  const running = () => props.session()?.connected() === true && props.session()?.run() != null;
+  const continuationSource = () => {
+    const value = props.session()?.continuation();
+    return !props.session()?.run() && !hasContent() && value ? value.source : null;
   };
   const stopPrimary = () => running() && !hasContent();
   const sendDisabled = () => cannotSend() || completion.composing();
   const continueDisabled = () =>
     !!props.blocked?.() ||
-    !!props.session()?.resuming() ||
+    !!props.session()?.continuing() ||
     !!blocked() ||
     !props.session()?.editable();
   const primaryDisabled = () =>
     stopPrimary()
       ? props.session()!.stopping()
-      : resumeSource() !== null
+      : continuationSource() !== null
         ? continueDisabled()
         : sendDisabled();
   const continueRendered = ({
@@ -214,7 +211,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   }) => {
     const session = props.session();
     if (session?.sessionId === owner && props.active() && !continueDisabled())
-      void session.resume(source, backend);
+      void session.continueRun(source, backend);
   };
   let unbind = () => {};
   cleanup(() => unbind());
@@ -234,7 +231,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
-    if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
+    if (node && props.active() && owner?.editable() && owner.run() === null && owner.draft())
       return keymap.bind('ctrl+c', completion.clearDraft, {
         when: 'notEditing',
         within: node,
@@ -249,7 +246,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       current?.owner === owner &&
       props.active() &&
       owner.editable() &&
-      owner.invocation() === null &&
+      owner.run() === null &&
       owner.draft()
     )
       return current.node.bindKey('ctrl+c', completion.clearDraft, { fallback: true });
@@ -318,25 +315,25 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           ? props.session()!.stopping()
             ? tr('Stopping…')
             : tr('Stop response')
-          : resumeSource() !== null
+          : continuationSource() !== null
             ? tr('Continue response')
             : tr('Send message')
       }
       tooltip={textTooltip(() =>
         stopPrimary()
           ? `${tr('Stop response')} · Esc`
-          : resumeSource() !== null
+          : continuationSource() !== null
             ? tr('Continue response')
             : `${tr('Send message')} · Enter`,
       )}
       disabled={primaryDisabled()}
       onPress={
         stopPrimary()
-          ? inputAction(props.session()!.stop, props.session()!.invocation())
-          : resumeSource() !== null
+          ? inputAction(props.session()!.stop, props.session()!.run())
+          : continuationSource() !== null
             ? inputAction(continueRendered, {
                 owner: props.session()!.sessionId,
-                source: resumeSource()!,
+                source: continuationSource()!,
                 backend: props.session()!.backend(),
               })
             : props.session()
@@ -372,7 +369,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         when={stopPrimary() ? props.session()!.stopping() : confirming()}
         else={
           <Icon
-            name={stopPrimary() ? 'stop' : resumeSource() !== null ? 'play' : 'send'}
+            name={stopPrimary() ? 'stop' : continuationSource() !== null ? 'play' : 'send'}
             color={primaryDisabled() ? C.muted : C.background}
           />
         }
@@ -950,7 +947,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         }
                         tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
                         disabled={owner().stopping()}
-                        onSelect={inputAction(owner().stop, owner().invocation())}
+                        onSelect={inputAction(owner().stop, owner().run())}
                         style={{
                           ...controlStyle,
                           flexDirection: 'row',

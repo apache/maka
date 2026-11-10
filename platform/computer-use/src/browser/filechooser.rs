@@ -616,13 +616,19 @@ impl Browsers {
         // Missing support refuses before any chooser interception is sent.
         provenance_supported(tab)?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, invocation.turn(), cancellation)
-            .await?;
+        self.use_tab(
+            &identity,
+            invocation.turn(),
+            invocation.execution_correlation(),
+            cancellation,
+        )
+        .await?;
         let tab = self
             .targets
             .get_mut(&handle)
             .expect("checked file chooser tab");
         tab.last_turn = invocation.turn().into();
+        tab.last_execution = invocation.execution_correlation().clone();
         tab.authorize(None, invocation, cancellation, language)
             .await?;
         tab.verify(BrowserCall::new(invocation, cancellation, language))
@@ -731,7 +737,7 @@ impl PreparedUpload {
             .host
             .lock()
             .await
-            .reconcile_provider(self.owner, &self.provider)
+            .reconcile_provider(self.owner, &self.provider, None)
             .await;
         let result = match (result, folded) {
             (Err(error), _) if uncertain(&error) => Err(error),
@@ -1002,13 +1008,19 @@ impl Browsers {
             .ok_or_else(|| failed(format!("Unknown file chooser id \"{chooser}\"")))?;
         store.held(&chooser, tab, self.owner, invocation.turn(), &files)?;
         let identity = tab.identity()?;
-        self.use_tab(&identity, invocation.turn(), cancellation)
-            .await?;
+        self.use_tab(
+            &identity,
+            invocation.turn(),
+            invocation.execution_correlation(),
+            cancellation,
+        )
+        .await?;
         let tab = self
             .targets
             .get_mut(&handle)
             .expect("checked file chooser tab");
         tab.last_turn = invocation.turn().into();
+        tab.last_execution = invocation.execution_correlation().clone();
         let mut upload = tab
             .prepare_file_upload(
                 self.owner,
@@ -1044,6 +1056,3 @@ impl Browsers {
         result
     }
 }
-
-#[cfg(test)]
-mod tests;

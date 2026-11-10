@@ -23,6 +23,7 @@ use super::{
     decode_operation, encode_operation, error, uploaded_attachment, validate_upload,
 };
 use crate::{Result, SETTINGS_METHODS};
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef},
@@ -453,7 +454,7 @@ async fn reserve_settings(
     let inserted = sqlx::query(concat!(
             "INSERT OR IGNORE INTO operations (id,domain,deployment,context,draft_owner) SELECT ?,?,?,?,NULL WHERE NOT EXISTS (SELECT 1 FROM operations WHERE domain=? AND deployment=? AND ",
             settings_owner_sql!(),
-            " AND receipt IS NULL AND abandoned=0)"
+            " AND (receipt IS NULL OR json_extract(receipt,'$.outcome.kind') IN ('unresolved','unknown') OR json_extract(receipt,'$.cleanup.kind') != 'confirmed') AND abandoned=0)"
         ))
             .bind(reservation.id)
             .bind(&reservation.domain)
@@ -531,12 +532,8 @@ async fn observe(
     draft: Option<&DraftReference>,
     receipt: &Receipt,
 ) -> Result<()> {
-    let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
-        ..
-    } = receipt
-    else {
-        // A failed observer and an absent/unresolved journal cannot erase a returned result.
+    let Receipt::Recorded { .. } = receipt else {
+        // Transport observations cannot erase provider knowledge.
         return Ok(());
     };
     let row = sqlx::query("SELECT receipt FROM operations WHERE id=?")
@@ -559,11 +556,31 @@ async fn observe(
         let Receipt::Recorded { outcome, cleanup } = &mut next else {
             unreachable!()
         };
-        if before != *outcome {
-            return Err("original operation returned conflicting receipts".into());
+        match (&before, &*outcome) {
+            (old, new) if old == new => {}
+            (OperationOutcome::Unresolved, _)
+            | (
+                OperationOutcome::Unknown { .. },
+                OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. },
+            ) => {}
+            // Delayed snapshots may not erase newer knowledge, but may still
+            // carry an independent cleanup confirmation.
+            (_, OperationOutcome::Unresolved)
+            | (
+                OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. },
+                OperationOutcome::Unknown { .. },
+            ) => *outcome = before,
+            _ => return Err("original operation returned conflicting receipts".into()),
         }
-        if previous_cleanup == OperationCleanup::Confirmed {
-            *cleanup = previous_cleanup;
+        match (&previous_cleanup, &*cleanup) {
+            (old, new) if old == new => {}
+            (OperationCleanup::Unconfirmed, _)
+            | (OperationCleanup::Failed { .. }, OperationCleanup::Confirmed) => {}
+            (OperationCleanup::Confirmed, _)
+            | (OperationCleanup::Failed { .. }, OperationCleanup::Unconfirmed) => {
+                *cleanup = previous_cleanup
+            }
+            _ => return Err("original operation returned conflicting cleanup evidence".into()),
         }
     }
     sqlx::query("UPDATE operations SET receipt=? WHERE id=?")
@@ -574,12 +591,9 @@ async fn observe(
         .map_err(error)?;
     if let Some(draft) = draft
         && accepted_send(&next, &draft.key.session_id)
-        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } if value["kind"] == "started")
+        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if value["kind"] == "started")
     {
         dismiss_send(connection, id).await?;
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

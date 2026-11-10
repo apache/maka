@@ -130,8 +130,8 @@ export function TurnUsage(props: {
           if (
             origin.kind === 'agent' &&
             origin.purpose === 'main' &&
-            origin.invocation.session_id === props.sessionId &&
-            origin.invocation.turn_id === props.turnId
+            origin.execution.sessionId === props.sessionId &&
+            origin.execution.turnId === props.turnId
           )
             matching.push(attempt);
         }

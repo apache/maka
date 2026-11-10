@@ -5013,6 +5013,467 @@ SOFTWARE.
 
 ================================================================================
 
+asyncband@0.7.4 (Apache-2.0)
+
+https://crates.io/api/v1/crates/asyncband/0.7.4/download :: LICENSE
+
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+THIRD-PARTY WORKS
+
+This product contains portions of third-party works. Modifications made for
+Apache Asyncband are licensed under the Apache License, Version 2.0, unless
+otherwise noted.
+
+Paths identifying Asyncband files are relative to the source repository root.
+For the published asyncband crate, remove the asyncband/ prefix to locate
+the corresponding packaged files. References to repository-only tests
+document additional uses of the same upstream works.
+
+In this section, "derived", "adapted", and "ported" identify incorporated
+source code.
+
+Tokio
+
+Portions of asyncband/src/mutex/mod.rs are derived from Tokio 1.41.0:
+
+  https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
+
+Asyncband's Mutex core predates the incorporation of Tokio's owned and mapped
+guard APIs. It is built on Asyncband's own fair semaphore, has no closed state
+or acquisition error, returns Option from nonblocking acquisition, and provides
+a single const constructor without runtime-specific tracing or blocking entry
+points. Asyncband substantially changed the incorporated guard implementation.
+Projected guards use NonNull pointers and explicit invariance, borrowed and
+owned projected guards can be mapped repeatedly, and guard destruction releases
+permits through Asyncband's semaphore lifecycle.
+
+The standard ASF source header on asyncband/src/mutex/mod.rs applies to the
+independent Mutex core and the substantial modifications contributed to Apache
+Asyncband. It does not replace the Tokio copyright notice or MIT License
+applicable to the incorporated portions.
+
+Portions of the following files are derived from Tokio 1.42.0. Each local path
+is followed by its upstream source path or paths:
+
+  asyncband/src/rwlock/mod.rs
+    tokio/src/sync/rwlock.rs
+  asyncband/src/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+  asyncband/src/rwlock/write_guard.rs
+    tokio/src/sync/rwlock/write_guard.rs
+  asyncband/src/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+  asyncband/src/rwlock/owned_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard.rs
+  asyncband/src/rwlock/mapped_write_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+  asyncband/src/rwlock/mapped_read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+
+The exact Tokio 1.42.0 revision is:
+
+  https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
+
+Asyncband substantially rewrote RwLock's guard lifecycle and documentation.
+Private RAII access tokens release permits through Asyncband's semaphore.
+The standard ASF source headers cover these substantial modifications
+contributed to Apache Asyncband; the incorporated Tokio-derived portions
+remain under the MIT License below.
+
+Acquisition has no semaphore-close error, nonblocking methods return Option,
+and max_readers is any NonZeroUsize instead of Tokio's restricted range. Mapped
+read guards use separate borrowed and owned types rather than changing a type
+parameter on the original read guard. All mapped guards use filter_map naming,
+and mutable mapped guards carry explicit invariance.
+
+Portions of the following files originated from Tokio 1.47.0's OnceCell. Each
+local path is followed by its upstream source path:
+
+  asyncband/src/once/once_cell/mod.rs
+    tokio/src/sync/once_cell.rs
+  asyncband/src/internal/value_cell.rs
+    tokio/src/sync/once_cell.rs
+
+The exact Tokio 1.47.0 source is:
+
+  https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
+
+Asyncband substantially changed this implementation. OnceCell uses a permit
+only to serialize initialization and does not close its semaphore when a value
+is published. It can remove a value and later initialize the cell again, and
+its set operation waits for an in-progress initializer instead of reporting a
+closed or initializing state. ValueCell factors storage out of OnceCell,
+contains no semaphore or closed-state invariant, supports mutation, removal,
+and reinitialization, and is shared by OnceCell and LazyCell.
+
+Portions of the following files originated from Tokio 1.42.0's public and
+internal semaphore implementations:
+
+  asyncband/src/semaphore/mod.rs
+    tokio/src/sync/semaphore.rs
+  asyncband/src/internal/semaphore.rs
+    tokio/src/sync/batch_semaphore.rs
+
+The exact Tokio 1.42.0 sources are:
+
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
+
+Asyncband substantially changed this implementation. It has no closed state,
+close operation, close errors, reserved status bits, or fixed maximum-permit
+constant. It uses usize permit counts and adds direct draining and exact
+reduction. Its internal implementation replaces Tokio's intrusive waiter node,
+which is pinned inside each acquire future, with queue-owned WaitList nodes
+addressed by stable IDs. Exact reduction inserts permit debt at the queue head.
+Cancellation detaches the queue-owned node and returns permits already assigned
+to it, while Asyncband's own batching machinery moves waker drops and wakeups
+outside the waiter lock.
+
+The standard ASF source headers on these files apply to the substantial
+modifications contributed to Apache Asyncband. They do not replace the Tokio
+copyright notice or MIT License applicable to the incorporated portions.
+
+Tokio is licensed under the MIT License:
+
+MIT License
+
+Copyright (c) Tokio Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Works used under the Apache License, Version 2.0
+
+The Apache License, Version 2.0, reproduced above, applies to the upstream
+portions identified below. Where an upstream project offers a choice of
+Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
+
+Portions of the following files are derived or adapted from oneshot v0.1.11.
+This is the version that Asyncband originally incorporated, before oneshot split
+its channel implementation across sender, receiver, channel, and state modules.
+Each local path is followed by its upstream source path or paths:
+
+  asyncband/src/oneshot/mod.rs
+    src/lib.rs
+  asyncband/src/oneshot/receiver.rs
+    src/lib.rs
+    src/errors.rs
+  asyncband/src/oneshot/sender.rs
+    src/lib.rs
+    src/errors.rs
+  asyncband/src/oneshot/tests.rs
+    tests/helpers/mod.rs
+    tests/helpers/waker.rs
+  tests-integration/tests/oneshot_test/main.rs
+    tests/async.rs
+    tests/future.rs
+    tests/sync.rs
+  tests-integration/tests/oneshot_test/support.rs
+    tests/helpers/mod.rs
+    tests/helpers/waker.rs
+
+The exact upstream revision is:
+
+  https://github.com/faern/oneshot/tree/25274e995ee0a702b3e9e1ac81e577f8c3ce0892
+
+The oneshot crate is licensed under Apache-2.0 or MIT. Apache Asyncband uses
+the Apache-2.0 option for the incorporated portions.
+
+Asyncband does not provide the upstream crate's synchronized receive
+operations and simplifies the incorporated implementation accordingly.
+
+The polling loop in asyncband/src/blocking/executor.rs is adapted from Pollster
+1.0.1 at the following exact revision and source path:
+
+  https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs
+
+The same file's reuse of a thread-local Parker/Waker pair, with a fresh pair
+for recursive calls, is adapted from futures-lite 2.6.1 at the following exact
+revision and source path:
+
+  https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
+
+Pollster is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions. The upstream source carries
+the following copyright notice:
+
+  Copyright (c) 2020-2021 Joshua Barretto
+
+futures-lite is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions.
+
+Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1 at
+the following exact revision and source path:
+
+  https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429
+
+parking is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions. The upstream source carries
+the following copyright notice:
+
+  Copyright 2014-2020 The Rust Project Developers
+
+Portions of the following files are ported from Fastpool 1.1.1. Each local path
+is followed by its upstream source path or paths:
+
+  asyncband/src/pool/mod.rs
+    fastpool/src/lib.rs
+  asyncband/src/pool/bounded.rs
+    fastpool/src/bounded.rs
+  asyncband/src/pool/common.rs
+    fastpool/src/common.rs
+  asyncband/src/pool/state.rs
+    fastpool/src/bounded.rs
+    fastpool/src/unbounded.rs
+  asyncband/src/pool/unbounded.rs
+    fastpool/src/unbounded.rs
+
+The exact upstream revision is:
+
+  https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
+
+Asyncband retains Fastpool's runtime-agnostic design and caller-side timeout
+composition. Fastpool is licensed under Apache-2.0, and its source carries the
+following copyright notice:
+
+  Copyright 2025 FastLabs Developers
+
+================================================================================
+
+asyncband@0.7.4 (Apache-2.0)
+
+https://crates.io/api/v1/crates/asyncband/0.7.4/download :: NOTICE
+
+Apache Asyncband (Incubating)
+Copyright 2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/).
+
+================================================================================
+
 atoi@2.0.0 (MIT); authors declared by package: Markus Klein
 scroll_derive@0.12.1 (MIT); authors declared by package: m4b <m4b.github.io@gmail.com>, Ted Mielczarek <ted@mielczarek.org>, Systemcluster <me@systemcluster.me>
 

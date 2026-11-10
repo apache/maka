@@ -22,14 +22,14 @@ use super::{
     ShellSnapshot, ShellStatus,
 };
 use crate::ProjectionError;
-use maka_agent_facts::shell_run::ShellOutcome;
-use maka_agent_facts::shell_run::ShellOutput as StoredOutput;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::{ShellObservation, ShellRun};
-use maka_agent_facts::terminal::TerminalScreen;
+use maka_plugin_core::shell_run::ShellOutcome;
+use maka_plugin_core::shell_run::ShellOutput as StoredOutput;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::{ShellObservation, ShellRun};
+use maka_plugin_core::terminal::TerminalScreen;
 use std::sync::Arc;
 
-const MODEL_BYTES: usize = maka_agent_facts::terminal::PREVIEW_BYTES;
+const MODEL_BYTES: usize = maka_plugin_core::terminal::PREVIEW_BYTES;
 const TERMINAL_MARKER: &str = "[terminal snapshot truncated to fit the output limit]";
 const FIELD_MARKER: &str = "[runtime resource field truncated]";
 const RECOVERY: &str = "If the command is safe to re-run, redirect its output to a file (e.g. `cmd > out.txt 2>&1`) then Read or Grep that file for the omitted portion. If re-running could repeat side effects, do not. Otherwise work from the kept output above.";
@@ -104,8 +104,8 @@ fn project(
     Ok(ResourceUpdate {
         session_id: record.session_id,
         ownership: Ownership::Local,
-        source_turn_id: record.source_turn_id,
-        source_tool_call_id: record.source_tool_call_id,
+        correlation: record.correlation,
+        visibility: record.visibility,
         result,
     })
 }

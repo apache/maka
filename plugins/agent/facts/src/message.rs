@@ -32,7 +32,7 @@ use std::collections::HashSet;
 )]
 pub enum MessageOrigin {
     Session {
-        invocation: crate::event::Invocation,
+        execution: crate::durable::ExecutionIdentity,
     },
     Goal {
         goal_id: String,
@@ -63,11 +63,10 @@ impl MessageOrigin {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            Self::Session { invocation } => {
-                crate::interaction::entity_id(&invocation.session_id)?;
-                crate::interaction::entity_id(&invocation.turn_id)?;
-                crate::interaction::entity_id(&invocation.run_id)?;
-                crate::interaction::entity_id(&invocation.invocation_id)
+            Self::Session { execution } => {
+                crate::interaction::entity_id(&execution.session_id)?;
+                crate::interaction::entity_id(&execution.turn_id)?;
+                Ok(())
             }
             Self::Goal { goal_id, objective } => {
                 crate::interaction::entity_id(goal_id)?;

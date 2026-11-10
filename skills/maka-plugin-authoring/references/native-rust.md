@@ -27,7 +27,11 @@ A factory receives `NativeContext` and configuration. Return a `NativeActivation
 
 Durable data belongs to the Root, deployment and instance. An activation epoch or package revision does not create a new data owner. Services that require persistence must reject an ephemeral context.
 
-A handler uses the original `Context.scope()` and actual attachments. Retain call resource tickets until native I/O and workers have finished. `NativeOwner.close` reports physical settlement; dropping an observer or requesting cancellation is insufficient. Cleanup failure must remain visible to the owner.
+A handler returns `HandlerResult`, distinguishing a definite JSON/business failure from an unknown outcome after a lost worker or resource owner. It uses the original `Context.scope()` and actual attachments. Retain call resource tickets until native I/O and workers have finished. `NativeOwner.close` reports physical settlement; dropping an observer or requesting cancellation is insufficient. Cleanup failure must remain visible to the owner, independently of the business result.
+
+For same-Root pure data updates, prepare a typed domain statement through the original `DataWriter`. Return `context.complete_change(value, change)` for an already prepared `DataChange`, or a `HandlerValue::Commit` using `context.prepare_statement`. These calls only seal data. The Host validates the output and commits the domain statement with the original provider receipt in the existing writer transaction. Do not execute SQL first and return JSON afterward, start another database or transaction, or include network, file or subprocess effects in a statement.
+
+A native provider can obtain its actual `ProviderJournal` to reconcile an original operation. The journal binds the Root, deployment, instance and native implementation; a serialized reference cannot create it. Interpret the original job/receipt protocol and version explicitly, report unsupported evidence as blocked, and never call a new handler to reproduce an uncertain old effect. Native bundle upgrades may preserve that stable owner, but do not make an incompatible protocol readable.
 
 `NativeServices` forwards through captured imports with private native-origin evidence. Public identity fields are observations, not grants. Declare an `execution_basis` only when immutable facts fully establish equivalent execution semantics; otherwise retain activation-specific identity.
 

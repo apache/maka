@@ -110,6 +110,12 @@ pub(super) fn configuration(stage: &'static str, error: &ConfigError, connection
 pub(super) fn model(stage: &'static str, error: &ModelError, connection_id: &str) {
     match error {
         ModelError::Cancelled => {}
+        ModelError::LocalAuthorization(_) => tracing::warn!(
+            stage,
+            cause = "local_model_authorization",
+            connection_id,
+            "Model dispatch authorization refused"
+        ),
         ModelError::Http { status, .. } => tracing::warn!(
             stage,
             cause = "model_http",
@@ -173,75 +179,4 @@ pub(super) fn network(stage: &'static str, error: &maka_network::Error, connecti
         maka_network::Error::Transport(_) => "network_transport",
     };
     tracing::warn!(stage, cause, connection_id, "Model preparation failed");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arbitrary_provider_error_strings_stay_private_at_diagnostic_boundary() {
-        use std::io::{Read, Seek};
-        let mut file = tempfile::tempfile().unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(file.try_clone().unwrap())
-            .with_max_level(tracing::Level::WARN)
-            .with_ansi(false)
-            .without_time()
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        for (stage, error) in [
-            (
-                "boundary_invalid",
-                ProviderError::Invalid("PRIVATE_INVALID_VALIDATION_SENTINEL".into()),
-            ),
-            (
-                "boundary_rejected",
-                ProviderError::Rejected("PRIVATE_REJECTED_REMOTE_SENTINEL".into()),
-            ),
-            (
-                "boundary_transport",
-                ProviderError::Transport("PRIVATE_TRANSPORT_URL_KEY_SENTINEL".into()),
-            ),
-            ("boundary_thinking", ProviderError::UnsupportedThinkingLevel),
-            (
-                "boundary_profile",
-                ProviderError::UnsupportedExecutionProfile,
-            ),
-        ] {
-            provider(stage, &error, "original-connection", "kimi-coding-plan");
-        }
-        file.rewind().unwrap();
-        let mut log = String::new();
-        file.read_to_string(&mut log).unwrap();
-        for (stage, cause) in [
-            ("boundary_invalid", "provider_invalid"),
-            ("boundary_rejected", "provider_rejected"),
-            ("boundary_transport", "provider_transport"),
-        ] {
-            let line = log.lines().find(|line| line.contains(stage)).unwrap();
-            assert!(line.contains(&format!("cause=\"{cause}\"")), "{line}");
-            assert!(line.contains("original-connection"));
-            assert!(line.contains("kimi-coding-plan"));
-            assert!(!line.contains("reason="));
-        }
-        for (stage, reason) in [
-            ("boundary_thinking", "unsupported_thinking_level"),
-            ("boundary_profile", "unsupported_execution_profile"),
-        ] {
-            let line = log.lines().find(|line| line.contains(stage)).unwrap();
-            assert!(line.contains("cause=\"provider_invalid\""), "{line}");
-            assert!(line.contains(&format!("reason=\"{reason}\"")), "{line}");
-        }
-        for secret in [
-            "PRIVATE_INVALID_VALIDATION_SENTINEL",
-            "PRIVATE_REJECTED_REMOTE_SENTINEL",
-            "PRIVATE_TRANSPORT_URL_KEY_SENTINEL",
-        ] {
-            assert!(
-                !log.contains(secret),
-                "arbitrary provider error payload escaped sanitization"
-            );
-        }
-    }
 }

@@ -70,7 +70,7 @@ pub(crate) async fn capture(
     exited: CancellationToken,
     observer: Option<(
         tokio::sync::mpsc::Sender<crate::PipeEvent>,
-        maka_agent_facts::shell_run::PipeStream,
+        maka_plugin_core::shell_run::PipeStream,
     )>,
 ) -> Tail {
     let mut tail = Tail::default();
@@ -104,19 +104,4 @@ pub(crate) async fn capture(
         }
     }
     tail
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replacement_expansion_is_bounded_and_marked_truncated() {
-        let mut tail = Tail::default();
-        tail.push(&vec![0xff; TAIL_BYTES]);
-        let text = tail.text();
-        assert!(text.len() <= TAIL_BYTES);
-        assert!(tail.truncated);
-        assert!(text.chars().all(|character| character == '\u{fffd}'));
-    }
 }

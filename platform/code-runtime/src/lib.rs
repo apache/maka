@@ -23,12 +23,18 @@ mod cell_context;
 mod result;
 mod scope;
 mod timeout;
+mod vm;
 
 pub use cell_context::{CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata};
+pub use maka_session_state::SessionDraft;
 pub use result::{CellAbort, CellDiagnostic, CellDiagnosticKind, CellResult, ToolCall, complete};
 pub use scope::ToolScope;
 use std::time::Duration;
 pub use timeout::{CellTimeoutBudget, CellTimeoutGuard};
+pub use vm::{
+    JAVASCRIPT_VM, PYTHON_VM, PreparedCell, RuntimeVmGoneProof, RuntimeVmObservation,
+    SourceRuntimeOwner, VM_BINDING_VERSION, VmBinding, VmThreadReady, observe_binding,
+};
 
 #[derive(Clone, Debug)]
 pub struct CellLimits {

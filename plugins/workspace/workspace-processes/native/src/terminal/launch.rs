@@ -18,13 +18,13 @@
  */
 
 use super::*;
-use maka_agent_facts::shell_run::ShellOutput;
-use maka_agent_facts::shell_run::ShellPermissions;
-use maka_agent_facts::shell_run::ShellRun;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::ShellVisibility;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::display::Display;
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPermissions;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::display::Display;
 impl Processes {
     pub(super) async fn terminal_start(
         &self,
@@ -51,13 +51,20 @@ impl Processes {
         let settings = self.settings.clone();
         let state_root = self.state_root.clone();
         let captured_configuration = configuration.clone();
+        let floor = context.scope().sandbox_floor().clone();
         let mut captured = tokio::task::spawn_blocking(move || {
-            super::super::execute::capture(&captured_configuration, &settings, &state_root, &shell)
+            super::super::execute::capture(
+                &captured_configuration,
+                &settings,
+                &state_root,
+                &shell,
+                &floor,
+            )
         })
         .await
         .map_err(failed)??;
-        // A direct user launch uses the configured base sandbox. Agent grants
-        // require their original live Invocation and cannot authorize this work.
+        // A user launch uses its configured base and the actual request floor;
+        // additive Agent grants do not authorize this separate resource.
         let network = self
             .configuration
             .network_configuration()
@@ -66,8 +73,16 @@ impl Processes {
         let route =
             maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
                 .map_err(|_| failed("Process network route unavailable"))?;
-        captured.executor = captured.executor.with_network_route(route);
-        let sandbox = captured.executor.sandbox().clone();
+        let sandbox = captured
+            .executor
+            .sandbox()
+            .intersect(context.scope().sandbox_floor())
+            .map_err(failed)?;
+        captured.executor = captured
+            .executor
+            .with_sandbox(sandbox.clone())
+            .with_network_route(route);
+        let workspace = captured.workspace;
         let (command, source, pty) = tokio::task::spawn_blocking(move || match input.command {
             Some(source) => captured
                 .executor
@@ -107,9 +122,8 @@ impl Processes {
         let record = ShellRun {
             id: format!("{}{}", self.prefix, uuid::Uuid::new_v4()),
             session_id: input.session_id,
-            source_run_id: None,
-            source_turn_id: origin.clone(),
-            source_tool_call_id: origin,
+            source_work_id: None,
+            correlation: serde_json::json!({"operationId": origin}),
             visibility: if pty {
                 ShellVisibility::Model
             } else {
@@ -142,17 +156,13 @@ impl Processes {
         };
         // No await between the final canonical Session read and native acceptance.
         // After acceptance the original owner joins work even if the caller leaves.
-        let execution = context
-            .scope()
-            .identity
-            .agent()
-            .filter(|invocation| invocation.session_id == record.session_id)
-            .zip(context.scope().execution())
-            .map(|(invocation, custody)| (invocation.clone(), custody.clone()));
+        let custody = context.work_custody().cloned();
         let mut handle = if pty {
-            self.resources.start_pty(record, command, size, execution)
+            self.resources
+                .start_pty(record, command, size, custody, Some(workspace))
         } else {
-            self.resources.start_pipes(record, command, execution)
+            self.resources
+                .start_pipes(record, command, custody, Some(workspace))
         }
         .map_err(|error| match error {
             ShellError::Process(error) => error,

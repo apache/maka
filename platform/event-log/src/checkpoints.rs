@@ -22,7 +22,7 @@
 mod load;
 mod restore;
 mod workspace;
-use crate::{StoreError, bundle::Inventory};
+use crate::StoreError;
 pub use load::{LoadOperation, LoadState, LoadedCheckpoint};
 pub(crate) use load::{LoadRequest, load_key};
 use maka_plugin_core::composition::InstanceId;
@@ -52,6 +52,8 @@ pub struct PublicationRequest {
     pub expected_revision: Option<Revision>,
     /// Confirmation of catalog membership, not a live revision precondition.
     pub confirmed_subtree_digest: String,
+    /// Complete immutable history material supplied by its canonical owner.
+    pub history: HistorySnapshot,
     /// Trusted assembly supplies the source; never a model-authored path.
     pub workspace: Option<WorkspaceCapture>,
 }
@@ -59,9 +61,19 @@ pub struct PublicationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectRef {
-    /// SHA-256 over every byte, including the native transfer's final frame.
+    /// SHA-256 over every byte of the immutable object.
     pub digest: String,
     pub bytes: u64,
+}
+
+/// The canonical history owner defines the format and interprets both descriptors.
+/// The object must be self-contained: no live handles or unpinned external bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistorySnapshot {
+    pub object: ObjectRef,
+    pub inventory: Vec<u8>,
+    pub cut: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,17 +81,11 @@ pub struct ObjectRef {
 pub struct Manifest {
     pub root_id: String,
     pub scope: Scope,
-    pub inventory: Inventory,
-    /// Commitment to the MAKA-SESSION stream reconstructed from this snapshot.
-    pub bundle: ObjectRef,
-    pub transfer_digest: String,
-    pub history_cut: String,
+    pub session_id: String,
+    pub history: HistorySnapshot,
     pub workspace: Option<WorkspaceSnapshot>,
 }
 impl Manifest {
-    pub fn bundle(&self) -> &ObjectRef {
-        &self.bundle
-    }
     pub fn workspace(&self) -> Option<&WorkspaceSnapshot> {
         self.workspace.as_ref()
     }
@@ -158,6 +164,8 @@ impl Request {
             || self.publication.operation.is_nil()
             || !valid_digest(&self.publication.fingerprint)
             || !valid_digest(&self.publication.confirmed_subtree_digest)
+            || !valid_digest(&self.publication.history.object.digest)
+            || self.publication.history.object.bytes == 0
             || self
                 .publication
                 .expected_revision

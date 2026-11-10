@@ -20,11 +20,11 @@
 use maka_agent_facts::language::Language;
 use maka_agent_ports::execution::Submit;
 use maka_capabilities::authorization::Id;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Record;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Record;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -114,27 +114,50 @@ pub struct Report {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Pending {
     Existing {
-        invocation: maka_agent_facts::event::Invocation,
+        run: maka_agent_facts::durable::RunId,
+        managed: bool,
     },
     Dispatch {
         request: Submit,
-        dispatched: bool,
     },
 }
-impl Pending {
-    pub fn invocation(&self) -> maka_agent_facts::event::Invocation {
-        match self {
-            Self::Existing { invocation } => invocation.clone(),
-            Self::Dispatch { request, .. } => {
-                use sha2::{Digest, Sha256};
-                let id = hex::encode(Sha256::digest(request.operation_id.as_bytes()));
-                maka_agent_facts::event::Invocation {
-                    session_id: request.session_id.clone(),
-                    turn_id: format!("t_{id}"),
-                    run_id: format!("r_{id}"),
-                    invocation_id: format!("i_{id}"),
-                }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleIndex {
+    pub sessions: std::collections::BTreeMap<String, Scheduled>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Scheduled {
+    Ready,
+    Due {
+        at: u64,
+    },
+    Waiting {
+        run: maka_agent_facts::durable::RunId,
+        stop: bool,
+    },
+}
+impl ScheduleIndex {
+    fn update<A>(&mut self, goal: &Goal<A>) {
+        let entry = match &goal.pending {
+            Some(Pending::Existing { run, managed }) => Some(Scheduled::Waiting {
+                run: *run,
+                stop: *managed && matches!(goal.status, Status::Paused | Status::Cancelled),
+            }),
+            Some(Pending::Dispatch { .. }) => Some(Scheduled::Ready),
+            None if goal.status == Status::Active && !goal.authority_blocked => {
+                Some(match goal.retry_at {
+                    Some(at) => Scheduled::Due { at },
+                    None => Scheduled::Ready,
+                })
             }
+            None => None,
+        };
+        if let Some(entry) = entry {
+            self.sessions.insert(goal.session_id.clone(), entry);
+        } else {
+            self.sessions.remove(&goal.session_id);
         }
     }
 }
@@ -210,51 +233,19 @@ impl<A> Goal<A> {
     }
     pub fn settled(
         &mut self,
-        outcome: maka_agent_facts::event::InvocationOutcome,
+        outcome: maka_agent_facts::durable::Terminal,
         usage: Result<Meter, String>,
-    ) {
+    ) -> Result<(), String> {
+        let total = usage?;
         self.pending = None;
-        if let maka_agent_facts::event::InvocationOutcome::Failed {
-            model_failure: Some(cause),
-            ..
-        } = &outcome
-        {
-            use maka_agent_facts::model::error::{ModelFailureCause, ProviderFailureReason};
-            self.retry_at = match cause {
-                ModelFailureCause::Provider {
-                    retry_at_unix_ms, ..
-                } => retry_at_unix_ms.filter(|deadline| *deadline > now_ms()),
-                _ => None,
-            };
-            if self.status == Status::Active
-                && self.retry_at.is_none()
-                && matches!(
-                    cause,
-                    ModelFailureCause::Http {
-                        status: 401 | 403 | 404
-                    } | ModelFailureCause::Provider {
-                        reason: ProviderFailureReason::QuotaExhausted,
-                        ..
-                    }
-                )
-            {
-                self.status = Status::Paused;
-                self.authority_blocked = true;
-                self.note = match self.arm.language {
-                    Language::En => "Check the model connection or available quota, then resume the Goal. You can also choose another model.",
-                    Language::ZhCn => "请检查模型连接或剩余额度，再继续目标，也可以选择其他模型。",
-                    Language::ZhTw => "請檢查模型連線或剩餘額度，再繼續目標，也可以選擇其他模型。",
-                }.into();
-            }
-        }
+        // Stop is a persistent user fence, not an invitation to schedule another Run.
         if self.status == Status::Active
-            && matches!(&outcome, maka_agent_facts::event::InvocationOutcome::Failed { class, .. } if class == "message_prerequisite_changed")
+            && matches!(outcome, maka_agent_facts::durable::Terminal::Cancelled)
         {
-            self.pause_for_settings();
+            self.status = Status::Paused;
         }
-        if let Ok(total) = usage {
-            self.meter(total);
-        }
+        self.meter(total);
+        Ok(())
     }
     pub fn report(&mut self, report: Report) {
         self.note = report.note.clone();
@@ -267,6 +258,7 @@ impl<A> Goal<A> {
         self.report = Some(report);
     }
     pub fn reserve(&mut self) -> Result<bool, Error> {
+        self.limit_budget();
         if self.status != Status::Active || self.pending.is_some() {
             return Err(invalid("Goal is not ready to continue"));
         }
@@ -278,23 +270,23 @@ impl<A> Goal<A> {
         self.report = None;
         let content = match self.arm.language {
             Language::En => format!(
-                "Continue this explicitly authorized goal (iteration {}):\n{}\n\nGoalStatus records iteration progress or changes goal status; an answer alone does not mark achievement. A configured token budget is a retrospective scheduling threshold, not a hard request limit. Previous checkpoint: {}",
+                "Continue this explicitly authorized goal (iteration {}):\n{}\n\nGoalStatus records iteration progress or changes goal status; an answer alone does not mark achievement. A finite token budget limits further dispatch; missing usage is not treated as zero. Previous checkpoint: {}",
                 self.iterations, self.arm.objective, self.note
             ),
             Language::ZhCn => format!(
-                "继续此已明确授权的目标（第 {} 次迭代）：\n{}\n\nGoalStatus 记录迭代进度或改变目标状态；普通回答不会将目标标记为完成。配置的 token 预算是事后调度阈值，不是单次请求的硬限制。上次检查点：{}",
+                "继续此已明确授权的目标（第 {} 次迭代）：\n{}\n\nGoalStatus 记录迭代进度或改变目标状态；普通回答不会将目标标记为完成。有限 token 预算限制后续派发，缺失用量不能视为零。上次检查点：{}",
                 self.iterations, self.arm.objective, self.note
             ),
             Language::ZhTw => format!(
-                "繼續此已明確授權的目標（第 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。設定的 token 預算是事後排程門檻，不是單次請求的硬限制。上次檢查點：{}",
+                "繼續此已明確授權的目標（第 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。有限 token 預算限制後續派發，缺失用量不能視為零。上次檢查點：{}",
                 self.iterations, self.arm.objective, self.note
             ),
         };
         self.pending = Some(Pending::Dispatch {
-            dispatched: false,
             request: Submit {
                 operation_id: format!("goal-{}-{}", self.id, self.iterations),
                 session_id: self.session_id.clone(),
+                orchestration_mode: None,
                 content: content.into(),
             },
         });
@@ -308,17 +300,22 @@ impl<A> Goal<A> {
     }
     pub fn meter(&mut self, total: Meter) {
         self.consumed = self.observed_usage(total);
+        self.limit_budget();
+    }
+    fn limit_budget(&mut self) {
         if let Some(limit) = self.arm.token_budget
             && self.status == Status::Active
-            && self.consumed.known >= limit
+            && (self.consumed.missing > 0 || self.consumed.known >= limit)
         {
             self.status = Status::BudgetLimited;
-            self.note = (match self.arm.language {
-                Language::En => "Token budget reached",
-                Language::ZhCn => "已达 Token 预算",
-                Language::ZhTw => "已達 Token 預算",
-            })
-            .into();
+            self.note = match (self.consumed.missing > 0, self.arm.language) {
+                (true, Language::En) => "Token accounting is incomplete; a larger finite budget cannot resolve missing usage.",
+                (true, Language::ZhCn) => "Token 用量尚不完整，提高有限预算不能补足缺失的用量证据。",
+                (true, Language::ZhTw) => "Token 用量尚不完整，提高有限預算不能補足缺失的用量證據。",
+                (false, Language::En) => "Token budget reached",
+                (false, Language::ZhCn) => "已达 Token 预算",
+                (false, Language::ZhTw) => "已達 Token 預算",
+            }.into();
         }
     }
 }
@@ -333,7 +330,7 @@ pub struct Repository<A = Id> {
     store: Arc<dyn Store>,
     authority: std::marker::PhantomData<A>,
 }
-fn key(session: &str) -> String {
+pub fn record_key(session: &str) -> String {
     use sha2::{Digest, Sha256};
     format!(
         "session/{}",
@@ -362,7 +359,11 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
         }
     }
     pub async fn read(&self, session: &str) -> Result<Option<Saved<A>>, Error> {
-        self.store.read(key(session)).await?.map(decode).transpose()
+        self.store
+            .read(record_key(session))
+            .await?
+            .map(decode)
+            .transpose()
     }
     pub async fn arm(&self, session: &str, arm: Arm<A>, baseline: Meter) -> Result<Goal<A>, Error> {
         self.arm_with(session, arm, baseline, None, vec![]).await
@@ -401,6 +402,30 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 "Finish or cancel the current Goal and await its execution before replacing it",
             ));
         }
+        let (index_revision, index, _) = self.schedule_record().await?;
+        let (goal, mutations) =
+            Self::prepare_arm(session, arm, baseline, pending, old, index_revision, index)?;
+        receipts.extend(mutations);
+        self.store.batch(receipts).await?;
+        Ok(goal)
+    }
+    pub fn prepare_arm(
+        session: &str,
+        arm: Arm<A>,
+        baseline: Meter,
+        pending: Option<Pending>,
+        old: Option<Saved<A>>,
+        index_revision: Option<u64>,
+        mut index: ScheduleIndex,
+    ) -> Result<(Goal<A>, Vec<Mutation>), Error> {
+        arm.validate()?;
+        if old
+            .as_ref()
+            .is_some_and(|saved| !saved.goal.status.terminal() || saved.goal.pending.is_some())
+        {
+            return Err(invalid("goal_current_unfinished"));
+        }
+        let receipt_key = format!("arm/{}", arm.operation_id);
         let goal = Goal {
             id: arm.operation_id,
             session_id: session.into(),
@@ -423,9 +448,15 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
             note: String::new(),
             authority_blocked: false,
         };
-        receipts.extend([
+        index.update(&goal);
+        let mutations = vec![
             Mutation {
-                key: key(session),
+                key: "schedule".into(),
+                expected_revision: index_revision,
+                data: Data::Present(serde_json::to_value(index).map_err(invalid)?),
+            },
+            Mutation {
+                key: record_key(session),
                 expected_revision: old.map(|v| v.revision),
                 data: Data::Present(serde_json::to_value(&goal).map_err(invalid)?),
             },
@@ -434,9 +465,8 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 expected_revision: None,
                 data: Data::Present(serde_json::json!({"session":session,"arm":arm})),
             },
-        ]);
-        self.store.batch(receipts).await?;
-        Ok(goal)
+        ];
+        Ok((goal, mutations))
     }
     pub async fn save(&self, saved: Saved<A>) -> Result<(), Error> {
         self.save_with(saved, vec![]).await
@@ -444,9 +474,19 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
     /// State transitions and their caller receipts share the original CAS.
     pub async fn save_with(
         &self,
-        mut saved: Saved<A>,
+        saved: Saved<A>,
         mut receipts: Vec<Mutation>,
     ) -> Result<(), Error> {
+        let (revision, index, _) = self.schedule_record().await?;
+        receipts.extend(Self::prepare_save(saved, revision, index)?);
+        self.store.batch(receipts).await?;
+        Ok(())
+    }
+    pub fn prepare_save(
+        mut saved: Saved<A>,
+        index_revision: Option<u64>,
+        mut index: ScheduleIndex,
+    ) -> Result<Vec<Mutation>, Error> {
         saved.goal.updated_at = now_ms();
         if saved.goal.status == Status::Active {
             if saved.goal.active_since.is_none() {
@@ -458,21 +498,35 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 .elapsed_ms
                 .saturating_add(saved.goal.updated_at.saturating_sub(start));
         }
-        receipts.push(Mutation {
-            key: key(&saved.goal.session_id),
-            expected_revision: Some(saved.revision),
-            data: Data::Present(serde_json::to_value(saved.goal).map_err(invalid)?),
-        });
-        self.store.batch(receipts).await?;
-        Ok(())
+        index.update(&saved.goal);
+        Ok(vec![
+            Mutation {
+                key: "schedule".into(),
+                expected_revision: index_revision,
+                data: Data::Present(serde_json::to_value(index).map_err(invalid)?),
+            },
+            Mutation {
+                key: record_key(&saved.goal.session_id),
+                expected_revision: Some(saved.revision),
+                data: Data::Present(serde_json::to_value(saved.goal).map_err(invalid)?),
+            },
+        ])
     }
-    pub async fn sessions(&self) -> Result<Vec<Result<Saved<A>, Error>>, Error> {
-        let mut result = vec![];
+    async fn schedule_record(&self) -> Result<(Option<u64>, ScheduleIndex, bool), Error> {
+        let record = self.store.read("schedule".into()).await?;
+        let revision = record.as_ref().map(|record| record.revision);
+        if let Some(value) = record.as_ref().and_then(|record| record.data.value()) {
+            let index = serde_json::from_value(value.clone()).map_err(invalid)?;
+            return Ok((revision, index, false));
+        }
+        // Rebuild a missing derived index once from original Goal records. This
+        // is not a notification fallback or a replacement authority.
+        let mut index = ScheduleIndex::default();
         let mut after = None;
         loop {
             let page = self
                 .store
-                .scan(maka_capabilities::storage::Scan {
+                .scan(maka_plugin_core::storage::Scan {
                     prefix: "session/".into(),
                     after,
                 })
@@ -481,267 +535,50 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 let Some(value) = entry.record.data.value() else {
                     continue;
                 };
-                let scheduled = Goal::<serde::de::IgnoredAny>::deserialize(value).map_err(invalid);
-                let saved = match scheduled {
-                    Ok(goal)
-                        if (goal.status == Status::Active && !goal.authority_blocked)
-                            || goal.pending.is_some() =>
-                    {
-                        decode(entry.record)
+                match Goal::<serde::de::IgnoredAny>::deserialize(value) {
+                    Ok(goal) => index.update(&goal),
+                    Err(_) => {
+                        let session = entry
+                            .key
+                            .strip_prefix("session/")
+                            .ok_or_else(|| invalid("invalid Goal record key"))?;
+                        index.sessions.insert(session.to_owned(), Scheduled::Ready);
                     }
-                    Ok(_) => continue,
-                    Err(error) => Err(error),
-                };
-                result.push(
-                    saved.map_err(|error| invalid(format!("Goal record {}: {error}", entry.key))),
-                );
+                }
             }
             after = page.next_after;
             if after.is_none() {
-                return Ok(result);
+                break;
             }
         }
+        Ok((revision, index, true))
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::future::BoxFuture;
-    use maka_capabilities::storage;
-    use std::{
-        collections::BTreeMap,
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
-    use uuid::Uuid;
-    #[derive(Default)]
-    struct Store(Mutex<BTreeMap<String, storage::Record>>, AtomicBool);
-    impl storage::Store for Store {
-        fn read(
-            &self,
-            key: String,
-        ) -> BoxFuture<'_, Result<Option<storage::Record>, storage::StoreError>> {
-            Box::pin(async move { Ok(self.0.lock().unwrap().get(&key).cloned()) })
+    pub async fn schedule_snapshot(&self) -> Result<(Option<u64>, ScheduleIndex), Error> {
+        let (revision, index, _) = self.schedule_record().await?;
+        Ok((revision, index))
+    }
+    pub async fn schedule(&self) -> Result<ScheduleIndex, Error> {
+        let (revision, index, rebuild) = self.schedule_record().await?;
+        if rebuild {
+            self.store
+                .batch(vec![Mutation {
+                    key: "schedule".into(),
+                    expected_revision: revision,
+                    data: Data::Present(serde_json::to_value(&index).map_err(invalid)?),
+                }])
+                .await?;
         }
-        fn scan(
-            &self,
-            _: storage::Scan,
-        ) -> BoxFuture<'_, Result<storage::Page, storage::StoreError>> {
-            Box::pin(async {
-                Ok(storage::Page {
-                    entries: self
-                        .0
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .filter(|(key, _)| key.starts_with("session/"))
-                        .map(|(key, record)| storage::Entry {
-                            key: key.clone(),
-                            record: record.clone(),
-                        })
-                        .collect(),
-                    next_after: None,
-                })
-            })
+        Ok(index)
+    }
+    pub async fn sessions(&self) -> Result<Vec<Result<Saved<A>, Error>>, Error> {
+        let mut result = Vec::new();
+        for session in self.schedule().await?.sessions.keys() {
+            result.push(match self.read(session).await {
+                Ok(Some(saved)) => Ok(saved),
+                Ok(None) => Err(invalid("Goal schedule points to missing source")),
+                Err(error) => Err(error),
+            });
         }
-        fn batch(
-            &self,
-            mutations: Vec<storage::Mutation>,
-        ) -> BoxFuture<'_, Result<Vec<storage::Record>, storage::StoreError>> {
-            Box::pin(async move {
-                let mut records = self.0.lock().unwrap();
-                for m in &mutations {
-                    let actual = records.get(&m.key).map(|r| r.revision);
-                    if actual != m.expected_revision {
-                        return Err(storage::StoreError::Conflict {
-                            expected: format!("{:?}", m.expected_revision),
-                            actual: format!("{actual:?}"),
-                        });
-                    }
-                }
-                let committed: Vec<_> = mutations
-                    .into_iter()
-                    .map(|m| {
-                        let r = storage::Record {
-                            revision: m.expected_revision.unwrap_or(0) + 1,
-                            data: m.data,
-                        };
-                        records.insert(m.key, r.clone());
-                        r
-                    })
-                    .collect();
-                if self.1.swap(false, Ordering::SeqCst) {
-                    return Err(storage::StoreError::OutcomeUnknown(
-                        "reply lost after commit".into(),
-                    ));
-                }
-                Ok(committed)
-            })
-        }
-    }
-
-    fn arm() -> Arm {
-        Arm {
-            language: Language::En,
-            operation_id: Uuid::new_v4(),
-            objective: "Verify the feature".into(),
-            grant: maka_capabilities::authorization::Id(Uuid::new_v4()),
-            token_budget: Some(100),
-            start: true,
-        }
-    }
-    #[tokio::test]
-    async fn business_receipt_commits_atomically_with_goal_and_conflicts_leave_neither_effect() {
-        let store = Arc::new(Store::default());
-        let repo = Repository::new(store.clone());
-        let receipt = |key: &str| storage::Mutation {
-            key: key.into(),
-            expected_revision: None,
-            data: storage::Data::Present(serde_json::json!({"committed":true})),
-        };
-        store.1.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            repo.arm_with(
-                "session",
-                arm(),
-                Meter::default(),
-                None,
-                vec![receipt("create-receipt")]
-            )
-            .await,
-            Err(Error::Storage(storage::StoreError::OutcomeUnknown(_)))
-        ));
-        assert!(store.0.lock().unwrap().contains_key("create-receipt"));
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.control(Control::Pause).unwrap();
-        let stale = saved.clone();
-        store.1.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            repo.save_with(saved, vec![receipt("pause-receipt")]).await,
-            Err(Error::Storage(storage::StoreError::OutcomeUnknown(_)))
-        ));
-        assert!(store.0.lock().unwrap().contains_key("pause-receipt"));
-        assert_eq!(
-            repo.read("session").await.unwrap().unwrap().goal.status,
-            Status::Paused
-        );
-        assert!(matches!(
-            repo.save_with(stale, vec![receipt("stale-receipt")]).await,
-            Err(Error::Storage(storage::StoreError::Conflict { .. }))
-        ));
-        assert!(!store.0.lock().unwrap().contains_key("stale-receipt"));
-    }
-
-    #[tokio::test]
-    async fn arm_retry_preserves_baseline_and_cannot_replace_or_resurrect_a_goal() {
-        let store = Arc::new(Store::default());
-        let repo = Repository::new(store.clone());
-        let request = arm();
-        let goal = repo
-            .arm(
-                "session",
-                request.clone(),
-                Meter {
-                    known: 10,
-                    missing: 0,
-                },
-            )
-            .await
-            .unwrap();
-        let retry = repo
-            .arm(
-                "session",
-                request.clone(),
-                Meter {
-                    known: 99,
-                    missing: 0,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(retry.baseline.known, 10);
-        assert_eq!(retry.id, goal.id);
-        let mut different = request.clone();
-        different.objective = "different".into();
-        assert!(
-            repo.arm("session", different, Meter::default())
-                .await
-                .is_err()
-        );
-        assert!(repo.arm("session", arm(), Meter::default()).await.is_err());
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.status = Status::Achieved;
-        repo.save(saved).await.unwrap();
-        let new = repo.arm("session", arm(), Meter::default()).await.unwrap();
-        assert!(
-            repo.arm("session", request, Meter::default())
-                .await
-                .is_err()
-        );
-        assert_eq!(repo.read("session").await.unwrap().unwrap().goal.id, new.id);
-    }
-    #[tokio::test]
-    async fn incomplete_usage_does_not_stop_progress_and_budget_can_be_raised() {
-        let repo = Repository::new(Arc::new(Store::default()));
-        let mut goal = repo.arm("session", arm(), Meter::default()).await.unwrap();
-        for _ in 0..101 {
-            goal.reserve().unwrap();
-            goal.settled(
-                maka_agent_facts::event::InvocationOutcome::Completed,
-                Ok(Meter {
-                    known: 20,
-                    missing: 1,
-                }),
-            );
-        }
-        assert_eq!(goal.iterations, 101);
-        assert_eq!(goal.status, Status::Active);
-        assert_eq!(
-            goal.consumed,
-            Meter {
-                known: 20,
-                missing: 1
-            }
-        );
-        goal.meter(Meter {
-            known: 100,
-            missing: 1,
-        });
-        assert_eq!(goal.status, Status::BudgetLimited);
-        goal.arm.token_budget = Some(200);
-        goal.control(Control::Resume).unwrap();
-        goal.reserve().unwrap();
-        assert_eq!(goal.status, Status::Active);
-        assert_eq!(goal.iterations, 102);
-    }
-    #[tokio::test]
-    async fn failed_execution_and_usage_observation_do_not_block_the_goal() {
-        let repo = Repository::new(Arc::new(Store::default()));
-        let mut goal = repo.arm("session", arm(), Meter::default()).await.unwrap();
-        goal.reserve().unwrap();
-        goal.settled(
-            maka_agent_facts::event::InvocationOutcome::Failed {
-                class: "network".into(),
-                message: Some("connection reset".into()),
-                model_failure: None,
-            },
-            Err("temporary database error".into()),
-        );
-        goal.reserve().unwrap();
-        assert_eq!(goal.iterations, 2);
-        goal.report(Report {
-            status: ReportKind::Achieved,
-            note: "Verified the result".into(),
-        });
-        goal.settled(
-            maka_agent_facts::event::InvocationOutcome::Completed,
-            Err("usage unavailable".into()),
-        );
-        assert_eq!(goal.status, Status::Achieved);
-        assert_eq!(goal.note, "Verified the result");
-        assert!(goal.control(Control::Resume).is_err());
+        Ok(result)
     }
 }

@@ -49,13 +49,4 @@ impl RootStore {
     pub fn subscribe_control_changes(&self) -> RootSubscription {
         self.subscribe_catalog_changes()
     }
-    pub fn subscribe_activation_changes(&self) -> RootSubscription {
-        RootSubscription {
-            receiver: self.log.subscribe_activation_changes(),
-            stop: self.gates.cancellation(),
-        }
-    }
-    pub fn subscribe_activation_control_changes(&self) -> RootSubscription {
-        self.subscribe_activation_changes()
-    }
 }

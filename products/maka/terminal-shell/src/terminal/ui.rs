@@ -436,7 +436,7 @@ mod tests {
         collapsed_workspace_pages("workspace-pages-busy");
     }
 
-    fn collapsed_workspace_pages(scenario: &'static str) {
+    fn component_fixture(scenario: &'static str) -> Session {
         use nsh_core::platform::Idiom;
         use nsh_core::prelude::{Instance, class};
 
@@ -459,21 +459,6 @@ mod tests {
                 self.scenario.clone()
             }
         }
-        let wait = |session: &mut Session, expected: &str| {
-            let deadline = Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                session.advance(command([])).unwrap();
-                let screen = session.surface.snapshot();
-                if screen.contains(expected) {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "expected {expected:?}:\n{screen}"
-                );
-                thread::yield_now();
-            }
-        };
         let mut registry = maka_workbench::bindings::ui_registry();
         registry.value("host", move || {
             Instance::new(Presentation {
@@ -496,6 +481,26 @@ mod tests {
         options.ui_sets.push(registry);
         let mut session = Session::new(options, false).unwrap();
         session.initial_frame().unwrap();
+        session
+    }
+
+    fn collapsed_workspace_pages(scenario: &'static str) {
+        let mut session = component_fixture(scenario);
+        let wait = |session: &mut Session, expected: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                session.advance(command([])).unwrap();
+                let screen = session.surface.snapshot();
+                if screen.contains(expected) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected {expected:?}:\n{screen}"
+                );
+                thread::yield_now();
+            }
+        };
         wait(&mut session, "DESKTOP_BRANCH");
         let events = click(&session.surface, "Collapse A");
         session.advance(command(events)).unwrap();
@@ -517,6 +522,39 @@ mod tests {
                 .any(|node| node.label == "Open conversation B conversation 0"),
             "{scenario}"
         );
+    }
+
+    #[test]
+    fn external_agent_hides_sandbox_and_native_selection_restores_it() {
+        let mut session = component_fixture("composer-backends");
+        let has = |session: &Session, label: &str| {
+            session
+                .surface
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == label)
+        };
+        let wait = |session: &mut Session, label: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                session.advance(command([])).unwrap();
+                if has(session, label) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "missing {label}");
+                thread::yield_now();
+            }
+        };
+        wait(&mut session, "Use external Agent");
+        assert!(has(&session, "Sandbox and approvals"));
+        let events = click(&session.surface, "Use external Agent");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "Use native model");
+        assert!(!has(&session, "Sandbox and approvals"));
+        let events = click(&session.surface, "Use native model");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "Use external Agent");
+        assert!(has(&session, "Sandbox and approvals"));
     }
 
     #[test]

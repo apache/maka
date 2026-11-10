@@ -21,6 +21,7 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 
 use crate::sessions::advance_catalog;
+use crate::writeback::{Notification, Prepared, Statement};
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -39,8 +40,6 @@ pub struct ProjectRelinkGuard {
 }
 
 impl EventLog {
-    /// Project aliases, locations and shared workspace bindings commit together.
-    /// Session rows and immutable execution facts are never rewritten.
     pub async fn relink_project(
         &self,
         id: &str,
@@ -52,7 +51,6 @@ impl EventLog {
         self.relink_project_guarded(id, owner_scope, registration, now, selected_workspace, None)
             .await
     }
-
     pub async fn relink_project_if(
         &self,
         guard: ProjectRelinkGuard,
@@ -60,11 +58,9 @@ impl EventLog {
         now: u64,
         selected_workspace: Value,
     ) -> Result<ProjectRelink> {
-        let id = guard.source.id.clone();
-        let owner_scope = guard.owner_scope.clone();
         self.relink_project_guarded(
-            &id,
-            &owner_scope,
+            &guard.source.id.clone(),
+            &guard.owner_scope.clone(),
             registration,
             now,
             selected_workspace,
@@ -72,7 +68,6 @@ impl EventLog {
         )
         .await
     }
-
     async fn relink_project_guarded(
         &self,
         id: &str,
@@ -82,104 +77,188 @@ impl EventLog {
         selected_workspace: Value,
         guard: Option<ProjectRelinkGuard>,
     ) -> Result<ProjectRelink> {
+        self.connection
+            .write(
+                WriteRelink::new(
+                    id,
+                    owner_scope,
+                    registration,
+                    now,
+                    selected_workspace,
+                    guard,
+                )?,
+                self.commits.notice(),
+            )
+            .await?
+            .map_err(StoreError::Project)
+    }
+    pub(crate) fn prepare_project_relink(
+        guard: ProjectRelinkGuard,
+        registration: ProjectRegistration,
+        now: u64,
+        selected_workspace: Value,
+    ) -> Result<
+        impl Statement<
+            Value = std::result::Result<ProjectRelink, ProjectError>,
+            Output = std::result::Result<ProjectRelink, ProjectError>,
+        >,
+    > {
+        WriteRelink::new(
+            &guard.source.id.clone(),
+            &guard.owner_scope.clone(),
+            registration,
+            now,
+            selected_workspace,
+            Some(guard),
+        )
+    }
+}
+
+struct WriteRelink {
+    id: String,
+    owner_scope: String,
+    registration: ProjectRegistration,
+    now: i64,
+    selected_workspace: Value,
+    guard: Option<ProjectRelinkGuard>,
+}
+impl WriteRelink {
+    fn new(
+        id: &str,
+        owner_scope: &str,
+        registration: ProjectRegistration,
+        now: u64,
+        selected_workspace: Value,
+        guard: Option<ProjectRelinkGuard>,
+    ) -> Result<Self> {
         if owner_scope.is_empty() {
             return Err(invalid("invalid project owner scope"));
         }
-        let owner_scope = owner_scope.to_owned();
-        let commits = self.commits.notice();
         validate_id(id)?;
         validate_registration(&registration)?;
-        let now = timestamp(now)?;
-        let id = id.to_owned();
-        self.connection
-            .run(move |connection| {
-                {
-                    let tx = rusqlite::Transaction::new_unchecked(
-                        connection,
-                        rusqlite::TransactionBehavior::Immediate,
-                    )?;
-                    let project = read(&tx, &id)?.ok_or(ProjectError::NotFound)?;
-                    let conflict_id: Option<String> = tx
-                        .query_row(
-                            "SELECT id FROM projects WHERE identity = ? AND id != ?",
-                            params![&registration.identity, &project.id],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    let conflict = match conflict_id {
-                        Some(id) => Some(read(&tx, &id)?.ok_or(ProjectError::NotFound)?),
-                        None => None,
-                    };
-                    if let Some(guard) = &guard {
-                        let destination = if project.identity == registration.identity {
-                            Some(&project)
-                        } else {
-                            conflict.as_ref()
-                        };
-                        if guard.source != project || guard.destination.as_ref() != destination {
-                            return Err(ProjectError::Changed.into());
-                        }
-                    }
-                    let (updated_bindings, permission_changed) = reassign_bindings(
-                        &tx,
-                        &project,
-                        conflict.as_ref(),
-                        &owner_scope,
-                        selected_workspace,
-                        now as u64,
-                    )?;
-                    tx.execute(
-                        "DELETE FROM project_locations WHERE project_id = ?",
-                        params![&project.id],
-                    )?;
-                    if let Some(conflict) = &conflict {
-                        // Move identities before deleting their former owner; the unique
-                        // namespace prevents alias collisions throughout the transaction.
-                        tx.execute(
-                            "UPDATE project_identities SET project_id = ? WHERE project_id = ?",
-                            params![&project.id, &conflict.id],
-                        )?;
-                        tx.execute(
-                            "INSERT INTO project_locations
+        if !selected_workspace.is_object() {
+            return Err(invalid("invalid relocated workspace"));
+        }
+        Ok(Self {
+            id: id.into(),
+            owner_scope: owner_scope.into(),
+            registration,
+            now: timestamp(now)?,
+            selected_workspace,
+            guard,
+        })
+    }
+}
+impl Statement for WriteRelink {
+    type Value = std::result::Result<ProjectRelink, ProjectError>;
+    type Output = Self::Value;
+    fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<Self::Value>> {
+        let Self {
+            id,
+            owner_scope,
+            registration,
+            now,
+            selected_workspace,
+            guard,
+        } = self;
+        let Some(project) = read(connection, &id)? else {
+            return Ok(Prepared {
+                value: Err(ProjectError::NotFound),
+                changed: false,
+                notification: Notification::NONE,
+            });
+        };
+        let conflict_id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM projects WHERE identity = ? AND id != ?",
+                params![&registration.identity, &project.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let conflict = match conflict_id {
+            Some(id) => Some(read(connection, &id)?.ok_or(ProjectError::NotFound)?),
+            None => None,
+        };
+        if let Some(guard) = &guard {
+            let destination = if project.identity == registration.identity {
+                Some(&project)
+            } else {
+                conflict.as_ref()
+            };
+            if guard.source != project || guard.destination.as_ref() != destination {
+                return Ok(Prepared {
+                    value: Err(ProjectError::Changed),
+                    changed: false,
+                    notification: Notification::NONE,
+                });
+            }
+        }
+        let (updated_bindings, permission_changed) = reassign_bindings(
+            connection,
+            &project,
+            conflict.as_ref(),
+            &owner_scope,
+            selected_workspace,
+            now as u64,
+        )?;
+        connection.execute(
+            "DELETE FROM project_locations WHERE project_id = ?",
+            params![&project.id],
+        )?;
+        if let Some(conflict) = &conflict {
+            // Move identities before deleting their former owner; the unique
+            // namespace prevents alias collisions throughout the transaction.
+            connection.execute(
+                "UPDATE project_identities SET project_id = ? WHERE project_id = ?",
+                params![&project.id, &conflict.id],
+            )?;
+            connection.execute(
+                "INSERT INTO project_locations
                     SELECT ?, path, is_worktree, last_used_at FROM project_locations
                     WHERE project_id = ? AND path != ?",
-                            params![&project.id, &conflict.id, &registration.path],
-                        )?;
-                        tx.execute("DELETE FROM projects WHERE id = ?", params![&conflict.id])?;
-                    }
-                    tx.execute(
-                        "INSERT INTO project_locations VALUES (?, ?, ?, ?)",
-                        params![
-                            &project.id,
-                            &registration.path,
-                            registration.is_worktree,
-                            now
-                        ],
-                    )?;
-                    let last_used = now.max(project.last_used_at as i64).max(
-                        conflict
-                            .as_ref()
-                            .map_or(0, |record| record.last_used_at as i64),
-                    );
-                    tx.execute(
-                        "UPDATE projects SET identity = ?, last_used_at = ? WHERE id = ?",
-                        params![&registration.identity, last_used, &project.id],
-                    )?;
-                    let project = read(&tx, &project.id)?.ok_or(ProjectError::NotFound)?;
-                    tx.commit().map_err(StoreError::CommitUnknown)?;
-                    if updated_bindings != 0 {
-                        commits.metadata_scope(&owner_scope);
-                        if permission_changed {
-                            commits.activations();
-                        }
-                    }
-                    Ok(ProjectRelink {
-                        project,
-                        updated_bindings,
-                    })
-                }
-            })
-            .await
+                params![&project.id, &conflict.id, &registration.path],
+            )?;
+            connection.execute("DELETE FROM projects WHERE id = ?", params![&conflict.id])?;
+        }
+        connection.execute(
+            "INSERT INTO project_locations VALUES (?, ?, ?, ?)",
+            params![
+                &project.id,
+                &registration.path,
+                registration.is_worktree,
+                now
+            ],
+        )?;
+        let last_used = now.max(project.last_used_at as i64).max(
+            conflict
+                .as_ref()
+                .map_or(0, |record| record.last_used_at as i64),
+        );
+        connection.execute(
+            "UPDATE projects SET identity = ?, last_used_at = ? WHERE id = ?",
+            params![&registration.identity, last_used, &project.id],
+        )?;
+        let project = read(connection, &project.id)?.ok_or(ProjectError::NotFound)?;
+
+        let notification = if updated_bindings == 0 {
+            Notification::NONE
+        } else {
+            Notification::metadata_scope(owner_scope).with_activation(permission_changed)
+        };
+        Ok(Prepared {
+            value: Ok(ProjectRelink {
+                project,
+                updated_bindings,
+            }),
+            changed: true,
+            notification,
+        })
+    }
+    fn committed(value: Self::Value) -> Self::Output {
+        value
+    }
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
     }
 }
 
@@ -232,17 +311,6 @@ fn reassign_bindings(
                     )?;
                     if relocation {
                         permission_changed = true;
-                        let current =
-                            crate::workspace_bindings::read::<Value>(connection, binding_id)?
-                                .ok_or_else(|| {
-                                    invalid("relocated workspace binding disappeared")
-                                })?;
-                        EventLog::close_computer_app_binding_in_transaction(
-                            connection,
-                            binding_id,
-                            current.permission_epoch,
-                            now,
-                        )?;
                     }
                     updated = updated
                         .checked_add(1)

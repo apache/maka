@@ -18,11 +18,8 @@
  */
 
 use super::*;
-use crate::{
-    bundle::{BundleError, BundleSummary, Inventory},
-    sessions::SessionRemovalResult,
-};
-use maka_agent_facts::workspace::BindingRef;
+use crate::sessions::SessionRemovalResult;
+use maka_sandbox::workspace::BindingRef;
 
 impl RootStore {
     pub fn owned_root(&self) -> Result<Arc<root::RootOwner>, StoreError> {
@@ -50,61 +47,6 @@ impl RootStore {
         self.require_open()?;
         self.log.workspace_binding(id).await
     }
-    pub async fn preview_bundle(&self, session: &str) -> Result<Inventory, BundleError> {
-        self.session(session)
-            .await?
-            .scoped()
-            .await?
-            .preview_bundle(session)
-            .await
-    }
-    pub async fn export_bundle<W: tokio::io::AsyncWrite + Unpin + Send + 'static>(
-        &self,
-        session: &str,
-        expected: &str,
-        output: W,
-    ) -> Result<(W, BundleSummary), BundleError> {
-        self.session(session)
-            .await?
-            .scoped()
-            .await?
-            .export_bundle(session, expected, output)
-            .await
-    }
-    /// Host startup only. Excludes live work while recovering abandoned invocations.
-    pub async fn recover_invocations(&self) -> Result<usize, crate::recovery::RecoveryError> {
-        self.require_open()?;
-        let (recovery, released) = self.gates.recovery()?;
-        let recovery = Arc::new(recovery);
-        let result = async {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| {
-                    StoreError::InvalidTransition("system clock precedes Unix epoch".into())
-                })?
-                .as_millis();
-            let now = u64::try_from(now)
-                .map_err(|_| StoreError::InvalidTransition("timestamp exhausted".into()))?;
-            // Pending app decisions close before their abandoned invocations.
-            self.close_abandoned_computer_apps(now, recovery.clone())
-                .await?;
-            crate::recovery::recover_invocations(&self.log.scoped(recovery.clone())).await
-        }
-        .await;
-        drop(recovery);
-        // Public completion includes the original actors' cleanup, not merely
-        // their result replies. The following startup phase can admit work now.
-        if let Some(lifecycle) = &self.lifecycle {
-            tokio::select! {
-                released = released => released.map_err(|_| StoreError::OperationUnknown)?,
-                closed = lifecycle.wait() => return Err(closed.err().unwrap_or(StoreError::ConnectionClosed).into()),
-            }
-        } else {
-            released.await.map_err(|_| StoreError::OperationUnknown)?;
-        }
-        result
-    }
-
     pub async fn begin_session_removal(
         &self,
         session: &str,

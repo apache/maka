@@ -23,80 +23,101 @@ use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration}
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
+use maka_agent_facts::interaction::PermissionDecision;
 use maka_agent_facts::interaction::PermissionRequest;
-use maka_agent_facts::tools::ToolCallContext;
 use maka_agent_facts::tools::ToolError;
-use maka_event_log::{
-    SessionStore, StoreError, interactions::PermissionGrant, sessions::SessionRecord,
-};
-use maka_sandbox::grant::Decision;
+use maka_event_log::{StoreError, sessions::SessionRecord};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
-/// Recover the original execution handle; an invocation identity alone cannot
-/// reacquire admission or substitute for the physical worker's custody.
-pub fn execution(
-    root: &maka_event_log::RootStore,
-    invocation: &maka_agent_facts::event::Invocation,
-    custody: Option<&dyn maka_agent_facts::tools::ExecutionCustody>,
-) -> Result<maka_event_log::SessionStore, ToolError> {
-    root.session_for_execution(
-        custody.ok_or_else(|| failed("Workspace execution custody is missing"))?,
-        invocation,
-    )
-    .map_err(|error| ToolError::Persistence(error.to_string()))
+/// A live, native-issued Run capability. No identity or persisted approval can
+/// construct this capability; native rechecks RunSpec intersected with current policy.
+pub trait Access: maka_agent_ports::execution::Interactions {
+    /// Request identity only: preparation has no Host source; a native caller
+    /// exposes only the original captured from its actual bound Context.
+    fn permission_request_original(
+        &self,
+    ) -> Result<Option<&maka_plugin_core::operation::RecoveryRef>, ToolError>;
+    fn live_configuration(
+        &self,
+    ) -> futures_util::future::BoxFuture<'_, Result<ResolvedConfiguration, ToolError>>;
+    /// Observation only. Preparation once approvals are consumed by the original
+    /// admission; Host grants are usable only within that active original scope.
+    fn permission_grants<'a>(
+        &'a self,
+        target: &'a maka_agent_facts::durable::AuthorizationObligation,
+        basis: &'a maka_sandbox::workspace::PermissionBasis,
+    ) -> futures_util::future::BoxFuture<'a, Result<Vec<PermissionGrant>, ToolError>>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionGrant {
+    pub approval_id: Option<maka_agent_facts::durable::ApprovalId>,
+    pub request_id: String,
+    pub permissions: maka_sandbox::grant::Permissions,
+    pub scope: maka_agent_facts::interaction::PermissionScope,
 }
 
 pub async fn request(
-    store: &SessionStore,
-    configuration: &ResolvedConfiguration,
+    access: &dyn Access,
     request: PermissionRequest,
-    context: &ToolCallContext,
+    target: &maka_agent_facts::durable::AuthorizationObligation,
     cancellation: &CancellationToken,
 ) -> Result<PermissionGrant, ToolError> {
+    let configuration = access.live_configuration().await?;
     if !configuration.permissions.request_permissions {
         return Err(failed(
             "Workspace policy does not allow requesting additional permissions",
         ));
     }
+    let identity = (
+        &access.execution().run_id,
+        target,
+        configuration.permission_basis(),
+        &request,
+    );
+    let identity = match access.permission_request_original()? {
+        None => serde_json::to_vec(&identity),
+        Some(original) => serde_json::to_vec(&(identity, "host", original)),
+    }
+    .expect("authorization obligation identity");
     let record = InteractionRecord {
-        session_id: context.invocation.session_id.clone(),
-        turn_id: context.invocation.turn_id.clone(),
-        run_id: context.invocation.run_id.clone(),
-        request_id: format!(
-            "permissions_{}",
-            hex::encode(Sha256::digest(
-                serde_json::to_vec(&(
-                    &context.invocation,
-                    &context.operation_id,
-                    configuration.permission_basis(),
-                    &request,
-                ))
-                .expect("tool identity")
-            ))
-        ),
+        execution: access.execution().clone(),
+        request_id: format!("permissions_{}", hex::encode(Sha256::digest(identity))),
         created_at: crate::now(),
         request: InteractionRequest::Permissions {
-            tool_use_id: Some(context.tool_use_id()),
+            target: target.clone(),
+            tool_use_id: match target {
+                maka_agent_facts::durable::AuthorizationObligation::Tool { tool } => {
+                    Some(maka_agent_facts::tool_call::tool_use_id(
+                        access.execution().run_id,
+                        &format!("{}:{}", tool.attempt, tool.call),
+                    ))
+                }
+                maka_agent_facts::durable::AuthorizationObligation::Cell { .. } => None,
+                maka_agent_facts::durable::AuthorizationObligation::External {
+                    operation, ..
+                } => Some(maka_agent_facts::tool_call::tool_use_id(
+                    access.execution().run_id,
+                    &operation.to_string(),
+                )),
+            },
             basis: configuration.permission_basis(),
             request,
         },
         outcome: None,
     };
     let observed = async {
-        let committed = store
-            .establish_run_interaction(&context.invocation, &record)
+        access
+            .establish(&record)
             .await
             .map_err(|_| "permission publication unavailable")?;
-        if !committed.matches {
-            return Err("permission identity conflict");
-        }
-        wait(store, &record, cancellation).await
+        wait(access, &record, cancellation).await
     }
     .await;
     let outcome = match observed {
         Ok(outcome) => outcome,
-        Err(error) => match withdraw(store, &record).await {
+        Err(error) => match withdraw(access, &record).await {
             Ok(Some(outcome)) => outcome,
             Ok(None) => return Err(failed(error)),
             Err(cleanup) => return Err(ToolError::CleanupUnconfirmed(cleanup.into())),
@@ -108,18 +129,14 @@ pub async fn request(
     if !matches!(
         outcome,
         InteractionOutcome::PermissionsDecision {
-            decision: Decision::Allow { .. },
+            decision: PermissionDecision::Allow { .. },
             ..
         }
     ) {
         return Err(failed("Additional permissions were not granted"));
     }
-    store
-        .permission_grants(
-            &context.invocation,
-            Some(&context.tool_use_id()),
-            &configuration.permission_basis(),
-        )
+    access
+        .permission_grants(target, &configuration.permission_basis())
         .await
         .map_err(|_| failed("Permission observation unavailable"))?
         .into_iter()
@@ -131,28 +148,8 @@ fn failed(message: impl Into<String>) -> ToolError {
     ToolError::Failed(message.into())
 }
 
-pub async fn live(
-    store: &SessionStore,
-    invocation: &maka_agent_facts::event::Invocation,
-) -> Result<ResolvedConfiguration, ToolError> {
-    let projection = store
-        .session_projection::<StoredSessionConfiguration>(&invocation.session_id)
-        .await
-        .map_err(|_| failed("Workspace session is unavailable"))?
-        .filter(|p| {
-            !p.session.archived
-                && p.root_turn.as_ref().is_some_and(|turn| {
-                    turn.invocation == *invocation
-                        && !matches!(
-                            turn.state,
-                            maka_event_log::turns::InvocationState::Ended { .. }
-                        )
-                })
-        })
-        .ok_or_else(|| failed("Workspace invocation is no longer active"))?;
-    resolve_session(projection.session)
-        .map(|session| session.configuration)
-        .map_err(|_| failed("Workspace binding is unavailable"))
+pub async fn live(access: &dyn Access) -> Result<ResolvedConfiguration, ToolError> {
+    access.live_configuration().await
 }
 
 /// Resolve only the binding snapshot read with this Session's canonical metadata.

@@ -59,8 +59,10 @@ impl Execution {
                 self.messages.push((
                     message_id.clone(),
                     Message {
-                        id: crate::executor_message_id(&event.invocation.invocation_id, message_id),
-                        turn_id: event.invocation.turn_id.clone(),
+                        id: crate::executor_message_id(event.execution.run_id, message_id),
+                        run_id: event.execution.run_id,
+                        model: None,
+                        turn_id: event.execution.turn_id.clone(),
                         ts,
                         content: Content::Assistant {
                             imported: false,
@@ -126,16 +128,18 @@ impl Execution {
                         "executor reused a tool activity ID",
                     ));
                 }
-                let id = crate::tool_message_id(&event.invocation.invocation_id, tool_call_id);
+                let id = crate::tool_message_id(event.execution.run_id, tool_call_id);
                 self.pending.insert(tool_call_id.clone(), id.clone());
                 Message {
                     id,
-                    turn_id: event.invocation.turn_id.clone(),
+                    run_id: event.execution.run_id,
+                    model: None,
+                    turn_id: event.execution.turn_id.clone(),
                     ts,
                     content: Content::ToolCall {
                         tool_name: name.clone(),
                         args: input.clone(),
-                        step_id: None,
+                        anchor_message_id: None,
                         provider_options: None,
                         provider_executed: Some(true),
                         metadata: metadata(),
@@ -236,7 +240,9 @@ fn result(
 ) -> Message {
     Message {
         id,
-        turn_id: event.invocation.turn_id.clone(),
+        run_id: event.execution.run_id,
+        model: None,
+        turn_id: event.execution.turn_id.clone(),
         ts,
         content: Content::ToolResult {
             settlement: None,
