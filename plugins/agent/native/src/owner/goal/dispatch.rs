@@ -69,7 +69,7 @@ impl Owner {
     }
     async fn tick_goals(self: &Arc<Self>) -> Result<(Option<u64>, Vec<String>), String> {
         use maka_goal::goal::Scheduled;
-        let _gate = self.goals.gate.lock().await;
+        let gate = self.goals.gate.lock().await;
         let index = self.goals.repository.schedule().await.map_err(reason)?;
         let waiting = index
             .sessions
@@ -111,17 +111,24 @@ impl Owner {
             !index.sessions.is_empty() || !errors.is_empty(),
             Ordering::Release,
         );
-        Ok((
-            index
-                .sessions
-                .values()
-                .filter_map(|entry| match entry {
-                    Scheduled::Due { at } if *at > now() => Some(*at),
-                    _ => None,
-                })
-                .min(),
-            errors,
-        ))
+        let admission_ready = index
+            .sessions
+            .values()
+            .any(|entry| matches!(entry, Scheduled::Ready));
+        let deadline = index
+            .sessions
+            .values()
+            .filter_map(|entry| match entry {
+                Scheduled::Due { at } if *at > now() => Some(*at),
+                _ => None,
+            })
+            .min();
+        // Queue admission uses try_lock on this gate and can miss the enqueue wake.
+        drop(gate);
+        if admission_ready {
+            self.wake_notify.notify_one();
+        }
+        Ok((deadline, errors))
     }
     async fn tick_goal(
         self: &Arc<Self>,
