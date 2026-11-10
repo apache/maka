@@ -211,13 +211,14 @@ async fn normal_shell_exit_preserves_background_descendants_but_bounds_pipe_drai
         }),
         CancellationToken::new(),
     ));
+    // Exclude fixture startup from the drain bound and retain cleanup if it times out.
+    let child = LiveProcess::read(&dir.path().join("child")).await;
     let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
     assert!(dir.path().join("child").exists(), "{result}");
-    let child = LiveProcess::read(&dir.path().join("child")).await;
     assert_eq!(result["status"], "completed");
     assert_eq!(result["output"]["stdout"], "done");
     assert_eq!(result["output"]["stdoutTruncated"], true);
