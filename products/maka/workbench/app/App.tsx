@@ -34,7 +34,9 @@ import {
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { currentWindow } from 'nsh/desktop';
 import { keepDesktopResident } from './desktopResidency';
+import { QuickLauncher } from './QuickLauncher';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
@@ -104,6 +106,7 @@ function App(
   });
   effect(() => currentLocale.set(runtime.locale()));
   keepDesktopResident();
+  const mainWindow = currentWindow();
   const report = (reason: unknown) => {
     if (alive) notice.set(reason);
   };
@@ -183,6 +186,16 @@ function App(
       report(reason);
       return false;
     }
+  };
+  const vacate = (id: string) => {
+    const side = sideFor(id);
+    if (side) return openSide(side, null);
+    return selected() === id ? openSession(null) : Promise.resolve(true);
+  };
+  const showSession = async (id: string) => {
+    if (!(await openSession(id))) return false;
+    mainWindow?.focus();
+    return true;
   };
   const connectionDetails = signal(false);
   const connectionDiagnostic = () => {
@@ -268,6 +281,9 @@ function App(
         backgroundColor: platform.idiom === 'terminal' ? C.background : C.chrome,
       }}
     >
+      <If when={mainWindow !== null}>
+        <QuickLauncher vacate={vacate} open={showSession} report={report} />
+      </If>
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}
