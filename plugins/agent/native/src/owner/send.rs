@@ -261,6 +261,13 @@ impl Owner {
             Some(run) => self.session_run(&id, run).await?,
             None => None,
         };
+        if latest.as_ref().is_some_and(|view| view.blocks_followup()) {
+            return Ok(NativeMutation::Returned(SendResult::Rejected {
+                session_id: id,
+                reason: SendRejection::OriginalOperationUnsettled,
+                skills: None,
+            }));
+        }
         let mut after_stop = None;
         let active = if latest.as_ref().is_some_and(|view| view.stopped) {
             if admission.state().await.busy(&id) {

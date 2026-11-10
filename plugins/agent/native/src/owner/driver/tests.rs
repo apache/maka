@@ -429,7 +429,7 @@ impl Rig {
                 "stop",
             ]
         } else {
-            &["create", "history", "source", "search"]
+            &["create", "history", "source", "search", "list", "execution"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -1189,10 +1189,10 @@ mod bounded_risk {
     };
 
     // Typed State fixture only. No interpreter, process identity or physical cleanup ACK.
-    async fn running_cell_with_returned_parent(
+    async fn start_original_cell(
         rig: &Rig,
         attempt: ModelAttemptId,
-    ) -> TestResult<CellId> {
+    ) -> TestResult<(CellId, ToolKey)> {
         let (parent, _) = rig
             .tool(
                 attempt,
@@ -1235,6 +1235,14 @@ mod bounded_risk {
                 vec![source],
             )
             .await?;
+        Ok((cell, parent))
+    }
+
+    async fn running_cell_with_returned_parent(
+        rig: &Rig,
+        attempt: ModelAttemptId,
+    ) -> TestResult<CellId> {
+        let (cell, parent) = start_original_cell(rig, attempt).await?;
         let returned = ContentBlob::json(&ToolReturn {
             schema_version: SCHEMA_VERSION,
             artifacts: vec![],
@@ -1308,6 +1316,101 @@ mod bounded_risk {
         )
         .await?;
         Ok((blocker, decision))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn original_cell_can_recover_after_authority_and_vm_loss() {
+        use maka_agent_facts::cells::CellInterruption;
+
+        let mut rig = Rig::new().expect("owned Cell recovery fixture");
+        let result = AssertUnwindSafe(async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            let (cell, parent) = start_original_cell(&rig, attempt).await?;
+            let blocker = BlockerId::new();
+            rig.append(
+                vec![
+                    Fact::Blocked {
+                        blocker,
+                        reason: BlockerKind::CodeCellRecoveryUnavailable { cell: cell.to_string() },
+                    },
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: BlockerKind::OriginalAdmissionUnknown { tool: parent.clone() },
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+            let driver = rig.driver.as_ref().ok_or("original driver missing")?;
+            let run = driver.access.execution().run_id;
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            let claim = driver.access.claim();
+            let first = engine
+                .current_authority_unavailable(
+                    claim.clone(),
+                    AuthorityStage::WorkspaceScope,
+                    "access temporarily unavailable".into(),
+                    at(),
+                )
+                .await?;
+            assert!(matches!(
+                first,
+                maka_agent_engine::DriverExit::Blocked { .. }
+            ));
+            let report = ContentBlob::json(&CellInterruption {
+                cell,
+                diagnostic: "the original VM ended".into(),
+                children: Default::default(),
+                prior_output: None,
+            })?;
+            rig.append(
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::Interrupted { cell, report: report.reference().clone() },
+                    },
+                    Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed },
+                ],
+                vec![report],
+            )
+            .await?;
+            let observed = driver.state.frontier(run).await?;
+            let original = &observed.tools[&tool_key(&parent)];
+            assert!(original.local_returned.is_none() && original.accepted.is_none());
+            assert!(!observed.has_unsettled_recovery(), "the missing parent return hid its original settled Cell");
+
+            engine
+                .current_authority_unavailable(
+                    claim.clone(),
+                    AuthorityStage::WorkspaceScope,
+                    "access still unavailable".into(),
+                    at(),
+                )
+                .await?;
+            let recovered = driver.state.frontier(run).await?;
+            assert!(recovered.terminal.is_none() && recovered.recovery_failure().is_none());
+            assert!(recovered.waiting_for_authority());
+            let history = driver.state.history(run, 0, 64).await?;
+            assert!(history.iter().any(|fact| matches!(&fact.fact,
+                Fact::ToolResultAccepted { tool, outcome: AcceptedResult::CellRecovered { cell: original }, .. }
+                    if tool == &parent && *original == cell
+            )));
+            assert!(matches!(
+                recovered.cells[&cell].status,
+                CellStatus::Interrupted { .. }
+            ));
+            assert!(!recovered.cells[&cell].blocks_session_retirement(Some(&Terminal::Failed)));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "Cell recovery failed: {result:?}"
+        );
+        assert!(cleanup.is_empty(), "original Cell cleanup: {cleanup:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1385,7 +1488,7 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn non_tool_run_cancellation_retains_original_decision_for_unrelated_pending_tool() {
+    async fn legacy_cancellation_keeps_unrelated_pending_tool_unsettled() {
         let mut rig = Rig::new().expect("owned bounded risk-tool fixture");
         let mut stage = "setup";
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -1416,14 +1519,9 @@ mod bounded_risk {
             assert!(matches!(exit, maka_agent_engine::DriverExit::Terminal { terminal: Terminal::Cancelled, .. }));
             let final_view = driver.state.frontier(run).await?;
             let tool = &final_view.tools[&tool_key(&unrelated)];
-            let acceptance = tool.accepted.as_ref().ok_or("unrelated tool was not accepted")?;
-            assert!(acceptance.outcome == AcceptedResult::RiskAdjudicated { blocker: risk });
-            let encoded: AcceptedToolResult = serde_json::from_slice(
-                &driver.state.content(run, acceptance.result.clone()).await?)?;
-            assert!(encoded == AcceptedToolResult::RiskAdjudicated { blocker: risk, decision: decision.clone() },
-                "accepted content lost the original blocker identity or decision");
-            assert!(tool.original.is_none() && tool.local_returned.is_none() && tool.prohibited_before_host.is_none(),
-                "risk acceptance fabricated an original execution or no-launch receipt");
+            assert!(tool.accepted.is_none() && tool.original.is_none()
+                && tool.local_returned.is_none() && tool.prohibited_before_host.is_none(),
+                "settling the legacy cancellation fabricated a receipt or a tool result");
             assert!(final_view.cells[&cell] == original_cell && !final_view.cells[&cell].physical_cleanup_confirmed());
             assert!(final_view.attempts[&attempt].cleanup != OperationCleanup::Confirmed);
             assert!(final_view.blockers[&risk] == *kept, "pending original obligation lost its whole-run decision");
@@ -1442,7 +1540,7 @@ mod bounded_risk {
 }
 
 mod source_recovery {
-    use super::*;
+    use super::{model_recovery::call, *};
     use crate::owner::PreparingRun;
     use maka_agent_state::ReadyCause;
 
@@ -1554,7 +1652,7 @@ mod source_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn assessed_stop_accepts_source_only_authority_recovery_and_explicit_risk_cancel() {
+    async fn assessed_stop_can_wake_for_authority_and_unrecoverable_runs_fail() {
         let mut rig = Rig::new().expect("owned Stop recovery fixture");
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
             let session = rig.start().await?;
@@ -1590,6 +1688,32 @@ mod source_recovery {
                 .as_ref()
                 .ok_or("original control driver missing")?;
             let run = driver.access.execution().run_id;
+            let client = rig.client.as_ref().ok_or("catalog client missing")?;
+            let list = call(
+                client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "needs_you", "position": {"kind": "start"}
+                }),
+            )
+            .await?;
+            assert_eq!(list["sessions"], json!([]));
+            assert_eq!(list["needsYouCount"], 0);
+            let execution = call(
+                client,
+                "agent",
+                "execution",
+                json!({
+                    "sessionId": session, "runId": run
+                }),
+            )
+            .await?;
+            assert_eq!(execution["execution"]["state"]["kind"], "waiting");
+            assert_eq!(
+                execution["execution"]["state"]["authorityUnavailable"],
+                true
+            );
             let owner = driver.state.frontier(run).await?.spec.owner;
             let ordinary = driver
                 .state
@@ -1644,23 +1768,23 @@ mod source_recovery {
                     .any(|entry| entry.run == run),
                 "StopAssessed permanently hid the authority-only Run"
             );
-            let risk = BlockerId::new();
+            let reason = BlockerKind::UnsupportedProtocol {
+                protocol: "logical-control-fixture".into(),
+                version: 1,
+            };
             rig.append(
                 vec![Fact::Blocked {
-                    blocker: risk,
-                    reason: BlockerKind::UnsupportedProtocol {
-                        protocol: "logical-control-fixture".into(),
-                        version: 1,
-                    },
+                    blocker: BlockerId::new(),
+                    reason: reason.clone(),
                 }],
                 vec![],
             )
             .await?;
             assert!(
-                !driver
+                driver
                     .state
                     .ready_runs_with_cause(
-                        owner.clone(),
+                        owner,
                         at(),
                         None,
                         64,
@@ -1669,41 +1793,7 @@ mod source_recovery {
                     .await?
                     .iter()
                     .any(|entry| entry.run == run),
-                "source recovery bypassed a second non-authority risk"
-            );
-            rig.append(
-                vec![Fact::RiskAdjudicated {
-                    blocker: risk,
-                    decision: RiskDecision::CancelBlockedRun {
-                        diagnostic: "fixture explicit cancellation".into(),
-                    },
-                    scope: RiskActionScope::RunCancellation,
-                }],
-                vec![],
-            )
-            .await?;
-            rig.append(vec![Fact::StopAssessed { request }], vec![])
-                .await?;
-            assert!(
-                driver
-                    .state
-                    .ready_runs(owner, at(), None, 64)
-                    .await?
-                    .iter()
-                    .any(|entry| entry.run == run),
-                "StopAssessed or another authority blocker hid explicit cancellation"
-            );
-            let view = driver.state.frontier(run).await?;
-            assert!(
-                view.cancelled_by_risk
-                    && view.stop_assessed == Some(request)
-                    && view.blockers[&authority].resolved_by.is_none()
-                    && view.waits.contains_key(&blocked_wait),
-                "readiness fabricated authority or drained control facts"
-            );
-            assert!(
-                !view.blockers.contains_key(&risk),
-                "bounded frontier must retire the adjudicated cancellation blocker"
+                "source change did not wake the parked Run"
             );
             let exit = maka_agent_engine::Engine::new(driver.state.clone())
                 .current_authority_unavailable(
@@ -1717,11 +1807,11 @@ mod source_recovery {
                 matches!(
                     exit,
                     maka_agent_engine::DriverExit::Terminal {
-                        terminal: Terminal::Cancelled,
+                        terminal: Terminal::Failed,
                         ..
                     }
                 ),
-                "explicit risk cancellation did not drain through the actual Engine"
+                "unrecoverable run did not settle through the actual Engine"
             );
             assert!(
                 driver.state.frontier(run).await?.attempts.is_empty(),
@@ -1734,7 +1824,7 @@ mod source_recovery {
         let cleanup = rig.finish().await;
         assert!(
             matches!(&result, Ok(Ok(Ok(())))),
-            "assessed Stop source/cancel regression failed: {result:?}"
+            "assessed Stop recovery regression failed: {result:?}"
         );
         assert!(
             cleanup.is_empty(),
@@ -1926,7 +2016,7 @@ mod model_recovery {
         )
         .await
     }
-    async fn call(
+    pub(super) async fn call(
         client: &HostClient,
         endpoint: &str,
         method: &str,

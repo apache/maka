@@ -107,10 +107,6 @@ impl Foreground {
                 json!({"sessionId":self.session.id,"target":self.target,"cursor":null}),
             )
             .await?;
-        let was_blocked = self
-            .work
-            .execution()
-            .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
         self.work = match work {
             Work::Delivered {
                 shared, execution, ..
@@ -121,18 +117,6 @@ impl Foreground {
                 return Err("Original accepted Agent work is unavailable or changed".into());
             }
         };
-        let blocked = self
-            .work
-            .execution()
-            .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
-        if blocked != was_blocked {
-            self.state(if blocked {
-                State::RequiresAction
-            } else {
-                State::Running
-            })
-            .await?;
-        }
         Ok(())
     }
     async fn observe(&mut self) -> Result<Completion, Error> {
@@ -157,18 +141,7 @@ impl Foreground {
             self.publish(updates).await?;
         }
         self.refresh().await?;
-        self.state(
-            if self
-                .work
-                .execution()
-                .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }))
-            {
-                State::RequiresAction
-            } else {
-                State::Running
-            },
-        )
-        .await?;
+        self.state(State::Running).await?;
         let mut callbacks = JoinSet::<Result<String, Error>>::new();
         let mut seen = HashSet::new();
         // Cancel only the client prompt wait; never abort an in-flight Host call.
@@ -276,8 +249,7 @@ impl Foreground {
                         let request_id = callback.ok_or("ACP callback task missing")???;
                         live.remove(&request_id);
                         if callbacks.is_empty() {
-                            let blocked = self.work.execution().is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
-                            self.state(if blocked { State::RequiresAction } else { State::Running }).await?;
+                            self.state(State::Running).await?;
                         }
                     },
                     _ = heartbeat.tick() => {
@@ -498,11 +470,8 @@ impl Foreground {
         Ok(match execution.state {
             ExecutionState::Completed => Completion::Completed,
             ExecutionState::Cancelled => Completion::Cancelled,
-            ExecutionState::Failed => Completion::Failed,
-            ExecutionState::Admitted
-            | ExecutionState::Running
-            | ExecutionState::Waiting { .. }
-            | ExecutionState::Blocked { .. } => {
+            ExecutionState::Failed { .. } => Completion::Failed,
+            ExecutionState::Admitted | ExecutionState::Running | ExecutionState::Waiting { .. } => {
                 return Err("Agent work is not physically settled".into());
             }
         })
@@ -541,10 +510,11 @@ impl Foreground {
 }
 fn terminal(state: &ExecutionState) -> bool {
     match state {
-        ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled => true,
-        ExecutionState::Admitted
-        | ExecutionState::Running
-        | ExecutionState::Waiting { .. }
-        | ExecutionState::Blocked { .. } => false,
+        ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled => {
+            true
+        }
+        ExecutionState::Admitted | ExecutionState::Running | ExecutionState::Waiting { .. } => {
+            false
+        }
     }
 }

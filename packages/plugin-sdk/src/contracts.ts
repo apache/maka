@@ -143,920 +143,6 @@ export const contracts: {
     interface: {
       kind: 'service',
       methods: {
-        adjudicateRisk: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentAdjudicateRisk',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-              runId: {
-                $ref: '#/$defs/RunId',
-              },
-              expectedHighWater: {
-                description: 'Compare against the Run-local observation used for this decision.',
-                type: 'integer',
-                format: 'uint64',
-                minimum: 1,
-                maximum: 9007199254740991,
-              },
-              blockerId: {
-                $ref: '#/$defs/BlockerId',
-              },
-              decision: {
-                $ref: '#/$defs/AgentRiskDecisionInput',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'runId', 'expectedHighWater', 'blockerId', 'decision'],
-            $defs: {
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              BlockerId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              AgentRiskDecisionInput: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'record_external_observation',
-                      },
-                      evidence: {
-                        $ref: '#/$defs/AgentRiskEvidenceInput',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'evidence'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'authorize_replan',
-                      },
-                      evidence: {
-                        $ref: '#/$defs/AgentRiskEvidenceInput',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'evidence'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cancel_blocked_run',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-              },
-              AgentRiskEvidenceInput: {
-                description:
-                  'User-supplied evidence bytes. Native stores and pins the immutable content in\nthe same control transaction; callers cannot select a canonical ContentRef.',
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'text',
-                      },
-                      text: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'text'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'json',
-                      },
-                      value: true,
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'value'],
-                  },
-                ],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentExecutionResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'missing',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'found',
-                  },
-                  execution: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'execution'],
-              },
-            ],
-            $defs: {
-              AgentExecution: {
-                description:
-                  'Stable logical Run receipt, independent of activations and the current Session tip.',
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    $ref: '#/$defs/RunId',
-                  },
-                  highWater: {
-                    description: 'Run-local event count, not the root-global transcript cursor.',
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  state: {
-                    $ref: '#/$defs/AgentExecutionState',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
-              },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              AgentExecutionState: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'admitted',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'running',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'waiting',
-                      },
-                      waits: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/WaitReason',
-                        },
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'blockers'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'completed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'failed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cancelled',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              WaitReason: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cell',
-                      },
-                      cell: {
-                        $ref: '#/$defs/CellId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'cell'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'external',
-                      },
-                      task: {
-                        $ref: '#/$defs/ExternalTaskId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'task'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'provider_backoff',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'approval',
-                      },
-                      approval: {
-                        $ref: '#/$defs/ApprovalId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'approval'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'retry',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'operation',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'child',
-                      },
-                      run: {
-                        $ref: '#/$defs/RunId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'run'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocker',
-                      },
-                      blocker: {
-                        $ref: '#/$defs/BlockerId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'blocker'],
-                  },
-                ],
-              },
-              CellId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              ExternalTaskId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              ModelAttemptId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              ApprovalId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              ToolKey: {
-                type: 'object',
-                properties: {
-                  attempt: {
-                    $ref: '#/$defs/ModelAttemptId',
-                  },
-                  call: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['attempt', 'call'],
-              },
-              BlockerId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
-              },
-              BlockerKind: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'external_publication_unavailable',
-                      },
-                      publication: {
-                        $ref: '#/$defs/ExternalPublicationId',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'publication', 'diagnostic'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'external_publication_item',
-                      },
-                      key: {
-                        $ref: '#/$defs/ExternalPublicationKey',
-                      },
-                      reason: {
-                        $ref: '#/$defs/ExternalPublicationBlocker',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'key', 'reason'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'current_authority_unavailable',
-                      },
-                      stage: {
-                        $ref: '#/$defs/AuthorityStage',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'stage', 'diagnostic'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'external_effect_unknown',
-                      },
-                      task: {
-                        $ref: '#/$defs/ExternalTaskId',
-                      },
-                      operation: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'task', 'operation'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'operation_unknown',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                      reference: {
-                        $ref: '#/$defs/RecoveryRef',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool', 'reference'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'provider_effect_unknown',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      call: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'call'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'original_admission_unknown',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'code_cell_recovery_unavailable',
-                      },
-                      cell: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'cell'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unsupported_protocol',
-                      },
-                      protocol: {
-                        type: 'string',
-                      },
-                      version: {
-                        type: 'integer',
-                        format: 'uint32',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'protocol', 'version'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool_cleanup_unconfirmed',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool', 'diagnostic'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_cleanup_unconfirmed',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'diagnostic'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cleanup_unconfirmed',
-                      },
-                      reference: {
-                        $ref: '#/$defs/RecoveryRef',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reference'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'resources_unavailable',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'external_task_unobservable',
-                      },
-                      descriptor: {
-                        $ref: '#/$defs/ContentRef',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'descriptor'],
-                  },
-                ],
-              },
-              ExternalPublicationId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              ExternalPublicationKey: {
-                type: 'object',
-                properties: {
-                  publication: {
-                    $ref: '#/$defs/ExternalPublicationId',
-                  },
-                  index: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['publication', 'index'],
-              },
-              ExternalPublicationBlocker: {
-                type: 'string',
-                enum: [
-                  'unknown',
-                  'conflict',
-                  'unsupported',
-                  'failed',
-                  'not_attempted',
-                  'cleanup_unconfirmed',
-                ],
-              },
-              AuthorityStage: {
-                type: 'string',
-                enum: [
-                  'current_session',
-                  'workspace_scope',
-                  'tool_bindings',
-                  'backend_scope',
-                  'input_codec',
-                ],
-              },
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-              ContentRef: {
-                type: 'object',
-                properties: {
-                  digest: {
-                    type: 'string',
-                  },
-                  bytes: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
-              },
-            },
-          },
-          resources: {},
-        },
         attachmentImage: {
           mode: 'query',
           input: {
@@ -4236,26 +3322,12 @@ export const contracts: {
                           $ref: '#/$defs/WaitReason',
                         },
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
+                      authorityUnavailable: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'blockers'],
+                    required: ['kind', 'waits', 'authorityUnavailable'],
                   },
                   {
                     type: 'object',
@@ -4275,9 +3347,19 @@ export const contracts: {
                         type: 'string',
                         const: 'failed',
                       },
+                      reason: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/BlockerKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
-                    required: ['kind'],
                     additionalProperties: false,
+                    required: ['kind'],
                   },
                   {
                     type: 'object',
@@ -4454,27 +3536,6 @@ export const contracts: {
               BlockerId: {
                 type: 'string',
                 format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
               },
               BlockerKind: {
                 oneOf: [
@@ -4860,73 +3921,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentCompactRejection: {
                 type: 'string',
@@ -5643,26 +4637,12 @@ export const contracts: {
                           $ref: '#/$defs/WaitReason',
                         },
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
+                      authorityUnavailable: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'blockers'],
+                    required: ['kind', 'waits', 'authorityUnavailable'],
                   },
                   {
                     type: 'object',
@@ -5682,9 +4662,19 @@ export const contracts: {
                         type: 'string',
                         const: 'failed',
                       },
+                      reason: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/BlockerKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
-                    required: ['kind'],
                     additionalProperties: false,
+                    required: ['kind'],
                   },
                   {
                     type: 'object',
@@ -5861,27 +4851,6 @@ export const contracts: {
               BlockerId: {
                 type: 'string',
                 format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
               },
               BlockerKind: {
                 oneOf: [
@@ -6267,73 +5236,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentContinuationRejection: {
                 type: 'string',
@@ -6521,26 +5423,12 @@ export const contracts: {
                           $ref: '#/$defs/WaitReason',
                         },
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
+                      authorityUnavailable: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'blockers'],
+                    required: ['kind', 'waits', 'authorityUnavailable'],
                   },
                   {
                     type: 'object',
@@ -6560,9 +5448,19 @@ export const contracts: {
                         type: 'string',
                         const: 'failed',
                       },
+                      reason: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/BlockerKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
-                    required: ['kind'],
                     additionalProperties: false,
+                    required: ['kind'],
                   },
                   {
                     type: 'object',
@@ -6739,27 +5637,6 @@ export const contracts: {
               BlockerId: {
                 type: 'string',
                 format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
               },
               BlockerKind: {
                 oneOf: [
@@ -7145,73 +6022,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentContinuationRejection: {
                 type: 'string',
@@ -8877,26 +7687,12 @@ export const contracts: {
                           $ref: '#/$defs/WaitReason',
                         },
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
+                      authorityUnavailable: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'blockers'],
+                    required: ['kind', 'waits', 'authorityUnavailable'],
                   },
                   {
                     type: 'object',
@@ -8916,9 +7712,19 @@ export const contracts: {
                         type: 'string',
                         const: 'failed',
                       },
+                      reason: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/BlockerKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
-                    required: ['kind'],
                     additionalProperties: false,
+                    required: ['kind'],
                   },
                   {
                     type: 'object',
@@ -9095,27 +7901,6 @@ export const contracts: {
               BlockerId: {
                 type: 'string',
                 format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
               },
               BlockerKind: {
                 oneOf: [
@@ -9501,73 +8286,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
               },
             },
           },
@@ -32789,7 +31507,12 @@ export const contracts: {
             $defs: {
               AgentSendRejection: {
                 type: 'string',
-                enum: ['model_unavailable', 'skills_unavailable', 'turn_stopped'],
+                enum: [
+                  'model_unavailable',
+                  'skills_unavailable',
+                  'turn_stopped',
+                  'original_operation_unsettled',
+                ],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -38939,26 +37662,12 @@ export const contracts: {
                           $ref: '#/$defs/WaitReason',
                         },
                       },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'waits'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'blocked',
-                      },
-                      blockers: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/AgentRunBlocker',
-                        },
+                      authorityUnavailable: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'blockers'],
+                    required: ['kind', 'waits', 'authorityUnavailable'],
                   },
                   {
                     type: 'object',
@@ -38978,9 +37687,19 @@ export const contracts: {
                         type: 'string',
                         const: 'failed',
                       },
+                      reason: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/BlockerKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
-                    required: ['kind'],
                     additionalProperties: false,
+                    required: ['kind'],
                   },
                   {
                     type: 'object',
@@ -39157,27 +37876,6 @@ export const contracts: {
               BlockerId: {
                 type: 'string',
                 format: 'uuid',
-              },
-              AgentRunBlocker: {
-                description:
-                  'A durable blocker is an observation, never permission to replay an operation.',
-                type: 'object',
-                properties: {
-                  id: {
-                    $ref: '#/$defs/BlockerId',
-                  },
-                  reason: {
-                    $ref: '#/$defs/BlockerKind',
-                  },
-                  offeredActions: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/OfferedRiskAction',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'reason', 'offeredActions'],
               },
               BlockerKind: {
                 oneOf: [
@@ -39563,73 +38261,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
-              },
-              OfferedRiskAction: {
-                type: 'object',
-                properties: {
-                  kind: {
-                    $ref: '#/$defs/RiskActionKind',
-                  },
-                  scope: {
-                    $ref: '#/$defs/RiskActionScope',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'scope'],
-              },
-              RiskActionKind: {
-                type: 'string',
-                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
-              },
-              RiskActionScope: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool',
-                      },
-                      tool: {
-                        $ref: '#/$defs/ToolKey',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'tool'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'model_replan',
-                      },
-                      attempt: {
-                        $ref: '#/$defs/ModelAttemptId',
-                      },
-                      base_step: {
-                        $ref: '#/$defs/StepId',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'attempt', 'base_step'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'run_cancellation',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              StepId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentAnswerPage: {
                 type: 'object',

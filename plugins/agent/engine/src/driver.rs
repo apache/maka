@@ -407,6 +407,7 @@ impl Engine {
         let mut live = Live::default();
         let mut work = Work::new();
         let mut cancellation_sent = false;
+        let mut recovery_cancelled = false;
         let mut authority_checked = false;
         let mut model_level: Option<(Option<StepId>, Option<ContentRef>, reconcile::ModelLevel)> =
             None;
@@ -422,10 +423,12 @@ impl Engine {
             let view = self.store.frontier(run).await?;
             let now = ports.now();
             if !authority_checked && view.terminal.is_none() && !cancellation.is_cancelled() {
-                authority_checked = true;
-                if self.resolve_authority(&claim, &view, now).await? {
+                if self.resolve_authority(&claim, &view, now).await?
+                    || self.recover_legacy_compaction(&claim, &view, now).await?
+                {
                     continue;
                 }
+                authority_checked = true;
             }
             if live.stop_request != view.stop_request {
                 live.stop_request = view.stop_request;
@@ -471,6 +474,11 @@ impl Engine {
             });
             // Cancellation belongs to the physical activation. Only an explicit
             // Native control transaction may place the durable Stop fence.
+            if recovery_cancelled && view.recovery_failure().is_none() {
+                // Resume with new live ports if late evidence settled the failure
+                // after this activation cancelled its workers.
+                cancellation.cancel();
+            }
             let retiring = cancellation.is_cancelled() && view.terminal.is_none();
             let complete_at_budget = !retiring && self.complete_at_budget(&view, now).await?;
             let fenced = view.stopped
@@ -481,6 +489,12 @@ impl Engine {
                 live.cells_observed.clear();
                 ports.cancel_live(run);
                 cancellation_sent = true;
+            }
+            if !retiring
+                && !view.cancelled_by_risk
+                && self.resolve_recovered_cells(&claim, &view, now).await?
+            {
+                continue;
             }
             if retiring && work.is_empty() {
                 return Ok(DriverExit::Retired { run });
@@ -552,6 +566,25 @@ impl Engine {
             }
             let mut action = if retiring {
                 Action::Idle
+            } else if view.recovery_failure().is_some() && !view.cancelled_by_risk {
+                if view.waiting_for_authority() {
+                    Action::Idle
+                } else if work.is_empty()
+                    && let Some(observation) = reconcile::recovery_action(&view, &live)
+                {
+                    observation
+                } else {
+                    if !cancellation_sent {
+                        ports.cancel_live(run);
+                        cancellation_sent = true;
+                        recovery_cancelled = true;
+                    }
+                    if work.is_empty() || live.only_cleanup(&view) {
+                        Action::Terminate(Terminal::Failed)
+                    } else {
+                        Action::Idle
+                    }
+                }
             } else {
                 reconcile::next(
                     &view,
@@ -835,33 +868,8 @@ impl Engine {
                     .await?;
                 }
                 Action::Accept(key, outcome) => {
-                    let tool = &view.tools[&tool_key(&key)];
-                    let result = accepted_content(&view, tool, &outcome)?;
-                    let loaded = self.accept_tool_loading(&view, tool, &outcome).await?;
-                    let mut acceptance = if let AcceptedResult::CellRecovered { cell } = &outcome {
-                        if !view.stopped
-                            && matches!(
-                                view.cells[cell].status,
-                                maka_agent_facts::cells::CellStatus::Completed {
-                                    accepted: false,
-                                    ..
-                                }
-                            )
-                        {
-                            maka_agent_state::cells::acceptance(&view.cells[cell])?
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        self.accept_cell_with_tool(&view, tool).await?
-                    };
-                    acceptance.push(Fact::ToolResultAccepted {
-                        tool: key,
-                        result: result.reference().clone(),
-                        outcome,
-                    });
-                    acceptance.extend(loaded);
-                    self.publish(Some(&claim), &view, acceptance, vec![result], now)
+                    let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
+                    self.publish(Some(&claim), &view, facts, vec![result], now)
                         .await?;
                 }
                 Action::SelectTransport(attempt, phase) => {
@@ -1105,6 +1113,7 @@ impl Engine {
                     || control != view.control_version
                     || view.stopped
                     || view.terminal.is_some()
+                    || view.recovery_failure().is_some()
                     || view.finish_requested()
                 {
                     return Ok(());
@@ -1176,6 +1185,7 @@ impl Engine {
                 if control != view.control_version
                     || view.stopped
                     || view.terminal.is_some()
+                    || view.recovery_failure().is_some()
                     || view.finish_requested()
                 {
                     return Ok(());
@@ -1279,6 +1289,7 @@ impl Engine {
                 if control != view.control_version
                     || view.stopped
                     || view.terminal.is_some()
+                    || view.recovery_failure().is_some()
                     || view.finish_requested()
                 {
                     return Ok(());
@@ -1526,6 +1537,18 @@ impl Engine {
             }
             Completion::Observed { key, result } => {
                 live.work.remove(&WorkKey::Tool(key.clone()));
+                let result = match result {
+                    Err(RunError::Tool(
+                        maka_agent_facts::tools::ToolError::OperationCleanupUnconfirmed {
+                            message,
+                            observation,
+                        },
+                    )) => {
+                        tracing::warn!(cause=%message, "original operation reader cleanup remains pending");
+                        Ok(*observation)
+                    }
+                    other => other,
+                };
                 match result {
                     Ok(reply) => {
                         let (reply, content) =
@@ -1545,22 +1568,43 @@ impl Engine {
                         )
                         .await?;
                     }
+                    Err(RunError::Blocked(reason))
+                        if !retiring
+                            && matches!(
+                                *reason,
+                                BlockerKind::CurrentAuthorityUnavailable { .. }
+                            ) =>
+                    {
+                        self.block(claim, &view, *reason, now).await?;
+                    }
                     Err(error) => {
                         tracing::error!(cause=%error,"original operation could not be observed");
                         if !retiring {
-                            self.block(
-                                claim,
-                                &view,
-                                BlockerKind::OperationUnknown {
-                                    tool: key.clone(),
-                                    reference: view.tools[&tool_key(&key)]
-                                        .original
-                                        .clone()
-                                        .expect("original observation reference"),
+                            let tool = &view.tools[&tool_key(&key)];
+                            let reference = tool
+                                .original
+                                .clone()
+                                .expect("original observation reference");
+                            let reason = match &tool.receipt {
+                                Some(maka_agent_facts::operation::RecordedReceipt::Recorded {
+                                    outcome:
+                                        OperationOutcome::Returned { .. }
+                                        | OperationOutcome::NotExecuted { .. },
+                                    cleanup,
+                                }) => {
+                                    if *cleanup
+                                        == maka_plugin_core::operation::OperationCleanup::Confirmed
+                                    {
+                                        return Ok(());
+                                    }
+                                    BlockerKind::CleanupUnconfirmed { reference }
+                                }
+                                _ => BlockerKind::OperationUnknown {
+                                    tool: key,
+                                    reference,
                                 },
-                                now,
-                            )
-                            .await?;
+                            };
+                            self.block(claim, &view, reason, now).await?;
                         }
                     }
                 }
@@ -1730,6 +1774,41 @@ impl Engine {
         }
         Ok(())
     }
+    async fn tool_acceptance(
+        &self,
+        view: &RunView,
+        key: ToolKey,
+        outcome: AcceptedResult,
+    ) -> Result<(Vec<Fact>, ContentBlob), RunError> {
+        let tool = &view.tools[&tool_key(&key)];
+        let result = accepted_content(view, tool, &outcome)?;
+        let loaded = self.accept_tool_loading(view, tool, &outcome).await?;
+        let mut acceptance = if let AcceptedResult::CellRecovered { cell } = &outcome {
+            if !view.stopped
+                && matches!(
+                    view.cells[cell].status,
+                    maka_agent_facts::cells::CellStatus::Completed {
+                        accepted: false,
+                        ..
+                    }
+                )
+            {
+                maka_agent_state::cells::acceptance(&view.cells[cell])?
+            } else {
+                vec![]
+            }
+        } else {
+            self.accept_cell_with_tool(view, tool).await?
+        };
+        acceptance.push(Fact::ToolResultAccepted {
+            tool: key,
+            result: result.reference().clone(),
+            outcome,
+        });
+        acceptance.extend(loaded);
+        Ok((acceptance, result))
+    }
+
     async fn port_failure(
         &self,
         claim: &DriverClaim,
@@ -1762,6 +1841,24 @@ pub(super) fn termination_facts(
     diagnostic: Option<String>,
 ) -> Vec<Fact> {
     let mut facts = Vec::new();
+    if terminal == Terminal::Failed
+        && let Some(reason) = view.recovery_failure()
+    {
+        facts.extend(
+            view.waits
+                .iter()
+                .filter(|(_, wait)| wait.satisfied.is_none() && wait.cancelled.is_none())
+                .map(|(wait, _)| Fact::WaitCancelled {
+                    wait: *wait,
+                    diagnostic: "Run could not reconcile the original operation".into(),
+                }),
+        );
+        facts.push(Fact::RunTerminated {
+            terminal,
+            diagnostic: Some(format!("{reason:?}")),
+        });
+        return facts;
+    }
     if terminal == Terminal::Failed && reconcile::budget_exhausted(view) {
         facts.extend(
             view.waits
@@ -1859,88 +1956,81 @@ fn accepted_content(
     outcome: &AcceptedResult,
 ) -> Result<ContentBlob, RunError> {
     use maka_agent_facts::tool_output::AcceptedToolResult;
-    let result = if let AcceptedResult::CellRecovered { cell } = outcome {
-        let evidence = match &view.cells[cell].status {
-            maka_agent_facts::cells::CellStatus::Completed { result, .. } => {
-                maka_agent_facts::tool_output::CellFinalEvidence::Completed {
-                    result: result.clone(),
+    let result =
+        if let AcceptedResult::CellRecovered { cell } = outcome {
+            let evidence = match &view.cells[cell].status {
+                maka_agent_facts::cells::CellStatus::Completed { result, .. } => {
+                    maka_agent_facts::tool_output::CellFinalEvidence::Completed {
+                        result: result.clone(),
+                    }
                 }
-            }
-            maka_agent_facts::cells::CellStatus::Interrupted { report } => {
-                maka_agent_facts::tool_output::CellFinalEvidence::Interrupted {
-                    report: report.clone(),
+                maka_agent_facts::cells::CellStatus::Interrupted { report } => {
+                    maka_agent_facts::tool_output::CellFinalEvidence::Interrupted {
+                        report: report.clone(),
+                    }
                 }
+                _ => {
+                    return Err(RunError::Internal(
+                        "recovered Cell has no original final evidence".into(),
+                    ));
+                }
+            };
+            AcceptedToolResult::RecoveredCell {
+                cell: *cell,
+                evidence,
             }
-            _ => {
-                return Err(RunError::Internal(
-                    "recovered Cell has no original final evidence".into(),
-                ));
+        } else if let Some(original) = tool.local_returned.as_ref().filter(|local| {
+            local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+        }) {
+            AcceptedToolResult::Local {
+                result: original.result.clone(),
             }
-        };
-        AcceptedToolResult::RecoveredCell {
-            cell: *cell,
-            evidence,
-        }
-    } else if let AcceptedResult::RiskAdjudicated { blocker } = outcome {
-        AcceptedToolResult::RiskAdjudicated {
-            blocker: *blocker,
-            decision: view.blockers[blocker]
-                .decision
+        } else if let Some(result) = &tool.provider_result {
+            AcceptedToolResult::Provider {
+                output: result.output.clone(),
+                is_error: result.is_error,
+                provider_options: result.provider_options.clone(),
+            }
+        } else if let Some(returned) = &tool.host_returned {
+            AcceptedToolResult::Host {
+                result: returned.result.clone(),
+            }
+        } else if let (
+            Some(reference),
+            Some(
+                receipt @ maka_agent_facts::operation::RecordedReceipt::Recorded {
+                    outcome: OperationOutcome::Returned { .. },
+                    ..
+                },
+            ),
+        ) = (&tool.original, &tool.receipt)
+        {
+            AcceptedToolResult::ObservedOperation {
+                reply: maka_plugin_core::operation::OperationReply {
+                    reference: reference.clone(),
+                    receipt: receipt.clone(),
+                },
+            }
+        } else if matches!(outcome, AcceptedResult::Rejected) {
+            let mut diagnostic = tool
+                .prohibited_before_host
                 .as_ref()
-                .expect("risk acceptance has a decision")
-                .decision
-                .clone(),
-        }
-    } else if let Some(original) = &tool.local_returned {
-        AcceptedToolResult::Local {
-            result: original.result.clone(),
-        }
-    } else if let Some(result) = &tool.provider_result {
-        AcceptedToolResult::Provider {
-            output: result.output.clone(),
-            is_error: result.is_error,
-            provider_options: result.provider_options.clone(),
-        }
-    } else if let Some(returned) = &tool.host_returned {
-        AcceptedToolResult::Host {
-            result: returned.result.clone(),
-        }
-    } else if let (
-        Some(reference),
-        Some(
-            receipt @ maka_agent_facts::operation::RecordedReceipt::Recorded {
-                outcome: OperationOutcome::Returned { .. },
-                ..
-            },
-        ),
-    ) = (&tool.original, &tool.receipt)
-    {
-        AcceptedToolResult::ObservedOperation {
-            reply: maka_plugin_core::operation::OperationReply {
-                reference: reference.clone(),
-                receipt: receipt.clone(),
-            },
-        }
-    } else if matches!(outcome, AcceptedResult::Rejected) {
-        let mut diagnostic = tool
-            .prohibited_before_host
-            .as_ref()
-            .or(match &tool.decision {
-                Some(ToolDecision::Rejected { rejection, .. }) => Some(rejection),
-                _ => None,
-            })
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "original provider proved non-execution".into());
-        if let Some(arguments) = tool.call.input.invalid_json_diagnostic() {
-            diagnostic.push('\n');
-            diagnostic.push_str(&arguments);
-        }
-        AcceptedToolResult::Rejected { diagnostic }
-    } else {
-        return Err(RunError::Internal(
-            "tool acceptance has no matching original typed result".into(),
-        ));
-    };
+                .or(match &tool.decision {
+                    Some(ToolDecision::Rejected { rejection, .. }) => Some(rejection),
+                    _ => None,
+                })
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "original provider proved non-execution".into());
+            if let Some(arguments) = tool.call.input.invalid_json_diagnostic() {
+                diagnostic.push('\n');
+                diagnostic.push_str(&arguments);
+            }
+            AcceptedToolResult::Rejected { diagnostic }
+        } else {
+            return Err(RunError::Internal(
+                "tool acceptance has no matching original typed result".into(),
+            ));
+        };
     Ok(ContentBlob::json(&result)?)
 }
 

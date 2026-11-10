@@ -342,6 +342,13 @@ pub enum BlockerKind {
         descriptor: ContentRef,
     },
 }
+impl BlockerKind {
+    pub fn is_legacy_compaction_lookup(&self) -> bool {
+        matches!(self, Self::UnsupportedProtocol { protocol, version: 1 }
+            if protocol == "compaction-budget-attempt-missing")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RiskDecision {
@@ -792,13 +799,6 @@ pub struct RecordedFact {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RiskActionKind {
-    RecordExternalObservation,
-    AuthorizeReplan,
-    CancelBlockedRun,
-}
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RiskActionScope {
     Tool {
@@ -810,13 +810,6 @@ pub enum RiskActionScope {
     },
     RunCancellation,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct OfferedRiskAction {
-    pub kind: RiskActionKind,
-    pub scope: RiskActionScope,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopedRiskDecision {
