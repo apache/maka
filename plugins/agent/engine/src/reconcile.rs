@@ -241,6 +241,18 @@ fn wait(view: &RunView, reason: WaitReason, due: Option<UnixMillis>, now: UnixMi
         Action::Wait(reason, due)
     }
 }
+fn recovered_cell(view: &RunView, tool: &maka_agent_state::fold::Tool) -> Option<CellId> {
+    if tool.accepted.is_some()
+        || tool.local_returned.as_ref().is_some_and(|result| {
+            result.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+        })
+    {
+        return None;
+    }
+    let cell = view.original_cell(tool)?;
+    (!cell.has_unsettled_effects()).then_some(cell.id)
+}
+
 pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
     let observe_tool = |tool: &ToolKey| {
         let key = maka_agent_state::fold::tool_key(tool);
@@ -253,8 +265,19 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
         }
     };
     view.recovery_failures().find_map(|reason| match reason {
-        BlockerKind::OriginalAdmissionUnknown { tool } if !live.looked_up.contains(tool) => {
-            Some(Action::Lookup(tool.clone()))
+        BlockerKind::OriginalAdmissionUnknown { tool } => {
+            let parent = view.tools.get(&maka_agent_state::fold::tool_key(tool))?;
+            if let Some(cell) = recovered_cell(view, parent) {
+                Some(Action::Accept(
+                    tool.clone(),
+                    AcceptedResult::CellRecovered { cell },
+                ))
+            } else if let Some(cell) = view.original_cell(parent) {
+                (cell.has_unsettled_effects() && !live.cells_observed.contains(&cell.id))
+                    .then_some(Action::ObserveCell(cell.id))
+            } else {
+                (!live.looked_up.contains(tool)).then(|| Action::Lookup(tool.clone()))
+            }
         }
         BlockerKind::OperationUnknown { tool, .. }
         | BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
@@ -791,9 +814,9 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
-        if tool.admitted && tool.original.is_none() && !tool.call.provider_executed
-            && let Some(cell)=view.cells.values().find(|cell|matches!(&cell.owner,CellOwner::Agent{link,call}if link.run==view.run&&link.attempt==tool.key.attempt&&call==&tool.key.call)&&!matches!(cell.status,CellStatus::Running)&&cell.children.values().all(|child|child.known())&&!cell.blocks_effect_admission())
-                && tool.local_returned.as_ref().is_none_or(|r|r.settlement==maka_agent_facts::tool_call::ToolSettlement::Unknown){return Action::Accept(tool.key.clone(),AcceptedResult::CellRecovered{cell:cell.id});}
+        if let Some(cell) = recovered_cell(view, tool) {
+            return Action::Accept(tool.key.clone(), AcceptedResult::CellRecovered { cell });
+        }
         if let Some(result) = outcome(tool) {
             return Action::Accept(tool.key.clone(), result);
         }

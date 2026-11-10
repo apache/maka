@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{DriverExit, accepted_content, exit, termination_facts};
+use super::{DriverExit, exit, termination_facts};
 use crate::{
     Engine, RunError,
     reconcile::{self, Action, Live},
@@ -81,9 +81,20 @@ impl Engine {
             {
                 continue;
             }
-            let probe_original = view.recovery_failure().is_some()
-                && !view.cancelled_by_risk
-                && reconcile::recovery_action(&view, &Live::default()).is_some();
+            let recovery = if view.cancelled_by_risk {
+                None
+            } else {
+                reconcile::recovery_action(&view, &Live::default())
+            };
+            let probe_original = match recovery {
+                Some(Action::Accept(key, outcome)) => {
+                    let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
+                    self.publish(Some(&claim), &view, facts, vec![result], at)
+                        .await?;
+                    continue;
+                }
+                action => action.is_some(),
+            };
             if view.recovery_failure().is_some() && !view.cancelled_by_risk && !probe_original {
                 self.publish(
                     Some(&claim),
@@ -141,14 +152,7 @@ impl Engine {
                         }], vec![])
                     },
                     Action::Accept(key, outcome) => {
-                        let tool = &view.tools[&tool_key(&key)];
-                        let result = accepted_content(&view, tool, &outcome)?;
-                        let mut facts = self.accept_cell_with_tool(&view, tool).await?;
-                        facts.push(Fact::ToolResultAccepted {
-                            tool: key,
-                            result: result.reference().clone(),
-                            outcome,
-                        });
+                        let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
                         (facts, vec![result])
                     }
                     Action::Interrupt(attempt, diagnostic) => (

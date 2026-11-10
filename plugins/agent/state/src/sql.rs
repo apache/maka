@@ -479,11 +479,6 @@ pub(crate) fn load(
         targets.blocker(&value.reason);
         view.blockers.insert(identity(key)?, value);
     }
-    let blocked_cells = view.recovery_failures().filter_map(|reason| match reason {
-        BlockerKind::CodeCellRecoveryUnavailable { cell } => Some(cell.clone()),
-        _ => None,
-    });
-    view.cells = crate::cells::load_run(c, run, facts, blocked_cells, all)?;
     for (key, value) in projection_rows::<Wait>(c, "agent_waits", run, &targets.waits, all)? {
         view.waits.insert(identity(key)?, value);
     }
@@ -504,6 +499,16 @@ pub(crate) fn load(
         targets.steps.insert(value.step.to_string());
         view.attempts.insert(identity(key)?, value);
     }
+    let blocked_cells = view.recovery_failures().filter_map(|reason| match reason {
+        BlockerKind::CodeCellRecoveryUnavailable { cell } => Some(cell.clone()),
+        BlockerKind::OriginalAdmissionUnknown { tool } => view
+            .tools
+            .get(&fold::tool_key(tool))
+            .and_then(|tool| view.original_cell_id(tool))
+            .map(|cell| cell.to_string()),
+        _ => None,
+    });
+    view.cells = crate::cells::load_run(c, run, facts, blocked_cells, all)?;
     if view
         .attempts
         .values()
@@ -599,7 +604,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             view.run,
             key,
             if failed {
-                fold::tool_unsettled(value)
+                view.tool_unsettled(value)
             } else {
                 fold::tool_pending(value)
             },

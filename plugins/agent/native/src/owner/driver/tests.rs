@@ -1174,10 +1174,10 @@ mod bounded_risk {
     };
 
     // Typed State fixture only. No interpreter, process identity or physical cleanup ACK.
-    async fn running_cell_with_returned_parent(
+    async fn start_original_cell(
         rig: &Rig,
         attempt: ModelAttemptId,
-    ) -> TestResult<CellId> {
+    ) -> TestResult<(CellId, ToolKey)> {
         let (parent, _) = rig
             .tool(
                 attempt,
@@ -1220,6 +1220,14 @@ mod bounded_risk {
                 vec![source],
             )
             .await?;
+        Ok((cell, parent))
+    }
+
+    async fn running_cell_with_returned_parent(
+        rig: &Rig,
+        attempt: ModelAttemptId,
+    ) -> TestResult<CellId> {
+        let (cell, parent) = start_original_cell(rig, attempt).await?;
         let returned = ContentBlob::json(&ToolReturn {
             schema_version: SCHEMA_VERSION,
             artifacts: vec![],
@@ -1304,15 +1312,19 @@ mod bounded_risk {
             let session = rig.start().await?;
             rig.assemble(&session).await?;
             let attempt = rig.attempt().await?;
-            let cell = running_cell_with_returned_parent(&rig, attempt).await?;
+            let (cell, parent) = start_original_cell(&rig, attempt).await?;
             let blocker = BlockerId::new();
             rig.append(
-                vec![Fact::Blocked {
-                    blocker,
-                    reason: BlockerKind::CodeCellRecoveryUnavailable {
-                        cell: cell.to_string(),
+                vec![
+                    Fact::Blocked {
+                        blocker,
+                        reason: BlockerKind::CodeCellRecoveryUnavailable { cell: cell.to_string() },
                     },
-                }],
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: BlockerKind::OriginalAdmissionUnknown { tool: parent.clone() },
+                    },
+                ],
                 vec![],
             )
             .await?;
@@ -1339,15 +1351,20 @@ mod bounded_risk {
                 prior_output: None,
             })?;
             rig.append(
-                vec![Fact::Cell {
-                    event: CellEvent::Interrupted {
-                        cell,
-                        report: report.reference().clone(),
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::Interrupted { cell, report: report.reference().clone() },
                     },
-                }],
+                    Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed },
+                ],
                 vec![report],
             )
             .await?;
+            let observed = driver.state.frontier(run).await?;
+            let original = &observed.tools[&tool_key(&parent)];
+            assert!(original.local_returned.is_none() && original.accepted.is_none());
+            assert!(!observed.has_unsettled_recovery(), "the missing parent return hid its original settled Cell");
+
             engine
                 .current_authority_unavailable(
                     claim.clone(),
@@ -1359,6 +1376,11 @@ mod bounded_risk {
             let recovered = driver.state.frontier(run).await?;
             assert!(recovered.terminal.is_none() && recovered.recovery_failure().is_none());
             assert!(recovered.waiting_for_authority());
+            let history = driver.state.history(run, 0, 64).await?;
+            assert!(history.iter().any(|fact| matches!(&fact.fact,
+                Fact::ToolResultAccepted { tool, outcome: AcceptedResult::CellRecovered { cell: original }, .. }
+                    if tool == &parent && *original == cell
+            )));
             assert!(matches!(
                 recovered.cells[&cell].status,
                 CellStatus::Interrupted { .. }

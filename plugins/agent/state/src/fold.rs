@@ -312,6 +312,32 @@ impl RunView {
         self.cells.get(&id)
     }
 
+    pub(crate) fn original_cell_id(&self, tool: &Tool) -> Option<maka_agent_facts::cells::CellId> {
+        if !tool.admitted || tool.original.is_some() || tool.call.provider_executed {
+            return None;
+        }
+        let attempt = self.attempts.get(&tool.key.attempt)?;
+        Some(maka_agent_facts::cells::CellId::for_agent(
+            AgentStepLink {
+                run: self.run,
+                step: attempt.step,
+                attempt: tool.key.attempt,
+            },
+            &tool.key.call,
+        ))
+    }
+
+    pub fn original_cell(&self, tool: &Tool) -> Option<&maka_agent_facts::cells::CellView> {
+        self.cells.get(&self.original_cell_id(tool)?)
+    }
+
+    pub(crate) fn tool_unsettled(&self, tool: &Tool) -> bool {
+        tool_unsettled(tool)
+            && self
+                .original_cell(tool)
+                .is_none_or(|cell| cell.has_unsettled_effects())
+    }
+
     pub fn waiting_for_authority(&self) -> bool {
         self.blockers.values().any(|blocker| {
             blocker.decision.is_none()
@@ -347,6 +373,12 @@ impl RunView {
 
     pub fn has_unsettled_recovery(&self) -> bool {
         self.recovery_failures().any(|reason| {
+            if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
+                return self
+                    .tools
+                    .get(&tool_key(tool))
+                    .is_none_or(|tool| self.tool_unsettled(tool));
+            }
             if let BlockerKind::CodeCellRecoveryUnavailable { cell } = reason {
                 return self
                     .recovery_cell(cell)
@@ -359,7 +391,7 @@ impl RunView {
                     | BlockerKind::ExternalPublicationUnavailable { .. }
                     | BlockerKind::ExternalPublicationItem { .. }
             )
-        }) || self.tools.values().any(tool_unsettled)
+        }) || self.tools.values().any(|tool| self.tool_unsettled(tool))
             || self.attempts.values().any(attempt_unsettled)
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
@@ -2385,7 +2417,7 @@ pub(crate) fn attempt_unsettled(attempt: &Attempt) -> bool {
                 )))
 }
 
-pub(crate) fn tool_unsettled(tool: &Tool) -> bool {
+fn tool_unsettled(tool: &Tool) -> bool {
     let cleanup = tool.original.is_some()
         && !matches!(
             &tool.receipt,

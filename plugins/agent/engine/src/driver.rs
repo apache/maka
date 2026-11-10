@@ -868,33 +868,8 @@ impl Engine {
                     .await?;
                 }
                 Action::Accept(key, outcome) => {
-                    let tool = &view.tools[&tool_key(&key)];
-                    let result = accepted_content(&view, tool, &outcome)?;
-                    let loaded = self.accept_tool_loading(&view, tool, &outcome).await?;
-                    let mut acceptance = if let AcceptedResult::CellRecovered { cell } = &outcome {
-                        if !view.stopped
-                            && matches!(
-                                view.cells[cell].status,
-                                maka_agent_facts::cells::CellStatus::Completed {
-                                    accepted: false,
-                                    ..
-                                }
-                            )
-                        {
-                            maka_agent_state::cells::acceptance(&view.cells[cell])?
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        self.accept_cell_with_tool(&view, tool).await?
-                    };
-                    acceptance.push(Fact::ToolResultAccepted {
-                        tool: key,
-                        result: result.reference().clone(),
-                        outcome,
-                    });
-                    acceptance.extend(loaded);
-                    self.publish(Some(&claim), &view, acceptance, vec![result], now)
+                    let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
+                    self.publish(Some(&claim), &view, facts, vec![result], now)
                         .await?;
                 }
                 Action::SelectTransport(attempt, phase) => {
@@ -1799,6 +1774,41 @@ impl Engine {
         }
         Ok(())
     }
+    async fn tool_acceptance(
+        &self,
+        view: &RunView,
+        key: ToolKey,
+        outcome: AcceptedResult,
+    ) -> Result<(Vec<Fact>, ContentBlob), RunError> {
+        let tool = &view.tools[&tool_key(&key)];
+        let result = accepted_content(view, tool, &outcome)?;
+        let loaded = self.accept_tool_loading(view, tool, &outcome).await?;
+        let mut acceptance = if let AcceptedResult::CellRecovered { cell } = &outcome {
+            if !view.stopped
+                && matches!(
+                    view.cells[cell].status,
+                    maka_agent_facts::cells::CellStatus::Completed {
+                        accepted: false,
+                        ..
+                    }
+                )
+            {
+                maka_agent_state::cells::acceptance(&view.cells[cell])?
+            } else {
+                vec![]
+            }
+        } else {
+            self.accept_cell_with_tool(view, tool).await?
+        };
+        acceptance.push(Fact::ToolResultAccepted {
+            tool: key,
+            result: result.reference().clone(),
+            outcome,
+        });
+        acceptance.extend(loaded);
+        Ok((acceptance, result))
+    }
+
     async fn port_failure(
         &self,
         claim: &DriverClaim,
