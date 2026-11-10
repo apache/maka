@@ -127,3 +127,21 @@ test('editing an approved plan preserves cadence, fire limit and expiry unless t
     once.task.schedule,
   );
 });
+
+test('editing second-based plans preserves their original seconds and cadence', () => {
+  for (const seconds of [1, 31, 90, 3599]) {
+    const schedule = { kind: 'interval', everySeconds: seconds, startAt: 5000 };
+    const existing = { task: { schedule }, timezone: 'UTC', misfire: 'latest' };
+    const edited = discoveryInput(
+      approval,
+      'Discovery',
+      'Only changed instructions',
+      Number(String(seconds / 60)),
+      10000,
+      'UTC',
+      existing,
+    );
+    assert.deepEqual(edited.task.schedule, schedule);
+    assert.equal(edited.task.intentBody, 'Only changed instructions');
+  }
+});

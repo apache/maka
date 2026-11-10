@@ -41,25 +41,21 @@ export function discoveryInput(
   timezone: string,
   existing?: AgentScheduledDetail | null,
 ): AgentScheduledInput {
+  const original = existing?.task.schedule;
+  const preserve =
+    original && (original.kind !== 'interval' || minutes === original.everySeconds / 60);
   const interval = minutes * 60;
   const start = now + interval * 1000;
   if (
     !intent.trim() ||
-    !Number.isSafeInteger(minutes) ||
-    minutes < 1 ||
-    !Number.isSafeInteger(start)
+    (!preserve && (!Number.isSafeInteger(minutes) || minutes < 1 || !Number.isSafeInteger(start)))
   )
     throw new Error('invalid_discovery_settings');
   return {
     task: {
       title,
       intentBody: intent.trim(),
-      schedule:
-        existing &&
-        (existing.task.schedule.kind !== 'interval' ||
-          existing.task.schedule.everySeconds === interval)
-          ? existing.task.schedule
-          : { kind: 'interval', everySeconds: interval, startAt: start },
+      schedule: preserve ? original : { kind: 'interval', everySeconds: interval, startAt: start },
       effect: { kind: 'discovery', ...approval },
       maxFires: existing?.task.maxFires ?? null,
       expiresAt: existing?.task.expiresAt ?? null,

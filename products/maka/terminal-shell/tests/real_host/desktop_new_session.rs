@@ -983,7 +983,16 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
 
 async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     let mut fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1200),
+            nsh_terminal::DevicePixels(900),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
     desktop.new_draft().await;
     desktop.type_text("RETRIED_IN_PLACE_MESSAGE").await;
     desktop.submit().await;
@@ -993,6 +1002,69 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
+    desktop.control("Continue response").await;
+    let failed_session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap();
+    let failed_id = failed_session["id"].as_str().unwrap();
+    desktop.new_draft().await;
+    let draft = desktop
+        .client
+        .load_draft("agent", failed_id, super::support::EDITOR)
+        .await
+        .unwrap();
+    desktop
+        .client
+        .save_draft(
+            "agent",
+            failed_id,
+            super::support::EDITOR,
+            draft.map(|draft| draft.revision),
+            serde_json::from_value(json!({"text":"","attachments":[],"settledUploads":[],
+            "quotes":[{"text":"Quoted follow-up","label":"Earlier reply"}]}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    desktop
+        .press(&format!(
+            "Open conversation {}",
+            failed_session["title"].as_str().unwrap()
+        ))
+        .await;
+    desktop.control("Remove quote").await;
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("Additional text").await;
+    desktop
+        .wait(
+            "text beside the quote was not saved",
+            super::support::wait_draft(&desktop.client, failed_id, "Additional text"),
+        )
+        .await;
+    desktop.key("a", true);
+    desktop.key("backspace", false);
+    desktop.expect_text("").await;
+    desktop
+        .wait(
+            "quote-only draft was not saved",
+            super::support::wait_draft(&desktop.client, failed_id, ""),
+        )
+        .await;
+    desktop.artifact("quoted-draft-before-continuation");
+    assert!(
+        desktop.controls("Continue in a new run").is_empty(),
+        "quote-only draft still offers continuation"
+    );
+    assert!(
+        desktop.controls("Continue response").is_empty(),
+        "composer must send the quote instead of continuing"
+    );
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    desktop.press("Remove quote").await;
     desktop.press("Continue response").await;
     let retry = desktop.request(&mut fixture).await;
     let users: Vec<_> = retry.body["messages"]

@@ -1988,6 +1988,7 @@ export function Conversation(props: ConversationProps) {
       runId() !== null ||
       draft().trim() ||
       attachments.files().length ||
+      quotes().length ||
       sendBlockedReason() ||
       observed === null ||
       observed.source.sessionId !== source.sessionId ||
@@ -2015,6 +2016,7 @@ export function Conversation(props: ConversationProps) {
         runId() !== null ||
         draft().trim() ||
         attachments.files().length ||
+        quotes().length ||
         !sameBackend(backend(), expectedBackend)
       )
         return;
@@ -3652,7 +3654,7 @@ export function Conversation(props: ConversationProps) {
       </Each>
       <If when={continuation()}>
         {(candidate) => (
-          <If when={!draft().trim() && attachments.files().length === 0}>
+          <If when={!draft().trim() && attachments.files().length === 0 && quotes().length === 0}>
             <View style={{ ...readingColumn, paddingVertical: 8 }}>
               <Button
                 disabled={
