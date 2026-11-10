@@ -29,6 +29,7 @@ import { senderSession, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
+import { turnOutcome } from './processGroups';
 import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { LiveToolRow } from './ToolCard';
@@ -71,26 +72,6 @@ export type GroupViewState = {
   list?: ListRef;
   requestFocus?: boolean;
 };
-
-export function turnOutcome(turn: TurnPresentation): string | null {
-  return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
-}
-
-/**
- * A turn that stopped, failed or took the user's input midway never folds. On the
- * desktop the rest fold from their first step, so finishing changes no structure.
- */
-export function canFoldTurn(turn: TurnPresentation): boolean {
-  if (!turn.worked || turn.interleavedInput) return false;
-  const outcome = turnOutcome(turn);
-  if (platform.idiom === 'terminal') return outcome === 'completed' && !turn.active;
-  return outcome === null || outcome === 'completed';
-}
-
-/** Until the user chooses, a turn's work stays open while it runs and folds once it completes. */
-export function foldsByDefault(turn: TurnPresentation): boolean {
-  return turnOutcome(turn) === 'completed' && !turn.active;
-}
 
 function elapsed(turn: TurnPresentation, now?: number): number | null {
   const start = turn.timing?.startedAt;
