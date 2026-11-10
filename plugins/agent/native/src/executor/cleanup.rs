@@ -376,15 +376,15 @@ impl ExternalCleanupSource for NativeSource {
             if let Some(reading) = self.reading.take() {
                 let _completed_read = reading.await;
             }
-            if let Some(watch) = self.watch.take() {
-                if let Err(error) = watch.close().await {
-                    tracing::error!(
-                        cause = "native_watch_close",
-                        "Original cleanup observer fence remains unconfirmed"
-                    );
-                    let _failure = error;
-                    std::future::pending::<()>().await;
-                }
+            if let Some(watch) = self.watch.take()
+                && let Err(error) = watch.close().await
+            {
+                tracing::error!(
+                    cause = "native_watch_close",
+                    "Original cleanup observer fence remains unconfirmed"
+                );
+                let _failure = error;
+                std::future::pending::<()>().await;
             }
         })
     }

@@ -252,7 +252,7 @@ impl WritePluginData {
                     .expected_revision
                     .unwrap_or(0)
                     .checked_add(1)
-                    .filter(|revision| *revision <= (1 << 53) - 1)
+                    .filter(|revision| *revision < (1 << 53))
                     .ok_or_else(|| invalid("plugin data revision exhausted"))?;
                 Ok(Record {
                     revision,
@@ -276,15 +276,15 @@ impl crate::writeback::Statement for WritePluginData {
         self,
         connection: &Connection,
     ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
-        if self.require_session_visible {
-            if let maka_plugin_core::scope::Scope::Session(session) = self.batch.namespace.scope() {
-                let available: bool = connection.query_row(
+        if self.require_session_visible
+            && let maka_plugin_core::scope::Scope::Session(session) = self.batch.namespace.scope()
+        {
+            let available: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM session_creations c JOIN session_control s ON s.id=c.session_id WHERE c.session_id=? AND c.ready=1 AND c.visible=1 AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=c.session_id))",
                     [session], |row| row.get(0),
                 )?;
-                if !available {
-                    return Err(StoreError::SessionNotFound);
-                }
+            if !available {
+                return Err(StoreError::SessionNotFound);
             }
         }
         let records = self.batch.execute(connection)?;

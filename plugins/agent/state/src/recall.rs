@@ -175,6 +175,12 @@ pub struct RecallStore {
     owner: RunOwner,
     prefix: String,
 }
+#[derive(Clone, Copy)]
+pub struct ContextWindow {
+    pub before: usize,
+    pub after: usize,
+}
+
 impl RecallStore {
     pub fn new(data: DataWriter, owner: RunOwner, prefix: String) -> Result<Self, StoreError> {
         SessionCatalog::new(data.clone(), owner.clone(), prefix.clone())?;
@@ -255,8 +261,7 @@ impl RecallStore {
         &self,
         session: String,
         anchor: String,
-        before: usize,
-        after: usize,
+        window: ContextWindow,
         cut: Option<HistoryCut>,
         exclude: Option<ExcludedTail>,
         stop: CancellationToken,
@@ -266,8 +271,8 @@ impl RecallStore {
                 self.clone(),
                 session,
                 anchor,
-                before,
-                after,
+                window.before,
+                window.after,
                 cut,
                 exclude,
                 stop,

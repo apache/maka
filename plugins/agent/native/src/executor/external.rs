@@ -92,6 +92,10 @@ pub(crate) trait TaskBinding: Send + Sync {
     fn bound(&self, binding: NativeBinding) -> BoxFuture<'_, Result<(), Error>>;
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "An original task observation transfers its terminal outcome or blocker as one owned value"
+)]
 pub(crate) enum NativeTaskObservation {
     Known {
         outcome: Outcome,
@@ -632,7 +636,6 @@ impl External {
         endpoints
     }
 }
-impl super::Backend {}
 struct Call {
     owner: Arc<External>,
     request: Request,
@@ -714,11 +717,11 @@ impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
                 }
             };
             let pipes = async {
-                if let Some(resources) = self.pipes.get() {
-                    if let Err(error) = resources.settle().await {
-                        tracing::error!(%error, "Original pipe resource settlement remains unconfirmed");
-                        std::future::pending::<()>().await;
-                    }
+                if let Some(resources) = self.pipes.get()
+                    && let Err(error) = resources.settle().await
+                {
+                    tracing::error!(%error, "Original pipe resource settlement remains unconfirmed");
+                    std::future::pending::<()>().await;
                 }
             };
             let bridge = async {
@@ -965,7 +968,6 @@ async fn seed_credentials(
             ));
         }
         let base = match seed.base {
-            super::CredentialBase::Home => owner.home(),
             super::CredentialBase::CodexHome => owner.codex_home(),
             super::CredentialBase::ClaudeConfig => owner.claude_config_dir(),
         };

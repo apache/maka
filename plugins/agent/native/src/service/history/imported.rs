@@ -259,10 +259,7 @@ pub(super) async fn row(
             impl std::io::Read for Stopped<'_> {
                 fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
                     if self.stop.is_cancelled() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "history read cancelled",
-                        ));
+                        return Err(std::io::Error::other("history read cancelled"));
                     }
                     self.reader.read(bytes)
                 }

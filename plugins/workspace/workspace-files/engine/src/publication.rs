@@ -252,10 +252,8 @@ pub(crate) fn run(
             _ => unreachable!("candidate resource shape checked before admission"),
         };
         if let Err(error) = mutation {
-            if !started.load(std::sync::atomic::Ordering::SeqCst) {
-                if cancellation.is_cancelled() {
-                    return Ok(cancelled());
-                }
+            if !started.load(std::sync::atomic::Ordering::SeqCst) && cancellation.is_cancelled() {
+                return Ok(cancelled());
             }
             return Err(error);
         }

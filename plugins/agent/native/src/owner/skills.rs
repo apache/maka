@@ -270,14 +270,13 @@ impl Owner {
         if parent.cancellation.is_cancelled() {
             return Err("agent_skill_call_cancelled".into());
         }
-        if let CompletionTarget::Draft { workspace } = &input.target {
-            if self
+        if let CompletionTarget::Draft { workspace } = &input.target
+            && self
                 .draft_completion_workspace(workspace.as_ref(), parent)
                 .await?
                 != draft_workspace
-            {
-                return Err("agent_completion_workspace_changed".into());
-            }
+        {
+            return Err("agent_completion_workspace_changed".into());
         }
         candidates(result)
     }

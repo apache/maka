@@ -359,14 +359,13 @@ impl Drop for DispatchState {
                 }
             }
         }
-        if status.handler != HandlerStart::AwaitingCommit {
-            if let Some(DispatchRetention {
+        if status.handler != HandlerStart::AwaitingCommit
+            && let Some(DispatchRetention {
                 lifetime: Some(lifetime),
                 ..
             }) = status.retained.take()
-            {
-                lifetime.abandon();
-            }
+        {
+            lifetime.abandon();
         }
     }
 }
@@ -841,18 +840,6 @@ impl EventLog {
             })
             .await
     }
-}
-
-pub(crate) fn require_pending(
-    connection: &Connection,
-    reference: &RecoveryRef,
-) -> Result<(), StoreError> {
-    let record = read(connection, reference)?
-        .ok_or_else(|| invalid("original application operation missing"))?;
-    if !matches!(record.observation.outcome, OperationOutcome::Unresolved) {
-        return Err(invalid("original application operation is not pending"));
-    }
-    Ok(())
 }
 
 pub(crate) struct WriteDispatch {

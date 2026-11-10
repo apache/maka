@@ -387,7 +387,7 @@ impl Owner {
                 None
             };
             return Err(PredictionError::AuxiliaryCleanup {
-                cleanup,
+                cleanup: Box::new(cleanup),
                 source,
                 material: Some(material),
             });
@@ -401,7 +401,7 @@ impl Owner {
             };
             if unconfirmed {
                 let message =
-                    PredictionError::from(generation.err().expect("observed failure")).message();
+                    PredictionError::from(generation.expect_err("observed failure")).message();
                 let material = Arc::new(std::sync::Mutex::new(Some(PredictionSource::Prepared {
                     io: source_io,
                     prompt: prediction,
@@ -447,6 +447,10 @@ impl Owner {
         Ok(result)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Freshness compares the original scope, configuration, policy revision, history cut and model binding"
+    )]
     async fn prediction_current(
         &self,
         scope: &Scope,
@@ -494,6 +498,10 @@ impl Owner {
     }
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Prediction preparation transfers its original prompt or I/O owner as one owned value"
+)]
 enum PredictionSource {
     Prepared {
         io: PreparationIo,
@@ -547,7 +555,7 @@ enum PredictionError {
     },
     Metadata(Arc<auxiliary::MetadataFailure>),
     AuxiliaryCleanup {
-        cleanup: auxiliary::Cleanup,
+        cleanup: Box<auxiliary::Cleanup>,
         source: Option<PendingPredictionSource>,
         material: Option<PredictionMaterial>,
     },
@@ -572,7 +580,7 @@ impl From<auxiliary::Error> for PredictionError {
             auxiliary::Error::Metadata(error) => return Self::Metadata(error),
             auxiliary::Error::Cleanup(cleanup) => {
                 return Self::AuxiliaryCleanup {
-                    cleanup,
+                    cleanup: Box::new(cleanup),
                     source: None,
                     material: None,
                 };

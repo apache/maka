@@ -449,6 +449,10 @@ fn next_revision(expected: u64) -> Result<u64, StoreError> {
         .ok_or_else(|| invalid("session metadata revision exhausted"))
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "DataChange already boxes the restore statement; keep the commit inline to avoid a second allocation"
+)]
 enum RestoreMetadata {
     Prepared {
         commit: Commit,

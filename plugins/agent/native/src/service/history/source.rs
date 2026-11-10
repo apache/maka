@@ -490,7 +490,7 @@ async fn source_value(
         path.as_deref(),
         position,
         8192,
-        false,
+        field == SourceField::Result,
         field == SourceField::Original,
         stop,
     )
@@ -557,14 +557,6 @@ pub(crate) async fn prompt(
     Ok(result)
 }
 
-pub(super) fn excerpt(
-    field: Field,
-    path: Option<&[SourceSegment]>,
-    position: SourcePosition,
-    limit: usize,
-) -> Result<(SourceFormat, u64, u64, String), String> {
-    excerpt_ref(&field, path, position, limit)
-}
 pub(super) fn excerpt_ref(
     field: &Field,
     path: Option<&[SourceSegment]>,

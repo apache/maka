@@ -68,7 +68,7 @@ impl Engine {
             }
         }
         if let Some(attempt) = unavailable {
-            return Err(RunError::Blocked(BlockerKind::ModelCleanupUnconfirmed {
+            return Err(RunError::from(BlockerKind::ModelCleanupUnconfirmed {
                 attempt,
                 diagnostic: "original model cleanup source is unavailable".into(),
             }));

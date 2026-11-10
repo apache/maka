@@ -138,7 +138,7 @@ pub(crate) fn find_index(
     );
     let mut statement = c.prepare_cached(&sql)?;
     for (sequence, ordinal, size) in headers {
-        check(&stop)?;
+        check(stop)?;
         let size = unsigned(size)?;
         if matches.len() == 16 || !work.admit(size) {
             next_after = position;
@@ -168,7 +168,7 @@ pub(crate) fn find_index(
             }
         }
     }
-    check(&stop)?;
+    check(stop)?;
     Ok((
         FindPage {
             matches,
@@ -249,7 +249,7 @@ pub(crate) fn landmarks_selected_index(
     ])?;
     let mut out = vec![];
     while let Some(row) = rows.next()? {
-        check(&stop)?;
+        check(stop)?;
         let turn: String = row.get(0)?;
         let first: i64 = row.get(1)?;
         let last: i64 = row.get(2)?;
@@ -274,7 +274,7 @@ pub(crate) fn landmarks_selected_index(
             origin: origin.map(|s| serde_json::from_str(&s)).transpose()?,
         });
     }
-    check(&stop)?;
+    check(stop)?;
     Ok(out)
 }
 

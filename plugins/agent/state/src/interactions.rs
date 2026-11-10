@@ -39,6 +39,10 @@ pub(crate) use sql::{
     validate_approval_refusal, validate_cell_approval,
 };
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Settlement returns the owned interaction record directly; avoid an allocation on each successful answer"
+)]
 pub enum AnswerSettlement {
     Recorded(InteractionRecord),
     Unavailable,
@@ -56,6 +60,10 @@ pub struct ApprovalBinding {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Host approvals carry their recovery metadata inline; avoid an allocation for each Host phase"
+)]
 pub enum ApprovalPhase {
     Preparation,
     Host { original: RecoveryRef },

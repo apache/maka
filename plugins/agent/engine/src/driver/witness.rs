@@ -257,6 +257,10 @@ impl ModelWitness {
         self.observe(vec![change], vec![failure]).await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Canonical closure publishes protocol, usage, partial material and original observations in one fact"
+    )]
     async fn closed_material(
         &self,
         parts: Vec<(u64, ModelPart, Option<ContentBlob>)>,

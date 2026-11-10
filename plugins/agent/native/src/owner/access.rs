@@ -84,7 +84,7 @@ pub(crate) struct RunAccess {
     execution: ExecutionIdentity,
     spec: Arc<RunSpec>,
     claim: DriverClaim,
-    work: SessionStore,
+    _work: SessionStore,
     custody: Arc<dyn WorkCustody>,
     binding_requests: tokio::sync::Mutex<Vec<BindingRequest>>,
     model_tools: std::sync::OnceLock<(
@@ -122,7 +122,7 @@ impl Owner {
             },
             spec,
             claim,
-            work,
+            _work: work,
             custody,
             binding_requests: tokio::sync::Mutex::new(Vec::new()),
             model_tools: Default::default(),
@@ -286,9 +286,6 @@ impl RunAccess {
 
     pub(crate) fn spec(&self) -> &RunSpec {
         &self.spec
-    }
-    pub(crate) fn work(&self) -> &SessionStore {
-        &self.work
     }
 
     pub(crate) async fn content(&self, reference: ContentRef) -> Result<Vec<u8>, ToolError> {
@@ -791,6 +788,10 @@ impl RunAccess {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Approval must bind the exact tool, method, binding, service, input and original call context"
+    )]
     pub(crate) async fn establish_service(
         &self,
         context: &ToolCallContext,
@@ -885,12 +886,11 @@ impl RunAccess {
             if let Some(ToolDecision::Approved {
                 approval: expected, ..
             }) = &original.decision
+                && *expected != Some(approval)
             {
-                if *expected != Some(approval) {
-                    return Err(ToolError::Failed(
-                        "Service confirmation differs from the original approval".into(),
-                    ));
-                }
+                return Err(ToolError::Failed(
+                    "Service confirmation differs from the original approval".into(),
+                ));
             }
         }
         let mut record = InteractionRecord {
@@ -933,6 +933,10 @@ impl RunAccess {
         Ok((record, approval))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Confirmation must match the exact tool, method, binding, service, input and original call context"
+    )]
     pub(crate) async fn confirm_service(
         &self,
         context: &ToolCallContext,

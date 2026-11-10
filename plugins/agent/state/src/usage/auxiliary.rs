@@ -214,7 +214,8 @@ fn verified(digest: Option<String>, bytes: Option<Vec<u8>>) -> Result<Vec<u8>, S
     Ok(bytes)
 }
 fn contains(c: &Connection, write: &AuxiliaryWrite) -> Result<bool, StoreError> {
-    let row: Option<(String, i64, Option<String>, Option<Vec<u8>>)> = c
+    type AuxiliarySourceRow = (String, i64, Option<String>, Option<Vec<u8>>);
+    let row: Option<AuxiliarySourceRow> = c
         .query_row(
             "SELECT e.request,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
          LEFT JOIN contents b ON b.id=e.body_content_id WHERE e.id=?",
@@ -447,7 +448,8 @@ impl Statement for RebuildAuxiliary {
         let mut started = false;
         let mut settled = false;
         loop {
-            let page: Vec<(i64,i64,Option<String>,Option<Vec<u8>>)> = c.prepare_cached(
+            type AuxiliaryFactRow = (i64, i64, Option<String>, Option<Vec<u8>>);
+            let page: Vec<AuxiliaryFactRow> = c.prepare_cached(
                 "SELECT e.sequence,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
                  LEFT JOIN contents b ON b.id=e.body_content_id
                  WHERE e.request=? AND e.sequence>? ORDER BY e.sequence LIMIT 128"

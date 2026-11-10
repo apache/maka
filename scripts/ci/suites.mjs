@@ -232,6 +232,12 @@ export const suites = {
       'terminal_native',
     ],
   },
+  'linux-desktop': {
+    workspace: 'root',
+    packages: ['maka-desktop-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    extraInputs: embeddedInputs,
+  },
   'macos-desktop': {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
@@ -403,11 +409,11 @@ export const workers = [
               'desktop',
               'pixels',
             ]
-          : ['native'],
+          : ['native', 'linux-desktop'],
     runner: `${os}-latest`,
     workspace: 'root',
-    dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: os === 'windows' || os === 'macos',
+    dependencies: os === 'ubuntu' ? 'headless' : '',
+    javascript: true,
     compile: true,
   })),
 ];

@@ -98,7 +98,7 @@ type Ready = oneshot::Sender<Result<(Peer<RoleClient>, Vec<RemoteTool>), String>
 #[derive(Clone)]
 pub struct CleanupMaterial(Arc<RuntimeOwner>);
 struct RuntimeOwner {
-    task: Option<tokio::task::JoinHandle<Result<(), CleanupFailure>>>,
+    task: Option<tokio::task::JoinHandle<Result<(), Box<CleanupFailure>>>>,
     done: watch::Receiver<Option<Result<(), String>>>,
     stop: CancellationToken,
 }
@@ -404,7 +404,7 @@ async fn own(
     invalid: Arc<AtomicBool>,
     stop: CancellationToken,
     ready: Ready,
-) -> Result<(), CleanupFailure> {
+) -> Result<(), Box<CleanupFailure>> {
     let mut ready = Some(ready);
     let outcome =
         match &config.transport {
@@ -502,11 +502,11 @@ async fn own(
                             match cleanup {
                                 Ok(()) => result,
                                 Err(message) => match result {
-                                    Ok(()) => Err(CleanupFailure {
+                                    Ok(()) => Err(Box::new(CleanupFailure {
                                         message: message.to_owned(),
                                         _transport: None,
                                         _child: Some(child),
-                                    }),
+                                    })),
                                     Err(mut failure) => {
                                         failure.message = format!("{}; {message}", failure.message);
                                         failure._child = Some(child);
@@ -584,7 +584,7 @@ async fn run<T: Transport<RoleClient> + 'static>(
     invalid: Arc<AtomicBool>,
     stop: CancellationToken,
     ready: &mut Option<Ready>,
-) -> Result<(), CleanupFailure> {
+) -> Result<(), Box<CleanupFailure>> {
     let (transport, custody) = owned::track(transport);
     let deadline = tokio::time::Instant::now() + Duration::from_millis(config.startup_timeout_ms);
     let started = {
@@ -653,11 +653,11 @@ async fn run<T: Transport<RoleClient> + 'static>(
         (Err(service), Err(transport)) => format!("{service}; {transport}"),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => error,
     };
-    Err(CleanupFailure {
+    Err(Box::new(CleanupFailure {
         message,
         _transport: Some(custody),
         _child: None,
-    })
+    }))
 }
 
 async fn discover(

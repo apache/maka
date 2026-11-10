@@ -169,10 +169,6 @@ enum Custody {
     Active(Turn),
     Settled,
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "native turn custody retains the original invocation and steering owner"
-)]
 async fn run(
     io: &mut Pipe,
     request: &Value,

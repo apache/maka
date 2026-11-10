@@ -166,10 +166,10 @@ impl SourceTree {
         let mut order = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         loop {
-            if let Some(id) = source.snapshot_id() {
-                if !seen.insert(id) {
-                    return Err(invalid("historical source snapshot cycle"));
-                }
+            if let Some(id) = source.snapshot_id()
+                && !seen.insert(id)
+            {
+                return Err(invalid("historical source snapshot cycle"));
             }
             let marker = source.latest_source_in_snapshot(c)?;
             segments.push(Segment {

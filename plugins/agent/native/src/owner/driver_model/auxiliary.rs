@@ -48,6 +48,10 @@ impl PreparedAuxiliary {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Auxiliary preparation binds the captured history cut, model, purpose and original preparation resources"
+)]
 pub(in crate::owner) async fn prepare_completed(
     history: &SessionHistory,
     cut: &HistoryCut,

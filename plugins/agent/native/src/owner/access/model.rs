@@ -210,18 +210,16 @@ impl RunAccess {
                 .services
                 .iter()
                 .find(|binding| binding.name() == original.name)
-            {
-                if owner
+                && owner
                     .tool_basis
                     .iter()
                     .find(|binding| binding.name() == original.name)
                     != Some(original_binding)
-                {
-                    return Err(source_authority_changed(format!(
-                        "selected tool {} binding changed",
-                        original.name
-                    )));
-                }
+            {
+                return Err(source_authority_changed(format!(
+                    "selected tool {} binding changed",
+                    original.name
+                )));
             }
         }
         for original in &selected {

@@ -17,29 +17,30 @@
  * under the License.
  */
 
-import { effect, host } from 'nsh';
-import { Tray, currentWindow } from 'nsh/desktop';
+import { cleanup, effect, host, platform } from 'nsh';
+import { isAvailable, Tray, Window } from 'nsh/desktop';
 import { appearance } from './appearance';
 import { tr } from './locale';
-import { trayIconArtwork } from './trayIcon';
 
-/** Closing the main window hides it; the engine and its Host client stay. */
-export function keepDesktopResident() {
-  const window = currentWindow();
-  if (!window) return;
-  window.set({ closeOnPress: false });
-  window.on('closePress', () => window.hide());
-  const open = () => window.focus();
-  effect(() =>
+/** The Bootstrap owner outlives replaceable UI contributions. */
+export function nativeDesktop() {
+  if (!isAvailable || !platform.desktop || platform.idiom === 'terminal') return;
+  const main = Window.get('main');
+  if (!main) return;
+
+  main.set({ closeOnPress: false });
+  cleanup(main.on('closePress', () => main.hide()));
+  cleanup(() => Tray.set(null));
+  effect(() => {
     Tray.set({
-      icon: trayIconArtwork[appearance.trayIcon()],
+      icon: `asset:/maka/tray-${appearance.trayIcon()}.svg`,
       tooltip: 'Maka',
-      onClick: open,
+      onClick: () => main.focus(),
       menu: [
-        { label: tr('Open Maka'), onSelect: open },
+        { label: tr('Open Maka'), onSelect: () => main.focus() },
         { type: 'separator' },
         { label: tr('Quit Maka'), onSelect: () => host.post('terminal.exit') },
       ],
-    }),
-  );
+    });
+  });
 }

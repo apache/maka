@@ -243,10 +243,10 @@ async fn excluded(projection: &JsonSource, budget: Arc<dyn SourceBudget>) -> io:
         let value = fields[1]
             .as_ref()
             .ok_or_else(|| invalid("missing projection value"))?;
-        if let Some(kind) = json::field(&value.source, &["kind"], budget.clone()).await? {
-            if kind.kind == json::JsonKind::String {
-                return json::text_eq(&kind.text()?, "maka.archived_tool_result", budget).await;
-            }
+        if let Some(kind) = json::field(&value.source, &["kind"], budget.clone()).await?
+            && kind.kind == json::JsonKind::String
+        {
+            return json::text_eq(&kind.text()?, "maka.archived_tool_result", budget).await;
         }
     } else if json::text_eq(&kind, "content", budget.clone()).await? {
         let parts = fields[2]

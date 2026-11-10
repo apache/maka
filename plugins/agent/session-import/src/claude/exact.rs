@@ -65,104 +65,100 @@ pub async fn read(
     let mut readable = false;
     while let Some(raw) = rows.next().await {
         let mut messages = vec![];
-        if let Some(row) = &raw.value {
-            if index.keep_id(row.get("uuid").and_then(Value::as_str), raw.number) {
-                let role = row.get("type").and_then(Value::as_str).unwrap_or("");
-                let id = content::source_id(row.get("uuid"))?;
-                if let Some(message) = row.get("message").filter(|message| message.is_object()) {
-                    let content = message
-                        .get("content")
-                        .ok_or(Error::Invalid("Claude message content is absent"))?;
-                    let has_results = content.as_array().is_some_and(|blocks| {
-                        blocks.iter().any(|block| block["type"] == "tool_result")
-                    });
-                    if turn.is_none() || (role == "user" && !has_results) {
-                        turn = Some(content::next_turn(turn)?);
-                    }
-                    let turn = turn.expect("message establishes an imported turn group");
-                    let timestamp = content::timestamp(row.get("timestamp"), false)?;
-                    let mut parts = Vec::new();
-                    let blocks: Vec<&Value> = match content {
-                        Value::Array(values) => values.iter().collect(),
-                        value => vec![value],
-                    };
-                    for block in blocks {
-                        match role {
-                            "assistant" => {
-                                let part = if let Some(value) = block.as_str() {
-                                    content::text(value, false, content::options(message))
-                                } else {
-                                    content::assistant(block, &mut calls, "claude-code")?
-                                };
-                                parts.push((HistoricalRole::Assistant, part));
-                            }
-                            "user" | "system" => {
-                                if block.get("type").and_then(Value::as_str) == Some("tool_result")
-                                {
-                                    let call = content::string(block, "tool_use_id")?;
-                                    let name = calls.remove(call).ok_or_else(|| {
-                                        Error::Unsupported(format!(
-                                            "Claude tool result has no original call {call}"
-                                        ))
-                                    })?;
-                                    let part = content::tool_result(
-                                        views,
-                                        call,
-                                        name,
-                                        block.get("content").ok_or(Error::Invalid(
-                                            "Claude tool result content is absent",
-                                        ))?,
-                                        block
-                                            .get("is_error")
-                                            .and_then(Value::as_bool)
-                                            .unwrap_or(false),
-                                        metadata.cwd.as_deref(),
-                                    )
-                                    .await?;
-                                    parts.push((HistoricalRole::Tool, part));
-                                } else {
-                                    let part =
-                                        content::input(views, block, metadata.cwd.as_deref())
-                                            .await?;
-                                    let role = if role == "system" {
-                                        HistoricalRole::System
-                                    } else if row
-                                        .get("isMeta")
+        if let Some(row) = &raw.value
+            && index.keep_id(row.get("uuid").and_then(Value::as_str), raw.number)
+        {
+            let role = row.get("type").and_then(Value::as_str).unwrap_or("");
+            let id = content::source_id(row.get("uuid"))?;
+            if let Some(message) = row.get("message").filter(|message| message.is_object()) {
+                let content = message
+                    .get("content")
+                    .ok_or(Error::Invalid("Claude message content is absent"))?;
+                let has_results = content.as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| block["type"] == "tool_result")
+                });
+                if turn.is_none() || (role == "user" && !has_results) {
+                    turn = Some(content::next_turn(turn)?);
+                }
+                let turn = turn.expect("message establishes an imported turn group");
+                let timestamp = content::timestamp(row.get("timestamp"), false)?;
+                let mut parts = Vec::new();
+                let blocks: Vec<&Value> = match content {
+                    Value::Array(values) => values.iter().collect(),
+                    value => vec![value],
+                };
+                for block in blocks {
+                    match role {
+                        "assistant" => {
+                            let part = if let Some(value) = block.as_str() {
+                                content::text(value, false, content::options(message))
+                            } else {
+                                content::assistant(block, &mut calls, "claude-code")?
+                            };
+                            parts.push((HistoricalRole::Assistant, part));
+                        }
+                        "user" | "system" => {
+                            if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                                let call = content::string(block, "tool_use_id")?;
+                                let name = calls.remove(call).ok_or_else(|| {
+                                    Error::Unsupported(format!(
+                                        "Claude tool result has no original call {call}"
+                                    ))
+                                })?;
+                                let part = content::tool_result(
+                                    views,
+                                    call,
+                                    name,
+                                    block.get("content").ok_or(Error::Invalid(
+                                        "Claude tool result content is absent",
+                                    ))?,
+                                    block
+                                        .get("is_error")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false),
+                                    metadata.cwd.as_deref(),
+                                )
+                                .await?;
+                                parts.push((HistoricalRole::Tool, part));
+                            } else {
+                                let part =
+                                    content::input(views, block, metadata.cwd.as_deref()).await?;
+                                let role = if role == "system" {
+                                    HistoricalRole::System
+                                } else if row
+                                    .get("isMeta")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
+                                    || row
+                                        .get("isCompactSummary")
                                         .and_then(Value::as_bool)
                                         .unwrap_or(false)
-                                        || row
-                                            .get("isCompactSummary")
-                                            .and_then(Value::as_bool)
-                                            .unwrap_or(false)
-                                    {
-                                        HistoricalRole::Context
-                                    } else {
-                                        HistoricalRole::User
-                                    };
-                                    if first_title.is_none()
-                                        && let ExactPart::Input { content, .. } = &part
-                                        && !content.text.trim().is_empty()
-                                    {
-                                        first_title = Some(crate::transcript::title(&content.text));
-                                    }
-                                    parts.push((role, part));
+                                {
+                                    HistoricalRole::Context
+                                } else {
+                                    HistoricalRole::User
+                                };
+                                if first_title.is_none()
+                                    && let ExactPart::Input { content, .. } = &part
+                                    && !content.text.trim().is_empty()
+                                {
+                                    first_title = Some(crate::transcript::title(&content.text));
                                 }
-                            }
-                            _ => {
-                                return Err(Error::Unsupported(format!(
-                                    "Claude message role {role}"
-                                )));
+                                parts.push((role, part));
                             }
                         }
+                        _ => {
+                            return Err(Error::Unsupported(format!("Claude message role {role}")));
+                        }
                     }
-                    let mut evidence = content::metadata(&row);
-                    evidence
-                        .as_object_mut()
-                        .expect("metadata is an object")
-                        .insert("originalProviderRole".into(), Value::String(role.into()));
-                    messages = content::messages(parts, id, None, turn, timestamp, &evidence);
-                    readable |= !messages.is_empty();
                 }
+                let mut evidence = content::metadata(row);
+                evidence
+                    .as_object_mut()
+                    .expect("metadata is an object")
+                    .insert("originalProviderRole".into(), Value::String(role.into()));
+                messages = content::messages(parts, id, None, turn, timestamp, &evidence);
+                readable |= !messages.is_empty();
             }
         }
         sink.record(ExactRecord {

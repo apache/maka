@@ -166,8 +166,8 @@ pub fn tray_registered() -> bool {
     })
 }
 
-/// Runs `callback` when the watcher stops holding the icon. An icon the app
-/// removes itself does not count.
+/// Runs `callback` when the watcher is absent, refuses the icon or stops
+/// holding it. An icon the app removes itself does not count.
 pub fn on_tray_lost(callback: impl Fn() + 'static) {
     ON_LOST.with(|slot| *slot.borrow_mut() = Some(Box::new(callback)));
 }
@@ -188,36 +188,45 @@ fn begin_registration() -> Option<u64> {
 
 /// Records a watcher's answer, if `attempt` is still the one awaited.
 fn finish_registration(attempt: u64, accepted: bool) {
-    TRAY.with(|t| {
-        if let Some(shown) = t
-            .borrow_mut()
+    let refused = TRAY.with(|t| {
+        let mut tray = t.borrow_mut();
+        let Some(shown) = tray
             .as_mut()
             .filter(|shown| shown.registration == Registration::Pending(attempt))
-        {
-            shown.registration = if accepted {
-                Registration::Accepted
-            } else {
-                Registration::Absent
-            };
-        }
+        else {
+            return false;
+        };
+        shown.registration = if accepted {
+            Registration::Accepted
+        } else {
+            Registration::Absent
+        };
+        !accepted
     });
+    if refused {
+        notify_lost();
+    }
 }
 
 /// The watcher left the bus.
 fn withdraw_registration() {
     let lost = TRAY.with(|t| {
         t.borrow_mut().as_mut().is_some_and(|shown| {
-            std::mem::replace(&mut shown.registration, Registration::Absent)
-                == Registration::Accepted
+            shown.registration = Registration::Absent;
+            true
         })
     });
     if lost {
-        ON_LOST.with(|slot| {
-            if let Some(callback) = slot.borrow().as_ref() {
-                callback();
-            }
-        });
+        notify_lost();
     }
+}
+
+fn notify_lost() {
+    ON_LOST.with(|slot| {
+        if let Some(callback) = slot.borrow().as_ref() {
+            callback();
+        }
+    });
 }
 
 /// Shows, changes or removes (`None`) the app's tray icon.
@@ -259,6 +268,7 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
             Ok(bus) => bus,
             Err(e) => {
                 log::warn!("nsh: no session bus for the tray icon: {e}");
+                notify_lost();
                 return;
             }
         };
@@ -271,6 +281,7 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
             &app_id,
             &app_name,
         ) else {
+            notify_lost();
             return;
         };
         TRAY.with(|t| *t.borrow_mut() = Some(shown));

@@ -26,12 +26,7 @@ use maka_model::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    io::{self, Write},
-    marker::PhantomData,
-    ops::Range,
-    sync::Arc,
-};
+use std::{io, marker::PhantomData, ops::Range, sync::Arc};
 use tokio_util::sync::CancellationToken;
 mod project;
 pub(super) use project::IdentifierBuilder;
@@ -327,9 +322,6 @@ impl Builder {
         self.count = self.count.checked_add(1).ok_or_else(overflow)?;
         self.breakdown.accumulate(&description.breakdown);
         Ok(())
-    }
-    pub async fn finish(self) -> io::Result<Prompt> {
-        Ok(self.finish_captured().await?.prompt)
     }
     pub async fn finish_captured(self) -> io::Result<CapturedPrompt> {
         self.check()?;

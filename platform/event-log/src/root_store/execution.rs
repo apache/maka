@@ -330,10 +330,10 @@ impl WorkEffectLease {
         settlement
     }
     fn fail(&mut self, material: impl Send + Sync + 'static, message: String) {
-        if let Some(mut lease) = self.lease.take() {
-            if let Some(pins) = lease.pins.take() {
-                pins.retain_unconfirmed(material);
-            }
+        if let Some(mut lease) = self.lease.take()
+            && let Some(pins) = lease.pins.take()
+        {
+            pins.retain_unconfirmed(material);
         }
         if let Some(ticket) = self.ticket.take() {
             ticket.complete(Err(message));
@@ -349,41 +349,6 @@ impl Drop for WorkEffectLease {
     }
 }
 impl SessionStore {
-    pub(super) fn capture_source_log(&self) -> Result<(EventLog, SessionStore), StoreError> {
-        let mut lease = self.fork_work()?;
-        let captured = (|| {
-            let owner = lease.store.owner()?;
-            let custody = lease
-                .store
-                .work
-                .as_ref()
-                .ok_or(StoreError::ConnectionClosed)?
-                .custody()?;
-            Ok((
-                owner.scoped(custody).bind_session(self.id.clone()),
-                lease.store.clone(),
-            ))
-        })();
-        if captured.is_ok() {
-            drop(lease.pins.take());
-        } else {
-            lease.finish();
-        }
-        captured
-    }
-
-    pub(crate) fn source_work_effect(&self) -> Result<Option<WorkEffectLease>, StoreError> {
-        self.work
-            .as_ref()
-            .ok_or(StoreError::ConnectionClosed)?
-            .lifetime()?;
-        self.fork_effect().map(Some)
-    }
-
-    pub(crate) fn source_work_lease(&self) -> Result<SessionWorkLease, StoreError> {
-        self.fork_work()
-    }
-
     pub(super) fn work_lifetime(&self) -> Result<Arc<WorkLifetime>, StoreError> {
         self.work
             .as_ref()

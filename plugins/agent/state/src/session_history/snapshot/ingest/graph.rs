@@ -329,15 +329,14 @@ fn entry_refs(
                     "snapshot artifact metadata differs from its original payload/scope",
                 ));
             }
-            if let Origin::Canonical { cut } = &manifest.origin {
-                if owner != &cut.owner
+            if let Origin::Canonical { cut } = &manifest.origin
+                && (owner != &cut.owner
                     || session != &cut.session
-                    || through_sequence.is_some_and(|sequence| sequence > cut.through_sequence)
-                {
-                    return Err(invalid(
-                        "snapshot artifact is outside its original source scope/cut",
-                    ));
-                }
+                    || through_sequence.is_some_and(|sequence| sequence > cut.through_sequence))
+            {
+                return Err(invalid(
+                    "snapshot artifact is outside its original source scope/cut",
+                ));
             }
         }
         Entry::Imported { message, .. } => {

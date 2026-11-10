@@ -214,6 +214,10 @@ impl PendingPublication {
     }
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Worker handoffs carry owned results inline rather than allocating a separate payload for every completion"
+)]
 enum Completion {
     PublicationPrepared {
         id: ExternalPublicationId,
@@ -496,26 +500,25 @@ impl Engine {
                     && !fenced
                     && pending.satisfied.is_none()
                     && pending.cancelled.is_none()
+                    && let WaitReason::Child { run: child } = &pending.reason
                 {
-                    if let WaitReason::Child { run: child } = &pending.reason {
-                        let child = self.store.frontier(*child).await?;
-                        if let Some(terminal) = child.terminal {
-                            let evidence = ContentBlob::json(
-                                &serde_json::json!({"child":child.run,"revision":child.revision,"terminal":terminal}),
-                            )?;
-                            self.publish(
-                                Some(&claim),
-                                &view,
-                                vec![Fact::WaitSatisfied {
-                                    wait: *wait,
-                                    evidence: evidence.reference().clone(),
-                                }],
-                                vec![evidence],
-                                now,
-                            )
-                            .await?;
-                            continue 'drive;
-                        }
+                    let child = self.store.frontier(*child).await?;
+                    if let Some(terminal) = child.terminal {
+                        let evidence = ContentBlob::json(
+                            &serde_json::json!({"child":child.run,"revision":child.revision,"terminal":terminal}),
+                        )?;
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::WaitSatisfied {
+                                wait: *wait,
+                                evidence: evidence.reference().clone(),
+                            }],
+                            vec![evidence],
+                            now,
+                        )
+                        .await?;
+                        continue 'drive;
                     }
                 }
             }
@@ -582,10 +585,10 @@ impl Engine {
                     .queue()
                     .steering(view.spec.session_id.clone(), run)
                     .await?;
-                if !queue.entries.is_empty() {
-                    if let Some(attempt) = view.current_attempt {
-                        action = Action::Prepare(Preparation::Steering { attempt });
-                    }
+                if !queue.entries.is_empty()
+                    && let Some(attempt) = view.current_attempt
+                {
+                    action = Action::Prepare(Preparation::Steering { attempt });
                 }
             }
             let idle = matches!(action, Action::Idle);
@@ -914,8 +917,8 @@ impl Engine {
                 }
                 Action::Block(reason) => {
                     if work.is_empty()
-                        && view.stop_request.is_some()
-                        && view.stop_assessed != view.stop_request
+                        && let Some(request) = view.stop_request
+                        && view.stop_assessed != Some(request)
                     {
                         let mut facts = vec![];
                         if !view.blockers.values().any(|b| {
@@ -926,9 +929,7 @@ impl Engine {
                                 reason,
                             });
                         }
-                        facts.push(Fact::StopAssessed {
-                            request: view.stop_request.expect("pending Stop source"),
-                        });
+                        facts.push(Fact::StopAssessed { request });
                         self.publish(Some(&claim), &view, facts, vec![], now)
                             .await?;
                     } else {
@@ -1018,13 +1019,13 @@ impl Engine {
                         if retiring {
                             return Ok(DriverExit::Retired { run });
                         }
-                        if view.stop_request.is_some() && view.stop_assessed != view.stop_request {
+                        if let Some(request) = view.stop_request
+                            && view.stop_assessed != Some(request)
+                        {
                             self.publish(
                                 Some(&claim),
                                 &view,
-                                vec![Fact::StopAssessed {
-                                    request: view.stop_request.expect("pending Stop source"),
-                                }],
+                                vec![Fact::StopAssessed { request }],
                                 vec![],
                                 now,
                             )
@@ -1301,7 +1302,7 @@ impl Engine {
                         match reconcile::tool_incomplete(&view, &key) {
                             Ok(true) => return Ok(()),
                             Ok(false) => {}
-                            Err(reason) => return self.block(claim, &view, reason, now).await,
+                            Err(reason) => return self.block(claim, &view, *reason, now).await,
                         }
                         let mut tool = view.tools[&tool_key(&key)].clone();
                         if let Some(ToolDecision::Approved {
@@ -1309,42 +1310,40 @@ impl Engine {
                             display,
                             ..
                         }) = &tool.decision
-                        {
-                            if view.approvals.get(id).is_none_or(|grant| {
+                            && view.approvals.get(id).is_none_or(|grant| {
                                 grant.expires_at.is_some_and(|expiry| ports.now() >= expiry)
-                            }) {
-                                self.publish(
-                                    Some(claim),
-                                    &view,
-                                    vec![Fact::ToolDecided {
-                                        tool: key,
-                                        decision: ToolDecision::Rejected {
-                                            display: display.clone(),
-                                            rejection: ToolRejection::PolicyDenied {
-                                                message: "Approval expired before final admission"
-                                                    .into(),
-                                            },
+                            })
+                        {
+                            self.publish(
+                                Some(claim),
+                                &view,
+                                vec![Fact::ToolDecided {
+                                    tool: key,
+                                    decision: ToolDecision::Rejected {
+                                        display: display.clone(),
+                                        rejection: ToolRejection::PolicyDenied {
+                                            message: "Approval expired before final admission"
+                                                .into(),
                                         },
-                                    }],
-                                    vec![],
-                                    ports.now(),
-                                )
-                                .await?;
-                                return Ok(());
-                            }
+                                    },
+                                }],
+                                vec![],
+                                ports.now(),
+                            )
+                            .await?;
+                            return Ok(());
                         }
                         let mut facts = Vec::new();
                         if let Some(ToolDecision::Approved {
                             approval: Some(approval),
                             ..
                         }) = &tool.decision
+                            && !view.approvals[approval].consumed
                         {
-                            if !view.approvals[approval].consumed {
-                                facts.push(Fact::ApprovalConsumed {
-                                    approval: *approval,
-                                    tool: key.clone(),
-                                });
-                            }
+                            facts.push(Fact::ApprovalConsumed {
+                                approval: *approval,
+                                tool: key.clone(),
+                            });
                         }
                         facts.push(Fact::ToolAdmitted { tool: key.clone() });
                         // Atomic consumption and logical admission precede the external effect.
@@ -1515,7 +1514,7 @@ impl Engine {
                         return Err(error);
                     }
                     Err(RunError::Blocked(reason)) if !retiring => {
-                        self.block(claim, &view, reason, now).await?
+                        self.block(claim, &view, *reason, now).await?
                     }
                     Err(RunError::Blocked(_)) if retiring => {}
                     Err(error) => {
@@ -1622,7 +1621,7 @@ impl Engine {
                         Some(AttemptRecovery::ObserveOriginal { .. })
                     ) {
                         let reason = match error {
-                            RunError::Blocked(reason) => reason,
+                            RunError::Blocked(reason) => *reason,
                             error => {
                                 tracing::error!(attempt=%attempt,cause=%error,"original model read failed");
                                 BlockerKind::UnsupportedProtocol {
@@ -1633,7 +1632,7 @@ impl Engine {
                         };
                         self.block(claim, &view, reason, now).await?;
                     } else if let RunError::Blocked(reason) = error {
-                        self.block(claim, &view, reason, now).await?;
+                        self.block(claim, &view, *reason, now).await?;
                     } else {
                         self.publish(
                             Some(claim),
@@ -1757,7 +1756,7 @@ impl Engine {
                 )
                 .await
             }
-            RunError::Blocked(reason) => self.block(claim, view, reason, now).await,
+            RunError::Blocked(reason) => self.block(claim, view, *reason, now).await,
             error => Err(error),
         }
     }
@@ -1833,7 +1832,7 @@ impl Engine {
                 RunError::InvalidInput(format!("original tool return is invalid: {error}"))
             })?;
         if returned.schema_version != SCHEMA_VERSION {
-            return Err(RunError::Blocked(BlockerKind::UnsupportedProtocol {
+            return Err(RunError::from(BlockerKind::UnsupportedProtocol {
                 protocol: "returned-tool-result".into(),
                 version: returned.schema_version,
             }));
@@ -1923,7 +1922,7 @@ fn accepted_content(
         let mut diagnostic = tool
             .prohibited_before_host
             .as_ref()
-            .or_else(|| match &tool.decision {
+            .or(match &tool.decision {
                 Some(ToolDecision::Rejected { rejection, .. }) => Some(rejection),
                 _ => None,
             })

@@ -174,10 +174,12 @@ impl Statement for AdoptSnapshot {
             adoption.run,
             Some(commit.head),
             &[done],
-            vec![],
+            crate::sql::AppendMaterial {
+                contents: vec![],
+                artifacts: &crate::artifacts::ArtifactBatch::default(),
+            },
             &Mode::Historical,
             None,
-            &crate::artifacts::ArtifactBatch::default(),
         )?;
         let notification = crate::sql::notification(c, adoption.run, true)?;
         Ok(Prepared {

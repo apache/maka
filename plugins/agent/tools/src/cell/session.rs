@@ -28,7 +28,7 @@ use maka_agent_facts::{
     tools::{ToolError, ToolExecutor, ToolFuture},
 };
 use maka_code_runtime::{CellContext, CellOutput, CellResult, CellStore, ToolMetadata};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -240,7 +240,12 @@ impl CodeCells {
                             .start(input, catalog, port, effect_cancel, steering)
                             .await
                     })
-                }))
+                })
+                .titled(maka_agent_facts::display::Text::localized(
+                    "Run script",
+                    "运行脚本",
+                    "執行腳本",
+                )))
             }
             "wait" => {
                 let input = super::wait_input(input)?;
@@ -965,9 +970,7 @@ impl ToolExecutor for Nested {
                 context.fail(error.clone());
                 cell_cancel.cancel();
             }
-            let value = result?
-                .into_code_value()
-                .map_err(|e| ToolError::Failed(e.into()))?;
+            let value = result?.into_code_value().map_err(ToolError::Failed)?;
             context
                 .stage_loaded(std::collections::BTreeSet::from([name]))
                 .map_err(|_| {

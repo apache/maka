@@ -119,10 +119,10 @@ pub(crate) fn apply(
             "publication requires an original completed task closure",
         ));
     }
-    if let ExternalPublicationEvent::Pending { task: id, .. } = event {
-        if *id != task.task {
-            return Err(invalid("publication belongs to another external task"));
-        }
+    if let ExternalPublicationEvent::Pending { task: id, .. } = event
+        && *id != task.task
+    {
+        return Err(invalid("publication belongs to another external task"));
     }
     if let ExternalPublicationEvent::Admitted { basis, .. } = event {
         basis.validate().map_err(invalid)?;
@@ -403,16 +403,15 @@ pub(crate) fn validate_batch(view: &RunView, changes: &[Change]) -> Result<(), S
             }
             Fact::ExternalPublication {
                 event: ExternalPublicationEvent::Pending { task, .. },
-            } => {
+            }
                 if !changes
                     .iter()
                     .any(|c| matches!(&c.fact,Fact::ExternalTaskClosed{task:id,outcome:Terminal::Completed,..} if id==task))
-                {
+                => {
                     return Err(invalid(
                         "pending publication requires the original same-batch completed task closure",
                     ));
                 }
-            }
             _ => {}
         }
     }
@@ -429,14 +428,14 @@ pub(crate) fn terminal_allowed(view: &RunView, terminal: &Terminal) -> bool {
     if view.cancelled_by_risk {
         return *terminal == Terminal::Cancelled;
     }
-    if let Some(task) = &view.external {
-        if let Some(closed) = &task.closed {
-            if closed.outcome != Terminal::Completed {
-                return *terminal != Terminal::Completed && task.publication.is_none();
-            }
-            if task.publication.is_none() {
-                return false;
-            }
+    if let Some(task) = &view.external
+        && let Some(closed) = &task.closed
+    {
+        if closed.outcome != Terminal::Completed {
+            return *terminal != Terminal::Completed && task.publication.is_none();
+        }
+        if task.publication.is_none() {
+            return false;
         }
     }
     let Some(publication) = view

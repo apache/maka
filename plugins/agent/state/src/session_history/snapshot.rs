@@ -263,14 +263,6 @@ impl Snapshot {
     ) -> Result<RunSource, StoreError> {
         read::Run(self.clone(), run).execute(c)
     }
-    pub(in crate::session_history) fn request_in_snapshot(
-        &self,
-        c: &Connection,
-        run: RunId,
-        step: StepId,
-    ) -> Result<RequestSpec, StoreError> {
-        read::Request(self.clone(), run, step).execute(c)
-    }
     pub(in crate::session_history) fn metadata_in_snapshot<T: serde::de::DeserializeOwned>(
         &self,
         c: &Connection,
@@ -364,9 +356,6 @@ impl Snapshot {
     }
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
-    }
-    pub(super) async fn latest_source(&self) -> Result<Option<RunSource>, StoreError> {
-        self.data.query(read::LatestSource(self.clone())).await
     }
     pub async fn history(
         &self,

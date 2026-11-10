@@ -128,58 +128,58 @@ impl Engine {
                         .get(&summary)
                         .ok_or_else(|| unsupported("compaction-budget-attempt-missing"))?;
                     let summary_request = self.store.request(view.run, original.step).await?;
-                    if summary_request.accounting.purpose == ModelPurpose::Summary {
-                        if let Some(closed) = original.closed.as_ref().filter(|closed| {
+                    if summary_request.accounting.purpose == ModelPurpose::Summary
+                        && let Some(closed) = original.closed.as_ref().filter(|closed| {
                             closed.outcome == Outcome::Success && closed.diagnostic.is_none()
-                        }) {
-                            let protocol = ModelClosureProtocol::deserialize(&closed.protocol)
-                                .map_err(|error| {
-                                    unsupported(format!("summary-terminal-protocol: {error}"))
-                                })?;
-                            let summary_provenance: RequestContextEvidence = decode(
-                                self,
-                                view.run,
-                                &summary_request.provenance,
-                                "request-provenance-schema",
-                            )
-                            .await?;
-                            let native =
-                                summary_provenance
-                                    .model_context
-                                    .as_ref()
-                                    .is_some_and(|context| {
-                                        context.operation == ModelOperation::CodexCompaction
-                                    });
-                            let usable = closed.outcome == Outcome::Success
-                                && closed.diagnostic.is_none()
-                                && protocol.finish_reason == ModelFinishReason::Stop
-                                && (!native || protocol.compaction.is_some())
-                                && match &protocol.summary {
-                                    Some(SummaryResult::Text { summary }) => {
-                                        !summary.text.trim().is_empty()
-                                    }
-                                    None => protocol.compaction.is_some(),
-                                    _ => false,
-                                };
-                            if usable {
-                                if baseline.as_ref().is_some_and(|baseline| {
-                                    baseline.checkpoint.summary_step_id == original.step
-                                }) {
-                                    let previous: RequestContextEvidence = decode(
-                                        self,
-                                        view.run,
-                                        &summary_request.provenance,
-                                        "request-provenance-schema",
-                                    )
-                                    .await?;
-                                    if provenance.previous_checkpoint_id
-                                        == previous.previous_checkpoint_id
-                                    {
-                                        compaction = CompactionLevel::Adopted { summary };
-                                    }
-                                } else {
-                                    compaction = CompactionLevel::Candidate { summary, adopt };
+                        })
+                    {
+                        let protocol = ModelClosureProtocol::deserialize(&closed.protocol)
+                            .map_err(|error| {
+                                unsupported(format!("summary-terminal-protocol: {error}"))
+                            })?;
+                        let summary_provenance: RequestContextEvidence = decode(
+                            self,
+                            view.run,
+                            &summary_request.provenance,
+                            "request-provenance-schema",
+                        )
+                        .await?;
+                        let native =
+                            summary_provenance
+                                .model_context
+                                .as_ref()
+                                .is_some_and(|context| {
+                                    context.operation == ModelOperation::CodexCompaction
+                                });
+                        let usable = closed.outcome == Outcome::Success
+                            && closed.diagnostic.is_none()
+                            && protocol.finish_reason == ModelFinishReason::Stop
+                            && (!native || protocol.compaction.is_some())
+                            && match &protocol.summary {
+                                Some(SummaryResult::Text { summary }) => {
+                                    !summary.text.trim().is_empty()
                                 }
+                                None => protocol.compaction.is_some(),
+                                _ => false,
+                            };
+                        if usable {
+                            if baseline.as_ref().is_some_and(|baseline| {
+                                baseline.checkpoint.summary_step_id == original.step
+                            }) {
+                                let previous: RequestContextEvidence = decode(
+                                    self,
+                                    view.run,
+                                    &summary_request.provenance,
+                                    "request-provenance-schema",
+                                )
+                                .await?;
+                                if provenance.previous_checkpoint_id
+                                    == previous.previous_checkpoint_id
+                                {
+                                    compaction = CompactionLevel::Adopted { summary };
+                                }
+                            } else {
+                                compaction = CompactionLevel::Candidate { summary, adopt };
                             }
                         }
                     }
@@ -261,25 +261,23 @@ impl Engine {
                 .as_ref()
                 .and_then(|failure| failure.transport.as_ref()),
             level.request.as_ref(),
-        ) {
-            if transport.fallback
-                == maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary
-                && transport.adapter.kind == maka_agent_facts::composition::SourceKind::ModelAdapter
-                && request
-                    .composition
-                    .sources
-                    .iter()
-                    .any(|source| source == &transport.adapter)
-            {
-                let provenance: FrozenRouteEvidence = decode(
-                    self,
-                    view.run,
-                    &request.provenance,
-                    "model-route-evidence-schema",
-                )
-                .await?;
-                level.fallback_available = provenance.route_identity == transport.route_identity;
-            }
+        ) && transport.fallback
+            == maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary
+            && transport.adapter.kind == maka_agent_facts::composition::SourceKind::ModelAdapter
+            && request
+                .composition
+                .sources
+                .iter()
+                .any(|source| source == &transport.adapter)
+        {
+            let provenance: FrozenRouteEvidence = decode(
+                self,
+                view.run,
+                &request.provenance,
+                "model-route-evidence-schema",
+            )
+            .await?;
+            level.fallback_available = provenance.route_identity == transport.route_identity;
         }
         level.failure = failure;
         Ok(())
@@ -457,7 +455,7 @@ async fn decode<T: DeserializeOwned>(
 }
 
 fn unsupported(reason: impl Into<String>) -> RunError {
-    RunError::Blocked(BlockerKind::UnsupportedProtocol {
+    RunError::from(BlockerKind::UnsupportedProtocol {
         protocol: reason.into(),
         version: 1,
     })

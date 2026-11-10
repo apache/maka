@@ -6904,7 +6904,6 @@ name = "maka-event-log"
 version = "0.2.0"
 dependencies = [
  "async-channel",
- "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
  "futures-util",
@@ -6914,8 +6913,6 @@ dependencies = [
  "maka-packages",
  "maka-plugin-core",
  "maka-sandbox",
- "postcard",
- "regex",
  "rusqlite",
  "schemars 1.2.3",
  "serde",
@@ -6925,7 +6922,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
- "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.61.2",

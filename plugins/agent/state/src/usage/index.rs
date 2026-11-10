@@ -30,6 +30,15 @@ mod cells;
 mod external;
 pub(crate) use cells::index_cell;
 
+#[derive(Clone, Copy)]
+pub(crate) struct UsagePosition<'a> {
+    pub source: &'a str,
+    pub session: &'a str,
+    pub run: Option<RunId>,
+    pub sequence: u64,
+    pub at: UnixMillis,
+}
+
 fn execution(spec: &RunSpec, run: RunId) -> ExecutionIdentity {
     ExecutionIdentity {
         session_id: spec.session_id.clone(),
@@ -66,31 +75,37 @@ fn evidence(
 fn insert_model(
     c: &Connection,
     id: &str,
-    source: &str,
     owner: &RunOwner,
-    session: &str,
-    run: Option<RunId>,
-    sequence: u64,
-    at: UnixMillis,
+    position: UsagePosition<'_>,
     evidence: &ModelEvidence,
     origin: &Origin,
 ) -> Result<(), StoreError> {
+    let UsagePosition {
+        source,
+        session,
+        run,
+        sequence,
+        at,
+    } = position;
     c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_json,quote_json,origin_json) VALUES(?,?,'model',?,?,?,?,?,?,?,?,?,?,?)",params![id,source,json(owner)?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,json(&evidence.binding)?,evidence.quote.as_ref().map(json).transpose()?,json(origin)?])?;
     Ok(())
 }
 fn insert_tool(
     c: &Connection,
     id: &str,
-    source: &str,
     owner: Option<&RunOwner>,
-    session: &str,
-    run: Option<RunId>,
-    sequence: u64,
-    at: UnixMillis,
+    position: UsagePosition<'_>,
     name: &str,
     binding: Option<&maka_agent_facts::execution::ModelBinding>,
     origin: &ToolUsageSource,
 ) -> Result<(), StoreError> {
+    let UsagePosition {
+        source,
+        session,
+        run,
+        sequence,
+        at,
+    } = position;
     c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,name,binding_json,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,owner.map(json).transpose()?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding.map(json).transpose()?,json(origin)?])?;
     Ok(())
 }
@@ -104,7 +119,19 @@ struct ResultVersion {
     cleanup: Option<OperationCleanup>,
 }
 fn previous(c: &Connection, id: &str) -> Result<ResultVersion, StoreError> {
-    let raw:Option<(Option<i64>,Option<String>,Option<String>,Option<i64>,Option<i64>,Option<i64>,Option<i64>,Option<i64>,Option<f64>,Option<String>)>=c.query_row("SELECT completed_at,outcome,rejection,input,output,cache_read,cache_write,reasoning,cost_usd,cleanup_json FROM agent_usage_results WHERE request=? ORDER BY sequence DESC LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).optional()?;
+    type UsageResultRow = (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<String>,
+    );
+    let raw:Option<UsageResultRow>=c.query_row("SELECT completed_at,outcome,rejection,input,output,cache_read,cache_write,reasoning,cost_usd,cleanup_json FROM agent_usage_results WHERE request=? ORDER BY sequence DESC LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).optional()?;
     raw.map(|r| {
         Ok(ResultVersion {
             completed_at: r.0,
@@ -324,12 +351,14 @@ fn provider_tool(
     insert_tool(
         c,
         &id,
-        "fact",
         Some(&spec.owner),
-        &spec.session_id,
-        Some(run),
-        sequence,
-        at,
+        UsagePosition {
+            source: "fact",
+            session: &spec.session_id,
+            run: Some(run),
+            sequence,
+            at,
+        },
         &name,
         Some(&model.binding),
         &origin,
@@ -354,12 +383,14 @@ pub(crate) fn index_fact(
             insert_model(
                 c,
                 &model_id(run, *attempt),
-                "fact",
                 &spec.owner,
-                &spec.session_id,
-                Some(run),
-                sequence,
-                record.at,
+                UsagePosition {
+                    source: "fact",
+                    session: &spec.session_id,
+                    run: Some(run),
+                    sequence,
+                    at: record.at,
+                },
                 &model,
                 &Origin::Agent {
                     execution: execution(spec, run),
@@ -436,12 +467,14 @@ pub(crate) fn index_fact(
         }
         Fact::Cell { event } => index_cell(
             c,
-            "fact",
             Some(&spec.owner),
-            &spec.session_id,
-            Some(run),
-            sequence,
-            record.at,
+            UsagePosition {
+                source: "fact",
+                session: &spec.session_id,
+                run: Some(run),
+                sequence,
+                at: record.at,
+            },
             event,
         )?,
         Fact::ExternalEffect { event } => external::index(c, spec, record, sequence, event)?,
@@ -462,12 +495,14 @@ pub(super) fn index_auxiliary(
         AuxiliaryEvent::Started { .. } => insert_model(
             c,
             &id,
-            "auxiliary",
             &spec.owner,
-            &spec.session,
-            None,
-            sequence,
-            at,
+            UsagePosition {
+                source: "auxiliary",
+                session: &spec.session,
+                run: None,
+                sequence,
+                at,
+            },
             &spec.accounting,
             &Origin::Auxiliary {
                 source: spec.source.clone(),

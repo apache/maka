@@ -54,13 +54,13 @@ impl DriverModel {
             .tool_result_reader(view.run, &self.cancellation)
             .result(fact, reference, budget.clone())
             .await
-            .map_err(&failed)?;
+            .map_err(failed)?;
         let ToolResultSource::Returned { body, .. } = selected else {
             return Ok(None);
         };
         let mut fields = json::fields(&body, &["projection", "is_error"], budget.clone())
             .await
-            .map_err(&failed)?
+            .map_err(failed)?
             .into_iter();
         let projection = fields.next().flatten().ok_or_else(|| {
             RunError::InvalidInput("original ToolReturn has no projection".into())
@@ -70,7 +70,7 @@ impl DriverModel {
         })?;
         let is_error = json::bool_value(&is_error.source, budget.clone())
             .await
-            .map_err(&failed)?;
+            .map_err(failed)?;
         let archived = ArchivedPlaceholder::prepare_source(
             id.to_string(),
             tool.call.clone(),
@@ -80,7 +80,7 @@ impl DriverModel {
             &self.cancellation,
         )
         .await
-        .map_err(&failed)?;
+        .map_err(failed)?;
         let Some(archived) = archived else {
             return Ok(None);
         };

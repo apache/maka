@@ -215,15 +215,6 @@ impl Projects {
             .clients
             .contains_key(session)
     }
-    pub fn client_sessions(&self) -> Vec<String> {
-        self.snapshots
-            .read()
-            .expect("MCP snapshots")
-            .clients
-            .keys()
-            .cloned()
-            .collect()
-    }
     pub fn client_cleanup_failed(&self, error: String) {
         self.cleanup_failures
             .lock()

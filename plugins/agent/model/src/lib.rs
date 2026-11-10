@@ -533,7 +533,7 @@ impl ModelExecutor {
                     .as_ref()
                     .is_err_and(|error| error.cleanup_unconfirmed())
                 {
-                    return Err(measured.err().expect("failed physical preparation"));
+                    return Err(measured.expect_err("failed physical preparation"));
                 }
                 if let Some(source) = &source {
                     source.frozen.authorize(cancellation.clone()).await?;
@@ -655,17 +655,14 @@ impl ModelExecutor {
             };
             drop(operation);
             adapter_cancel.cancel();
-            if !reported {
-                if let Err(error) = &result {
-                    let cause = source
-                        .as_ref()
-                        .and_then(|source| source.frozen.authorization_failure())
-                        .unwrap_or_else(|| error.clone());
-                    original_cause = Some(Arc::new(cause.clone()));
-                    cleanup_sender
-                        .send_replace(cleanup::Observation::Running(original_cause.clone()));
-                    let _ = failure_sender.send(Err(cause)).await;
-                }
+            if !reported && let Err(error) = &result {
+                let cause = source
+                    .as_ref()
+                    .and_then(|source| source.frozen.authorization_failure())
+                    .unwrap_or_else(|| error.clone());
+                original_cause = Some(Arc::new(cause.clone()));
+                cleanup_sender.send_replace(cleanup::Observation::Running(original_cause.clone()));
+                let _ = failure_sender.send(Err(cause)).await;
             }
             let cleanup = if let Err(error) = result {
                 if error.cleanup_unconfirmed() {

@@ -54,10 +54,8 @@ fn tools(page: &Value) -> Vec<wire::Tool> {
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|chunk| {
-            (!chunk["tool"].is_null())
-                .then(|| serde_json::from_value(chunk["tool"].clone()).unwrap())
-        })
+        .filter(|&chunk| !chunk["tool"].is_null())
+        .map(|chunk| serde_json::from_value(chunk["tool"].clone()).unwrap())
         .collect()
 }
 
@@ -135,6 +133,14 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
                     },
                 },
                 Fact::Cell {
+                    event: CellEvent::ChildDisplayRecorded {
+                        cell, operation, display: ToolDisplay {
+                            title: Some("Find earlier compiler failures".into()),
+                            presentation: Some("example.history/recall".into()),
+                        },
+                    },
+                },
+                Fact::Cell {
                     event: CellEvent::ChildAdmitted { cell, operation },
                 },
             ],
@@ -167,6 +173,8 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
             .find(|tool| tool.call.as_ref().is_some_and(|call| call.name == "Recall"))
             .ok_or("named child missing behind lifecycle events")?;
         assert!(child.call.as_ref().unwrap().pending);
+        assert_eq!(child.call.as_ref().unwrap().title.as_ref().unwrap().fallback, "Find earlier compiler failures");
+        assert_eq!(child.call.as_ref().unwrap().presentation.as_deref(), Some("example.history/recall"));
         assert_eq!(
             child.call.as_ref().unwrap().origin,
             wire::ToolCallOrigin::CodeMode
@@ -228,8 +236,10 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
             schema_version: SCHEMA_VERSION,
             artifacts: vec![],
             body: CellReturnedResult {
-                output: ToolOutput::Text("Found the previous cargo failure".into()),
-                projection: None,
+                output: ToolOutput::Text("Internal service response".into()),
+                projection: Some(maka_agent_facts::tool_output::DurableToolProjection::Text {
+                    text: "Found the previous cargo failure".into(),
+                }),
                 is_error: false,
             },
         })?;
@@ -342,6 +352,8 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
             "frozen history must not acquire later results"
         );
         assert!(frozen_child.result.is_none());
+        assert_eq!(frozen_child.call.as_ref().unwrap().title, child.call.as_ref().unwrap().title);
+        assert_eq!(frozen_child.call.as_ref().unwrap().presentation, child.call.as_ref().unwrap().presentation);
         let chunks = done["chunks"].as_array().unwrap();
         assert!(
             chunks

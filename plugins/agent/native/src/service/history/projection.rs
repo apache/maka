@@ -61,6 +61,11 @@ pub(super) fn visible(fact: &Fact) -> bool {
             super::super::delivery::settlement(reply).is_some()
         }
         Fact::Cell { .. } => false,
+        Fact::ExternalEffect { event } => matches!(
+            event,
+            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+                | maka_agent_facts::external_effects::ExternalEffectEvent::Returned { .. }
+        ),
         _ => true,
     }
 }
@@ -196,6 +201,13 @@ pub(super) fn input(
         _ => Body::Field(SourceField::Body),
     };
     row.fields.push((SourceField::Body, body));
+}
+fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
+    call.title = display
+        .title
+        .as_ref()
+        .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
+    call.presentation = display.presentation.as_deref().map(Into::into);
 }
 fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
     row.chunk.tool = Some(wire::Tool {
@@ -335,9 +347,10 @@ pub(super) async fn project(
             });
             row.chunk.message_id = Some(item.recorded.id.to_string());
             if let BackendSpec::Model { binding, .. } = &source.spec.backend {
-                if !views.contains_key(&item.recorded.run) {
-                    views.insert(
-                        item.recorded.run,
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    views.entry(item.recorded.run)
+                {
+                    e.insert(
                         reader
                             .view_at(item.recorded.run)
                             .await
@@ -453,12 +466,12 @@ pub(super) async fn project(
                         .push((SourceField::Result, Field::Json(output.clone())));
                 }
             }
-            if !views.contains_key(&item.recorded.run) {
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
                 let view = reader
                     .view_at(item.recorded.run)
                     .await
                     .map_err(|e| e.to_string())?;
-                views.insert(item.recorded.run, view);
+                e.insert(view);
             }
             let view = &views[&item.recorded.run];
             row.chunk.final_output = view.terminal == Some(Terminal::Completed)
@@ -476,17 +489,13 @@ pub(super) async fn project(
                     attempt: *attempt,
                     call: call.id.clone(),
                 };
-                if let Some(state) = view.tools.values().find(|tool| tool.key == key) {
-                    if let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
-                    {
-                        call.pending = view.terminal.is_none() && state.accepted.is_none();
-                        call.dispatched = state.admitted;
-                        if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
-                            call.title = display.title.as_ref().map(|title| {
-                                Box::new(maka_agent_facts::display::Text::plain(title.clone()))
-                            });
-                            call.presentation = display.presentation.as_deref().map(Into::into);
-                        }
+                if let Some(state) = view.tools.values().find(|tool| tool.key == key)
+                    && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                {
+                    call.pending = view.terminal.is_none() && state.accepted.is_none();
+                    call.dispatched = state.admitted;
+                    if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
+                        apply_display(call, display);
                     }
                 }
             }
@@ -543,9 +552,10 @@ pub(super) async fn project(
                 AcceptedResult::Rejected => ToolSettlement::Rejected,
                 AcceptedResult::RiskAdjudicated { .. } => ToolSettlement::Unknown,
                 AcceptedResult::CellRecovered { cell } => {
-                    if !views.contains_key(&item.recorded.run) {
-                        views.insert(
-                            item.recorded.run,
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
                             reader
                                 .view_at(item.recorded.run)
                                 .await
@@ -618,9 +628,8 @@ pub(super) async fn project(
             ) {
                 return Ok(result);
             }
-            if !views.contains_key(&item.recorded.run) {
-                views.insert(
-                    item.recorded.run,
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
+                e.insert(
                     reader
                         .view_at(item.recorded.run)
                         .await
@@ -651,6 +660,9 @@ pub(super) async fn project(
                         .and_then(|tool| tool.call.as_mut())
                         .expect("external Host call");
                     call.origin = wire::ToolCallOrigin::HostSdk;
+                    if let Some(display) = &state.display {
+                        apply_display(call, display);
+                    }
                     call.dispatched = state.admitted;
                     call.pending = view.terminal.is_none()
                         && state.returned.is_none()
@@ -700,9 +712,10 @@ pub(super) async fn project(
                 } => {
                     let thinking = matches!(output, Output::ThinkingDelta { .. });
                     if !thinking {
-                        if !views.contains_key(&item.recorded.run) {
-                            views.insert(
-                                item.recorded.run,
+                        if let std::collections::btree_map::Entry::Vacant(e) =
+                            views.entry(item.recorded.run)
+                        {
+                            e.insert(
                                 reader
                                     .view_at(item.recorded.run)
                                     .await
@@ -774,9 +787,8 @@ pub(super) async fn project(
             result.push(row);
         }
         Fact::Cell { event } => {
-            if !views.contains_key(&item.recorded.run) {
-                views.insert(
-                    item.recorded.run,
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
+                e.insert(
                     reader
                         .view_at(item.recorded.run)
                         .await

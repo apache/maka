@@ -202,7 +202,7 @@ impl DriverModel {
                 }
                 self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),&mut builder).await?;
                 let mut tail=directory.open(start);
-                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..}){if let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}}
+                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
                 Ok::<(),RunError>(())
             }.await;
             if let Err(error)=built{return Err(match builder.close().await{Ok(())=>error,Err(close)=>preparation::preparation_cleanup_error(error,close)});}

@@ -45,6 +45,7 @@ type LiveRow = Row & {
   runId: RunId;
   stepId: StepId;
   attemptId: ModelAttemptId;
+  startSequence: number;
   closedAt: number | null;
 };
 type Seat = {
@@ -224,11 +225,20 @@ export class TranscriptOverlay {
   snapshot(): Overlay {
     const starts = new Set<number>();
     for (const row of this.rows)
-      if (!row.preview && row.closedAt !== null && row.startSequence !== undefined)
-        starts.add(row.startSequence);
+      if (!row.preview && row.closedAt !== null) starts.add(row.startSequence);
     for (const seat of this.seats.values())
       if (seat.closedAt !== null) starts.add(seat.startSequence);
-    return { rows: this.rows, tools: this.tools, parts: this.parts, closedStarts: [...starts] };
+    // The event cursor can reach a preview's dependency before history has rendered it.
+    const through = this.tailThrough;
+    const loaded = (sequence: number) => through !== null && sequence <= through;
+    return {
+      rows: this.rows.filter((row) => !row.preview || loaded(row.startSequence)),
+      tools: this.tools.filter(
+        (tool) => tool.previewOrder === undefined || loaded(tool.startSequence),
+      ),
+      parts: this.parts,
+      closedStarts: [...starts],
+    };
   }
 
   history(
@@ -451,10 +461,9 @@ export class TranscriptOverlay {
   }
 
   private retireCovered(coveredFrom?: number, windowStart?: number) {
-    const windowCovered = (startSequence: number | undefined, closedAt: number) =>
+    const windowCovered = (startSequence: number, closedAt: number) =>
       this.tailThrough === null ||
       (closedAt <= this.tailThrough &&
-        startSequence !== undefined &&
         ((coveredFrom !== undefined && coveredFrom <= startSequence) ||
           (windowStart !== undefined && startSequence < windowStart)));
     for (const [messageId, seat] of this.seats)

@@ -1975,7 +1975,8 @@ export function Conversation(props: ConversationProps) {
       backend()?.kind !== 'model' ||
       source === null ||
       source.runId !== executionSource() ||
-      !terminal(source)
+      !terminal(source) ||
+      source.state.kind === 'completed'
     )
       return null;
     return { source };

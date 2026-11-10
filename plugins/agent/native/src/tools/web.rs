@@ -20,50 +20,6 @@
 use super::*;
 use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
-pub(super) async fn capture(
-    service: &Service,
-    context: &ToolCallContext,
-    cancellation: &CancellationToken,
-) -> Result<maka_web_api::contract::Capture, ToolError> {
-    let access = service
-        .access
-        .as_ref()
-        .ok_or_else(|| ToolError::Failed("Web capture has no live Run capability".into()))?;
-    access.check_context(context).await?;
-    let request = service
-        .services
-        .request_with_work(
-            Identity::Agent {
-                execution: context.execution.clone(),
-                operation_id: None,
-            },
-            cancellation.clone(),
-            access.custody().clone(),
-        )
-        .map_err(ToolError::Failed)?;
-    let request = access.track_binding_request(request).await;
-    let result = AssertUnwindSafe(async {
-        request
-            .call_target(
-                &service.selection.target,
-                "capture".into(),
-                serde_json::json!({}),
-                Attachments::default(),
-            )
-            .map_err(ToolError::Failed)?
-            .await
-            .map_err(ToolError::Failed)
-    })
-    .catch_unwind()
-    .await;
-    access.settle_binding_request(&request).await?;
-    let value = result.map_err(|_| ToolError::Failed("Web capture panicked".into()))??;
-    if cancellation.is_cancelled() {
-        return Err(ToolError::Failed("Web capture cancelled".into()));
-    }
-    serde_json::from_value(value)
-        .map_err(|error| ToolError::Failed(format!("Web capture invalid: {error}")))
-}
 
 pub(super) struct Binding {
     pub services: Vec<Service>,

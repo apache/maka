@@ -28,8 +28,6 @@ ignore = "0.4.33"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 hex.workspace = true
-base64 = "0.23.1"
-postcard.workspace = true
 maka-packages.workspace = true
 maka-sandbox.workspace = true
 maka-plugin-core.workspace = true
@@ -42,8 +40,6 @@ async-channel = "2.5.0"
 url = "2"
 futures-util.workspace = true
 serde_json.workspace = true
-regex = "1.13.1"
-unicode-normalization = "0.1.25"
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
