@@ -19,8 +19,9 @@
 
 import { effect, host } from 'nsh';
 import { Tray, currentWindow } from 'nsh/desktop';
-import logo from './assets/maka.png';
+import { appearance } from './appearance';
 import { tr } from './locale';
+import { trayIconArtwork } from './trayIcon';
 
 /** Closing the main window hides it; the engine and its Host client stay. */
 export function keepDesktopResident() {
@@ -31,7 +32,7 @@ export function keepDesktopResident() {
   const open = () => window.focus();
   effect(() =>
     Tray.set({
-      icon: logo,
+      icon: trayIconArtwork[appearance.trayIcon()],
       tooltip: 'Maka',
       onClick: open,
       menu: [

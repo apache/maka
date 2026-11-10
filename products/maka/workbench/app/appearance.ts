@@ -27,6 +27,9 @@ export type ColorTheme = 'system' | 'light' | 'dark';
 export const colorThemes: ColorTheme[] = ['system', 'light', 'dark'];
 export const textSizes = [0.9, 1, 1.15, 1.3];
 
+export type TrayIcon = 'line' | 'bold' | 'tile';
+export const trayIcons: TrayIcon[] = ['line', 'bold', 'tile'];
+
 export const paletteIds: PaletteId[] = [
   'default',
   'mist',
@@ -41,7 +44,13 @@ const THEME = 'appearance-theme';
 const TEXT_SIZE = 'appearance-text-size';
 const PALETTE = 'appearance-palette';
 const CUSTOM_PALETTE = 'appearance-custom-palette';
-type StorageKey = typeof THEME | typeof TEXT_SIZE | typeof PALETTE | typeof CUSTOM_PALETTE;
+const TRAY_ICON = 'appearance-tray-icon';
+type StorageKey =
+  | typeof THEME
+  | typeof TEXT_SIZE
+  | typeof PALETTE
+  | typeof CUSTOM_PALETTE
+  | typeof TRAY_ICON;
 type Initialization =
   | { kind: 'uninitialized'; pending: Set<StorageKey> }
   | { kind: 'loading'; pending: Set<StorageKey> }
@@ -65,9 +74,10 @@ function createAppearanceOwner() {
   const textSize = signal(1);
   const palette = signal<PaletteId>('default');
   const custom = signal<PaletteRecipe>(presetRecipes.mist);
+  const trayIcon = signal<TrayIcon>('bold');
   let initialization: Initialization = {
     kind: 'uninitialized',
-    pending: new Set([THEME, TEXT_SIZE, PALETTE, CUSTOM_PALETTE]),
+    pending: new Set([THEME, TEXT_SIZE, PALETTE, CUSTOM_PALETTE, TRAY_ICON]),
   };
   let persistence: Persistence = { kind: 'idle' };
   const selected = (key: StorageKey) => {
@@ -80,7 +90,7 @@ function createAppearanceOwner() {
     }
     const pending = new Map<StorageKey, string>([[key, value]]);
     const completion = Promise.resolve().then(async () => {
-      // Only the latest write to each of the four settings waits behind the active write.
+      // Only the latest write to each setting waits behind the active write.
       for (;;) {
         const next = pending.entries().next();
         if (next.done) break;
@@ -119,6 +129,7 @@ function createAppearanceOwner() {
     textSize: () => textSize(),
     palette: () => palette(),
     custom: () => custom(),
+    trayIcon: () => trayIcon(),
     chooseTheme(value: ColorTheme) {
       selected(THEME);
       theme.set(value);
@@ -144,6 +155,11 @@ function createAppearanceOwner() {
       custom.set(next);
       if (save) persist(CUSTOM_PALETTE, JSON.stringify(next));
     },
+    chooseTrayIcon(value: TrayIcon) {
+      selected(TRAY_ICON);
+      trayIcon.set(value);
+      persist(TRAY_ICON, value);
+    },
     /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
     stepTextSize(step: number) {
       const at = textSizes.indexOf(textSize());
@@ -168,6 +184,9 @@ function createAppearanceOwner() {
         }),
         restore(PALETTE, (value) => {
           if (paletteIds.includes(value as PaletteId)) palette.set(value as PaletteId);
+        }),
+        restore(TRAY_ICON, (value) => {
+          if (trayIcons.includes(value as TrayIcon)) trayIcon.set(value as TrayIcon);
         }),
         restore(TEXT_SIZE, (value) => {
           const scale = Number(value);
