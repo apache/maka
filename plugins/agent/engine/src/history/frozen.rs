@@ -151,42 +151,24 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
 #[derive(Clone)]
 pub(crate) struct Items<T> {
     entries: Arc<[T]>,
-    range: std::ops::Range<usize>,
     _owner: Arc<dyn Send + Sync>,
 }
 impl<T> Items<T> {
     pub fn new(entries: Vec<T>, owner: Arc<dyn Send + Sync>) -> Self {
-        let end = entries.len();
         Self {
             entries: entries.into(),
-            range: 0..end,
-            _owner: owner,
-        }
-    }
-    pub fn range(
-        entries: Arc<[T]>,
-        range: std::ops::Range<usize>,
-        owner: Arc<dyn Send + Sync>,
-    ) -> Self {
-        assert!(
-            range.start <= range.end && range.end <= entries.len(),
-            "part range exceeds frozen directory"
-        );
-        Self {
-            entries,
-            range,
             _owner: owner,
         }
     }
 }
 impl<T: Clone + Send + Sync + 'static> RecipeSource<T> for Items<T> {
     fn len(&self) -> usize {
-        self.range.end - self.range.start
+        self.entries.len()
     }
     fn open(&self, start: usize) -> Box<dyn RecipeCursor<T>> {
         Box::new(ItemsCursor {
             items: self.clone(),
-            position: self.range.start.saturating_add(start),
+            position: start,
         })
     }
 }
@@ -197,8 +179,7 @@ struct ItemsCursor<T> {
 impl<T: Clone + Send + Sync + 'static> RecipeCursor<T> for ItemsCursor<T> {
     fn next(&mut self) -> NextRecipe<'_, T> {
         Box::pin(async move {
-            let result = (self.position < self.items.range.end)
-                .then(|| self.items.entries[self.position].clone());
+            let result = self.items.entries.get(self.position).cloned();
             self.position += usize::from(result.is_some());
             Ok(result)
         })

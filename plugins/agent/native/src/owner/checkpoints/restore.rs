@@ -269,7 +269,7 @@ impl Owner {
                     .map_err(failure)?
                     .ok_or("agent_session_unavailable")?;
                 let mut candidate = stored.configuration;
-                candidate.workspace = binding.clone();
+                candidate.workspace = binding;
                 candidate.permissions = input.permissions;
                 candidate.backend = Some(input.backend);
                 let current = owner.session(&session.id).await?;

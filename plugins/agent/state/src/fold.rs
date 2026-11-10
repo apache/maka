@@ -656,10 +656,10 @@ impl RunView {
                     matches!(self.spec.backend, BackendSpec::Model { .. }),
                     "model Step requires a model backend",
                 )?;
-                if let Some(existing) = self.steps.get(step) {
-                    if existing != request || self.current_step != Some(*step) {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = self.steps.get(step)
+                    && (existing != request || self.current_step != Some(*step))
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 let selected: std::collections::BTreeSet<_> =
                     adjudications.iter().copied().collect();
@@ -965,10 +965,10 @@ impl RunView {
                             is_error: *is_error,
                             provider_options: provider_options.clone(),
                         };
-                        if let Some(existing) = &current.provider_result {
-                            if existing != &result {
-                                return Err(StoreError::EventConflict);
-                            }
+                        if let Some(existing) = &current.provider_result
+                            && existing != &result
+                        {
+                            return Err(StoreError::EventConflict);
                         }
                         self.tools
                             .get_mut(&tool_key(&key))
@@ -1155,10 +1155,10 @@ impl RunView {
                     current.admitted && current.prohibited_before_host.is_none(),
                     "original lookup requires an admitted tool without prevention proof",
                 )?;
-                if let Some(original) = &current.original {
-                    if original != reference {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(original) = &current.original
+                    && original != reference
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1312,15 +1312,13 @@ impl RunView {
                     result: result.clone(),
                     is_error: *is_error,
                 };
-                if let Some(existing) = &current.local_returned {
-                    if existing != &returned
-                        && (existing.settlement
-                            != maka_agent_facts::tool_call::ToolSettlement::Unknown
-                            || returned.settlement
-                                == maka_agent_facts::tool_call::ToolSettlement::Unknown)
-                    {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = &current.local_returned
+                    && existing != &returned
+                    && (existing.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+                        || returned.settlement
+                            == maka_agent_facts::tool_call::ToolSettlement::Unknown)
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1496,10 +1494,10 @@ impl RunView {
                     current.admitted && current.original.is_none() && current.receipt.is_none(),
                     "prevention proof requires the original logical admission without a Host reference or receipt",
                 )?;
-                if let Some(existing) = &current.prohibited_before_host {
-                    if existing != rejection {
-                        return Err(StoreError::EventConflict);
-                    }
+                if let Some(existing) = &current.prohibited_before_host
+                    && existing != rejection
+                {
+                    return Err(StoreError::EventConflict);
                 }
                 self.tools
                     .get_mut(&tool_key(tool))
@@ -1757,16 +1755,16 @@ impl RunView {
                 if current.decision.is_some() || current.resolved_by.is_some() {
                     return Err(StoreError::EventConflict);
                 }
-                if let BlockerKind::ProviderEffectUnknown { attempt, call } = &current.reason {
-                    if !self.tools.contains_key(&tool_key(&ToolKey {
+                if let BlockerKind::ProviderEffectUnknown { attempt, call } = &current.reason
+                    && !self.tools.contains_key(&tool_key(&ToolKey {
                         attempt: *attempt,
                         call: call.clone(),
-                    })) {
-                        require(
-                            matches!(scope, RiskActionScope::RunCancellation),
-                            "private summary provider effects require whole-run cancellation",
-                        )?;
-                    }
+                    }))
+                {
+                    require(
+                        matches!(scope, RiskActionScope::RunCancellation),
+                        "private summary provider effects require whole-run cancellation",
+                    )?;
                 }
                 if matches!(
                     current.reason,

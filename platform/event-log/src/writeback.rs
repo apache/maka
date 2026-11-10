@@ -56,7 +56,6 @@ pub trait Statement: Send + Sized + 'static {
 /// Session routes are data and are published only after the shared SQL commit.
 #[derive(Default)]
 pub struct Notification {
-    sequence: Option<u64>,
     metadata: bool,
     activation: bool,
     material_released: bool,
@@ -65,7 +64,6 @@ pub struct Notification {
 }
 impl Notification {
     pub const NONE: Self = Self {
-        sequence: None,
         metadata: false,
         activation: false,
         material_released: false,
@@ -73,7 +71,6 @@ impl Notification {
         metadata_scopes: BTreeSet::new(),
     };
     pub const METADATA: Self = Self {
-        sequence: None,
         metadata: true,
         activation: false,
         material_released: false,
@@ -81,25 +78,12 @@ impl Notification {
         metadata_scopes: BTreeSet::new(),
     };
     pub const MATERIAL_RELEASED: Self = Self {
-        sequence: None,
         metadata: false,
         activation: false,
         material_released: true,
         sessions: BTreeSet::new(),
         metadata_scopes: BTreeSet::new(),
     };
-    pub fn sequence(sequence: u64) -> Self {
-        Self {
-            sequence: Some(sequence),
-            ..Self::NONE
-        }
-    }
-    pub fn activation_sequence(sequence: u64) -> Self {
-        Self {
-            activation: true,
-            ..Self::sequence(sequence)
-        }
-    }
     pub fn metadata_scope(scope: String) -> Self {
         Self {
             metadata_scopes: BTreeSet::from([scope]),
@@ -116,7 +100,6 @@ impl Notification {
     }
     /// Union every invalidation channel when pure statements share one receipt.
     pub fn combine(mut self, other: Self) -> Self {
-        self.sequence = self.sequence.max(other.sequence);
         self.metadata |= other.metadata;
         self.activation |= other.activation;
         self.material_released |= other.material_released;
@@ -127,9 +110,7 @@ impl Notification {
     fn publish(self, notice: &crate::commits::CommitNotice) {
         let has_sessions = !self.sessions.is_empty();
         let notice = notice.with_sessions(self.sessions);
-        if let Some(sequence) = self.sequence {
-            notice.publish(sequence);
-        } else if self.metadata || has_sessions {
+        if self.metadata || has_sessions {
             notice.metadata();
         }
         for scope in self.metadata_scopes {

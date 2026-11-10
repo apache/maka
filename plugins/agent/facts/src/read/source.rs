@@ -178,10 +178,10 @@ async fn display(
         ));
     }
     if value.kind == JsonKind::Object {
-        if matches!(tool_name, "Shell" | "Read") {
-            if let Some(shell) = shell(&value.source, budget).await? {
-                return Ok(shell);
-            }
+        if matches!(tool_name, "Shell" | "Read")
+            && let Some(shell) = shell(&value.source, budget).await?
+        {
+            return Ok(shell);
         }
         let mut object = json::ObjectCursor::open(value.source.clone(), budget.clone())
             .await
@@ -220,20 +220,21 @@ async fn display(
                 ));
             }
         }
-        if only_known && count == 1 && tool_name == "Read" {
-            if let Some(content) = json::field(&value.source, &["content"], budget.clone())
+        if only_known
+            && count == 1
+            && tool_name == "Read"
+            && let Some(content) = json::field(&value.source, &["content"], budget.clone())
                 .await
                 .map_err(io::Error::other)?
-                && content.kind == JsonKind::String
-            {
-                return Ok((
-                    vec![pull::text::bytes(
-                        content.text().map_err(io::Error::other)?,
-                        budget.clone(),
-                    )],
-                    None,
-                ));
-            }
+            && content.kind == JsonKind::String
+        {
+            return Ok((
+                vec![pull::text::bytes(
+                    content.text().map_err(io::Error::other)?,
+                    budget.clone(),
+                )],
+                None,
+            ));
         }
     }
     Ok((vec![serialized], None))
@@ -288,10 +289,10 @@ async fn shell(
         if !shell_run && matches!(name, "mode" | "revision") {
             continue;
         }
-        if let Some(value) = fields.remove(name) {
-            if value.kind != JsonKind::Null {
-                metadata.insert(name.to_owned(), small(value, budget).await?);
-            }
+        if let Some(value) = fields.remove(name)
+            && value.kind != JsonKind::Null
+        {
+            metadata.insert(name.to_owned(), small(value, budget).await?);
         }
     }
     let mut parts = Vec::new();

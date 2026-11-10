@@ -30,21 +30,13 @@ use tokio::sync::{
 
 /// Lifecycle and control mutations exclude submissions. Submissions to distinct
 /// Sessions share that lifecycle boundary, but never their per-Session ordering.
+#[derive(Default)]
 pub(super) struct Registry {
     activity: Arc<RwLock<()>>,
     state: Arc<Mutex<Runs>>,
     sessions: MapMutex<BTreeMap<String, Weak<Gate>>>,
 }
 
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            activity: Default::default(),
-            state: Default::default(),
-            sessions: Default::default(),
-        }
-    }
-}
 impl Registry {
     pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
         self.state.lock().await

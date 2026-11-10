@@ -54,9 +54,6 @@ impl SnapshotProof {
     pub fn files(&self) -> &[SnapshotFile] {
         &self.files
     }
-    pub fn capture_cost(&self) -> CaptureCost {
-        self.capture_cost
-    }
     pub(super) fn baseline_identity(&self) -> FileIdentity {
         self.baseline_identity
     }
@@ -69,11 +66,11 @@ pub struct FileIdentity {
 }
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CaptureCost {
-    pub cow_clones: u64,
-    pub byte_copies: u64,
-    pub copied_bytes: u64,
-    pub logical_file_bytes: u64,
+struct CaptureCost {
+    cow_clones: u64,
+    byte_copies: u64,
+    copied_bytes: u64,
+    logical_file_bytes: u64,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -244,6 +244,10 @@ fn original(
     Ok(Some((receipt, manifest)))
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Snapshot preparation holds one selection at a time; avoid a separate allocation for its live cut"
+)]
 enum Selected {
     Live(HistoryCut),
     Snapshot {

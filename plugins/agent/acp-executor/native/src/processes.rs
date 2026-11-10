@@ -526,10 +526,10 @@ async fn close_running(
         .original_issued(scope)
         .map_err(Error::CleanupUnconfirmed)?
         .is_setup();
-    if let Some(done) = running.done.borrow().clone() {
-        if matches!(done.job, JobProof::PreventedBeforeStart) {
-            return Ok(());
-        }
+    if let Some(done) = running.done.borrow().clone()
+        && matches!(done.job, JobProof::PreventedBeforeStart)
+    {
+        return Ok(());
     }
     let close_error = if !setup || !scope.cancellation.is_cancelled() {
         match calls.close_original(scope, running).await {

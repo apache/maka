@@ -306,8 +306,6 @@ impl SetupAccess for SetupSource {
                 seeded
             };
             if matches!(self.purpose, SetupPurpose::Check) {
-                drop(frozen);
-                drop(seeded);
                 return Ok(());
             }
             let prepared = self

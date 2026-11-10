@@ -494,3 +494,54 @@ fn release_candidates(c: &Connection, candidates: &[i64]) -> Result<(), StoreErr
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_preserves_content_until_application_and_session_owners_are_gone()
+    -> Result<(), StoreError> {
+        let c = Connection::open_in_memory()?;
+        c.pragma_update(None, "foreign_keys", true)?;
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&c, &catalog)?;
+        let shared = content::put(&c, &content_digest(b"shared"), b"shared")?;
+        let body = content::put(&c, &content_digest(b"registration"), b"registration")?;
+        let unused = content::put(&c, &content_digest(b"unused"), b"unused")?;
+        c.execute(
+            "INSERT INTO application_packages VALUES('package','revision')",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO application_package_files VALUES('package','revision','file',?)",
+            [shared],
+        )?;
+        c.execute(
+            "INSERT INTO agent_session_artifact_registrations(session,artifact,owner,operation,body_content_id,content_id) VALUES('session','artifact','owner','upload',?,?)",
+            params![body, shared],
+        )?;
+
+        release_candidates(&c, &[unused, body, shared])?;
+        assert_eq!(content::read(&c, &content_digest(b"unused"))?, None);
+        c.execute("DELETE FROM application_package_files", [])?;
+        assert_eq!(
+            content::read(&c, &content_digest(b"shared"))?,
+            Some(b"shared".to_vec())
+        );
+        assert_eq!(
+            content::read(&c, &content_digest(b"registration"))?,
+            Some(b"registration".to_vec())
+        );
+
+        c.execute("DELETE FROM agent_session_artifact_registrations", [])?;
+        release_candidates(&c, &[body, shared])?;
+        assert_eq!(content::read(&c, &content_digest(b"shared"))?, None);
+        assert_eq!(content::read(&c, &content_digest(b"registration"))?, None);
+        Ok(())
+    }
+}

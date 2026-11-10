@@ -421,11 +421,11 @@ impl FieldWriter<'_> {
         if !self.internal {
             self.document.label_bytes(text);
         }
-        if self.preview {
-            if let Some(preview) = self.document.preview.as_mut() {
-                let left = 160usize.saturating_sub(preview.chars().count());
-                preview.extend(text.chars().take(left));
-            }
+        if self.preview
+            && let Some(preview) = self.document.preview.as_mut()
+        {
+            let left = 160usize.saturating_sub(preview.chars().count());
+            preview.extend(text.chars().take(left));
         }
         let mut indexed = std::mem::take(&mut self.tail);
         indexed.push_str(text);

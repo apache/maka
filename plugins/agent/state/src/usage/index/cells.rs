@@ -23,17 +23,13 @@ fn key(cell: maka_agent_facts::cells::CellId, operation: Uuid) -> String {
 }
 fn call(
     c: &Connection,
-    source: &str,
     owner: Option<&RunOwner>,
-    session: &str,
-    run: Option<RunId>,
-    sequence: u64,
-    at: UnixMillis,
+    position: UsagePosition<'_>,
     cell: maka_agent_facts::cells::CellId,
     operation: Uuid,
 ) -> Result<String, StoreError> {
     let path = format!("$.children.\"{operation}\".name");
-    let (body,name):(String,String)=c.query_row("SELECT json_extract(body,'$.owner'),json_extract(body,?) FROM agent_cells WHERE cell=? AND session=?",params![path,cell.to_string(),session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (body,name):(String,String)=c.query_row("SELECT json_extract(body,'$.owner'),json_extract(body,?) FROM agent_cells WHERE cell=? AND session=?",params![path,cell.to_string(),position.session],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let cell_owner: CellOwner = serde_json::from_str(&body)?;
     let binding = match &cell_owner {
         CellOwner::Agent { link, .. } => Some(evidence(c, link.run, link.attempt)?.1.binding),
@@ -43,12 +39,8 @@ fn call(
     insert_tool(
         c,
         &id,
-        source,
         owner,
-        session,
-        run,
-        sequence,
-        at,
+        position,
         &name,
         binding.as_ref(),
         &ToolUsageSource::Cell {
@@ -61,19 +53,14 @@ fn call(
 }
 pub(crate) fn index_cell(
     c: &Connection,
-    source: &str,
     owner: Option<&RunOwner>,
-    session: &str,
-    run: Option<RunId>,
-    sequence: u64,
-    at: UnixMillis,
+    position: UsagePosition<'_>,
     event: &CellEvent,
 ) -> Result<(), StoreError> {
+    let UsagePosition { sequence, at, .. } = position;
     match event {
         CellEvent::ChildAdmitted { cell, operation } => {
-            call(
-                c, source, owner, session, run, sequence, at, *cell, *operation,
-            )?;
+            call(c, owner, position, *cell, *operation)?;
         }
         CellEvent::ChildRejected {
             cell,
@@ -81,9 +68,7 @@ pub(crate) fn index_cell(
             reason,
             ..
         } => {
-            let id = call(
-                c, source, owner, session, run, sequence, at, *cell, *operation,
-            )?;
+            let id = call(c, owner, position, *cell, *operation)?;
             settle(
                 c,
                 &id,

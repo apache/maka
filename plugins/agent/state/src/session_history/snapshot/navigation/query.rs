@@ -247,27 +247,26 @@ fn search_field(
         } else {
             0
         };
-        if let Some(found) = matcher.find_at(&window, start) {
-            if eof
+        if let Some(found) = matcher.find_at(&window, start)
+            && (eof
                 || (found.end().saturating_add(4) <= window.len()
-                    && found.start().saturating_add(378) <= window.len())
-            {
-                let begin = window.floor_char_boundary(found.start().saturating_sub(64));
-                let end = window.floor_char_boundary((begin + 378).min(window.len()));
-                let mut preview = String::new();
-                if offset > 0 || begin > 0 {
-                    preview.push('…');
-                }
-                preview.extend(
-                    window[begin..end]
-                        .chars()
-                        .map(|c| if c.is_control() { ' ' } else { c }),
-                );
-                if !eof || end < window.len() {
-                    preview.push('…');
-                }
-                return Ok(Some(preview));
+                    && found.start().saturating_add(378) <= window.len()))
+        {
+            let begin = window.floor_char_boundary(found.start().saturating_sub(64));
+            let end = window.floor_char_boundary((begin + 378).min(window.len()));
+            let mut preview = String::new();
+            if offset > 0 || begin > 0 {
+                preview.push('…');
             }
+            preview.extend(
+                window[begin..end]
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c }),
+            );
+            if !eof || end < window.len() {
+                preview.push('…');
+            }
+            return Ok(Some(preview));
         }
         if eof {
             return Ok(None);

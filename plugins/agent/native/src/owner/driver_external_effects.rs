@@ -509,10 +509,8 @@ impl NativeExternalEffects {
             }
         );
         self.observe_reply(key, &reply).await?;
-        if confirmed {
-            if let Some(active) = &self.active {
-                active.lock().await.physical = true;
-            }
+        if confirmed && let Some(active) = &self.active {
+            active.lock().await.physical = true;
         }
         Ok(confirmed)
     }
@@ -750,12 +748,12 @@ impl NativeExternalEffects {
                     continue;
                 }
                 owned = true;
-                let batches = source
+
+                source
                     .retained
                     .lock()
                     .expect("external T2 material")
-                    .clone();
-                batches
+                    .clone()
             };
             for batch in batches {
                 self.settle_batch(&batch).await?;
@@ -929,7 +927,7 @@ impl NativeExternalEffects {
             },
             at(),
         );
-        let batch = self.retain_batch(&[event.clone()], &[], &[], true);
+        let batch = self.retain_batch(std::slice::from_ref(&event), &[], &[], true);
         loop {
             let view = match self.access.fresh().await {
                 Ok(view) => view,
@@ -1274,13 +1272,13 @@ impl NativeExternalEffects {
                 observation: reply.clone(),
             }));
         }
-        if let Receipt::Recorded { cleanup, .. } = &reply.receipt {
-            if original.cleanup != *cleanup {
-                changes.push(change(ExternalEffectEvent::CleanupObserved {
-                    key,
-                    cleanup: cleanup.clone(),
-                }));
-            }
+        if let Receipt::Recorded { cleanup, .. } = &reply.receipt
+            && original.cleanup != *cleanup
+        {
+            changes.push(change(ExternalEffectEvent::CleanupObserved {
+                key,
+                cleanup: cleanup.clone(),
+            }));
         }
         if !changes.is_empty() {
             self.observe(changes, vec![]).await?;
@@ -1432,7 +1430,7 @@ impl NativeExternalEffects {
                 },
             },
         ];
-        let batch = self.retain(&changes, &[blob.clone()], &artifacts);
+        let batch = self.retain(&changes, std::slice::from_ref(&blob), &artifacts);
         let committed = match self
             .state
             .observe_artifacts(

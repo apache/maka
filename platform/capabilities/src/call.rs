@@ -251,7 +251,7 @@ impl Owned {
         self.0.clone()
     }
     pub async fn finish(self) -> Result<(), ToolError> {
-        self.0.finish().await.map_err(Into::into)
+        self.0.finish().await
     }
 }
 impl Drop for Owned {

@@ -23,7 +23,7 @@ use crate::publication::{
     PublicationUnsupported, conflict, finish_digest, hash_reader, unsupported,
 };
 use maka_agent_facts::durable::ContentRef;
-use std::io::{Read, Seek};
+use std::io::Seek;
 
 impl Target {
     pub(crate) fn capture_publication(
@@ -84,7 +84,7 @@ impl Target {
             } else {
                 ReadMode::Required
             };
-            return match Self::capture_route(root, &route.relative, read, managed) {
+            match Self::capture_route(root, &route.relative, read, managed) {
                 Ok(target) => Ok(Capture::Ready(target)),
                 Err(ToolError::Failed(_)) => Ok(Capture::Refused(conflict(
                     PublicationConflict::EntryVisibility,
@@ -96,7 +96,7 @@ impl Target {
                     PublicationConflict::EntryVisibility,
                 ))),
                 Err(error) => Err(error),
-            };
+            }
         }
     }
 
@@ -265,8 +265,5 @@ fn permission_mode(mode: u32) -> Result<rustix::fs::Mode, ToolError> {
     if mode & !0o777 != 0 {
         return Err(failed("publication mode exceeds captured permission bits"));
     }
-    let mode = mode
-        .try_into()
-        .map_err(|_| failed("publication mode is not representable on this platform"))?;
-    Ok(rustix::fs::Mode::from_raw_mode(mode))
+    Ok(rustix::fs::Mode::from_raw_mode(mode as _))
 }

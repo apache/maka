@@ -89,10 +89,7 @@ fn bind_attachments<'a>(
     c: &Connection,
     run: RunId,
     spec: &RunSpec,
-    fact: FactId,
-    revision: u64,
-    source: &ContentRef,
-    origin: &tool::BindingOrigin,
+    evidence: tool::BindingEvidence<'_>,
     attachments: impl IntoIterator<Item = &'a AttachmentRef>,
 ) -> Result<(), StoreError> {
     let mut ids = BTreeSet::new();
@@ -103,16 +100,7 @@ fn bind_attachments<'a>(
         if !ids.insert(material.record.artifact.id.clone()) {
             continue;
         }
-        tool::bind(
-            c,
-            run,
-            spec,
-            &material.record,
-            fact,
-            revision,
-            source,
-            origin,
-        )?;
+        tool::bind(c, run, spec, &material.record, evidence)?;
     }
     Ok(())
 }
@@ -133,10 +121,12 @@ pub(crate) fn admit(
             c,
             run,
             spec,
-            fact,
-            1,
-            &spec.input,
-            &tool::BindingOrigin::Input,
+            tool::BindingEvidence {
+                fact,
+                revision: 1,
+                source: &spec.input,
+                origin: &tool::BindingOrigin::Input,
+            },
             content.attachments.iter().flatten().chain(
                 source_messages
                     .iter()
@@ -197,10 +187,12 @@ fn pin_steering_sources<'a>(
             c,
             run,
             &spec,
-            fact,
-            revision,
-            reference,
-            &tool::BindingOrigin::Steering,
+            tool::BindingEvidence {
+                fact,
+                revision,
+                source: reference,
+                origin: &tool::BindingOrigin::Steering,
+            },
             source.message.content.attachments.iter().flatten(),
         )?;
     }

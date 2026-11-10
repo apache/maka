@@ -62,7 +62,7 @@ impl RootStore {
                 )?
                 .0
                 {
-                    SessionMutation::Committed(record) => Ok(*record),
+                    SessionMutation::Committed(record) => Ok(record),
                     SessionMutation::RevisionConflict { expected, actual } => {
                         Err(StoreError::SessionRevisionConflict { expected, actual })
                     }
@@ -70,7 +70,7 @@ impl RootStore {
             })
             .await?;
         let configuration: T = serde_json::from_value(preview.configuration.clone())?;
-        let record = preview.clone().map_configuration(|_| configuration);
+        let record = (*preview).clone().map_configuration(|_| configuration);
         let change = writer.prepare(RetirementChange {
             choice: Choice::Archive {
                 preview,
@@ -135,7 +135,7 @@ fn validate_expected(expected: u64) -> Result<(), StoreError> {
 
 enum Choice {
     Archive {
-        preview: SessionRecord,
+        preview: Box<SessionRecord>,
         expected: u64,
         archived: bool,
         now: u64,
@@ -184,7 +184,7 @@ impl<S: Statement> Statement for RetirementChange<S> {
                     now,
                 )?;
                 match outcome {
-                    SessionMutation::Committed(record) if *record == preview => {}
+                    SessionMutation::Committed(record) if record == preview => {}
                     SessionMutation::Committed(_) => {
                         return Err(invalid("prepared Session metadata changed"));
                     }

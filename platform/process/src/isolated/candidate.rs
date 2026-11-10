@@ -17,9 +17,7 @@
  * under the License.
  */
 
-use super::{
-    BaselineEntry, BaselineReader, CaptureCost, Error, SnapshotFile, SnapshotProof, TaskOwner,
-};
+use super::{BaselineEntry, BaselineReader, Error, SnapshotFile, SnapshotProof, TaskOwner};
 #[cfg(target_os = "macos")]
 use super::{FileIdentity, SnapshotKind};
 #[cfg(target_os = "macos")]
@@ -46,7 +44,6 @@ pub struct FrozenCandidate {
     input: Arc<CaptureInput>,
     directory: File,
     entries: Vec<SnapshotFile>,
-    cost: CaptureCost,
 }
 impl CandidateCapture {
     #[cfg(target_os = "macos")]
@@ -86,9 +83,6 @@ impl FrozenCandidate {
     }
     pub fn entries(&self) -> &[SnapshotFile] {
         &self.entries
-    }
-    pub fn capture_cost(&self) -> CaptureCost {
-        self.cost
     }
     /// Native I/O; call on a blocking worker. No closure or task restart needed.
     pub fn baseline_reader(&self) -> io::Result<BaselineReader> {
@@ -155,7 +149,6 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
         })?
         .into_file();
     let mut entries = Vec::with_capacity(before.len().saturating_sub(1));
-    let mut cost = CaptureCost::default();
     for (relative, original) in &before {
         if relative.as_os_str().is_empty() {
             continue;
@@ -193,7 +186,6 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
                     Mode::empty(),
                 )?
                 .into();
-                let metadata = frozen.metadata()?;
                 let cloned = observe_file(&frozen)?;
                 if cloned.kind != ObservedKind::File
                     || cloned.mode != original.mode
@@ -203,8 +195,6 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
                 }
                 fchmod(&frozen, Mode::RUSR)?;
                 ensure(original, &observe_file(&source)?, relative)?;
-                cost.cow_clones += 1;
-                cost.logical_file_bytes += metadata.len();
                 SnapshotKind::File
             }
             ObservedKind::Directory { .. } => {
@@ -265,7 +255,6 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
         input,
         directory,
         entries,
-        cost,
     })
 }
 

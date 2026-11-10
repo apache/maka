@@ -407,12 +407,12 @@ impl CellView {
         else {
             return Err("CellStarted required".into());
         };
-        if let CellOwner::Agent { link, call } = owner {
-            if *cell != CellId::for_agent(*link, call) {
-                return Err(CellTransitionError::Conflict(
-                    "Cell identity differs from its original parent",
-                ));
-            }
+        if let CellOwner::Agent { link, call } = owner
+            && *cell != CellId::for_agent(*link, call)
+        {
+            return Err(CellTransitionError::Conflict(
+                "Cell identity differs from its original parent",
+            ));
         }
         Ok(Self {
             id: *cell,
@@ -735,16 +735,16 @@ impl CellView {
                     is_error: *is_error,
                     settlement: *settlement,
                 };
-                if let Some(prior) = &child.local_result {
-                    if prior.settlement != ToolSettlement::Unknown {
-                        if evidence.settlement == ToolSettlement::Unknown {
-                            return Ok(());
-                        }
-                        if prior != &evidence {
-                            return Err(CellTransitionError::Conflict(
-                                "known local Cell result changed",
-                            ));
-                        }
+                if let Some(prior) = &child.local_result
+                    && prior.settlement != ToolSettlement::Unknown
+                {
+                    if evidence.settlement == ToolSettlement::Unknown {
+                        return Ok(());
+                    }
+                    if prior != &evidence {
+                        return Err(CellTransitionError::Conflict(
+                            "known local Cell result changed",
+                        ));
                     }
                 }
                 child.local_result = Some(evidence);

@@ -1782,12 +1782,11 @@ impl Owner {
                                     let invocation = async {
                                         let service = execution.value();
                                         let value = service.implementation.call(method.clone(), input, context).await?;
-                                        if let Some(output) = value.value() {
-                                            if !is_subscription || !output.is_null() {
+                                        if let Some(output) = value.value()
+                                            && (!is_subscription || !output.is_null()) {
                                                 service.methods[&method].output.validate(output)
                                                     .map_err(|error| HandlerError::Returned { diagnostic: error.to_string() })?;
                                             }
-                                        }
                                         Ok(value)
                                     };
                                     match AssertUnwindSafe(invocation).catch_unwind().await {
@@ -1819,15 +1818,14 @@ impl Owner {
                                         _ => unreachable!("only an original successful or computed completion carries state"),
                                     })
                                 } else { None };
-                                if let Some(Ok(observation)) = &state_commit {
-                                    if matches!(handler, HandlerOutcome::Computed) {
+                                if let Some(Ok(observation)) = &state_commit
+                                    && matches!(handler, HandlerOutcome::Computed) {
                                         handler = match &observation.outcome {
                                             OperationOutcome::Returned { result: OperationResult::Success { value } } => HandlerOutcome::Returned(Ok(value.clone())),
                                             OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } } => HandlerOutcome::Returned(Err(diagnostic.clone())),
                                             _ => HandlerOutcome::Unknown("computed completion has no original Returned outcome".into()),
                                         };
                                     }
-                                }
                                 if let Some(Err(error)) = &state_commit {
                                     let diagnostic = operation_failure("operation_state_commit", error, claim.reference(), execution.id());
                                     handler = if super::completion::state_rejected(error) {

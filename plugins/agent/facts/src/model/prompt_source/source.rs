@@ -573,6 +573,10 @@ pub struct ToolResultRecipe {
     pub provider_options: Option<JsonSource>,
 }
 #[derive(Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Recipe cursors yield parts by value; keep tool results inline to avoid an allocation per result"
+)]
 pub enum AssistantRecipe {
     CodexCompaction {
         item: JsonSource,

@@ -214,9 +214,8 @@ impl Statement for AppendStandalone {
             });
         }
         for event in &self.batch.events {
-            if let CellEvent::Completed { cell, .. } = &event.event {
-                if self.batch.events.iter().filter(|candidate|matches!(&candidate.event,CellEvent::ResultAccepted{cell:id} if id==cell)).count()!=1{return Err(invalid("standalone completion requires same-batch final acceptance"));}
-            }
+            if let CellEvent::Completed { cell, .. } = &event.event
+                && self.batch.events.iter().filter(|candidate|matches!(&candidate.event,CellEvent::ResultAccepted{cell:id} if id==cell)).count()!=1{return Err(invalid("standalone completion requires same-batch final acceptance"));}
             let view = match &event.event {
                 CellEvent::Started {
                     owner: CellOwner::Standalone { session },
@@ -269,13 +268,15 @@ impl Statement for AppendStandalone {
             )?;
             crate::usage::index_cell(
                 c,
-                "cell",
                 None,
-                &self.batch.session,
-                None,
-                u64::try_from(sequence)
-                    .map_err(|_| invalid("negative standalone Cell sequence"))?,
-                event.at,
+                crate::usage::UsagePosition {
+                    source: "cell",
+                    session: &self.batch.session,
+                    run: None,
+                    sequence: u64::try_from(sequence)
+                        .map_err(|_| invalid("negative standalone Cell sequence"))?,
+                    at: event.at,
+                },
                 &event.event,
             )?;
         }

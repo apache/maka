@@ -207,16 +207,27 @@ pub(super) fn owned_decode<T: serde::de::DeserializeOwned>(
     blob.close()?;
     Ok(decoded?)
 }
+#[derive(Clone, Copy)]
+pub(super) struct BindingEvidence<'a> {
+    pub fact: FactId,
+    pub revision: u64,
+    pub source: &'a ContentRef,
+    pub origin: &'a BindingOrigin,
+}
+
 pub(super) fn bind(
     c: &Connection,
     run: RunId,
     spec: &RunSpec,
     record: &PublishedArtifact,
-    fact: FactId,
-    revision: u64,
-    source: &ContentRef,
-    origin: &BindingOrigin,
+    evidence: BindingEvidence<'_>,
 ) -> Result<(), StoreError> {
+    let BindingEvidence {
+        fact,
+        revision,
+        source,
+        origin,
+    } = evidence;
     if record.artifact.session_id != spec.session_id {
         return Err(invalid(
             "artifact manifest session differs from producer Run",
@@ -254,10 +265,12 @@ fn project(
         run,
         spec,
         &declaration.record,
-        declaration.fact,
-        declaration.revision,
-        &declaration.result,
-        &declaration.origin,
+        BindingEvidence {
+            fact: declaration.fact,
+            revision: declaration.revision,
+            source: &declaration.result,
+            origin: &declaration.origin,
+        },
     )
 }
 /// Runs inside the original canonical fact statement. Pending bytes never

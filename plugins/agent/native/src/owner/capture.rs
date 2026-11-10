@@ -82,6 +82,10 @@ impl Owner {
             .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Capture binds immutable source bytes to the original session, operation identity and parent scope"
+    )]
     async fn freeze_captured_request(
         &self,
         session_id: &str,
@@ -168,6 +172,10 @@ impl Owner {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Run freezing binds the source trigger, input, budget and original parent scope"
+    )]
     async fn freeze_run_values(
         &self,
         session_id: &str,

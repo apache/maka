@@ -253,18 +253,18 @@ impl Todo {
 
 pub(super) const REVISION_CONFLICT: &str = "checklist_revision_conflict";
 
+type PublishLocal = dyn Fn(
+        Change,
+        Vec<ContentBlob>,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<maka_agent_state::Commit, maka_event_log::StoreError>,
+    > + std::marker::Send
+    + Sync;
+
 pub(super) struct Replacement {
     // Captures one prepared pure CAS statement; publication never invokes the tool again.
-    publish: Box<
-        dyn Fn(
-                Change,
-                Vec<ContentBlob>,
-            ) -> futures_util::future::BoxFuture<
-                'static,
-                Result<maka_agent_state::Commit, maka_event_log::StoreError>,
-            > + std::marker::Send
-            + Sync,
-    >,
+    publish: Box<PublishLocal>,
 }
 impl Replacement {
     fn new<S: Statement + Clone + Sync>(
@@ -285,10 +285,12 @@ impl Replacement {
                         match state
                             .append_local_with(
                                 &claim,
-                                Head::from(&view),
-                                original.clone(),
-                                contents.clone(),
-                                Vec::new(),
+                                maka_agent_state::LocalResult {
+                                    head: Head::from(&view),
+                                    original: original.clone(),
+                                    contents: contents.clone(),
+                                    normalized_artifacts: Vec::new(),
+                                },
                                 business.clone(),
                                 &writer,
                             )

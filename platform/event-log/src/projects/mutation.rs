@@ -21,6 +21,8 @@ use super::*;
 use crate::writeback::{Notification, Prepared, Statement};
 use uuid::Uuid;
 
+type ProjectSelection = std::result::Result<(ProjectRecord, String), ProjectError>;
+
 enum RegistrationGuard {
     Unconditional,
     Observed(Option<ProjectRecord>),
@@ -222,12 +224,7 @@ impl EventLog {
         expected: ProjectRecord,
         available_paths: Vec<String>,
         now: u64,
-    ) -> Result<
-        impl Statement<
-            Value = std::result::Result<(ProjectRecord, String), ProjectError>,
-            Output = std::result::Result<(ProjectRecord, String), ProjectError>,
-        >,
-    > {
+    ) -> Result<impl Statement<Value = ProjectSelection, Output = ProjectSelection>> {
         WriteSelection::new(&expected.id.clone(), available_paths, now, Some(expected))
     }
     pub async fn touch_project(&self, id: &str, path: &str, now: u64) -> Result<ProjectRecord> {

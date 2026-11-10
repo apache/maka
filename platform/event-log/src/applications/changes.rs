@@ -30,7 +30,7 @@ pub struct DeploymentChanges {
     stop: Option<tokio_util::sync::CancellationToken>,
     observed: DeploymentRef,
     observed_idle: bool,
-    wakes: tokio::sync::watch::Receiver<u64>,
+    wakes: tokio::sync::watch::Receiver<()>,
 }
 impl EventLog {
     pub fn subscribe_application(

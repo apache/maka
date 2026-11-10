@@ -42,7 +42,7 @@ impl Recall {
         if !self.enabled || !super::super::owns_session(&self.prefix, &input.session_id) {
             return Err(preparation("Recall Session unavailable".into()));
         }
-        let writer = access.data_writer().map_err(&preparation)?;
+        let writer = access.data_writer().map_err(preparation)?;
         self.durable
             .validate_root(&writer)
             .map_err(|error| preparation(error.to_string()))?;

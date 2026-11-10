@@ -611,30 +611,6 @@ async fn plan(
     Ok(plan)
 }
 
-/// The additional peak reserved before promoting the original Summary source.
-pub(crate) async fn peak_bytes(
-    prompt: &PreparedPrompt,
-    tokens: u64,
-    language: Language,
-    cancel: &CancellationToken,
-) -> Result<usize, FitError> {
-    let estimated = prompt.breakdown().estimated_tokens();
-    if estimated == 0 {
-        return Ok(0);
-    }
-    match plan(prompt, tokens.min(estimated - 1), language, cancel, None).await {
-        Ok(plan) => Ok(plan.bytes),
-        Err(FitError::NeedsBacking { .. }) if prompt.arena().is_some() => {
-            backed_peak_bytes(language).map_err(failure)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// Used only when the complete request's intrinsic resident peak needs backing.
-pub(crate) fn backed_peak_bytes(language: Language) -> io::Result<usize> {
-    backed::allocation_bytes(language)
-}
 pub(crate) async fn fit(
     prompt: &PreparedPrompt,
     tokens: u64,

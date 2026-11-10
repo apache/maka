@@ -135,6 +135,10 @@ pub async fn project_cell_notification_from(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Cell evidence, artifact authority and model preparation resources have independent owners"
+)]
 pub async fn project_cell_final(
     source: NotificationSource<'_>,
     scope: &ArtifactScope,

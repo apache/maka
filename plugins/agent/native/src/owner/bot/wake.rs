@@ -47,14 +47,6 @@ struct Watch {
 
 impl Bot {
     /// Record or refresh the watch for `worker`, keeping what was already reported.
-    async fn watch(
-        &self,
-        worker: &str,
-        route: crate::owner::notifications::ReturnRoute,
-    ) -> Result<(), StoreError> {
-        let mutation = self.watch_mutation(worker, route).await?;
-        self.storage.batch(vec![mutation]).await.map(drop)
-    }
     async fn watch_mutation(
         &self,
         worker: &str,
@@ -145,31 +137,6 @@ impl Owner {
             .await
             .map(|mutation| vec![mutation])
             .map_err(|error| error.to_string())
-    }
-
-    /// Refresh an existing worker's watch after a send. Creation installs its
-    /// initial watch inside the original Session/receipt transaction.
-    pub(crate) async fn bot_watch(&self, scope: &maka_capabilities::call::Scope, worker: &str) {
-        let Some(source) = scope.identity.agent() else {
-            return;
-        };
-        let result = async {
-            if self.settings.bot {
-                self.bot.load().await.map_err(|error| error.to_string())?;
-            }
-            if !self.bot.is(&source.session_id) || !self.owns(worker) {
-                return Ok(());
-            }
-            let route = self.return_route(source).await?;
-            self.bot
-                .watch(worker, route)
-                .await
-                .map_err(|error| error.to_string())
-        }
-        .await;
-        if let Err(error) = result {
-            eprintln!("Bot worker watch: {error}");
-        }
     }
 
     /// Native workers inherit the Bot's admitted model; an explicitly selected

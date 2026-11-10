@@ -118,7 +118,6 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 
-[性能基线](checkpoint-baseline.md)
 
 ChatGPT 订阅请求使用 Host 拥有的[账号模型目录](src/model/codex_inventory.rs)。
 每个逻辑模型 step 准备时检查五分钟有效期的兼容性缓存；同连接共享按需发现任务，

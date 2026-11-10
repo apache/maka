@@ -24,7 +24,6 @@ use crate::{
 };
 use maka_agent_facts::cells::{CellEvent, CellId, CellOwner, CellStatus};
 use maka_agent_facts::external_effects::ExternalEffectKey;
-use maka_event_log::content;
 use maka_sandbox::workspace::{BindingRef, BindingStamp};
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
@@ -298,12 +297,12 @@ pub(super) fn establish(
         blob.store(c)?;
     }
     if let Some(binding) = &approval {
-        if let InteractionRequest::Permissions { target, .. } = &record.request {
-            if target != &binding.target {
-                return Err(invalid(
-                    "permission target differs from canonical obligation",
-                ));
-            }
+        if let InteractionRequest::Permissions { target, .. } = &record.request
+            && target != &binding.target
+        {
+            return Err(invalid(
+                "permission target differs from canonical obligation",
+            ));
         }
         if !target_pending(c, &view, binding, post_admission(binding))? {
             return Err(invalid("approval obligation no longer eligible"));
@@ -452,10 +451,12 @@ pub(super) fn answer(
             view.run,
             Some(Head::from(&view)),
             &[change],
-            vec![],
+            crate::sql::AppendMaterial {
+                contents: vec![],
+                artifacts: &crate::artifacts::ArtifactBatch::default(),
+            },
             &Mode::Control,
             None,
-            &crate::artifacts::ArtifactBatch::default(),
         )?;
     }
     record.outcome = Some(outcome);
@@ -616,7 +617,15 @@ pub(super) fn grants(
     {
         return Ok(vec![]);
     }
-    let rows: Vec<(String,String,Option<String>,String,String,Option<String>)> = c.prepare_cached("SELECT request,permissions,approval,scope,run,target FROM agent_interaction_grants WHERE session=?1 AND basis=?2 AND (scope='session' OR (run=?3 AND (scope='run' OR (scope='once' AND target=?4)))) ORDER BY request")?.query_map(params![execution.session_id,encode(&expected)?,execution.run_id.to_string(),target.map(encode).transpose()?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?.collect::<Result<_,_>>()?;
+    type GrantRow = (
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+    );
+    let rows: Vec<GrantRow> = c.prepare_cached("SELECT request,permissions,approval,scope,run,target FROM agent_interaction_grants WHERE session=?1 AND basis=?2 AND (scope='session' OR (run=?3 AND (scope='run' OR (scope='once' AND target=?4)))) ORDER BY request")?.query_map(params![execution.session_id,encode(&expected)?,execution.run_id.to_string(),target.map(encode).transpose()?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?.collect::<Result<_,_>>()?;
     let mut grants = Vec::with_capacity(rows.len());
     for (request, permissions, approval, scope, original_run, original_target) in rows {
         let scope = match scope.as_str() {

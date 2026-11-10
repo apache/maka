@@ -320,6 +320,10 @@ fn seal_parent_callbacks(callbacks: &callbacks::ParentCallbacks, request: &Reque
 
 // Both purposes share one invocation's existing authorization queue. This
 // routing metadata never creates a document, a grant, or a native lease proof.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Both authorization purposes share the existing invocation queue and keep request payloads inline"
+)]
 enum BrowserAuthorizationRequest {
     Access(BrowserAccess),
     SessionPreparation {

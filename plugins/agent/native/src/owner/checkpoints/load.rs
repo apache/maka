@@ -331,7 +331,7 @@ impl Owner {
         scope: &Scope,
     ) -> Result<CheckpointArtifacts, String> {
         management(scope)?;
-        self.resource_work(scope, move |owner, scope| {
+        self.resource_work(scope, move |owner, _scope| {
             Box::pin(async move {
                 let mut snapshot = owner.inspection_snapshot(&input.inspection).await?;
                 for run in input.path {

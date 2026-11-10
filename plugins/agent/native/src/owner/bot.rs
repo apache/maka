@@ -78,6 +78,8 @@ pub(super) struct Registration {
     revision: Option<u64>,
     session: Option<String>,
 }
+type StorageRecords = Vec<maka_plugin_core::storage::Record>;
+
 impl Registration {
     pub(super) fn from_record(
         record: maka_plugin_core::storage::Record,
@@ -214,10 +216,8 @@ impl Bot {
     ) -> Result<
         (
             Option<usize>,
-            impl maka_event_log::writeback::Statement<
-                Value = Vec<maka_plugin_core::storage::Record>,
-                Output = Vec<maka_plugin_core::storage::Record>,
-            > + Clone
+            impl maka_event_log::writeback::Statement<Value = StorageRecords, Output = StorageRecords>
+            + Clone
             + use<>,
         ),
         maka_event_log::StoreError,

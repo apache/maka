@@ -725,7 +725,7 @@ impl Live {
         let files = self.selected_files(key.publication)?;
         let operation = crate::tools::operation_uuid(self.access.execution(), &operation_id(key));
         let unavailable = |diagnostic| {
-            RunError::Blocked(BlockerKind::CurrentAuthorityUnavailable {
+            RunError::from(BlockerKind::CurrentAuthorityUnavailable {
                 stage: AuthorityStage::BackendScope,
                 diagnostic,
             })
@@ -919,17 +919,16 @@ impl Live {
             io.writer_failed.store(true, Ordering::Release);
             return;
         }
-        if let Some(witness) = original {
-            if ack(
+        if let Some(witness) = original
+            && ack(
                 io,
                 witness
                     .cleanup(OperationCleanup::Confirmed, timestamp())
                     .await,
             )
             .is_err()
-            {
-                return;
-            }
+        {
+            return;
         }
         io.requests
             .lock()
@@ -1194,13 +1193,13 @@ fn failed(message: &str) -> ToolError {
     ToolError::Failed(message.into())
 }
 fn unavailable(publication: ExternalPublicationId, diagnostic: &str) -> RunError {
-    RunError::Blocked(BlockerKind::ExternalPublicationUnavailable {
+    RunError::from(BlockerKind::ExternalPublicationUnavailable {
         publication,
         diagnostic: diagnostic.into(),
     })
 }
 fn unknown(key: ExternalPublicationKey) -> RunError {
-    RunError::Blocked(BlockerKind::ExternalPublicationItem {
+    RunError::from(BlockerKind::ExternalPublicationItem {
         key,
         reason: maka_agent_facts::external_publication::ExternalPublicationBlocker::Unknown,
     })

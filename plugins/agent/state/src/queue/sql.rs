@@ -256,7 +256,8 @@ fn followup(
         return Err(rejected("follow-up request belongs to another session"));
     }
     let owner = serde_json::to_string(&request.spec.owner)?;
-    let row: Option<(u32, Vec<u8>, u32, String, String, i64, i64)> = c
+    type OriginalRunRow = (u32, Vec<u8>, u32, String, String, i64, i64);
+    let row: Option<OriginalRunRow> = c
         .query_row(
             "SELECT s.schema_version,b.payload,r.schema_version,r.owner,r.session,r.local,r.stopped
          FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
@@ -435,18 +436,16 @@ fn project(
                     if exists {
                         return Err(StoreError::EventConflict);
                     }
-                    if check {
-                        if let Placement::Steering { run, expected_head } = placement {
-                            target(
-                                c,
-                                session,
-                                &request.spec.owner,
-                                &SteeringTarget {
-                                    run: *run,
-                                    expected_head: *expected_head,
-                                },
-                            )?;
-                        }
+                    if check && let Placement::Steering { run, expected_head } = placement {
+                        target(
+                            c,
+                            session,
+                            &request.spec.owner,
+                            &SteeringTarget {
+                                run: *run,
+                                expected_head: *expected_head,
+                            },
+                        )?;
                     }
                     for reference in references(request) {
                         pin(c, session, &request.id, reference)?;
@@ -812,8 +811,7 @@ pub(crate) fn consume_external_steering(
     c: &Connection,
     cut: &Consume,
     run: RunId,
-    task: ExternalTaskId,
-    steering: uuid::Uuid,
+    key: &maka_agent_facts::external_steering::ExternalSteeringKey,
     descriptor: &ContentRef,
     command: FactId,
     at: UnixMillis,
@@ -822,8 +820,8 @@ pub(crate) fn consume_external_steering(
         cut: cut.clone(),
         run,
         target: DeliveryTarget::External {
-            task,
-            steering,
+            task: key.task,
+            steering: key.steering,
             descriptor: descriptor.clone(),
         },
     };
@@ -831,8 +829,7 @@ pub(crate) fn consume_external_steering(
         return Ok(());
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
-    let key = maka_agent_facts::external_steering::ExternalSteeringKey { task, steering };
-    let frozen = crate::external_steering::read_spec(c, run, &key, descriptor)?;
+    let frozen = crate::external_steering::read_spec(c, run, key, descriptor)?;
     if frozen.consume != *cut {
         return Err(invalid(
             "external steering descriptor differs from original queue cut",

@@ -186,9 +186,6 @@ impl RunCells {
     pub(super) fn has_original_workers(&self) -> bool {
         !self.workers.is_empty()
     }
-    pub(super) async fn original_workers_finished(&self) {
-        self.workers.wait().await;
-    }
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         // Shutdown joins the original coordinator tasks; its historical error is not positive or negative cleanup truth.
         let _shutdown = self.coordinator.shutdown().await;
@@ -855,12 +852,11 @@ impl RunCells {
                 .map_err(persistence)?
                 .retain(|original| !Arc::ptr_eq(original, &request));
         }
-        if let Ok(Some(reply)) = &result {
-            if child.reference.as_ref() != Some(&reply.reference)
-                || child.reply.as_ref() != Some(reply)
-            {
-                self.record_reply(cell, operation, reply.clone()).await?;
-            }
+        if let Ok(Some(reply)) = &result
+            && (child.reference.as_ref() != Some(&reply.reference)
+                || child.reply.as_ref() != Some(reply))
+        {
+            self.record_reply(cell, operation, reply.clone()).await?;
         }
         if let Err(error) = cleanup {
             return Err(ToolError::CleanupUnconfirmed(format!(
@@ -1826,12 +1822,12 @@ impl NativeCellPort {
             return Err(ToolError::Failed(diagnostic.into()));
         }
         let child = &current.children[&operation];
-        if let Some(approval) = prepared.approval_id() {
-            if !child.approvals.contains_key(&approval) {
-                return Err(persistence(
-                    "Prepared Cell approval differs from its original established interaction",
-                ));
-            }
+        if let Some(approval) = prepared.approval_id()
+            && !child.approvals.contains_key(&approval)
+        {
+            return Err(persistence(
+                "Prepared Cell approval differs from its original established interaction",
+            ));
         }
         let display = prepared.display(match self.run.access.spec().language {
             maka_agent_facts::language::Language::En => "en",
@@ -1907,17 +1903,17 @@ impl NativeCellPort {
         cell: CellId,
         result: Result<ToolOutput, ToolError>,
     ) -> Result<ToolOutput, ToolError> {
-        if let Err(error) = &result {
-            if uncertain(error) {
-                self.admission_closed.cancel();
-                self.run.cleanup.observe_tool(error);
-                if let Err(failure) = self.run.quarantine(cell).await {
-                    let failure = ToolError::CleanupUnconfirmed(format!(
-                        "Original Cell remains quarantined locally; canonical quarantine could not be confirmed: {failure}; original: {error}"
-                    ));
-                    self.run.cleanup.observe_tool(&failure);
-                    return Err(failure);
-                }
+        if let Err(error) = &result
+            && uncertain(error)
+        {
+            self.admission_closed.cancel();
+            self.run.cleanup.observe_tool(error);
+            if let Err(failure) = self.run.quarantine(cell).await {
+                let failure = ToolError::CleanupUnconfirmed(format!(
+                    "Original Cell remains quarantined locally; canonical quarantine could not be confirmed: {failure}; original: {error}"
+                ));
+                self.run.cleanup.observe_tool(&failure);
+                return Err(failure);
             }
         }
         result
@@ -2251,11 +2247,9 @@ impl CellPorts for RunCells {
             {
                 Ok(CellObservation::Recorded)
             } else {
-                Err(RunError::Blocked(
-                    BlockerKind::CodeCellRecoveryUnavailable {
-                        cell: cell.id.to_string(),
-                    },
-                ))
+                Err(RunError::from(BlockerKind::CodeCellRecoveryUnavailable {
+                    cell: cell.id.to_string(),
+                }))
             }
         })
     }

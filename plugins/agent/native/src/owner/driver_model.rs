@@ -1060,6 +1060,10 @@ impl DriverModel {
         Ok(HistorySource::live(&self.state, &cut))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Notification projection binds its original history cut, Cell evidence and target prompt"
+    )]
     async fn append_notification(
         &self,
         reader: &HistorySource<'_>,
@@ -1261,10 +1265,9 @@ impl DriverModel {
                 if !matches!(
                     recipe,
                     maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
-                ) {
-                    if let Some(recipe) = target.recipe(recipe).await? {
-                        messages.append_recipe(&recipe).await?;
-                    }
+                ) && let Some(recipe) = target.recipe(recipe).await?
+                {
+                    messages.append_recipe(&recipe).await?;
                 }
             }
             Ok(())
@@ -1639,6 +1642,10 @@ impl DriverModel {
         language: maka_agent_facts::language::Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<(Option<String>, Vec<FrozenCellKnowledge>), RunError> {
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "Replay resolves one history base at a time and keeps that captured base inline"
+        )]
         enum Base {
             Request {
                 sequence: u64,
@@ -1837,6 +1844,10 @@ impl DriverModel {
         Ok(evidence.previous_checkpoint_id)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Inherited replay keeps its original source, target, model capabilities and mutable prompt owners explicit"
+    )]
     async fn inherited_messages(
         &self,
         target: ReplayTarget<'_>,
@@ -1871,6 +1882,10 @@ impl DriverModel {
             };
             source_run = predecessor;
         }
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "Replay resolves one history base at a time and keeps that captured base inline"
+        )]
         enum Base {
             Request { after: u64, request: RequestSpec },
             Compacted { id: FactId, baseline: ContentRef },
@@ -1982,6 +1997,10 @@ impl DriverModel {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Semantic replay keeps the exact history frontier and mutable prompt owners in one borrowed scope"
+    )]
     fn semantic_tail<'a>(
         &'a self,
         target: ReplayTarget<'a>,
@@ -2017,6 +2036,10 @@ impl DriverModel {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Accepted-result projection binds the exact history cut, Cell evidence and model capabilities"
+    )]
     async fn project_accepted(
         &self,
         reader: &HistorySource<'_>,
@@ -2633,8 +2656,7 @@ impl DriverModel {
                 cleanup_state = maka_plugin_core::operation::OperationCleanup::Failed {
                     diagnostic: result
                         .as_ref()
-                        .err()
-                        .expect("private partial publication failed")
+                        .expect_err("private partial publication failed")
                         .to_string(),
                 };
             }
@@ -3099,7 +3121,7 @@ fn original_recovery_contract(
 }
 
 fn unsupported(feature: &str) -> RunError {
-    RunError::Blocked(BlockerKind::UnsupportedProtocol {
+    RunError::from(BlockerKind::UnsupportedProtocol {
         protocol: format!("{PROTOCOL}/{feature}"),
         version: VERSION,
     })
@@ -3418,10 +3440,9 @@ fn merge_input_skills(system: &mut Option<SystemPrompt>, input: &RunInput) -> Re
     for source in source_messages {
         if let Some(skill) =
             super::skills::prompt(&source.message.content).map_err(RunError::InvalidInput)?
+            && seen.insert(maka_agent_engine::digest(&skill)?)
         {
-            if seen.insert(maka_agent_engine::digest(&skill)?) {
-                append_skill(system, skill);
-            }
+            append_skill(system, skill);
         }
     }
     Ok(())
@@ -3472,7 +3493,7 @@ fn ensure_no_unknown_provider_effect(
             && call.provider_executed
             && !results.contains(call.id.as_str())
         {
-            return Err(RunError::Blocked(BlockerKind::ProviderEffectUnknown {
+            return Err(RunError::from(BlockerKind::ProviderEffectUnknown {
                 attempt,
                 call: call.id.clone(),
             }));

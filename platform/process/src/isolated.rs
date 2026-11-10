@@ -43,7 +43,7 @@ use maka_sandbox::{
     filesystem::{Access, Policy, Rule},
 };
 use serde::{Deserialize, Serialize};
-pub use snapshot::{CaptureCost, FileIdentity, SnapshotFile, SnapshotKind, SnapshotProof};
+pub use snapshot::{FileIdentity, SnapshotFile, SnapshotKind, SnapshotProof};
 use std::{
     ffi::OsString,
     io,

@@ -186,6 +186,10 @@ impl CodeExecutor {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The VM thread receives independent tool, resource, call-context and startup-barrier owners"
+)]
 async fn run_cell(
     source: String,
     executor: Arc<dyn ToolExecutor>,

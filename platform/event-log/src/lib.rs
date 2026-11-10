@@ -50,10 +50,6 @@ use connection::{ConnectionAuthority, OwnedConnection};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error(
-        "Resource prefix is ambiguous in this Session; use a longer prefix or the full reference"
-    )]
-    AmbiguousReadResource,
     #[error(transparent)]
     Project(#[from] projects::ProjectError),
     #[error("event log already has a writer")]
@@ -315,28 +311,6 @@ impl EventLog {
             },
         )
         .await?;
-        let high_water = connection
-            .run(move |connection| {
-                sequence_number(connection.query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
-                    [],
-                    |row| row.get(0),
-                )?)
-            })
-            .await;
-        let high_water = match high_water {
-            Ok(value) => value,
-            Err(cause) => {
-                // Startup errors have the same real close boundary as normal shutdown.
-                if let Err(cleanup) = connection.shutdown().await {
-                    return Err(StoreError::StartupCleanupFailed {
-                        cause: Box::new(cause),
-                        cleanup: Box::new(cleanup),
-                    });
-                }
-                return Err(cause);
-            }
-        };
         let operation_live = root_owner.as_ref().map_or_else(
             || Arc::new(applications::operations::LiveOperations::default()),
             |owner| owner.operation_live.clone(),
@@ -346,7 +320,7 @@ impl EventLog {
             connection,
             root_owner,
             operation_live,
-            commits: commits::CommitHub::new(high_water),
+            commits: commits::CommitHub::new(),
             shell_changes: tokio::sync::broadcast::channel(256).0,
         })
     }
@@ -391,7 +365,7 @@ impl EventLog {
 
     /// A coalescible wakeup, not a replacement for committed facts. Register
     /// before reading a bootstrap snapshot, then catch up from its SQL cursor.
-    pub fn subscribe_commits(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub fn subscribe_commits(&self) -> tokio::sync::watch::Receiver<()> {
         self.commits.subscribe()
     }
 
@@ -411,9 +385,4 @@ impl EventLog {
     pub fn subscribe_catalog_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.connection.subscribe_changes()
     }
-}
-
-fn sequence_number(value: i64) -> Result<u64, StoreError> {
-    u64::try_from(value)
-        .map_err(|_| StoreError::InvalidTransition("negative ledger sequence".into()))
 }

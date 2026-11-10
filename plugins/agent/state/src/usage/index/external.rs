@@ -39,12 +39,14 @@ pub(super) fn index(
             insert_tool(
                 c,
                 &request,
-                "fact",
                 Some(&spec.owner),
-                &spec.session_id,
-                Some(record.run),
-                sequence,
-                record.at,
+                UsagePosition {
+                    source: "fact",
+                    session: &spec.session_id,
+                    run: Some(record.run),
+                    sequence,
+                    at: record.at,
+                },
                 &name,
                 None,
                 &ToolUsageSource::External {

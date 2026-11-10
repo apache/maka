@@ -340,12 +340,9 @@ impl WriterIngress {
                     .unwrap_or(Err(StoreError::OperationUnknown));
                 let job: Job = Box::new(move |connection, valid, changed| {
                     let before = connection.total_changes();
-                    let (value, clean, _) = execute(
-                        connection,
-                        valid,
-                        move |connection| operation(connection, value?),
-                        None,
-                    );
+                    let (value, clean, _) = execute(connection, valid, move |connection| {
+                        operation(connection, value?)
+                    });
                     if value.is_err() {
                         failures.fetch_add(1, Ordering::AcqRel);
                     }
@@ -383,7 +380,7 @@ impl WriterIngress {
                 _permit: Some(Arc::new(permit)),
                 command: Command::Run(Box::new(move |connection, valid, changed| {
                     let before = connection.total_changes();
-                    let (result, clean, _) = execute(connection, valid, operation, None);
+                    let (result, clean, _) = execute(connection, valid, operation);
                     if result.is_err() {
                         failures.fetch_add(1, Ordering::AcqRel);
                     }
@@ -409,32 +406,11 @@ fn execute<T>(
     connection: &mut Connection,
     valid: Result<(), StoreError>,
     operation: impl FnOnce(&mut Connection) -> Result<T, StoreError>,
-    cancel: Option<Arc<AtomicBool>>,
 ) -> (Result<T, StoreError>, bool, bool) {
     let mut panicked = false;
     let mut result = match valid {
         Err(error) => Err(error),
         Ok(()) => {
-            if cancel
-                .as_ref()
-                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-            {
-                return (
-                    Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-                        None,
-                    )
-                    .into()),
-                    true,
-                    false,
-                );
-            }
-            if let Some(cancel) = cancel
-                && let Err(error) =
-                    connection.progress_handler(1000, Some(move || cancel.load(Ordering::Acquire)))
-            {
-                return (Err(error.into()), false, false);
-            }
             let result =
                 catch_unwind(AssertUnwindSafe(|| operation(connection))).unwrap_or_else(|_| {
                     panicked = true;
@@ -537,22 +513,13 @@ impl OwnedConnection {
         authority: ConnectionAuthority,
         initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
     ) -> Result<Self, StoreError> {
-        Self::start(options, authority, initialize, None, None).await
-    }
-    pub(crate) async fn open_tracked(
-        options: OpenOptions,
-        authority: ConnectionAuthority,
-        initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
-        registration: crate::root_store::StageRegistration,
-    ) -> Result<Self, StoreError> {
-        Self::start(options, authority, initialize, Some(registration), None).await
+        Self::start(options, authority, initialize, None).await
     }
     pub async fn from_temporary_connection(connection: Connection) -> Result<Self, StoreError> {
         Self::start(
             OpenOptions::temporary(),
             ConnectionAuthority::Temporary,
             |_| Ok(()),
-            None,
             Some(connection),
         )
         .await
@@ -561,7 +528,6 @@ impl OwnedConnection {
         options: OpenOptions,
         authority: ConnectionAuthority,
         initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
-        mut registration: Option<crate::root_store::StageRegistration>,
         existing: Option<Connection>,
     ) -> Result<Self, StoreError> {
         let read_on_owner =
@@ -609,9 +575,6 @@ impl OwnedConnection {
         std::thread::Builder::new()
             .name("runtime-sqlite-writer".into())
             .spawn(move || {
-                if let Some(registration) = &mut registration {
-                    registration.started();
-                }
                 let authority = Arc::new(authority);
                 let initialized_connection = authority.validate().and_then(|()| match existing {
                     Some(connection) => Ok(connection),
@@ -622,9 +585,6 @@ impl OwnedConnection {
                     Err(error) => {
                         writer_physical_released.store(true, Ordering::Release);
                         let _ = ready.send(Err(error));
-                        if let Some(registration) = &mut registration {
-                            registration.complete(true);
-                        }
                         drop(authority);
                         let _ = closed.send(Ok(()));
                         return;
@@ -643,9 +603,6 @@ impl OwnedConnection {
                     receiver.close();
                     let cleanup = close(connection, &authority, Vec::new());
                     let _ = ready.send(Err(init.err().unwrap_or(StoreError::Initialization)));
-                    if let Some(registration) = &mut registration {
-                        registration.complete(cleanup.is_ok());
-                    }
                     drop(authority);
                     let _ = closed.send(cleanup);
                     return;
@@ -893,12 +850,8 @@ impl OwnedConnection {
                 } else {
                     close(connection, &authority, std::mem::take(&mut retained))
                 };
-                let physical_closed = result.is_ok();
                 if let Err(error) = result {
                     failure.get_or_insert(error);
-                }
-                if let Some(registration) = &mut registration {
-                    registration.complete(physical_closed);
                 }
                 drop(authority);
                 drop(retained);
@@ -981,31 +934,10 @@ impl OwnedConnection {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
-        self.read_job(operation, false).await
-    }
-    pub(crate) async fn read_interruptible<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        self.read_job(operation, true).await
-    }
-    async fn read_job<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
-        interruptible: bool,
-    ) -> Result<T, StoreError> {
         self.require_open()?;
         if self.read_on_owner {
             return self.run(operation).await;
         }
-        let cancel = Arc::new(AtomicBool::new(false));
-        struct Cancel(Arc<AtomicBool>);
-        impl Drop for Cancel {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-        let _cancel = Cancel(cancel.clone());
         let (reply, result) = oneshot::channel();
         let slot = ReadSlot {
             index: self
@@ -1033,12 +965,7 @@ impl OwnedConnection {
                         );
                     }
                 };
-                let (value, clean, panicked) = execute(
-                    connection,
-                    valid,
-                    operation,
-                    interruptible.then_some(cancel),
-                );
+                let (value, clean, panicked) = execute(connection, valid, operation);
                 (
                     clean && !panicked,
                     Box::new(move || {

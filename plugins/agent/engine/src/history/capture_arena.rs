@@ -45,10 +45,6 @@ impl ArenaAppend {
         self.arena.write_job(write).await
     }
 }
-pub(crate) struct ArenaValue {
-    pub source: JsonSource,
-    pub inspection: JsonSource,
-}
 pub(crate) fn source_metadata_bytes(count: usize) -> io::Result<usize> {
     count
         .checked_mul(std::mem::size_of::<RangeSource>() + 2 * std::mem::size_of::<usize>())
@@ -64,9 +60,6 @@ struct Inner {
     access: Arc<tokio::sync::Mutex<()>>,
 }
 impl CaptureArena {
-    pub(super) fn owns_arena_locator(&self, identity: &Arc<SourceIdentity>) -> bool {
-        Arc::ptr_eq(&self.0.identity, identity)
-    }
     pub fn metadata_bytes() -> usize {
         2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<Inner>()
@@ -216,21 +209,6 @@ impl CaptureArena {
         }
         let end = append.with_writer(|builder| Ok(builder.position())).await?;
         Ok(start..end)
-    }
-
-    pub async fn append_text(
-        &self,
-        source: TextSource,
-        budget: Arc<dyn SourceBudget>,
-        cancellation: &CancellationToken,
-    ) -> io::Result<ArenaValue> {
-        let range = self
-            .append(text::bytes(source, budget.clone()), budget, cancellation)
-            .await?;
-        Ok(ArenaValue {
-            source: JsonSource::new(self.pending(range.clone())),
-            inspection: JsonSource::new(self.inspect(range)),
-        })
     }
 
     /// Internal immutable-prefix inspection is available before publication.
