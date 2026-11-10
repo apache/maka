@@ -22,6 +22,7 @@ import type { ComposerPrediction } from '../../../../packages/plugin-sdk/src/com
 import type { OriginalMutation } from './host';
 
 type Trigger = 'live' | 'catch_up';
+type ComposerState = 'restoring' | 'occupied' | 'empty';
 type Suggestion = NonNullable<ReturnType<ComposerPrediction['current']>>;
 type Result = { sourceTurnId: string; policyRevision: number; suggestion: string | null };
 type Source = {
@@ -32,6 +33,7 @@ type Source = {
   state:
     | { kind: 'unsettled' }
     | { kind: 'settled'; revision: number; value: Suggestion | null }
+    | { kind: 'skipped' }
     | { kind: 'dismissed' };
 };
 export function predictionTrigger(input: {
@@ -124,7 +126,7 @@ export function invalidatePredictionPreferences(revision: number): void {
 export function createMessagePrediction(options: Options) {
   let alive = true;
   let eligible = false;
-  let canStart = false;
+  let composer: ComposerState = 'restoring';
   let source: Source | null = null;
   let shown: Suggestion | null = null;
   let request: Request | null = null;
@@ -242,7 +244,22 @@ export function createMessagePrediction(options: Options) {
 
   function refresh() {
     if (!alive) return;
-    if (!eligible || !source || source.state.kind === 'dismissed') {
+    if (
+      source &&
+      composer === 'occupied' &&
+      (request?.source !== source || request.cancelled) &&
+      (source.state.kind === 'unsettled' ||
+        (source.state.kind === 'settled' &&
+          preferences.revision() !== null &&
+          source.state.revision !== preferences.revision()))
+    )
+      source.state = { kind: 'skipped' };
+    if (
+      !eligible ||
+      !source ||
+      source.state.kind === 'dismissed' ||
+      source.state.kind === 'skipped'
+    ) {
       publish(null);
       cancel();
       return;
@@ -268,7 +285,7 @@ export function createMessagePrediction(options: Options) {
       if (request.source !== source || request.revision !== config.revision) cancel();
       return;
     }
-    if (!canStart) return;
+    if (composer !== 'empty') return;
     const ticket: Request = {
       source,
       revision: config.revision,
@@ -307,10 +324,10 @@ export function createMessagePrediction(options: Options) {
           : { turnId, trigger, contextKey, settingsReady: false, state: { kind: 'unsettled' } };
       refresh();
     },
-    eligible(value: boolean, mayStart: boolean) {
-      if (!alive || (eligible === value && canStart === mayStart)) return;
+    eligible(value: boolean, nextComposer: ComposerState) {
+      if (!alive || (eligible === value && composer === nextComposer)) return;
       eligible = value;
-      canStart = mayStart;
+      composer = nextComposer;
       if (!value && source) source.settingsReady = false;
       refresh();
     },

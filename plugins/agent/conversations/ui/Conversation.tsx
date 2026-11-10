@@ -2411,13 +2411,13 @@ export function Conversation(props: ConversationProps) {
       !sending() &&
       !recovering() &&
       !confirmingContinuation();
-    const mayStart =
-      draftReady() &&
-      draft() === '' &&
-      !attachments.restoring() &&
-      attachments.files().length === 0 &&
-      attachments.rows().length === 0;
-    untracked(() => messagePrediction.eligible(eligible, mayStart));
+    const composer =
+      !draftReady() || attachments.restoring()
+        ? 'restoring'
+        : draft() !== '' || attachments.files().length > 0 || attachments.blocked() !== ''
+          ? 'occupied'
+          : 'empty';
+    untracked(() => messagePrediction.eligible(eligible, composer));
   });
   const queueSession: ComposerQueue = {
     sessionId,
