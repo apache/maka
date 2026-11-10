@@ -453,7 +453,9 @@ impl PublishProfile {
                     regular_files = regular_files
                         .checked_add(1)
                         .ok_or_else(|| invalid("profile regular-file count overflow"))?;
-                    content::put_stream(connection, &content.digest, content.bytes, &mut file)?;
+                    let id =
+                        content::put_stream(connection, &content.digest, content.bytes, &mut file)?;
+                    retain(connection, &actual.key, revision, id)?;
                 }
                 (Kind::Directory, HomeEntryKind::Directory) => {}
                 (Kind::Symlink { target: a }, HomeEntryKind::Symlink { target: b }) if a == b => {}
@@ -468,20 +470,37 @@ impl PublishProfile {
             return Err(invalid("original frozen HOME inventory length changed"));
         }
         manifest.rewind()?;
-        content::put_stream(
+        let id = content::put_stream(
             connection,
             &prepared.selector.manifest.digest,
             prepared.selector.manifest.bytes,
             &mut *manifest,
         )?;
+        retain(connection, &actual.key, revision, id)?;
         let value = serde_json::to_string(&prepared.selector)?;
         connection.execute("INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(package_id,scope_id,key) DO UPDATE SET revision=excluded.revision,value_json=excluded.value_json", params![actual.namespace.package(), String::from(actual.namespace.scope().clone()), actual.key, revision as i64, value])?;
+        let released = connection.execute(
+            "DELETE FROM agent_executor_profile_contents WHERE profile_key=? AND revision<?",
+            params![actual.key, revision as i64],
+        )?;
+        let mut notification = Notification::METADATA;
+        if released != 0 {
+            notification = notification.combine(Notification::MATERIAL_RELEASED);
+        }
         Ok(Prepared {
             value: (),
             changed: true,
-            notification: Notification::METADATA,
+            notification,
         })
     }
+}
+
+fn retain(connection: &Connection, key: &str, revision: u64, id: i64) -> Result<(), StoreError> {
+    connection.execute(
+        "INSERT OR IGNORE INTO agent_executor_profile_contents VALUES(?,?,?)",
+        params![key, revision as i64, id],
+    )?;
+    Ok(())
 }
 
 struct Materialize {

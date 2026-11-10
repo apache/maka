@@ -23,9 +23,10 @@ use crate::{
     external_publication,
     fold::{self, Attempt, ExternalTask, Tool},
 };
+use maka_agent_facts::operation::RecordedReceipt as Receipt;
 use maka_agent_facts::{cells::CellView, durable::*, external_publication::ExternalPublicationKey};
 use maka_event_log::{StoreError, connection::Query, root_store::DataWriter};
-use maka_plugin_core::operation::{OperationCleanup, Receipt};
+use maka_plugin_core::operation::OperationCleanup;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::collections::BTreeSet;

@@ -242,15 +242,15 @@ impl Owner {
             .latest_run(session.into())
             .await
             .map_err(|e| e.to_string())?
-            && self
+        {
+            let latest = self
                 .durable
                 .frontier(run)
                 .await
-                .map_err(|e| e.to_string())?
-                .terminal
-                .is_none()
-        {
-            return Ok(());
+                .map_err(|e| e.to_string())?;
+            if latest.terminal.is_none() || latest.blocks_followup() {
+                return Ok(());
+            }
         }
         if let Trigger::Goal { goal_id } = &original.request.spec.trigger {
             if goal.is_none() {
@@ -567,10 +567,9 @@ impl Owner {
         }
         let authority_unavailable = match &result {
             Ok(maka_agent_engine::DriverExit::Blocked { blockers, .. }) => {
-                !blockers.is_empty()
-                    && blockers.iter().all(|(_, reason)| {
-                        matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
-                    })
+                blockers.iter().any(|(_, reason)| {
+                    matches!(reason, BlockerKind::CurrentAuthorityUnavailable { .. })
+                })
             }
             Err(RunError::Blocked(reason)) => matches!(
                 reason.as_ref(),

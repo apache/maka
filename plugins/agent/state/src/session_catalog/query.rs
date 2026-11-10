@@ -33,7 +33,7 @@ const BASE: &str = "WITH base AS (
  (SELECT at FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1) AS message_at,
  (SELECT preview FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1) AS preview,
  (SELECT MIN(p.created_at) FROM agent_interaction_pending p JOIN agent_interaction_requests q ON q.request=p.request
-  JOIN agent_run_specs spec ON spec.run=q.run JOIN agent_catalog_runs pending_run ON pending_run.run=q.run WHERE p.session=s.id AND spec.owner=?1 AND pending_run.admission_sequence>COALESCE(source.sequence,0)) AS pending_since,
+  JOIN agent_run_specs spec ON spec.run=q.run JOIN agent_catalog_runs pending_run ON pending_run.run=q.run WHERE p.session=s.id AND spec.owner=?1 AND pending_run.live=1 AND pending_run.admission_sequence>COALESCE(source.sequence,0)) AS pending_since,
  r.run,r.terminal,r.stopped,r.blocked AS run_blocked,r.unknown_effects AS run_unknown,r.cleanup_pending AS run_cleanup,r.late_sequence,
  EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=s.id AND w.admission_sequence>COALESCE(source.sequence,0) AND w.live=1) AS working,
  EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=s.id AND w.admission_sequence>COALESCE(source.sequence,0) AND w.blocked=1) AS blocked,
@@ -68,7 +68,7 @@ const BASE: &str = "WITH base AS (
  AND instr(COALESCE(json_extract(s.configuration,'$.title'),''),?9)>0
  AND (?10 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?10)
  AND (?11=0 OR (?11=1 AND s.archived=0) OR (?11=2 AND s.archived=1))
-), selected AS (SELECT *, (pending_since IS NOT NULL OR blocked) AS needs_you FROM base)";
+), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
 const FILTER: &str =
     "(?12=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?13=0 OR needs_you=1)";
 const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread";

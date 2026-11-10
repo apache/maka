@@ -22,7 +22,7 @@ use maka_agent_facts::{
     cells::CellEvent,
     durable::*,
     external_effects::ExternalEffectEvent,
-    model::prompt_source::source::{self as pull, ChargedBuffer, SourceBudget, json},
+    model::prompt_source::source::{self as pull, ChargedBuffer, SourceBudget},
     read::{ReadPage, ReadRequest},
 };
 use maka_agent_state::session_history::{
@@ -81,13 +81,21 @@ pub(super) async fn read(
         .await
         .map_err(failed)?;
     let page = match selected {
-        ToolResultSource::Returned { body, .. } | ToolResultSource::External { body } => {
-            let projection = json::field(&body, &["projection"], budget.clone())
+        ToolResultSource::Returned(_) | ToolResultSource::External { .. } => {
+            let projection = selected
+                .fields(budget.clone())
                 .await
                 .map_err(failed)?
-                .ok_or_else(|| failed("Original archived tool projection is missing"))?;
+                .expect("returned result")
+                .projection(budget.clone())
+                .await
+                .map_err(failed)?
+                .ok_or_else(|| failed("Original archived tool projection is missing"))?
+                .into_json(budget.clone())
+                .await
+                .map_err(failed)?;
             maka_agent_facts::read::projection_page(
-                projection.source,
+                projection,
                 tool_name,
                 request,
                 read_page_budget(),

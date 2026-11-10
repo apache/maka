@@ -624,3 +624,83 @@ fn spent_budget_does_not_promote_stop_unknown_failure_length_or_summary_to_succe
         );
     }
 }
+
+#[test]
+fn known_publication_failure_only_fences_followup_until_original_cleanup() {
+    use maka_agent_state::{
+        external_publication::{ExternalPublication, PublicationItem},
+        fold::{Blocker, ExternalClosure, ExternalTask},
+    };
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    let task = ExternalTaskId::new();
+    let id = ExternalPublicationId::new();
+    let key = ExternalPublicationKey {
+        publication: id,
+        index: 0,
+    };
+    let item = PublicationItem {
+        key,
+        basis: view.spec.permission_basis,
+        prevention: None,
+        original: None,
+        observation: None,
+        outcome: Some(ExternalPublicationOutcome::Conflict),
+        cleanup: OperationCleanup::Unconfirmed,
+    };
+    view.external = Some(ExternalTask {
+        task,
+        descriptor: view.spec.input.clone(),
+        admitted: true,
+        binding: None,
+        observed: 0,
+        closed: Some(ExternalClosure {
+            outcome: Terminal::Completed,
+            diagnostic: None,
+            final_message: None,
+        }),
+        cleanup: OperationCleanup::Confirmed,
+        cleanup_not_before: None,
+        steering: None,
+        effects: Default::default(),
+        publication: Some(ExternalPublication {
+            id,
+            task,
+            source: view.spec.input.clone(),
+            manifest: Some(view.spec.input.clone()),
+            item_count: Some(2),
+            admitted: 1,
+            settled: 0,
+            abandoned: false,
+            items: [(0, item)].into(),
+        }),
+    });
+    let reason = BlockerKind::ExternalPublicationItem {
+        key,
+        reason: ExternalPublicationBlocker::Conflict,
+    };
+    view.blockers.insert(
+        BlockerId::new(),
+        Blocker {
+            reason: reason.clone(),
+            decision: None,
+            resolved_by: None,
+        },
+    );
+    view.terminal = Some(Terminal::Failed);
+    assert!(view.blocks_followup());
+
+    view.external
+        .as_mut()
+        .unwrap()
+        .publication
+        .as_mut()
+        .unwrap()
+        .items
+        .get_mut(&0)
+        .unwrap()
+        .cleanup = OperationCleanup::Confirmed;
+    assert!(!view.blocks_followup());
+    assert_eq!(view.recovery_failure(), Some(&reason));
+}

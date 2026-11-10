@@ -213,7 +213,7 @@ impl Mounter {
         self.layout_animation = None;
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
-        crate::input::content_moved(surface, false);
+        crate::input::content_moved(surface, None);
         crate::selectable_view::end_batch(surface);
         crate::text_input::end_batch(surface);
         surface.control(|control| control.set_focus_path(crate::input::focus_path(surface)));

@@ -52,6 +52,23 @@ export interface ConversationSessionHandle {
   openBot(): Promise<string>;
 }
 
+export interface QuickToolHandle {
+  /** How many rows the tool shows for the current query. */
+  rows(): number;
+  activate(row: number): void;
+}
+
+/** A view drawn in the quick launcher, below its input. */
+export interface QuickToolInput {
+  query(): string;
+  /** Which of the tool's rows the keyboard selection is on. */
+  selected(): number | null;
+  /** Dismisses the launcher once a row has done its work. */
+  close(): void;
+  report(reason: unknown): void;
+  attach(handle: QuickToolHandle): void;
+}
+
 export interface ConversationPreviewHandle {
   shown(): boolean;
   modalSuppressed(): boolean;
@@ -95,6 +112,8 @@ export const conversationSessionView = defineUiViewContract<ConversationSessionI
 export const conversationPreviewView = defineUiViewContract<ConversationPreviewInput>(
   'maka.conversations.preview',
 );
+
+export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');
 
 export interface SettingsRoute {
   readonly instance: InstanceId;

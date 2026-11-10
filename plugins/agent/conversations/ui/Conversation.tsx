@@ -17,12 +17,7 @@
  * under the License.
  */
 
-import {
-  RiskDecisionDialog,
-  riskActionLabels,
-  sameRiskOffer,
-  type RiskReview,
-} from './RiskDecisionDialog';
+import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -39,13 +34,10 @@ import {
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import type { StagedFile } from 'maka/host';
 import type {
-  AgentAdjudicateRisk,
   AgentContinuationRejection,
   AgentContinuationResult,
   AgentExecution,
-  AgentExecutionResult,
   AgentSendResult,
-  AgentRunBlocker,
   RunId,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -62,7 +54,7 @@ import {
 } from 'nsh';
 import type { ListRef, ScrollRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform, Scroll, windowSize } from 'nsh';
+import { keymap, platform, Scroll } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -159,13 +151,7 @@ import {
   createMessagePrediction,
   predictionTrigger,
 } from '../../../../products/maka/workbench/app/messagePrediction';
-import {
-  canFoldTurn,
-  foldsByDefault,
-  TurnPanel,
-  TurnSummary,
-  turnOutcome,
-} from '../../../../products/maka/workbench/app/TurnPanel';
+import { TurnPanel, TurnSummary } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
@@ -178,6 +164,8 @@ import {
   sameProcessRows,
   orderProcessRows,
   stableRowId,
+  turnOutcome,
+  turnWorkFold,
 } from '../../../../products/maka/workbench/app/processGroups';
 import type {
   ProcessActivity,
@@ -273,7 +261,6 @@ type ConversationProps = {
   client: ScopedHost;
   control: Control;
   continuationPending(): boolean;
-  riskPending(): boolean;
   /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
   botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
@@ -343,7 +330,9 @@ function receiptMessage(reply: any): UiText {
         ? uiMessage('Stopped before delivery. Your message is kept.')
         : value.reason === 'model_unavailable'
           ? uiMessage('The selected model is unavailable. Try again or choose another model.')
-          : uiMessage('Send rejected: {reason}', { reason: value.reason })
+          : value.reason === 'original_operation_unsettled'
+            ? uiMessage('Maka could not confirm the previous operation. Your message is kept.')
+            : uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
   return uiMessage('This action could not be completed.');
@@ -406,8 +395,6 @@ export function Conversation(props: ConversationProps) {
   const compacting = signal<AgentCompactionProgress | null>(null);
   const execution = signal<AgentExecution | null>(null);
   const continuing = signal(false);
-  const adjudicating = signal(false);
-  const riskReview = signal<RiskReview | null>(null);
   const confirmingContinuation = () => continuing() || props.continuationPending();
   const executionRevision = signal(0);
   const stoppingRun = signal<RunId | null>(null);
@@ -417,6 +404,7 @@ export function Conversation(props: ConversationProps) {
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
+  const lastCompletedTurn = signal<string | null>(null);
   const backend = signal<BackendIdentity>(null);
   const interactions = signal<AgentPendingInteractions>({
     revision: -1,
@@ -502,6 +490,7 @@ export function Conversation(props: ConversationProps) {
     return formerBot() && ready() && !archived() ? 'ordinary' : identity;
   };
   const readingSize = signal({ width: 640, height: 192 });
+  let historyOffset = 0;
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
@@ -562,7 +551,7 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      if (run() === 'waiting_for_user' || run() === 'waiting' || run() === 'blocked')
+      if (run() === 'waiting_for_user' || run() === 'waiting')
         return { kind: 'waiting', detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
@@ -598,6 +587,12 @@ export function Conversation(props: ConversationProps) {
         left.kind === right.kind && left.detail === right.detail && left.rowId === right.rowId,
     },
   );
+  const answerTurn = computed(() => {
+    if (!atHistoryTail() || reading() !== 'chat' || botView() !== 'ordinary') return null;
+    // A successful end can arrive before history marks the final answer.
+    if (runId() === null) return lastCompletedTurn();
+    return run() === 'running' ? runTurn() : null;
+  });
   let previousGroups: ProcessEntry[] = [];
   const projection = computed(() => {
     // Current model previews have their own attempt/part order; only durable
@@ -607,6 +602,7 @@ export function Conversation(props: ConversationProps) {
       rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
       activeTurnId: runId() === null ? null : runTurn(),
+      answerTurnId: answerTurn(),
       previous: previousGroups,
     });
     previousGroups = next.entries;
@@ -638,8 +634,11 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => (canOpenWorker() ? openWorker : undefined),
   );
-  const turnExpanded = (turn: TurnPresentation) =>
-    !canFoldTurn(turn) || (turnState(turn.turnKey).expanded() ?? !foldsByDefault(turn));
+  const workFold = (turn: TurnPresentation) => turnWorkFold(turn, platform.idiom === 'terminal');
+  const turnExpanded = (turn: TurnPresentation) => {
+    const fold = workFold(turn);
+    return fold === 'unavailable' || (turnState(turn.turnKey).expanded() ?? fold === 'open');
+  };
   // Showing something in a folded turn opens it; an open turn keeps folding by default.
   const unfoldTurn = (turn: TurnPresentation) => {
     if (!turnExpanded(turn)) turnState(turn.turnKey).expanded.set(true);
@@ -735,17 +734,19 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
-      // On the desktop a turn's summary leads it from its first step, so finishing
-      // changes only its text and fold; the terminal adds it once the turn ends.
+      // The terminal needs a summary as soon as there is folded work to reopen.
+      const outcome = turn && turnOutcome(turn);
+      const streamingFold =
+        turn && turn.answerOutputIds.length > 0 && outcome === null && workFold(turn) === 'closed';
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || turnOutcome(turn) === 'completed'))) &&
+            (platform.idiom !== 'terminal' || outcome === 'completed' || streamingFold))) &&
         !summaries.has(turn.turnKey) &&
-        (platform.idiom !== 'terminal' || turnOutcome(turn) !== null)
+        (platform.idiom !== 'terminal' || outcome !== null || streamingFold)
       ) {
         summaries.add(turn.turnKey);
         result.push({
@@ -765,7 +766,13 @@ export function Conversation(props: ConversationProps) {
         // A message the Host wrote on the user's behalf (a worker finishing, a task
         // result) is not something the user said. It stays in Trajectory.
         if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
-        if (entry.processTurnKey && turn && !turnExpanded(turn)) continue;
+        if (
+          entry.processTurnKey &&
+          turn &&
+          !turnExpanded(turn) &&
+          !turn.answerOutputIds.includes(entry.rowId)
+        )
+          continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
@@ -1172,6 +1179,7 @@ export function Conversation(props: ConversationProps) {
         publishOverlay();
       }
       const completedTurn = observed.lastCompletedTurnId;
+      lastCompletedTurn.set(completedTurn);
       const trigger = predictionTrigger({
         completedTurnId: completedTurn,
         activeTurnId: observed.run?.turnId ?? null,
@@ -1325,6 +1333,7 @@ export function Conversation(props: ConversationProps) {
         case 'opened':
           if (event.sequence > runThrough) {
             predictionTriggerTurn = null;
+            lastCompletedTurn.set(null);
             messagePrediction.source(null, 'live');
             run.set('admitted');
             runId.set(event.runId);
@@ -1352,7 +1361,9 @@ export function Conversation(props: ConversationProps) {
             rows().find((row) => row.position?.kind === 'live' && row.turnId === event.turnId),
           );
           if (event.sequence > runThrough && event.runId === runId()) {
-            predictionTriggerTurn = fact.failed ? null : event.turnId;
+            const completedTurn = fact.failed ? null : event.turnId;
+            predictionTriggerTurn = completedTurn;
+            lastCompletedTurn.set(completedTurn);
             run.set('loading');
             runId.set(null);
             runBackend.set(null);
@@ -1537,6 +1548,20 @@ export function Conversation(props: ConversationProps) {
   };
   const loadOlder = () => extendHistory('before');
   const loadNewer = () => extendHistory('after');
+  const olderHistoryOwner = () => {
+    const owner = historyWindow();
+    return owner?.before && ownsWindow(owner.identity) && props.visible() && navigation() === null
+      ? owner.identity
+      : null;
+  };
+  const nearHistoryStart = () =>
+    historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
+  const olderHistory = createHistoryPrefetch({
+    owner: olderHistoryOwner,
+    nearStart: nearHistoryStart,
+    loadOlder,
+  });
+  const prefetchOlder = () => void olderHistory().catch(report);
   // A tail page can hold only the end of a long turn, whose process rows fold
   // into a few lines that leave the reader too short to scroll for older pages.
   // Read back to the message that opened the latest turn, within a few pages.
@@ -1912,6 +1937,7 @@ export function Conversation(props: ConversationProps) {
     if (terminal(value)) {
       run.set(value.state.kind === 'failed' ? 'failed' : 'idle');
       if (runId() === value.runId) {
+        lastCompletedTurn.set(value.state.kind === 'completed' ? value.turnId : null);
         runId.set(null);
         runBackend.set(null);
         runTurn.set(null);
@@ -1925,7 +1951,6 @@ export function Conversation(props: ConversationProps) {
         case 'admitted':
         case 'running':
         case 'waiting':
-        case 'blocked':
           run.set(value.state.kind);
           break;
       }
@@ -2036,79 +2061,6 @@ export function Conversation(props: ConversationProps) {
         });
     }
   };
-  const riskReviewCurrent = (review: RiskReview) => {
-    const current = execution();
-    return (
-      alive &&
-      current?.state.kind === 'blocked' &&
-      current.sessionId === review.source.sessionId &&
-      current.runId === review.source.runId &&
-      current.highWater === review.source.highWater &&
-      current.state.blockers.some(
-        (blocker) =>
-          blocker.id === review.blockerId &&
-          blocker.offeredActions.some((offer) => sameRiskOffer(offer, review.offer)),
-      )
-    );
-  };
-  const riskUnavailable = () =>
-    !connected()
-      ? uiMessage('Reconnect before submitting a risk decision.')
-      : archived()
-        ? uiMessage('Restore this conversation before submitting a risk decision.')
-        : undefined;
-  const openRiskReview = (review: RiskReview) => {
-    if (!props.visible() || adjudicating() || props.riskPending() || riskReview() !== null) return;
-    const unavailable = riskUnavailable();
-    if (unavailable) {
-      notice.set(unavailable);
-      return;
-    }
-    if (!riskReviewCurrent(review)) {
-      notice.set(uiMessage('This run changed. Close this decision and review the current state.'));
-      return;
-    }
-    riskReview.set(review);
-  };
-  const adjudicateRisk = async (input: AgentAdjudicateRisk) => {
-    if (!alive || adjudicating() || props.riskPending())
-      throw new UiError('Checking the original decision receipt. Do not submit another decision.');
-    const unavailable = riskUnavailable();
-    if (unavailable) throw new UiError(unavailable.key);
-    const source = execution();
-    if (
-      input.sessionId !== sessionId ||
-      source?.state.kind !== 'blocked' ||
-      source.runId !== input.runId ||
-      source.highWater !== input.expectedHighWater ||
-      !source.state.blockers.some((blocker) => blocker.id === input.blockerId)
-    )
-      throw new UiError('This run changed. Close this decision and review the current state.');
-    const blocker = source.state.blockers.find((blocker) => blocker.id === input.blockerId)!;
-    if (!blocker.offeredActions.some((offer) => offer.kind === input.decision.kind))
-      throw new UiError('This action is not offered for the current blocker.');
-    adjudicating.set(true);
-    try {
-      const result: AgentExecutionResult = await props.control('adjudicateRisk', input);
-      if (result.kind !== 'found')
-        throw new UiError('This run is no longer available. Refresh the conversation.');
-      if (result.execution.sessionId !== sessionId || result.execution.runId !== input.runId)
-        throw new UiError('Host returned a different run for this decision.');
-      if (result.execution.highWater <= input.expectedHighWater)
-        throw new UiError('The decision did not advance this run. Refresh before deciding again.');
-      if (!alive) return;
-      batch(() => acceptExecution(result.execution));
-      // A failed refresh does not turn an already-recorded decision into failure.
-      await observe().catch(report);
-    } finally {
-      if (alive)
-        batch(() => {
-          adjudicating.set(false);
-          executionRevision.set(executionRevision() + 1);
-        });
-    }
-  };
-
   const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
@@ -2701,8 +2653,6 @@ export function Conversation(props: ConversationProps) {
     continuation,
     continuing: confirmingContinuation,
     continueRun,
-    adjudicating: () => adjudicating() || props.riskPending(),
-    adjudicateRisk,
     metrics: () => metricText(metrics()),
     contextUsage: () => {
       const value = metrics();
@@ -3079,32 +3029,39 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
-  const blockedExecution = computed(() => {
-    const source = execution();
-    return source?.state.kind === 'blocked' ? { source, blockers: source.state.blockers } : null;
+  const recoveryFailure = computed(() => {
+    const state = execution()?.state;
+    return state?.kind === 'failed' ? state.reason : null;
   });
+  const failureLabels: Record<NonNullable<ReturnType<typeof recoveryFailure>>['kind'], MessageKey> =
+    {
+      current_authority_unavailable: 'Current authority unavailable',
+      external_effect_unknown: 'External operation outcome unknown',
+      operation_unknown: 'Operation outcome unknown',
+      provider_effect_unknown: 'Provider tool outcome unknown',
+      original_admission_unknown: 'Operation outcome unknown',
+      code_cell_recovery_unavailable: 'Code cell recovery unavailable',
+      unsupported_protocol: 'Maka could not resume this run.',
+      cleanup_unconfirmed: 'Resource cleanup unconfirmed',
+      tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
+      model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
+      resources_unavailable: 'Resources unavailable',
+      external_task_unobservable: 'External task cannot be observed',
+      external_publication_item: 'External output needs reconciliation',
+      external_publication_unavailable: 'External output publication unavailable',
+    };
+  const authorityUnavailable = () => {
+    const state = execution()?.state;
+    return state?.kind === 'waiting' && state.authorityUnavailable;
+  };
   const waitingExecution = computed(() => {
     const source = execution();
     return source?.state.kind === 'waiting'
-      ? [...new Set(source.state.waits.map((wait) => wait.kind))]
+      ? [...new Set(source.state.waits.map((wait) => wait.kind))].filter(
+          (kind) => kind !== 'blocker',
+        )
       : [];
   });
-  const blockerLabels: Record<AgentRunBlocker['reason']['kind'], MessageKey> = {
-    current_authority_unavailable: 'Current authority unavailable',
-    external_effect_unknown: 'External operation outcome unknown',
-    operation_unknown: 'Operation outcome unknown',
-    provider_effect_unknown: 'Provider tool outcome unknown',
-    original_admission_unknown: 'Original admission unknown',
-    code_cell_recovery_unavailable: 'Code cell recovery unavailable',
-    unsupported_protocol: 'Protocol recovery unavailable',
-    cleanup_unconfirmed: 'Resource cleanup unconfirmed',
-    tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
-    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
-    resources_unavailable: 'Resources unavailable',
-    external_task_unobservable: 'External task cannot be observed',
-    external_publication_item: 'External output needs reconciliation',
-    external_publication_unavailable: 'External output publication unavailable',
-  };
   const waitLabels: Record<
     Extract<AgentExecution['state'], { kind: 'waiting' }>['waits'][number]['kind'],
     MessageKey
@@ -3117,7 +3074,7 @@ export function Conversation(props: ConversationProps) {
     retry: 'Waiting to retry',
     operation: 'Waiting for the original operation',
     child: 'Waiting for a child run',
-    blocker: 'Waiting for a blocker',
+    blocker: 'Waiting for access to be restored',
   };
   let botReadThrough = 0;
   effect(() => {
@@ -3188,7 +3145,7 @@ export function Conversation(props: ConversationProps) {
                 groups={groups}
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
-                canFold={() => canFoldTurn(turn())}
+                canFold={() => workFold(turn()) !== 'unavailable'}
                 images={{
                   sessionId,
                   through: () => latestKnown,
@@ -3508,75 +3465,21 @@ export function Conversation(props: ConversationProps) {
           )
         }
       />
-      <If when={riskReview()}>
-        {(review) => (
-          <RiskDecisionDialog
-            review={review()}
-            current={() => riskReviewCurrent(review())}
-            unavailable={riskUnavailable}
-            pending={() => adjudicating() || props.riskPending()}
-            submit={adjudicateRisk}
-            close={() => riskReview.set(null)}
-          />
+      <If when={recoveryFailure()}>
+        {(reason) => (
+          <View style={{ ...readingColumn, paddingVertical: 8 }}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {tr(failureLabels[reason().kind])}
+            </Text>
+          </View>
         )}
       </If>
-      <If when={blockedExecution()}>
-        {(blocked) => (
-          <Scroll style={{ maxHeight: Math.max(160, windowSize().height / 3), flexShrink: 1 }}>
-            <View style={{ ...readingColumn, gap: 12, paddingVertical: 12 }}>
-              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Run blocked')}</Text>
-              <Each of={blocked().blockers} key={(blocker) => blocker.id}>
-                {(blocker) => (
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ ...captionTextStyle, color: C.muted }}>
-                      {tr(blockerLabels[blocker().reason.kind])}
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                      <Each of={blocker().offeredActions} key={(offer) => offer.kind}>
-                        {(offer) => (
-                          <Button
-                            disabled={
-                              !connected() || adjudicating() || props.riskPending() || archived()
-                            }
-                            onPress={inputAction(openRiskReview, {
-                              source: blocked().source,
-                              blockerId: blocker().id,
-                              offer: offer(),
-                            })}
-                            style={controlStyle}
-                            hoverStyle={{ backgroundColor: C.surface }}
-                            focusStyle={{ backgroundColor: C.raised }}
-                          >
-                            <Text style={{ ...captionTextStyle, color: C.accent }}>
-                              {tr(riskActionLabels[offer().kind])}…
-                            </Text>
-                          </Button>
-                        )}
-                      </Each>
-                    </View>
-                    <If when={blocker().offeredActions.length === 0}>
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
-                        {tr('No risk action is currently offered.')}
-                      </Text>
-                    </If>
-                    <If
-                      when={
-                        blocker().offeredActions.length > 0 &&
-                        !blocker().offeredActions.some(
-                          (offer) => offer.kind !== 'cancel_blocked_run',
-                        )
-                      }
-                    >
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
-                        {tr('Observation and replanning are not offered for this blocker.')}
-                      </Text>
-                    </If>
-                  </View>
-                )}
-              </Each>
-            </View>
-          </Scroll>
-        )}
+      <If when={authorityUnavailable()}>
+        <View style={{ ...readingColumn, paddingVertical: 8 }}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('Waiting for access to be restored')}
+          </Text>
+        </View>
       </If>
       <Each of={waitingExecution()} key={(kind) => kind}>
         {(kind) => (
@@ -3726,9 +3629,17 @@ export function Conversation(props: ConversationProps) {
                 changedReadExposure();
               }}
               each={displayKeys()}
+              loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
+              onLoadMoreAtStart={prefetchOlder}
+              onScrollDragStart={({ offset }) => {
+                if (offset.y <= 1) prefetchOlder();
+              }}
               onScrollIntent={(event) => {
                 if (event.intent === 'start') void navigateStart().catch(report);
-                else cancelNavigation();
+                else {
+                  cancelNavigation();
+                  if (event.intent === 'scroll' && historyOffset <= 1) prefetchOlder();
+                }
               }}
               onBlur={() => {
                 // Latest returns to editing immediately; its expected blur does
@@ -3755,6 +3666,9 @@ export function Conversation(props: ConversationProps) {
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
+                const towardHistory = event.offset.y < historyOffset;
+                historyOffset = event.offset.y;
+                if (towardHistory && nearHistoryStart()) prefetchOlder();
                 changedReadExposure();
                 awayFromLatest.set(
                   !atHistoryTail() ||
@@ -3774,7 +3688,6 @@ export function Conversation(props: ConversationProps) {
                   event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
                 )
                   innerReader.set(null);
-                if (event.offset.y <= 32) void loadOlder();
                 if (
                   event.offset.y >=
                   Math.max(0, event.contentSize.height - event.size.height) - 32

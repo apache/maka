@@ -309,7 +309,7 @@ impl<C> LayoutTree<C> {
 
     /// What is laid out in `node`'s place: `node`, or the node the holders
     /// it is are laid out through.
-    fn laid_out(&self, mut node: NodeId) -> NodeId {
+    pub(super) fn laid_out(&self, mut node: NodeId) -> NodeId {
         while self.through(node) {
             node = self.nodes[key(node)].children[0];
         }

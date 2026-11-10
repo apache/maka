@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{DriverExit, accepted_content, exit, termination_facts};
+use super::{DriverExit, exit, termination_facts};
 use crate::{
     Engine, RunError,
     reconcile::{self, Action, Live},
@@ -76,19 +76,50 @@ impl Engine {
             if view.terminal.is_some() {
                 return Ok(exit(&view));
             }
+            if self.recover_legacy_compaction(&claim, &view, at).await?
+                || self.resolve_recovered_cells(&claim, &view, at).await?
+            {
+                continue;
+            }
+            let recovery = if view.cancelled_by_risk {
+                None
+            } else {
+                reconcile::recovery_action(&view, &Live::default())
+            };
+            let probe_original = match recovery {
+                Some(Action::Accept(key, outcome)) => {
+                    let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
+                    self.publish(Some(&claim), &view, facts, vec![result], at)
+                        .await?;
+                    continue;
+                }
+                action => action.is_some(),
+            };
+            if view.recovery_failure().is_some() && !view.cancelled_by_risk && !probe_original {
+                self.publish(
+                    Some(&claim),
+                    &view,
+                    termination_facts(&view, Terminal::Failed, None),
+                    vec![],
+                    at,
+                )
+                .await?;
+                continue;
+            }
             let mut source_blocker = None;
-            if view.stopped
-                || view.cancelled_by_risk
-                || view
-                    .spec
-                    .budget
-                    .deadline
-                    .is_some_and(|deadline| at >= deadline)
-                || view
-                    .spec
-                    .budget
-                    .tokens
-                    .is_some_and(|limit| view.tokens >= limit)
+            if !probe_original
+                && (view.stopped
+                    || view.cancelled_by_risk
+                    || view
+                        .spec
+                        .budget
+                        .deadline
+                        .is_some_and(|deadline| at >= deadline)
+                    || view
+                        .spec
+                        .budget
+                        .tokens
+                        .is_some_and(|limit| view.tokens >= limit))
             {
                 // Without ports, only canonical evidence can be drained. A Cell
                 // needing physical observation remains explicitly unavailable.
@@ -121,14 +152,7 @@ impl Engine {
                         }], vec![])
                     },
                     Action::Accept(key, outcome) => {
-                        let tool = &view.tools[&tool_key(&key)];
-                        let result = accepted_content(&view, tool, &outcome)?;
-                        let mut facts = self.accept_cell_with_tool(&view, tool).await?;
-                        facts.push(Fact::ToolResultAccepted {
-                            tool: key,
-                            result: result.reference().clone(),
-                            outcome,
-                        });
+                        let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
                         (facts, vec![result])
                     }
                     Action::Interrupt(attempt, diagnostic) => (
@@ -243,8 +267,7 @@ mod tests {
     use crate::reconcile::tests::{apply_policy_fact, budget_closure, model_closure, policy_view};
     use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
     use maka_plugin_core::operation::{
-        OperationOutcome, OperationReply, OperationResult, RecoveryContract, RecoveryProtocol,
-        RecoveryRef,
+        OperationOutcome, OperationReply, RecoveryContract, RecoveryProtocol, RecoveryRef,
     };
 
     #[test]
@@ -361,7 +384,7 @@ mod tests {
                     reference,
                     receipt: Receipt::Recorded {
                         outcome: OperationOutcome::Returned {
-                            result: OperationResult::Success {
+                            result: maka_agent_facts::operation::RecordedOperationResult::Success {
                                 value: serde_json::Value::Null,
                             },
                         },

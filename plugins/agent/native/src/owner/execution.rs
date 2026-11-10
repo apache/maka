@@ -19,35 +19,29 @@
 
 use super::*;
 use maka_agent_facts::durable::{self, Fact, FactId, RunId, Terminal, UnixMillis};
-use maka_agent_state::{Change, ContentBlob, Head, fold::RunView};
+use maka_agent_state::{Change, fold::RunView};
 use maka_event_log::root_store::DataChange;
 
 pub(super) fn project(view: &RunView) -> Execution {
     let state = match &view.terminal {
         Some(Terminal::Completed) => ExecutionState::Completed,
-        Some(Terminal::Failed) => ExecutionState::Failed,
+        Some(Terminal::Failed) => ExecutionState::Failed {
+            reason: view.recovery_failure().cloned(),
+        },
         Some(Terminal::Cancelled) => ExecutionState::Cancelled,
         None => {
-            let blockers: Vec<_> = view
-                .blockers
-                .iter()
-                .filter(|(_, blocker)| blocker.decision.is_none() && blocker.resolved_by.is_none())
-                .map(|(id, blocker)| RunBlocker {
-                    id: *id,
-                    reason: blocker.reason.clone(),
-                    offered_actions: maka_agent_engine::offered_risk_actions(view, *id),
-                })
-                .collect();
             let waits: Vec<_> = view
                 .waits
                 .values()
                 .filter(|wait| wait.satisfied.is_none() && wait.cancelled.is_none())
                 .map(|wait| wait.reason.clone())
                 .collect();
-            if !blockers.is_empty() {
-                ExecutionState::Blocked { blockers }
-            } else if !waits.is_empty() {
-                ExecutionState::Waiting { waits }
+            let authority_unavailable = view.waiting_for_authority();
+            if !waits.is_empty() || authority_unavailable {
+                ExecutionState::Waiting {
+                    waits,
+                    authority_unavailable,
+                }
             } else if view.current_step.is_none() && !view.stopped {
                 ExecutionState::Admitted
             } else {
@@ -62,13 +56,6 @@ pub(super) fn project(view: &RunView) -> Execution {
         high_water: view.revision,
         state,
     }
-}
-
-fn risk_evidence(evidence: RiskEvidenceInput) -> Result<ContentBlob, String> {
-    if matches!(&evidence, RiskEvidenceInput::Text { text } if text.is_empty()) {
-        return Err("agent_risk_evidence_empty".into());
-    }
-    ContentBlob::json(&evidence).map_err(|error| error.to_string())
 }
 
 impl Owner {
@@ -279,97 +266,6 @@ impl Owner {
             },
         );
         Ok((true, Some(self.durable.prepare_stop_latest(run, change))))
-    }
-
-    pub async fn prepare_adjudicate_risk(
-        self: &Arc<Self>,
-        input: AdjudicateRisk,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-    ) -> Result<(ExecutionResult, Option<DataChange>), String> {
-        let Some(view) = self.session_run(&input.session_id, input.run_id).await? else {
-            return Ok((ExecutionResult::Missing, None));
-        };
-        let (decision, contents) = match input.decision {
-            RiskDecisionInput::RecordExternalObservation { evidence } => {
-                let blob = risk_evidence(evidence)?;
-                (
-                    durable::RiskDecision::RecordExternalObservation {
-                        evidence: blob.reference().clone(),
-                    },
-                    vec![blob],
-                )
-            }
-            RiskDecisionInput::AuthorizeReplan { evidence } => {
-                let blob = risk_evidence(evidence)?;
-                (
-                    durable::RiskDecision::AuthorizeReplan {
-                        evidence: blob.reference().clone(),
-                    },
-                    vec![blob],
-                )
-            }
-            RiskDecisionInput::CancelBlockedRun { diagnostic } => (
-                durable::RiskDecision::CancelBlockedRun { diagnostic },
-                vec![],
-            ),
-        };
-        if let Some(original) = self
-            .durable
-            .fact(input.run_id, self.control_id(operation, "adjudicate_risk"))
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            if !matches!(&original.fact, Fact::RiskAdjudicated { blocker, decision: recorded, .. }
-                if *blocker == input.blocker_id && recorded == &decision)
-            {
-                return Err("agent_control_conflict".into());
-            }
-            return Ok((
-                ExecutionResult::Found {
-                    execution: project(&view),
-                },
-                None,
-            ));
-        }
-        if view.revision != input.expected_high_water {
-            return Err("agent_execution_changed".into());
-        }
-        let scope = maka_agent_engine::risk_action_scope(&view, input.blocker_id, &decision)
-            .map_err(|error| error.to_string())?;
-        let change = self.control_change(
-            operation,
-            "adjudicate_risk",
-            Fact::RiskAdjudicated {
-                blocker: input.blocker_id,
-                decision,
-                scope,
-            },
-        );
-        let mut projected = view.clone();
-        projected
-            .apply(&durable::RecordedFact {
-                schema_version: durable::SCHEMA_VERSION,
-                id: change.id,
-                run: input.run_id,
-                revision: view
-                    .revision
-                    .checked_add(1)
-                    .ok_or("agent_run_revision_overflow")?,
-                at: change.at,
-                fact: change.fact.clone(),
-            })
-            .map_err(|error| error.to_string())?;
-        let transaction =
-            self.durable
-                .prepare_control(input.run_id, Head::from(&view), vec![change], contents);
-        // This value is only the prepared transaction's response. Host exposes
-        // it after the original mutation receipt and this control commit together.
-        Ok((
-            ExecutionResult::Found {
-                execution: project(&projected),
-            },
-            Some(transaction),
-        ))
     }
 
     fn control_change(

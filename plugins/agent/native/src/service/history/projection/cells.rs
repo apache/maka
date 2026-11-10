@@ -31,10 +31,22 @@ pub(super) fn project(
     view: &RunView,
 ) -> Result<Row, String> {
     let mut row = base(item, turn, 0, Role::ToolResult, address)?;
-    row.fields.push((
-        SourceField::Receipt,
-        Field::Json(serde_json::to_value(event).map_err(|error| error.to_string())?),
-    ));
+    let receipt = if let CellEvent::ChildObserved {
+        cell,
+        operation,
+        reply,
+    } = event
+        && maka_agent_facts::operation::result_reference(reply).is_some()
+    {
+        Field::CellChildReceipt {
+            cell: *cell,
+            operation: *operation,
+            reply: Box::new(reply.clone()),
+        }
+    } else {
+        Field::Json(serde_json::to_value(event).map_err(|error| error.to_string())?)
+    };
+    row.fields.push((SourceField::Receipt, receipt));
     let operation = match event {
         CellEvent::ChildPrepared { operation, .. }
         | CellEvent::ChildRejected { operation, .. }
@@ -151,7 +163,7 @@ pub(super) fn project(
                 .push((SourceField::Result, Field::Text(diagnostic.clone().into())));
         }
         CellEvent::ChildObserved { reply, .. } => {
-            let Some(settlement) = super::super::super::delivery::settlement(reply) else {
+            let Some(settlement) = super::super::super::delivery::recorded_settlement(reply) else {
                 return Ok(row);
             };
             returned(

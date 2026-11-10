@@ -889,7 +889,7 @@ impl crate::writeback::Statement for WriteDispatch {
         }
         require_source(connection, &reference.source)?;
         connection.execute("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING", params![&reference.contract.digest, contract_json.as_ref()])?;
-        connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, request_json, serde_json::to_string(&OperationOutcome::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
+        connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, request_json, serde_json::to_string(&OperationOutcome::<OperationResult>::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
 
         // Reserve before COMMIT becomes visible to independent readers. Only
         // committed() issues a claim; an unissued rollback removes this entry.

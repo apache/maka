@@ -19,9 +19,7 @@
 
 use crate::Error;
 use crate::name;
-use maka_agent_facts::durable::{
-    BlockerId, BlockerKind, ExecutionIdentity, RunId, Terminal, WaitReason,
-};
+use maka_agent_facts::durable::{ExecutionIdentity, RunId, Terminal, WaitReason};
 use maka_agent_facts::input::MessageInput;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -106,30 +104,6 @@ impl ContinueRun {
             return Err(Error::Invalid("invalid continuation source fence".into()));
         }
         self.target.validate()
-    }
-}
-
-/// This decision settles the Agent blocker only, never the provider's original outcome.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AdjudicateRisk {
-    pub operation_id: String,
-    pub session_id: String,
-    pub run_id: RunId,
-    /// Compare against the Run-local observation used for this decision.
-    pub expected_high_water: u64,
-    pub blocker_id: BlockerId,
-    pub decision: maka_agent_facts::durable::RiskDecision,
-}
-
-impl AdjudicateRisk {
-    pub fn validate(&self) -> Result<(), Error> {
-        name(&self.operation_id)?;
-        name(&self.session_id)?;
-        if !(1..=9_007_199_254_740_991).contains(&self.expected_high_water) {
-            return Err(Error::Invalid("invalid risk observation fence".into()));
-        }
-        Ok(())
     }
 }
 
@@ -245,15 +219,7 @@ pub enum Progress {
     Pending,
     Running,
     Waiting { waits: Vec<WaitReason> },
-    Blocked { blockers: Vec<RunBlocker> },
     Ended { outcome: Terminal },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunBlocker {
-    pub id: BlockerId,
-    pub reason: BlockerKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -409,10 +375,6 @@ pub trait Commands: Send + Sync + std::any::Any {
         &self,
         request: ContinueRun,
     ) -> futures_util::future::BoxFuture<'_, Result<ExecutionIdentity, CommandError>>;
-    fn adjudicate_risk(
-        &self,
-        request: AdjudicateRisk,
-    ) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
     /// Replace an idle Session's model/Executor selection without changing its
     /// workspace, behavior or permission ceiling. Revision mismatch is explicit.
     /// Every committed choice advances the revision, including identical values.

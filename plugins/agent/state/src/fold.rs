@@ -23,12 +23,11 @@ use std::collections::BTreeMap;
 use maka_agent_facts::{
     durable::*,
     model::{ModelPart, ModelToolCall, ModelUsage, retry_transport::RetryTransportPhase},
+    operation::{RecordedOutcome as OperationOutcome, RecordedReceipt as Receipt},
     tools::ToolSemantics,
 };
 use maka_event_log::StoreError;
-use maka_plugin_core::operation::{
-    OperationCleanup, OperationOutcome, OperationResult, Receipt, RecoveryRef,
-};
+use maka_plugin_core::operation::{OperationCleanup, RecoveryRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -306,6 +305,104 @@ impl RunView {
                 "failed attempt has no evidence permitting fresh recovery admission".into(),
             )),
         }
+    }
+
+    pub fn recovery_cell(&self, id: &str) -> Option<&maka_agent_facts::cells::CellView> {
+        let id = id.parse::<uuid::Uuid>().ok()?.try_into().ok()?;
+        self.cells.get(&id)
+    }
+
+    pub(crate) fn original_cell_id(&self, tool: &Tool) -> Option<maka_agent_facts::cells::CellId> {
+        if !tool.admitted || tool.original.is_some() || tool.call.provider_executed {
+            return None;
+        }
+        let attempt = self.attempts.get(&tool.key.attempt)?;
+        Some(maka_agent_facts::cells::CellId::for_agent(
+            AgentStepLink {
+                run: self.run,
+                step: attempt.step,
+                attempt: tool.key.attempt,
+            },
+            &tool.key.call,
+        ))
+    }
+
+    pub fn original_cell(&self, tool: &Tool) -> Option<&maka_agent_facts::cells::CellView> {
+        self.cells.get(&self.original_cell_id(tool)?)
+    }
+
+    pub(crate) fn tool_unsettled(&self, tool: &Tool) -> bool {
+        tool_unsettled(tool)
+            && self
+                .original_cell(tool)
+                .is_none_or(|cell| cell.has_unsettled_effects())
+    }
+
+    pub fn waiting_for_authority(&self) -> bool {
+        self.blockers.values().any(|blocker| {
+            blocker.decision.is_none()
+                && blocker.resolved_by.is_none()
+                && matches!(
+                    blocker.reason,
+                    BlockerKind::CurrentAuthorityUnavailable { .. }
+                )
+        })
+    }
+
+    pub fn recovery_failures(&self) -> impl Iterator<Item = &BlockerKind> {
+        self.blockers.iter().filter_map(|(id, blocker)| {
+            (self.replans.contains_key(id)
+                || (blocker.decision.is_none()
+                    && blocker.resolved_by.is_none()
+                    && !matches!(
+                        blocker.reason,
+                        BlockerKind::CurrentAuthorityUnavailable { .. }
+                    )))
+            .then_some(&blocker.reason)
+        })
+    }
+
+    pub fn recovery_failure(&self) -> Option<&BlockerKind> {
+        self.recovery_failures().next()
+    }
+
+    pub fn blocks_followup(&self) -> bool {
+        (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
+            && self.has_unsettled_recovery()
+    }
+
+    pub fn has_unsettled_recovery(&self) -> bool {
+        self.recovery_failures().any(|reason| {
+            if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
+                return self
+                    .tools
+                    .get(&tool_key(tool))
+                    .is_none_or(|tool| self.tool_unsettled(tool));
+            }
+            if let BlockerKind::CodeCellRecoveryUnavailable { cell } = reason {
+                return self
+                    .recovery_cell(cell)
+                    .is_none_or(|cell| cell.has_unsettled_effects());
+            }
+            !matches!(
+                reason,
+                BlockerKind::UnsupportedProtocol { .. }
+                    | BlockerKind::ResourcesUnavailable { .. }
+                    | BlockerKind::ExternalPublicationUnavailable { .. }
+                    | BlockerKind::ExternalPublicationItem { .. }
+            )
+        }) || self.tools.values().any(|tool| self.tool_unsettled(tool))
+            || self.attempts.values().any(attempt_unsettled)
+            || self.cells.values().any(|cell| cell.has_unsettled_effects())
+            || self.external.as_ref().is_some_and(|task| {
+                task.admitted
+                    && (task.closed.is_none()
+                        || task.cleanup != OperationCleanup::Confirmed
+                        || task.effects.values().any(|effect| effect.pending())
+                        || task.publication.as_ref().is_some_and(|publication| {
+                            !publication.quiescent() || publication.unknown()
+                        }))
+            })
     }
 
     pub fn check_effect_admission(&self) -> Result<(), StoreError> {
@@ -1299,6 +1396,7 @@ impl RunView {
                 settlement,
                 result,
                 is_error,
+                ..
             } => {
                 let current = self.tool(tool)?;
                 require(
@@ -1345,14 +1443,9 @@ impl RunView {
                     result: result.clone(),
                     outcome: outcome.clone(),
                 };
-                require(
-                    !matches!(outcome, AcceptedResult::Succeeded | AcceptedResult::Failed)
-                        || !current.local_returned.as_ref().is_some_and(|returned| {
-                            returned.settlement
-                                == maka_agent_facts::tool_call::ToolSettlement::Unknown
-                        }),
-                    "an unknown original local effect requires explicit risk acceptance",
-                )?;
+                let local = current.local_returned.as_ref().filter(|returned| {
+                    returned.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+                });
                 if let Some(existing) = &current.accepted {
                     if existing != &acceptance {
                         return Err(StoreError::EventConflict);
@@ -1360,10 +1453,7 @@ impl RunView {
                 } else {
                     let valid = match outcome {
                         AcceptedResult::Succeeded => {
-                            current
-                                .local_returned
-                                .as_ref()
-                                .is_some_and(|returned| !returned.is_error)
+                            local.is_some_and(|returned| !returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|!returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
                                 || current
                                     .provider_result
@@ -1373,17 +1463,14 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Success { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if !result.is_error()
                                 )
                         }
                         AcceptedResult::Failed => {
-                            current
-                                .local_returned
-                                .as_ref()
-                                .is_some_and(|returned| returned.is_error)
+                            local.is_some_and(|returned| returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
                                 || current
                                     .provider_result
@@ -1393,10 +1480,10 @@ impl RunView {
                                     &current.receipt,
                                     Some(Receipt::Recorded {
                                         outcome: OperationOutcome::Returned {
-                                            result: OperationResult::Failure { .. }
+                                            result
                                         },
                                         ..
-                                    })
+                                    }) if result.is_error()
                                 )
                         }
                         AcceptedResult::Rejected => {
@@ -1727,21 +1814,28 @@ impl RunView {
                 }
             }
             Fact::BlockerResolved { blocker, .. } => {
-                let current = self.blockers.get_mut(blocker).ok_or_else(|| {
+                let current = self.blockers.get(blocker).ok_or_else(|| {
                     StoreError::InvalidTransition("unknown resolved blocker".into())
                 })?;
+                let cell_settled = match &current.reason {
+                    BlockerKind::CodeCellRecoveryUnavailable { cell } => self
+                        .recovery_cell(cell)
+                        .is_some_and(|cell| !cell.has_unsettled_effects()),
+                    _ => false,
+                };
                 require(
                     matches!(
                         current.reason,
                         BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ),
-                    "this blocker requires original evidence or explicit risk adjudication",
+                    ) || current.reason.is_legacy_compaction_lookup()
+                        || cell_settled,
+                    "this blocker requires an observation from its original source",
                 )?;
-                require(
-                    current.resolved_by.is_none(),
-                    "authority blocker is already resolved",
-                )?;
-                current.resolved_by = Some(recorded.id);
+                require(current.resolved_by.is_none(), "blocker is already resolved")?;
+                self.blockers
+                    .get_mut(blocker)
+                    .expect("validated blocker")
+                    .resolved_by = Some(recorded.id);
             }
             Fact::RiskAdjudicated {
                 blocker,
@@ -1872,22 +1966,32 @@ impl RunView {
                     !self.cancelled_by_risk || matches!(terminal, Terminal::Cancelled),
                     "risk cancellation is a sticky logical fence",
                 )?;
+                // An unsuccessful Run may close logically while original receipts
+                // and cleanup remain outstanding and observable in its history.
+                let recovery_failed =
+                    *terminal == Terminal::Failed && self.recovery_failure().is_some();
+                let legacy_cancelled = *terminal == Terminal::Cancelled && self.cancelled_by_risk;
                 require(
-                    self.external_terminal_allowed(terminal),
+                    recovery_failed || self.external_terminal_allowed(terminal),
                     "external task is not closed or explicitly risk-cancelled",
                 )?;
                 require(
-                    crate::external_publication::terminal_allowed(self, terminal),
+                    recovery_failed
+                        || crate::external_publication::terminal_allowed(self, terminal),
                     "external publication has unfinished original obligations",
                 )?;
                 require(
-                    self.tools.values().all(|tool| tool.accepted.is_some()),
+                    recovery_failed
+                        || legacy_cancelled
+                        || self.tools.values().all(|tool| tool.accepted.is_some()),
                     "run still has unaccepted hard tool obligations",
                 )?;
                 require(
-                    self.attempts
-                        .values()
-                        .all(|attempt| attempt.closed.is_some() || attempt.interrupted.is_some()),
+                    recovery_failed
+                        || legacy_cancelled
+                        || self.attempts.values().all(|attempt| {
+                            attempt.closed.is_some() || attempt.interrupted.is_some()
+                        }),
                     "run still has open model attempts",
                 )?;
                 require(
@@ -2191,11 +2295,19 @@ fn resolves_blocker(
                 ..
             },
         ) => original == reference,
+        (
+            BlockerKind::ToolCleanupUnconfirmed { tool: original, .. },
+            Receipt::Recorded {
+                cleanup: OperationCleanup::Confirmed,
+                ..
+            },
+        ) => original == tool,
         _ => false,
     }
 }
 
-fn known(outcome: &OperationOutcome) -> bool {
+fn known<R>(outcome: &maka_plugin_core::operation::OperationOutcome<R>) -> bool {
+    use maka_plugin_core::operation::OperationOutcome;
     matches!(
         outcome,
         OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
@@ -2218,10 +2330,26 @@ fn join_receipt(previous: Option<&Receipt>, incoming: &Receipt) -> Result<Receip
                 cleanup: new_cleanup,
             },
         ) => {
-            if known(old) && known(new) && old != new {
-                return Err(StoreError::EventConflict);
+            if known(old) && known(new) {
+                let equal = match (old, new) {
+                    (
+                        OperationOutcome::Returned { result: a },
+                        OperationOutcome::Returned { result: b },
+                    ) => a.same_result(b)?,
+                    (a, b) => a == b,
+                };
+                if !equal {
+                    return Err(StoreError::EventConflict);
+                }
             }
-            let outcome = if known(old)
+            let keep_known = known(old)
+                && !matches!(
+                    new,
+                    OperationOutcome::Returned {
+                        result: maka_agent_facts::operation::RecordedOperationResult::Referenced { .. },
+                    }
+                );
+            let outcome = if keep_known
                 || matches!(new, OperationOutcome::Unresolved)
                 || matches!(
                     (old, new),
@@ -2279,7 +2407,17 @@ pub(crate) fn original_effect_unknown(tool: &Tool) -> bool {
                 })
             )
 }
-pub(crate) fn tool_pending(tool: &Tool) -> bool {
+pub(crate) fn attempt_unsettled(attempt: &Attempt) -> bool {
+    attempt.admission.is_some()
+        && (attempt.cleanup != OperationCleanup::Confirmed
+            || (attempt.closed.is_none()
+                && matches!(
+                    attempt.recovery,
+                    Some(AttemptRecovery::ObserveOriginal { .. })
+                )))
+}
+
+fn tool_unsettled(tool: &Tool) -> bool {
     let cleanup = tool.original.is_some()
         && !matches!(
             &tool.receipt,
@@ -2293,10 +2431,17 @@ pub(crate) fn tool_pending(tool: &Tool) -> bool {
         && tool.prohibited_before_host.is_none()
         && tool.local_returned.is_none()
         && !cell_context_recovered(tool);
-    tool.accepted.is_none() || original_effect_unknown(tool) || cleanup || unknown_admission
+    original_effect_unknown(tool)
+        || cleanup
+        || unknown_admission
+        || (tool.call.provider_executed && tool.provider_result.is_none())
+}
+pub(crate) fn tool_pending(tool: &Tool) -> bool {
+    tool.accepted.is_none() || tool_unsettled(tool)
 }
 
-fn receipt_blocks_effects(receipt: &Receipt) -> bool {
+fn receipt_blocks_effects<R>(receipt: &maka_plugin_core::operation::Receipt<R>) -> bool {
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
     match receipt {
         Receipt::NotRecorded | Receipt::Unavailable { .. } => true,
         Receipt::Recorded { outcome, cleanup } => {
@@ -2314,6 +2459,7 @@ fn cell_context_recovered(tool: &Tool) -> bool {
 }
 fn local_effect_unknown(tool: &Tool) -> bool {
     !cell_context_recovered(tool)
+        && !matches!(&tool.receipt, Some(Receipt::Recorded { outcome, .. }) if known(outcome))
         && tool.local_returned.as_ref().is_some_and(|result| {
             result.settlement == maka_agent_facts::tool_call::ToolSettlement::Unknown
         })

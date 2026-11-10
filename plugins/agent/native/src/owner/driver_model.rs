@@ -90,13 +90,14 @@ pub(super) struct DriverModel {
         tokio::sync::watch::Sender<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
 }
 
+type ProjectedHistory = (Option<String>, Vec<FrozenCellKnowledge>);
+
 struct ProjectedStepInput<'a> {
     system: Option<SystemPrompt>,
     messages: preparation::PromptBuilder,
     source_evidence: RequestSource,
     reader: HistorySource<'a>,
     previous_checkpoint_id: Option<String>,
-    adjudications: Vec<AdjudicationBasis>,
     recovered_cells: Vec<FrozenCellKnowledge>,
 }
 
@@ -116,6 +117,8 @@ struct FrozenInput {
     operation: ModelOperation,
     language: maka_agent_facts::language::Language,
     prompt: ContentRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
@@ -172,7 +175,11 @@ impl FrozenCellKnowledge {
 }
 impl FrozenInput {
     fn content_refs(&self) -> Vec<ContentRef> {
-        let mut refs = vec![self.prompt.clone()];
+        let mut refs = if self.prompt_chunks.is_empty() {
+            vec![self.prompt.clone()]
+        } else {
+            self.prompt_chunks.clone()
+        };
         for notice in &self.notifications {
             for reference in &notice.dependencies {
                 if !refs.contains(reference) {
@@ -322,9 +329,8 @@ impl DriverModel {
         if let Preparation::Prefix { attempt, proof } = &mode {
             self.validate_prefix(view, *attempt, proof).await?;
         }
-        let summary = !matches!(mode, Preparation::Replan { .. })
-            && (matches!(mode, Preparation::Summary)
-                || matches!(input, RunInput::ContextCompact { .. }));
+        let summary = matches!(mode, Preparation::Summary)
+            || matches!(input, RunInput::ContextCompact { .. });
         let model = tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => return Err(RunError::Cancelled),
@@ -343,10 +349,9 @@ impl DriverModel {
             source_evidence,
             reader,
             previous_checkpoint_id,
-            adjudications,
             recovered_cells,
         } = self
-            .project_step_input(view, &input, &mode, &model, summary)
+            .project_step_input(view, &input, &model, summary)
             .await?;
         let reader = &reader;
         let queue = self.state.queue();
@@ -495,9 +500,7 @@ impl DriverModel {
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
-            operation: if !adjudications.is_empty() {
-                ModelOperation::Inference
-            } else if native_compaction {
+            operation: if native_compaction {
                 ModelOperation::CodexCompaction
             } else {
                 context.map_or(ModelOperation::Inference, |value| value.operation)
@@ -598,7 +601,6 @@ impl DriverModel {
                 calibration,
             )?;
             if view.steps.is_empty()
-                && adjudications.is_empty()
                 && let RunInput::Continuation { claim, .. } = &input
             {
                 maka_agent_engine::preparation::validate_continuation(
@@ -619,7 +621,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (payload, layout, cleanup) = snapshot.into_parts();
+            let (prompt_content, chunks, layout, cleanup) = snapshot.into_parts();
             let cleanup_evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -634,7 +636,8 @@ impl DriverModel {
                 route_identity: request.route_identity.clone(),
                 operation: request.request.operation,
                 language: request.request.language,
-                prompt: payload.reference().clone(),
+                prompt: prompt_content,
+                prompt_chunks: chunks.iter().map(|chunk| chunk.reference().clone()).collect(),
                 layout,
                 covered_prefix,
                 normalization: request.request.prompt.normalization().cloned(),
@@ -727,22 +730,10 @@ impl DriverModel {
                 },
                 source_capture: capture.reference().clone(),
                 source_digest: source_evidence.cut.digest.clone(),
-                effective_source_digest: if adjudications.is_empty() {
-                    projection.reference().digest.clone()
-                } else {
-                    maka_agent_engine::digest(&(
-                        &source_evidence,
-                        &adjudications,
-                        &request.input_digest,
-                    ))?
-                },
+                effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
-                projection: if adjudications.is_empty() {
-                    Some(projection.reference().clone())
-                } else {
-                    None
-                },
-                adjudications: adjudications.clone(),
+                projection: Some(projection.reference().clone()),
+                adjudications: Vec::new(),
                 steering: steering_refs,
                 request: body.reference().clone(),
                 request_contents: frozen.content_refs(),
@@ -756,12 +747,12 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
-                        payload,
                         recovery_contract,
                         capture,
                         provenance,
                         projection,
                     ];
+                    contents.extend(chunks);
                     contents.extend(steering_contents);
                     contents
                 },
@@ -786,7 +777,6 @@ impl DriverModel {
         &'a self,
         view: &'a RunView,
         input: &'a RunInput,
-        mode: &'a Preparation,
         model: &'a maka_agent_engine::PreparedModel,
         summary: bool,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
@@ -820,42 +810,8 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let mut previous_checkpoint_id = None;
+            let previous_checkpoint_id;
             let mut recovered_cells = Vec::new();
-            let adjudications: Vec<AdjudicationBasis> = if let Preparation::Replan {
-                attempt,
-                adjudications: inputs,
-            } = mode
-            {
-                let attempt = attempt.ok_or_else(|| unsupported("replan-without-model-base"))?;
-                let (source, baseline, knowledge) = self
-                    .replan_input(
-                        reader,
-                        view,
-                        attempt,
-                        inputs,
-                        model.supports_vision,
-                        &mut messages,
-                    )
-                    .await?;
-                source_evidence = source;
-                system = baseline;
-                recovered_cells = knowledge;
-                let original = view
-                    .attempts
-                    .get(&attempt)
-                    .ok_or_else(|| RunError::InvalidInput("replan attempt is absent".into()))?;
-                previous_checkpoint_id = self
-                    .request_checkpoint(
-                        reader,
-                        view.run,
-                        &reader.request(view.run, original.step).await?,
-                    )
-                    .await?;
-                inputs.iter().map(|input| input.basis.clone()).collect()
-            } else {
-                Vec::new()
-            };
             let mut has_main_attempt = false;
             if summary {
                 for attempt in view.attempts.values() {
@@ -872,12 +828,70 @@ impl DriverModel {
                 }
             }
             let pre_turn_summary = summary && !has_main_attempt;
-            if adjudications.is_empty() {
-                if pre_turn_summary {
-                    let before = history.capture_before(view.run).await?;
-                    previous_checkpoint_id = match input {
-                        RunInput::Continuation { claim, .. } => {
-                            self.inherited_messages(
+            if pre_turn_summary {
+                let before = history.capture_before(view.run).await?;
+                previous_checkpoint_id = match input {
+                    RunInput::Continuation { claim, .. } => {
+                        self.inherited_messages(
+                            target,
+                            reader,
+                            claim.source.execution.run_id,
+                            view.spec.language,
+                            model.supports_vision,
+                            &mut system,
+                            &mut messages,
+                        )
+                        .await?
+                    }
+                    _ => {
+                        self.canonical_messages(
+                            target,
+                            &before,
+                            model.supports_vision,
+                            view.spec.language,
+                            &mut messages,
+                        )
+                        .await?
+                    }
+                };
+                source_evidence.current = before;
+                source_evidence.current_revision = 0;
+            } else if view.baseline.is_some() {
+                (previous_checkpoint_id, recovered_cells) = self
+                    .project_history(
+                        target,
+                        reader,
+                        model.supports_vision,
+                        view.spec.language,
+                        &mut messages,
+                    )
+                    .await?;
+            } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
+                let (source, baseline) = self
+                    .request_base(target, reader, view.run, &request, &mut messages)
+                    .await?;
+                source_evidence = source;
+                source_evidence.current = history.capture().await?;
+                source_evidence.current_revision = view.revision;
+                system = baseline;
+                previous_checkpoint_id =
+                    self.request_checkpoint(reader, view.run, &request).await?;
+                recovered_cells = self
+                    .semantic_tail(
+                        target,
+                        reader,
+                        view,
+                        model.supports_vision,
+                        &mut system,
+                        &mut messages,
+                        after,
+                    )
+                    .await?;
+            } else {
+                match input {
+                    RunInput::Continuation { claim, .. } => {
+                        previous_checkpoint_id = self
+                            .inherited_messages(
                                 target,
                                 reader,
                                 claim.source.execution.run_id,
@@ -887,99 +901,39 @@ impl DriverModel {
                                 &mut messages,
                             )
                             .await?
-                        }
-                        _ => {
-                            self.canonical_messages(
+                    }
+                    _ => {
+                        previous_checkpoint_id = self
+                            .canonical_messages(
                                 target,
-                                &before,
+                                &source_evidence.cut,
                                 model.supports_vision,
                                 view.spec.language,
                                 &mut messages,
                             )
-                            .await?
-                        }
-                    };
-                    source_evidence.current = before;
-                    source_evidence.current_revision = 0;
-                } else if view.baseline.is_some() {
-                    (previous_checkpoint_id, recovered_cells) = self
-                        .project_history(
-                            target,
-                            reader,
-                            model.supports_vision,
-                            view.spec.language,
-                            &mut messages,
-                        )
-                        .await?;
-                } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
-                    let (source, baseline) = self
-                        .request_base(target, reader, view.run, &request, &mut messages)
-                        .await?;
-                    source_evidence = source;
-                    source_evidence.current = history.capture().await?;
-                    source_evidence.current_revision = view.revision;
-                    system = baseline;
-                    previous_checkpoint_id =
-                        self.request_checkpoint(reader, view.run, &request).await?;
-                    recovered_cells = self
-                        .semantic_tail(
-                            target,
-                            reader,
-                            view,
-                            model.supports_vision,
-                            &mut system,
-                            &mut messages,
-                            after,
-                        )
-                        .await?;
-                } else {
-                    match input {
-                        RunInput::Continuation { claim, .. } => {
-                            previous_checkpoint_id = self
-                                .inherited_messages(
-                                    target,
-                                    reader,
-                                    claim.source.execution.run_id,
-                                    view.spec.language,
-                                    model.supports_vision,
-                                    &mut system,
-                                    &mut messages,
-                                )
-                                .await?
-                        }
-                        _ => {
-                            previous_checkpoint_id = self
-                                .canonical_messages(
-                                    target,
-                                    &source_evidence.cut,
-                                    model.supports_vision,
-                                    view.spec.language,
-                                    &mut messages,
-                                )
-                                .await?;
-                            self.project_message_input(
-                                reader,
-                                view,
-                                input,
-                                model.supports_vision,
-                                false,
-                                &mut messages,
-                            )
                             .await?;
-                        }
-                    }
-                    recovered_cells = self
-                        .semantic_tail(
-                            target,
+                        self.project_message_input(
                             reader,
                             view,
+                            input,
                             model.supports_vision,
-                            &mut system,
+                            false,
                             &mut messages,
-                            0,
                         )
                         .await?;
+                    }
                 }
+                recovered_cells = self
+                    .semantic_tail(
+                        target,
+                        reader,
+                        view,
+                        model.supports_vision,
+                        &mut system,
+                        &mut messages,
+                        0,
+                    )
+                    .await?;
             }
             Ok(ProjectedStepInput {
                 system,
@@ -987,7 +941,6 @@ impl DriverModel {
                 source_evidence,
                 reader: captured,
                 previous_checkpoint_id,
-                adjudications,
                 recovered_cells,
             })
         })
@@ -1117,67 +1070,69 @@ impl DriverModel {
         Ok(dependencies)
     }
 
-    async fn project_message_input(
-        &self,
-        reader: &HistorySource<'_>,
-        view: &RunView,
-        input: &RunInput,
+    fn project_message_input<'a>(
+        &'a self,
+        reader: &'a HistorySource<'_>,
+        view: &'a RunView,
+        input: &'a RunInput,
         vision: bool,
         steering: bool,
-        messages: &mut preparation::PromptBuilder,
-    ) -> Result<(), RunError> {
-        if matches!(input, RunInput::HistorySource { .. }) {
-            return Err(unsupported(
-                "history-source-requires-bound-snapshot-projection",
-            ));
-        }
-        if let RunInput::Message {
-            content,
-            source_messages,
-            ..
-        } = input
-        {
-            let scope = maka_agent_state::artifacts::SessionScope {
-                owner: view.spec.owner.clone(),
-                session: view.spec.session_id.clone(),
-            };
-            if source_messages.is_empty() {
-                messages
-                    .append(
-                        preparation::project_input_from(
-                            reader.media_source(scope.clone().into()),
-                            content,
-                            view.spec.language,
-                            vision,
-                            steering,
-                            None,
-                            &self.resources,
-                            &self.cancellation,
-                        )
-                        .await?,
-                    )
-                    .await?;
-            } else {
-                for source in source_messages {
+        messages: &'a mut preparation::PromptBuilder,
+    ) -> BoxFuture<'a, Result<(), RunError>> {
+        Box::pin(async move {
+            if matches!(input, RunInput::HistorySource { .. }) {
+                return Err(unsupported(
+                    "history-source-requires-bound-snapshot-projection",
+                ));
+            }
+            if let RunInput::Message {
+                content,
+                source_messages,
+                ..
+            } = input
+            {
+                let scope = maka_agent_state::artifacts::SessionScope {
+                    owner: view.spec.owner.clone(),
+                    session: view.spec.session_id.clone(),
+                };
+                if source_messages.is_empty() {
                     messages
                         .append(
                             preparation::project_input_from(
                                 reader.media_source(scope.clone().into()),
-                                &source.message.content,
+                                content,
                                 view.spec.language,
                                 vision,
                                 steering,
-                                source.message.origin.as_ref(),
+                                None,
                                 &self.resources,
                                 &self.cancellation,
                             )
                             .await?,
                         )
                         .await?;
+                } else {
+                    for source in source_messages {
+                        messages
+                            .append(
+                                preparation::project_input_from(
+                                    reader.media_source(scope.clone().into()),
+                                    &source.message.content,
+                                    view.spec.language,
+                                    vision,
+                                    steering,
+                                    source.message.origin.as_ref(),
+                                    &self.resources,
+                                    &self.cancellation,
+                                )
+                                .await?,
+                            )
+                            .await?;
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     async fn latest_replan(
@@ -1239,6 +1194,7 @@ impl DriverModel {
             reader.content_source(),
             run,
             &frozen.prompt,
+            &frozen.prompt_chunks,
             &frozen.layout,
             &self.cancellation,
         )
@@ -1293,138 +1249,6 @@ impl DriverModel {
         let source: RequestSource = reader.decode(run, &request.source_capture).await?;
         let system = frozen.system;
         Ok((source, system))
-    }
-
-    async fn replan_input(
-        &self,
-        reader: &HistorySource<'_>,
-        view: &RunView,
-        attempt: ModelAttemptId,
-        inputs: &[maka_agent_engine::ports::ReplanInput],
-        vision: bool,
-        messages: &mut preparation::PromptBuilder,
-    ) -> Result<
-        (
-            RequestSource,
-            Option<SystemPrompt>,
-            Vec<FrozenCellKnowledge>,
-        ),
-        RunError,
-    > {
-        use maka_model::prompt::{ContentPart, ToolOutput};
-        let original = view
-            .attempts
-            .get(&attempt)
-            .ok_or_else(|| RunError::InvalidInput("adjudicated model attempt is missing".into()))?;
-        let request = reader.request(view.run, original.step).await?;
-        let frozen = self.frozen_input(reader, view.run, &request).await?;
-        let model = self.source.capture().await?;
-        let binding = self.executor.binding(&model.provider)?;
-        if frozen.accepted != self.source.accepted
-            || !same_adapter_revision(binding.source(), &frozen.adapter)
-            || preparation::route_identity(&model.provider)? != frozen.route_identity
-        {
-            return Err(unsupported("replan-base-route-changed"));
-        }
-        self.append_frozen_base(
-            ReplayTarget::new(&model, ModelOperation::Inference),
-            reader,
-            view.run,
-            &request,
-            &frozen,
-            messages,
-        )
-        .await?;
-        let observed = self.canonical_parts(view, attempt).await?;
-        let original_cells = self.recorded_inputs(reader, view, 0).await?.cells;
-        let mut reports = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let evidence: Value = reader.decode(view.run, &input.basis.evidence).await?;
-            reports.push(json!({"adjudication":input.basis,"decision":input.decision,"humanEvidence":evidence}));
-        }
-        let report = json!({"type":"host_model_interruption","attempt":attempt,"originalRequest":request.request,"observedThrough":view.revision,"adjudications":reports,"completeItemObservations":observed,"upstreamClosedNotInferred":true,"unknownProviderEffectsNotDeclaredSuccessful":true});
-        let mut content = vec![
-            ContentPart::text(
-                "The original model attempt was interrupted. The following are Host-recorded observations and an explicit human risk decision, not a replayable assistant response or proof of upstream completion. Start a new plan from the legal request base; do not resend an operation whose original outcome remains unknown.",
-            ),
-            ContentPart::text(serde_json::to_string(&report).map_err(RunError::Json)?),
-        ];
-        let mut source: RequestSource = reader.decode(view.run, &request.source_capture).await?;
-        let mut after = source.current_revision;
-        let mut seen = std::collections::BTreeSet::new();
-        loop {
-            let page = reader.history(view.run, after, 256).await?;
-            if page.is_empty() {
-                break;
-            }
-            for fact in page {
-                after = fact.revision;
-                if after > view.revision {
-                    break;
-                }
-                let Fact::ToolResultAccepted {
-                    tool: link, result, ..
-                } = &fact.fact
-                else {
-                    continue;
-                };
-                if link.attempt != attempt {
-                    continue;
-                }
-                if !seen.insert(link.clone()) {
-                    continue;
-                }
-                let tool = reader.tool_call(view.run, link).await?;
-                let output = if let Some(output) = self
-                    .archived_tool_result(reader, view, fact.id, &fact.fact, &tool)
-                    .await?
-                {
-                    output
-                } else {
-                    let evidence = reader.decode(view.run, result).await?;
-                    self.project_accepted(
-                        reader,
-                        view,
-                        view.revision,
-                        &original_cells,
-                        evidence,
-                        vision,
-                        view.spec.language,
-                    )
-                    .await?
-                };
-                content.push(ContentPart::text(format!(
-                    "Original tool observation for {} ({}):",
-                    tool.name, tool.id
-                )));
-                match output {
-                    ToolOutput::Text(text) | ToolOutput::ErrorText(text) => {
-                        content.push(ContentPart::text(text))
-                    }
-                    ToolOutput::Json(value) | ToolOutput::ErrorJson(value) => content.push(
-                        ContentPart::text(serde_json::to_string(&value).map_err(RunError::Json)?),
-                    ),
-                    ToolOutput::Content(parts) => content.extend(parts),
-                }
-            }
-            if after >= view.revision {
-                break;
-            }
-        }
-        messages
-            .append(Message::User {
-                content,
-                provider_options: None,
-            })
-            .await?;
-        source.current = self
-            .state
-            .session_history(view.spec.owner.clone(), view.spec.session_id.clone())
-            .capture()
-            .await?;
-        source.current_revision = view.revision;
-        let system = frozen.system;
-        Ok((source, system, original_cells.into_values().collect()))
     }
 
     async fn decode<T: serde::de::DeserializeOwned>(
@@ -1620,195 +1444,199 @@ impl DriverModel {
         }
         Ok(run)
     }
-    async fn canonical_messages(
-        &self,
-        target: ReplayTarget<'_>,
-        cut: &maka_agent_state::session_history::HistoryCut,
+    fn canonical_messages<'a>(
+        &'a self,
+        target: ReplayTarget<'a>,
+        cut: &'a maka_agent_state::session_history::HistoryCut,
         vision: bool,
         language: maka_agent_facts::language::Language,
-        messages: &mut preparation::PromptBuilder,
-    ) -> Result<Option<String>, RunError> {
-        let reader = HistorySource::live(&self.state, cut);
-        self.project_history(target, &reader, vision, language, messages)
-            .await
-            .map(|(previous, _)| previous)
+        messages: &'a mut preparation::PromptBuilder,
+    ) -> BoxFuture<'a, Result<Option<String>, RunError>> {
+        Box::pin(async move {
+            let reader = HistorySource::live(&self.state, cut);
+            self.project_history(target, &reader, vision, language, messages)
+                .await
+                .map(|(previous, _)| previous)
+        })
     }
 
-    async fn project_history(
-        &self,
-        target: ReplayTarget<'_>,
-        reader: &HistorySource<'_>,
+    fn project_history<'a>(
+        &'a self,
+        target: ReplayTarget<'a>,
+        reader: &'a HistorySource<'_>,
         vision: bool,
         language: maka_agent_facts::language::Language,
-        messages: &mut preparation::PromptBuilder,
-    ) -> Result<(Option<String>, Vec<FrozenCellKnowledge>), RunError> {
-        #[expect(
-            clippy::large_enum_variant,
-            reason = "Replay resolves one history base at a time and keeps that captured base inline"
-        )]
-        enum Base {
-            Request {
-                sequence: u64,
-                run: RunId,
-                request: RequestSpec,
-            },
-            Compacted {
-                id: FactId,
-                run: RunId,
-                baseline: ContentRef,
-            },
-            Snapshot {
-                sequence: u64,
-                run: RunId,
-            },
-        }
-        struct Frame<'reader, 'source: 'reader> {
-            reader: std::borrow::Cow<'reader, HistorySource<'source>>,
-            covered: u64,
-            order: std::collections::BTreeMap<u64, (RunId, u64)>,
-        }
-        let mut current = std::borrow::Cow::Borrowed(reader);
-        let mut frames = Vec::new();
-        let (mut covered, previous_checkpoint_id, mut order) = loop {
-            let reader = current.as_ref();
-            if let Some(snapshot) = reader.as_snapshot() {
-                let manifest = snapshot.manifest().await?;
-                manifest
-                    .validate()
-                    .map_err(|error| RunError::InvalidInput(error.into()))?;
-                if matches!(
-                    manifest.origin,
-                    maka_agent_facts::history_snapshot::Origin::Imported { .. }
-                ) {
-                    self.imported_messages(
-                        target,
-                        snapshot,
-                        reader.source_path(),
-                        vision,
-                        language,
-                        messages,
-                    )
-                    .await?;
-                    break (None, None, std::collections::BTreeMap::new());
-                }
+        messages: &'a mut preparation::PromptBuilder,
+    ) -> BoxFuture<'a, Result<ProjectedHistory, RunError>> {
+        Box::pin(async move {
+            #[expect(
+                clippy::large_enum_variant,
+                reason = "Replay resolves one history base at a time and keeps that captured base inline"
+            )]
+            enum Base {
+                Request {
+                    sequence: u64,
+                    run: RunId,
+                    request: RequestSpec,
+                },
+                Compacted {
+                    id: FactId,
+                    run: RunId,
+                    baseline: ContentRef,
+                },
+                Snapshot {
+                    sequence: u64,
+                    run: RunId,
+                },
             }
-            let mut base = None;
-            let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
-            let mut after = 0;
-            loop {
-                let (items, next) = reader.page(after, 256).await?;
-                for item in items {
-                    match &item.recorded.fact {
-                        Fact::RunAdmitted { .. } => {
-                            let source = reader.run_source(item.recorded.run).await?;
-                            if !matches!(source.spec.origin, RunOrigin::Local) {
-                                if !matches!(source.spec.backend, BackendSpec::Historical {}) {
-                                    return Err(unsupported("historical-installation-backend"));
-                                }
-                                base = Some(Base::Snapshot {
-                                    sequence: item.sequence,
-                                    run: item.recorded.run,
-                                });
-                            }
-                        }
-                        Fact::StepPrepared { step, .. } => {
-                            let request = reader.request(item.recorded.run, *step).await?;
-                            if !request.adjudications.is_empty() {
-                                base = Some(Base::Request {
-                                    sequence: item.sequence,
-                                    run: item.recorded.run,
-                                    request,
-                                });
-                            }
-                        }
-                        Fact::ContextCompacted { baseline } => {
-                            base = Some(Base::Compacted {
-                                id: item.recorded.id,
-                                run: item.recorded.run,
-                                baseline: baseline.clone(),
-                            })
-                        }
-                        _ => {}
+            struct Frame<'reader, 'source: 'reader> {
+                reader: std::borrow::Cow<'reader, HistorySource<'source>>,
+                covered: u64,
+                order: std::collections::BTreeMap<u64, (RunId, u64)>,
+            }
+            let mut current = std::borrow::Cow::Borrowed(reader);
+            let mut frames = Vec::new();
+            let (mut covered, previous_checkpoint_id, mut order) = loop {
+                let reader = current.as_ref();
+                if let Some(snapshot) = reader.as_snapshot() {
+                    let manifest = snapshot.manifest().await?;
+                    manifest
+                        .validate()
+                        .map_err(|error| RunError::InvalidInput(error.into()))?;
+                    if matches!(
+                        manifest.origin,
+                        maka_agent_facts::history_snapshot::Origin::Imported { .. }
+                    ) {
+                        self.imported_messages(
+                            target,
+                            snapshot,
+                            reader.source_path(),
+                            vision,
+                            language,
+                            messages,
+                        )
+                        .await?;
+                        break (None, None, std::collections::BTreeMap::new());
                     }
-                    order
-                        .entry(item.admission_sequence)
-                        .and_modify(|entry| entry.1 = item.recorded.revision)
-                        .or_insert((item.recorded.run, item.recorded.revision));
                 }
-                let Some(next) = next else {
-                    break;
+                let mut base = None;
+                let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
+                let mut after = 0;
+                loop {
+                    let (items, next) = reader.page(after, 256).await?;
+                    for item in items {
+                        match &item.recorded.fact {
+                            Fact::RunAdmitted { .. } => {
+                                let source = reader.run_source(item.recorded.run).await?;
+                                if !matches!(source.spec.origin, RunOrigin::Local) {
+                                    if !matches!(source.spec.backend, BackendSpec::Historical {}) {
+                                        return Err(unsupported("historical-installation-backend"));
+                                    }
+                                    base = Some(Base::Snapshot {
+                                        sequence: item.sequence,
+                                        run: item.recorded.run,
+                                    });
+                                }
+                            }
+                            Fact::StepPrepared { step, .. } => {
+                                let request = reader.request(item.recorded.run, *step).await?;
+                                if !request.adjudications.is_empty() {
+                                    base = Some(Base::Request {
+                                        sequence: item.sequence,
+                                        run: item.recorded.run,
+                                        request,
+                                    });
+                                }
+                            }
+                            Fact::ContextCompacted { baseline } => {
+                                base = Some(Base::Compacted {
+                                    id: item.recorded.id,
+                                    run: item.recorded.run,
+                                    baseline: baseline.clone(),
+                                })
+                            }
+                            _ => {}
+                        }
+                        order
+                            .entry(item.admission_sequence)
+                            .and_modify(|entry| entry.1 = item.recorded.revision)
+                            .or_insert((item.recorded.run, item.recorded.revision));
+                    }
+                    let Some(next) = next else {
+                        break;
+                    };
+                    after = next;
+                }
+                let (covered, previous_checkpoint_id) = match base {
+                    None => (None, None),
+                    Some(Base::Request {
+                        sequence,
+                        run,
+                        request,
+                    }) => {
+                        self.request_base(target, reader, run, &request, messages)
+                            .await?;
+                        (
+                            Some(sequence),
+                            self.request_checkpoint(reader, run, &request).await?,
+                        )
+                    }
+                    Some(Base::Compacted { id, run, baseline }) => {
+                        let capture = self
+                            .append_compacted(reader, run, &baseline, target, messages)
+                            .await?;
+                        (Some(capture.current.through_sequence), Some(id.to_string()))
+                    }
+                    Some(Base::Snapshot { sequence, run }) => {
+                        let nested = reader.nested(run).await?;
+                        frames.push(Frame {
+                            reader: current,
+                            covered: sequence,
+                            order,
+                        });
+                        current = std::borrow::Cow::Owned(nested);
+                        continue;
+                    }
                 };
-                after = next;
+                break (covered, previous_checkpoint_id, order);
+            };
+            loop {
+                let reader = current.as_ref();
+                let covered_revisions = match covered {
+                    Some(through) => self.covered_revisions(reader, through).await?,
+                    None => Default::default(),
+                };
+                let mut recovered_cells = Vec::new();
+                for (admission, (run, through)) in order {
+                    let source = reader.run_source(run).await?;
+                    if matches!(source.spec.backend, BackendSpec::Historical {}) {
+                        continue;
+                    }
+                    let after = covered_revisions.get(&run).copied().unwrap_or(0);
+                    if after >= through {
+                        continue;
+                    }
+                    let view = reader.view(run).await?;
+                    if !covered.is_some_and(|through| admission <= through) {
+                        let input: RunInput = reader.decode(run, &view.spec.input).await?;
+                        self.project_message_input(reader, &view, &input, vision, false, messages)
+                            .await?;
+                    }
+                    let knowledge = self
+                        .semantic_tail(target, reader, &view, vision, &mut None, messages, after)
+                        .await?;
+                    if run == self.execution.run_id {
+                        recovered_cells = knowledge;
+                    }
+                }
+                let Some(frame) = frames.pop() else {
+                    return Ok((previous_checkpoint_id, recovered_cells));
+                };
+                current = frame.reader;
+                covered = Some(frame.covered);
+                order = frame.order;
             }
-            let (covered, previous_checkpoint_id) = match base {
-                None => (None, None),
-                Some(Base::Request {
-                    sequence,
-                    run,
-                    request,
-                }) => {
-                    self.request_base(target, reader, run, &request, messages)
-                        .await?;
-                    (
-                        Some(sequence),
-                        self.request_checkpoint(reader, run, &request).await?,
-                    )
-                }
-                Some(Base::Compacted { id, run, baseline }) => {
-                    let capture = self
-                        .append_compacted(reader, run, &baseline, target, messages)
-                        .await?;
-                    (Some(capture.current.through_sequence), Some(id.to_string()))
-                }
-                Some(Base::Snapshot { sequence, run }) => {
-                    let nested = reader.nested(run).await?;
-                    frames.push(Frame {
-                        reader: current,
-                        covered: sequence,
-                        order,
-                    });
-                    current = std::borrow::Cow::Owned(nested);
-                    continue;
-                }
-            };
-            break (covered, previous_checkpoint_id, order);
-        };
-        loop {
-            let reader = current.as_ref();
-            let covered_revisions = match covered {
-                Some(through) => self.covered_revisions(reader, through).await?,
-                None => Default::default(),
-            };
-            let mut recovered_cells = Vec::new();
-            for (admission, (run, through)) in order {
-                let source = reader.run_source(run).await?;
-                if matches!(source.spec.backend, BackendSpec::Historical {}) {
-                    continue;
-                }
-                let after = covered_revisions.get(&run).copied().unwrap_or(0);
-                if after >= through {
-                    continue;
-                }
-                let view = reader.view(run).await?;
-                if !covered.is_some_and(|through| admission <= through) {
-                    let input: RunInput = reader.decode(run, &view.spec.input).await?;
-                    self.project_message_input(reader, &view, &input, vision, false, messages)
-                        .await?;
-                }
-                let knowledge = self
-                    .semantic_tail(target, reader, &view, vision, &mut None, messages, after)
-                    .await?;
-                if run == self.execution.run_id {
-                    recovered_cells = knowledge;
-                }
-            }
-            let Some(frame) = frames.pop() else {
-                return Ok((previous_checkpoint_id, recovered_cells));
-            };
-            current = frame.reader;
-            covered = Some(frame.covered);
-            order = frame.order;
-        }
+        })
     }
 
     async fn covered_revisions(
@@ -1848,153 +1676,157 @@ impl DriverModel {
         clippy::too_many_arguments,
         reason = "Inherited replay keeps its original source, target, model capabilities and mutable prompt owners explicit"
     )]
-    async fn inherited_messages(
-        &self,
-        target: ReplayTarget<'_>,
-        reader: &HistorySource<'_>,
+    fn inherited_messages<'a>(
+        &'a self,
+        target: ReplayTarget<'a>,
+        reader: &'a HistorySource<'_>,
         mut source_run: RunId,
         language: maka_agent_facts::language::Language,
         vision: bool,
-        system: &mut Option<SystemPrompt>,
-        messages: &mut preparation::PromptBuilder,
-    ) -> Result<Option<String>, RunError> {
-        let mut ancestry = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        loop {
-            if !seen.insert(source_run) {
-                return Err(RunError::InvalidInput(
-                    "continuation ancestry is cyclic".into(),
-                ));
-            }
-            let prior = reader.view(source_run).await?;
-            if prior.spec.session_id != self.execution.session_id {
-                return Err(RunError::InvalidInput(
-                    "continuation ancestry crosses Sessions".into(),
-                ));
-            }
-            let input: RunInput = reader.decode(source_run, &prior.spec.input).await?;
-            let predecessor = input
-                .inherited_claim()
-                .map(|claim| claim.source.execution.run_id);
-            ancestry.push((prior, input));
-            let Some(predecessor) = predecessor else {
-                break;
-            };
-            source_run = predecessor;
-        }
-        #[expect(
-            clippy::large_enum_variant,
-            reason = "Replay resolves one history base at a time and keeps that captured base inline"
-        )]
-        enum Base {
-            Request { after: u64, request: RequestSpec },
-            Compacted { id: FactId, baseline: ContentRef },
-        }
-        let mut selected = None;
-        for (index, (prior, _)) in ancestry.iter().enumerate() {
-            let mut after = 0;
-            let mut base = None;
-            while after < prior.revision {
-                let page = reader.history(prior.run, after, 256).await?;
-                if page.is_empty() {
-                    break;
+        system: &'a mut Option<SystemPrompt>,
+        messages: &'a mut preparation::PromptBuilder,
+    ) -> BoxFuture<'a, Result<Option<String>, RunError>> {
+        Box::pin(async move {
+            let mut ancestry = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            loop {
+                if !seen.insert(source_run) {
+                    return Err(RunError::InvalidInput(
+                        "continuation ancestry is cyclic".into(),
+                    ));
                 }
-                for fact in page {
-                    if fact.revision > prior.revision {
+                let prior = reader.view(source_run).await?;
+                if prior.spec.session_id != self.execution.session_id {
+                    return Err(RunError::InvalidInput(
+                        "continuation ancestry crosses Sessions".into(),
+                    ));
+                }
+                let input: RunInput = reader.decode(source_run, &prior.spec.input).await?;
+                let predecessor = input
+                    .inherited_claim()
+                    .map(|claim| claim.source.execution.run_id);
+                ancestry.push((prior, input));
+                let Some(predecessor) = predecessor else {
+                    break;
+                };
+                source_run = predecessor;
+            }
+            #[expect(
+                clippy::large_enum_variant,
+                reason = "Replay resolves one history base at a time and keeps that captured base inline"
+            )]
+            enum Base {
+                Request { after: u64, request: RequestSpec },
+                Compacted { id: FactId, baseline: ContentRef },
+            }
+            let mut selected = None;
+            for (index, (prior, _)) in ancestry.iter().enumerate() {
+                let mut after = 0;
+                let mut base = None;
+                while after < prior.revision {
+                    let page = reader.history(prior.run, after, 256).await?;
+                    if page.is_empty() {
                         break;
                     }
-                    after = fact.revision;
-                    match fact.fact {
-                        Fact::StepPrepared { step, .. } => {
-                            let request = reader.request(prior.run, step).await?;
-                            if !request.adjudications.is_empty() {
-                                base = Some(Base::Request { after, request });
+                    for fact in page {
+                        if fact.revision > prior.revision {
+                            break;
+                        }
+                        after = fact.revision;
+                        match fact.fact {
+                            Fact::StepPrepared { step, .. } => {
+                                let request = reader.request(prior.run, step).await?;
+                                if !request.adjudications.is_empty() {
+                                    base = Some(Base::Request { after, request });
+                                }
                             }
+                            Fact::ContextCompacted { baseline } => {
+                                base = Some(Base::Compacted {
+                                    id: fact.id,
+                                    baseline,
+                                })
+                            }
+                            _ => {}
                         }
-                        Fact::ContextCompacted { baseline } => {
-                            base = Some(Base::Compacted {
-                                id: fact.id,
-                                baseline,
-                            })
-                        }
-                        _ => {}
                     }
                 }
-            }
-            if let Some(base) = base {
-                selected = Some((index, base));
-                break;
-            }
-        }
-        if let Some((index, base)) = selected {
-            let run = ancestry[index].0.run;
-            let (previous, covered, request_after) = match base {
-                Base::Request { after, request } => {
-                    let (_, baseline) = self
-                        .request_base(target, reader, run, &request, messages)
-                        .await?;
-                    *system = baseline;
-                    (
-                        self.request_checkpoint(reader, run, &request).await?,
-                        None,
-                        Some(after),
-                    )
+                if let Some(base) = base {
+                    selected = Some((index, base));
+                    break;
                 }
-                Base::Compacted { id, baseline } => {
-                    let capture = self
-                        .append_compacted(reader, run, &baseline, target, messages)
-                        .await?;
-                    (
-                        Some(id.to_string()),
-                        Some(capture.current.through_sequence),
-                        None,
-                    )
-                }
-            };
-            let covered_revisions = match covered {
-                Some(through) => self.covered_revisions(reader, through).await?,
-                None => Default::default(),
-            };
-            for (position, (prior, input)) in ancestry.into_iter().enumerate().take(index + 1).rev()
-            {
-                merge_input_skills(system, &input)?;
-                let after = if position == index {
-                    request_after
-                        .unwrap_or_else(|| covered_revisions.get(&prior.run).copied().unwrap_or(0))
-                } else {
-                    covered_revisions.get(&prior.run).copied().unwrap_or(0)
+            }
+            if let Some((index, base)) = selected {
+                let run = ancestry[index].0.run;
+                let (previous, covered, request_after) = match base {
+                    Base::Request { after, request } => {
+                        let (_, baseline) = self
+                            .request_base(target, reader, run, &request, messages)
+                            .await?;
+                        *system = baseline;
+                        (
+                            self.request_checkpoint(reader, run, &request).await?,
+                            None,
+                            Some(after),
+                        )
+                    }
+                    Base::Compacted { id, baseline } => {
+                        let capture = self
+                            .append_compacted(reader, run, &baseline, target, messages)
+                            .await?;
+                        (
+                            Some(id.to_string()),
+                            Some(capture.current.through_sequence),
+                            None,
+                        )
+                    }
                 };
-                let admission = reader.run_source(prior.run).await?.admission_sequence;
-                if !(position == index && request_after.is_some())
-                    && !covered.is_some_and(|through| admission <= through)
+                let covered_revisions = match covered {
+                    Some(through) => self.covered_revisions(reader, through).await?,
+                    None => Default::default(),
+                };
+                for (position, (prior, input)) in
+                    ancestry.into_iter().enumerate().take(index + 1).rev()
                 {
+                    merge_input_skills(system, &input)?;
+                    let after = if position == index {
+                        request_after.unwrap_or_else(|| {
+                            covered_revisions.get(&prior.run).copied().unwrap_or(0)
+                        })
+                    } else {
+                        covered_revisions.get(&prior.run).copied().unwrap_or(0)
+                    };
+                    let admission = reader.run_source(prior.run).await?.admission_sequence;
+                    if !(position == index && request_after.is_some())
+                        && !covered.is_some_and(|through| admission <= through)
+                    {
+                        self.project_message_input(reader, &prior, &input, vision, false, messages)
+                            .await?;
+                    }
+                    let _ = self
+                        .semantic_tail(target, reader, &prior, vision, system, messages, after)
+                        .await?;
+                }
+                Ok(previous)
+            } else {
+                let root = &ancestry.last().expect("source ancestry").0;
+                let history = self
+                    .state
+                    .session_history(root.spec.owner.clone(), root.spec.session_id.clone());
+                let cut = history.capture_before(root.run).await?;
+                let previous = self
+                    .canonical_messages(target, &cut, vision, language, messages)
+                    .await?;
+                for (prior, input) in ancestry.into_iter().rev() {
+                    merge_input_skills(system, &input)?;
                     self.project_message_input(reader, &prior, &input, vision, false, messages)
                         .await?;
+                    let _ = self
+                        .semantic_tail(target, reader, &prior, vision, system, messages, 0)
+                        .await?;
                 }
-                let _ = self
-                    .semantic_tail(target, reader, &prior, vision, system, messages, after)
-                    .await?;
+                Ok(previous)
             }
-            Ok(previous)
-        } else {
-            let root = &ancestry.last().expect("source ancestry").0;
-            let history = self
-                .state
-                .session_history(root.spec.owner.clone(), root.spec.session_id.clone());
-            let cut = history.capture_before(root.run).await?;
-            let previous = self
-                .canonical_messages(target, &cut, vision, language, messages)
-                .await?;
-            for (prior, input) in ancestry.into_iter().rev() {
-                merge_input_skills(system, &input)?;
-                self.project_message_input(reader, &prior, &input, vision, false, messages)
-                    .await?;
-                let _ = self
-                    .semantic_tail(target, reader, &prior, vision, system, messages, 0)
-                    .await?;
-            }
-            Ok(previous)
-        }
+        })
     }
 
     #[expect(
@@ -2053,8 +1885,16 @@ impl DriverModel {
         use maka_agent_facts::tool_output::AcceptedToolResult;
         use maka_model::prompt::ToolOutput;
         use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+        let evidence = match evidence {
+            AcceptedToolResult::ObservedOperation { reply } => AcceptedToolResult::Operation {
+                reply: reader.operation_reply(view.run, &reply).await?,
+                result: None,
+            },
+            evidence => evidence,
+        };
         Ok(match evidence {
             AcceptedToolResult::Local { result }
+            | AcceptedToolResult::Host { result }
             | AcceptedToolResult::Operation {
                 result: Some(result),
                 ..
@@ -2090,6 +1930,9 @@ impl DriverModel {
                     ));
                 }
             },
+            AcceptedToolResult::ObservedOperation { .. } => {
+                unreachable!("resolved operation evidence")
+            }
             AcceptedToolResult::RecoveredCell { cell, evidence } => {
                 let (message, _dependencies) = preparation::project_cell_final(
                     reader.notification_source(),
@@ -2185,11 +2028,20 @@ impl DriverModel {
         language: maka_agent_facts::language::Language,
     ) -> Result<maka_model::prompt::ToolOutput, RunError> {
         let returned: maka_agent_facts::artifact::ToolReturn<
-            maka_agent_facts::tool_output::ReturnedToolResult,
+            maka_agent_facts::tool_output::StoredToolResult,
         > = reader.decode(view.run, result).await?;
         returned
             .validate()
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
+        use maka_agent_facts::tool_output::StoredToolResult;
+        let body = match returned.body {
+            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Operation(body) => {
+                let reply = reader.operation_reply(view.run, &body.operation).await?;
+                body.resolve(reply)
+                    .map_err(|reason| RunError::InvalidInput(reason.into()))?
+            }
+        };
         preparation::project_returned_tool_from(
             reader.media_source(
                 maka_agent_state::artifacts::ArtifactScope {
@@ -2200,7 +2052,7 @@ impl DriverModel {
                 }
                 .into(),
             ),
-            &returned.body,
+            &body,
             language,
             vision,
             &self.resources,

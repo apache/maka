@@ -63,6 +63,16 @@ impl CellsStore {
             .query(ReadContent(session.into(), cell, reference))
             .await
     }
+    pub async fn operation_reply(
+        &self,
+        session: &str,
+        cell: CellId,
+        reply: maka_agent_facts::operation::RecordedOperationReply,
+    ) -> Result<maka_plugin_core::operation::OperationReply, StoreError> {
+        self.data
+            .query(ReadOperation(session.into(), cell, reply))
+            .await
+    }
     pub async fn notifications(
         &self,
         run: RunId,
@@ -220,6 +230,24 @@ impl Query for ReadContent {
     type Output = Vec<u8>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::owned_content(c, &self.0, self.1, &self.2)
+    }
+}
+struct ReadOperation(
+    String,
+    CellId,
+    maka_agent_facts::operation::RecordedOperationReply,
+);
+impl Query for ReadOperation {
+    type Output = maka_plugin_core::operation::OperationReply;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        use maka_agent_facts::operation::{resolve_reply, result_reference};
+        let stored = result_reference(&self.2)
+            .map(|reference| {
+                let bytes = sql::owned_content(c, &self.0, self.1, reference)?;
+                Ok::<_, StoreError>(serde_json::from_slice(&bytes)?)
+            })
+            .transpose()?;
+        resolve_reply(self.2, stored).map_err(invalid)
     }
 }
 struct ReadNotifications(RunId, Option<FactId>, u32);
