@@ -140,6 +140,7 @@ pub(crate) fn load_run(
     c: &Connection,
     run: RunId,
     targets: &[&Fact],
+    blocked_cells: impl Iterator<Item = String>,
     all: bool,
 ) -> Result<BTreeMap<CellId, CellView>, StoreError> {
     let keys: Vec<_> = targets
@@ -152,6 +153,7 @@ pub(crate) fn load_run(
             } => Some(cell.to_string()),
             _ => None,
         })
+        .chain(blocked_cells)
         .collect();
     let query = if all {
         "SELECT body FROM agent_cells WHERE run=?1"

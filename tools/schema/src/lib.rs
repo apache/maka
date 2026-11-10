@@ -240,7 +240,6 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::ExecutionResult>(&mut g),
         root::<maka_agent_api::contract::ContinueRun>(&mut g),
         root::<maka_agent_api::contract::ContinuationResult>(&mut g),
-        root::<maka_agent_api::contract::AdjudicateRisk>(&mut g),
         root::<maka_agent_api::contract::UploadAttachment>(&mut g),
         root::<maka_agent_api::contract::Attachment>(&mut g),
         root::<maka_agent_api::contract::AttachmentUploadResult>(&mut g),

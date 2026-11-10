@@ -18,7 +18,7 @@
  */
 
 //! The only next-action policy. State folds facts; Native executes capabilities.
-use crate::ports::{Preparation, ReplanInput};
+use crate::ports::Preparation;
 use maka_agent_facts::operation::RecordedReceipt;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::{
@@ -241,6 +241,79 @@ fn wait(view: &RunView, reason: WaitReason, due: Option<UnixMillis>, now: UnixMi
         Action::Wait(reason, due)
     }
 }
+fn recovered_cell(view: &RunView, tool: &maka_agent_state::fold::Tool) -> Option<CellId> {
+    if tool.accepted.is_some()
+        || tool.local_returned.as_ref().is_some_and(|result| {
+            result.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
+        })
+    {
+        return None;
+    }
+    let cell = view.original_cell(tool)?;
+    (!cell.has_unsettled_effects()).then_some(cell.id)
+}
+
+pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
+    let observe_tool = |tool: &ToolKey| {
+        let key = maka_agent_state::fold::tool_key(tool);
+        if !live.observed.contains(tool)
+            && view.tools.get(&key).is_some_and(|t| t.original.is_some())
+        {
+            Some(Action::Observe(tool.clone()))
+        } else {
+            None
+        }
+    };
+    view.recovery_failures().find_map(|reason| match reason {
+        BlockerKind::OriginalAdmissionUnknown { tool } => {
+            let parent = view.tools.get(&maka_agent_state::fold::tool_key(tool))?;
+            if let Some(cell) = recovered_cell(view, parent) {
+                Some(Action::Accept(
+                    tool.clone(),
+                    AcceptedResult::CellRecovered { cell },
+                ))
+            } else if let Some(cell) = view.original_cell(parent) {
+                (cell.has_unsettled_effects() && !live.cells_observed.contains(&cell.id))
+                    .then_some(Action::ObserveCell(cell.id))
+            } else {
+                (!live.looked_up.contains(tool)).then(|| Action::Lookup(tool.clone()))
+            }
+        }
+        BlockerKind::OperationUnknown { tool, .. }
+        | BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
+        BlockerKind::CleanupUnconfirmed { reference } => view
+            .tools
+            .values()
+            .find(|tool| tool.original.as_ref() == Some(reference))
+            .and_then(|tool| observe_tool(&tool.key)),
+        BlockerKind::CodeCellRecoveryUnavailable { cell } => {
+            let cell = view.recovery_cell(cell)?;
+            (cell.has_unsettled_effects() && !live.cells_observed.contains(&cell.id))
+                .then_some(Action::ObserveCell(cell.id))
+        }
+        BlockerKind::ExternalPublicationItem { key, .. } => {
+            let publication = view.external.as_ref()?.publication.as_ref()?;
+            let item = publication
+                .items
+                .get(&key.index)
+                .filter(|item| item.key == *key)?;
+            if item.settled() {
+                None
+            } else if let Some(reference) = &item.original {
+                (!live.publication_observed.contains(key))
+                    .then(|| Action::ObservePublication(*key, reference.clone()))
+            } else {
+                (!live.publication_looked_up.contains(key) && !item.known())
+                    .then_some(Action::LookupPublication(*key))
+            }
+        }
+        BlockerKind::ExternalTaskUnobservable { descriptor } if !live.external_observed => view
+            .external
+            .as_ref()
+            .map(|task| Action::ObserveExternal(task.task, descriptor.clone())),
+        _ => None,
+    })
+}
 fn unresolved(view: &RunView) -> bool {
     view.blockers
         .values()
@@ -265,10 +338,11 @@ fn cell_context_recovered(tool: &maka_agent_state::fold::Tool) -> bool {
 }
 
 fn outcome(tool: &maka_agent_state::fold::Tool) -> Option<AcceptedResult> {
-    if let Some(local) = &tool.local_returned {
-        if local.settlement == maka_agent_facts::tool_call::ToolSettlement::Unknown {
-            return None;
-        }
+    if let Some(local) = tool
+        .local_returned
+        .as_ref()
+        .filter(|local| local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown)
+    {
         return Some(if local.is_error {
             AcceptedResult::Failed
         } else {
@@ -332,30 +406,6 @@ impl Live {
             WorkKey::Prepare | WorkKey::CancelModel(_) => false,
         })
     }
-}
-fn adjudicated_tool(view: &RunView, tool: &maka_agent_state::fold::Tool) -> Option<BlockerId> {
-    view.blockers.iter().find_map(|(id, b)| {
-        let decision = b.decision.as_ref()?;
-        if matches!(decision.scope, RiskActionScope::RunCancellation) {
-            return Some(*id);
-        }
-        let covers = match &b.reason {
-            BlockerKind::OperationUnknown {
-                tool: key,
-                reference,
-            } => key == &tool.key && tool.original.as_ref() == Some(reference),
-            BlockerKind::OriginalAdmissionUnknown { tool: key }
-            | BlockerKind::ResourcesUnavailable { tool: key } => key == &tool.key,
-            BlockerKind::ProviderEffectUnknown { attempt, call } => {
-                *attempt == tool.key.attempt && call == &tool.key.call
-            }
-            BlockerKind::CleanupUnconfirmed { reference } => {
-                tool.original.as_ref() == Some(reference)
-            }
-            _ => false,
-        };
-        covers.then_some(*id)
-    })
 }
 fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
     for cell in view.cells.values() {
@@ -739,14 +789,7 @@ fn next_action(
                 if pending.due_at.is_some() {
                     return known(&tool.receipt) && (!finish || confirmed);
                 }
-                let accepted_risk = matches!(&tool.receipt, Some(Receipt::Recorded {
-                    outcome: OperationOutcome::Unknown { .. }, ..
-                })) && tool.accepted.as_ref().is_some_and(|accepted| {
-                    let AcceptedResult::RiskAdjudicated { blocker } = &accepted.outcome else { return false; };
-                    view.blockers.get(blocker).and_then(|blocker| blocker.decision.as_ref())
-                        .is_some_and(|decision| !matches!(&decision.scope, RiskActionScope::RunCancellation))
-                });
-                confirmed && (known(&tool.receipt) || accepted_risk)
+                confirmed && known(&tool.receipt)
             }),
             WaitReason::Blocker { blocker } => view.blockers.get(blocker).is_none_or(|blocker| !active(blocker)),
             WaitReason::Model { attempt } => view.attempts.get(attempt).is_some_and(|attempt| {
@@ -771,17 +814,11 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
-        if tool.admitted && tool.original.is_none() && !tool.call.provider_executed
-            && let Some(cell)=view.cells.values().find(|cell|matches!(&cell.owner,CellOwner::Agent{link,call}if link.run==view.run&&link.attempt==tool.key.attempt&&call==&tool.key.call)&&!matches!(cell.status,CellStatus::Running)&&cell.children.values().all(|child|child.known())&&!cell.blocks_effect_admission())
-                && tool.local_returned.as_ref().is_none_or(|r|r.settlement==maka_agent_facts::tool_call::ToolSettlement::Unknown){return Action::Accept(tool.key.clone(),AcceptedResult::CellRecovered{cell:cell.id});}
+        if let Some(cell) = recovered_cell(view, tool) {
+            return Action::Accept(tool.key.clone(), AcceptedResult::CellRecovered { cell });
+        }
         if let Some(result) = outcome(tool) {
             return Action::Accept(tool.key.clone(), result);
-        }
-        if let Some(blocker) = adjudicated_tool(view, tool) {
-            return Action::Accept(
-                tool.key.clone(),
-                AcceptedResult::RiskAdjudicated { blocker },
-            );
         }
     }
     if fenced {
@@ -872,9 +909,7 @@ fn next_action(
             return action;
         }
         for tool in view.tools.values() {
-            if (view.cancelled_by_risk && tool.accepted.is_some())
-                || adjudicated_tool(view, tool).is_some()
-            {
+            if view.cancelled_by_risk {
                 continue;
             }
             let reason = if tool.call.provider_executed && tool.provider_result.is_none() {
@@ -982,30 +1017,15 @@ fn next_action(
         if known(&tool.receipt)
             && matches!(&tool.receipt,Some(Receipt::Recorded{cleanup,..}) if *cleanup!=maka_plugin_core::operation::OperationCleanup::Confirmed)
         {
-            let covered = view.blockers.values().any(|b| {
-                b.decision
-                    .as_ref()
-                    .is_some_and(|d| !matches!(d.decision, RiskDecision::CancelBlockedRun { .. }))
-                    && match &b.reason {
-                        BlockerKind::OperationUnknown {
-                            tool: key,
-                            reference: old,
-                        } => key == &tool.key && old == reference,
-                        BlockerKind::CleanupUnconfirmed { reference: old } => old == reference,
-                        _ => false,
-                    }
-            });
-            if !covered {
-                let reason = BlockerKind::CleanupUnconfirmed {
-                    reference: reference.clone(),
-                };
-                if !view
-                    .blockers
-                    .values()
-                    .any(|b| b.reason == reason && active(b))
-                {
-                    return Action::Block(reason);
-                }
+            let reason = BlockerKind::CleanupUnconfirmed {
+                reference: reference.clone(),
+            };
+            if !view
+                .blockers
+                .values()
+                .any(|b| b.reason == reason && active(b))
+            {
+                return Action::Block(reason);
             }
         }
     }
@@ -1023,8 +1043,7 @@ fn next_action(
             return Action::Accept(tool.key.clone(), result);
         }
         if let Some(reference) = &tool.original {
-            let adjudicated = view.blockers.values().any(|blocker| blocker.decision.is_some() && matches!(&blocker.reason, BlockerKind::OperationUnknown { tool:key,reference:original } if key == &tool.key && original == reference));
-            if !known(&tool.receipt) && !adjudicated {
+            if !known(&tool.receipt) {
                 pending_effect = true;
                 let reason = BlockerKind::OperationUnknown {
                     tool: tool.key.clone(),
@@ -1053,12 +1072,6 @@ fn next_action(
         }
         if tool.accepted.is_some() {
             continue;
-        }
-        if let Some(blocker) = adjudicated_tool(view, tool) {
-            return Action::Accept(
-                tool.key.clone(),
-                AcceptedResult::RiskAdjudicated { blocker },
-            );
         }
         if tool.call.provider_executed {
             if view
@@ -1210,56 +1223,6 @@ fn next_action(
     }
     if let Some(action) = summary_effects(view) {
         return action;
-    }
-    if !view.replans.is_empty()
-        && view.tools.values().all(|tool| tool.accepted.is_some())
-        && live.only_cleanup(view)
-    {
-        if let Some((id, _)) = view
-            .current_attempt
-            .and_then(|id| view.attempts.get(&id).map(|a| (id, a)))
-            .filter(|(_, a)| a.closed.is_none() && a.interrupted.is_none())
-        {
-            return Action::Interrupt(
-                id,
-                "Explicit human replan replaced the interrupted logical attempt".into(),
-            );
-        }
-        if let Some((_, first)) = view.replans.iter().next() {
-            let RiskActionScope::ModelReplan { attempt, base_step } = &first.scope else {
-                unreachable!("only frozen ModelReplan scopes enter model replan frontier")
-            };
-            let adjudications = view
-                .replans
-                .iter()
-                .filter(|(_, entry)| match &entry.scope {
-                    RiskActionScope::ModelReplan {
-                        base_step: base, ..
-                    } => base == base_step,
-                    _ => false,
-                })
-                .map(|(blocker, entry)| {
-                    let evidence = match &entry.decision {
-                        RiskDecision::RecordExternalObservation { evidence }
-                        | RiskDecision::AuthorizeReplan { evidence } => evidence.clone(),
-                        RiskDecision::CancelBlockedRun { .. } => {
-                            unreachable!("cancellation never selects a model replan")
-                        }
-                    };
-                    ReplanInput {
-                        basis: AdjudicationBasis {
-                            blocker: *blocker,
-                            evidence,
-                        },
-                        decision: entry.decision.clone(),
-                    }
-                })
-                .collect();
-            return Action::Prepare(Preparation::Replan {
-                attempt: Some(*attempt),
-                adjudications,
-            });
-        }
     }
     if unresolved(view) {
         return Action::Idle;

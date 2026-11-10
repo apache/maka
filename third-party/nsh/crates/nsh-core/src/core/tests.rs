@@ -32108,6 +32108,116 @@ fn only_greedy_lines_without_a_limit_share_measurements() {
 }
 
 #[test]
+fn source_reading_keeps_its_place_under_an_unstyled_holder() {
+    let mut c = core();
+    add(
+        &mut c,
+        2,
+        Tag::List,
+        ROOT_ID,
+        &[("height", StyleValue::Number(100.0))],
+    );
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 2,
+            prop: Prop::Count(1),
+        }],
+    );
+    c.commit();
+    add(&mut c, 100, Tag::Cell, 2, &[]);
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 100,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::SetProp {
+                id: 100,
+                prop: Prop::CellIndex(0),
+            },
+        ],
+    );
+    add(
+        &mut c,
+        3,
+        Tag::View,
+        100,
+        &[("height", StyleValue::Number(40.0))],
+    );
+    add(&mut c, 4, Tag::View, 100, &[]);
+    c.lay_out_through(c.key(4).unwrap());
+    add(&mut c, 5, Tag::List, 4, &[]);
+    let source_id = "session/message/body";
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 5,
+                prop: Prop::ListViewport(crate::ListViewport::Parent),
+            },
+            Op::SetProp {
+                id: 5,
+                prop: Prop::Count(1),
+            },
+            Op::SetProp {
+                id: 5,
+                prop: Prop::ListSourceRows(Some(Arc::new(crate::ListSourceRows {
+                    id: source_id.into(),
+                    source_len: 400,
+                    projection_len: 400,
+                    rows: vec![vec![0..400]].into(),
+                }))),
+            },
+        ],
+    );
+    c.commit();
+    add(&mut c, 101, Tag::Cell, 5, &[]);
+    add(&mut c, 6, Tag::Text, 101, &[]);
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 101,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::SetProp {
+                id: 101,
+                prop: Prop::CellIndex(0),
+            },
+            Op::SetProp {
+                id: 6,
+                prop: Prop::TextSource(Some(Arc::new(crate::TextSource::Literal {
+                    id: source_id.into(),
+                    offset: 0,
+                }))),
+            },
+            Op::CreateText {
+                id: 7,
+                text: "R".repeat(400),
+            },
+            Op::Insert {
+                parent: 6,
+                child: 7,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+    c.set_scroll_offset(2, point(px(0.0), px(8.0)), u32::MAX);
+    c.commit();
+
+    c.apply(style_op(3, &[("height", StyleValue::Number(88.0))]))
+        .unwrap();
+    let batch = c.commit().unwrap();
+    assert!(batch.items.iter().any(|item| matches!(
+        item,
+        MountItem::ScrollBy { id: 2, dy, .. } if *dy == px(48.0)
+    )));
+}
+
+#[test]
 fn source_reading_survives_delayed_cell_acknowledgment() {
     source_reading_survives_prepend_and_rich_replacement(true);
 }

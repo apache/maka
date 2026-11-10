@@ -566,6 +566,14 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
     let mut f = Fixture::new(&listener).await;
     f.send("Wait for my next instruction", json!([])).await;
     let (_bot_socket, _) = next(&listener).await;
+    // Recovery can admit the report before the next query; stop only the original Run.
+    let busy = f
+        .owner()
+        .durable
+        .latest_run(f.bot.clone())
+        .await
+        .unwrap()
+        .unwrap();
     let task = f.create("Authorized recovered report").await;
     f.change(&task, "trigger_now").await;
     let (mut worker, _) = next(&listener).await;
@@ -603,13 +611,6 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
     f.query("send", json!({"sessionId":worker_id,"message":"A later independent turn", "backend":f.model,"delivery":"queue"})).await;
     let (_later_worker, _) = next(&listener).await;
     f.reopen().await;
-    let busy = f
-        .owner()
-        .durable
-        .latest_run(f.bot.clone())
-        .await
-        .unwrap()
-        .unwrap();
     f.query("stop", json!({"sessionId":f.bot,"runId":busy}))
         .await;
     let (mut bot, body) = next(&listener).await;

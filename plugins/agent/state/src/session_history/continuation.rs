@@ -117,6 +117,7 @@ pub(crate) fn admit_continuation(
         || original.spec.turn_id != claim.source.execution.turn_id
         || original.spec.session_id != view.spec.session_id
         || original.terminal.is_none()
+        || original.blocks_followup()
         || original.revision != claim.source.high_water
         || original.spec.workspace != view.spec.workspace
         || original.spec.permission_basis.binding.id != view.spec.permission_basis.binding.id

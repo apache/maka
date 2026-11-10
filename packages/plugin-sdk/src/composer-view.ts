@@ -26,7 +26,6 @@ import type {
   AgentExecution,
   AgentGoalView,
   GoalControl,
-  AgentAdjudicateRisk,
   RunId,
   AgentQueueAction,
   AgentQueueMessageResult,
@@ -260,8 +259,6 @@ export interface ComposerSession<Element = unknown> {
   continuation(): ComposerContinuation | null;
   continuing(): boolean;
   continueRun(source: AgentExecution, backend: ComposerBackend): Promise<void>;
-  adjudicating(): boolean;
-  adjudicateRisk(input: AgentAdjudicateRisk): Promise<void>;
   metrics(): string;
   /** How much of its model's context the conversation uses, when the model reports a window. */
   contextUsage?(): ComposerContextUsage | null;
