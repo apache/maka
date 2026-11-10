@@ -196,6 +196,43 @@ test('skill and product inputs still select the native Windows skills consumer',
   assert.ok(worker.suites.includes('windows-skills'));
 });
 
+test('Windows process and account-guard regressions are selected from their actual consumers', () => {
+  const packages = [
+    ['maka-host-runtime', 'platform/host-runtime'],
+    ['maka-process', 'platform/process'],
+  ].map(([name, path]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, path, 'Cargo.toml'),
+  }));
+  const metadata = {
+    root: {
+      packages,
+      workspace_members: packages.map((pkg) => pkg.id),
+      resolve: { nodes: packages.map((pkg) => ({ id: pkg.id, deps: [] })) },
+    },
+  };
+  for (const path of [
+    'platform/host-runtime/src/sandbox/windows/guards.rs',
+    'platform/process/tests/integration/conpty.rs',
+  ]) {
+    const plan = createPlan({
+      root,
+      changes: [path],
+      metadata,
+      revision: 'test',
+      baseline: 'base',
+    });
+    assert.equal(plan.full, false);
+    const worker = plan.workers.find((entry) => entry.id === 'native-windows');
+    assert.ok(worker.suites.includes('windows-shell'));
+    assert.match(plan.suites['windows-shell'].filter, /binary_id\(=maka-process::integration\)/);
+    assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::guards::tests::/);
+    assert.deepEqual(suites['windows-shell'].cargoArgs, suites.root.cargoArgs);
+  }
+});
+
 test('Desktop archives build the Host and worker metadata with the workspace feature union', () => {
   const plan = full();
   assert.equal(plan.suites.desktop.filter, 'test(terminal::desktop_new_session)');

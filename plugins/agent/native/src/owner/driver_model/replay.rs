@@ -24,15 +24,50 @@ use super::{
 use futures_util::future::BoxFuture;
 use maka_agent_engine::{RunError, preparation};
 use maka_agent_facts::{
-    context::ModelPurpose,
+    context::{CodexRequestProvenance, ModelPurpose},
     durable::{Fact, ModelAttemptId, RecordedFact, ToolKey},
     execution::SystemPrompt,
-    model::prompt::Message,
+    model::{prompt::Message, prompt_source::source::ReplayOrigin},
 };
 use maka_agent_state::fold::RunView;
 use maka_model::prompt::AssistantPart;
 use serde_json::json;
 use std::collections::BTreeSet;
+
+#[derive(Default)]
+struct AssistantBatch {
+    parts: Vec<AssistantPart>,
+    producer: Option<Producer>,
+}
+
+struct Producer {
+    model_id: String,
+    codex: Option<CodexRequestProvenance>,
+}
+
+impl AssistantBatch {
+    async fn flush(&mut self, messages: &mut preparation::PromptBuilder) -> Result<(), RunError> {
+        // Even an omitted reasoning-only batch must relinquish its original producer.
+        let producer = self.producer.take();
+        if self.parts.is_empty() {
+            return Ok(());
+        }
+        match producer {
+            Some(producer) => {
+                super::append_observed(
+                    messages,
+                    Message::Assistant {
+                        content: std::mem::take(&mut self.parts),
+                        provider_options: None,
+                    },
+                    ReplayOrigin::observed(&producer.model_id, producer.codex.as_ref()),
+                )
+                .await
+            }
+            None => flush_assistant(messages, &mut self.parts).await,
+        }
+    }
+}
 
 pub(super) struct TailReplay<'a, 'source> {
     driver: &'a DriverModel,
@@ -43,7 +78,7 @@ pub(super) struct TailReplay<'a, 'source> {
     system: &'a mut Option<SystemPrompt>,
     messages: &'a mut preparation::PromptBuilder,
     recorded: RecordedInputs,
-    assistant: Vec<AssistantPart>,
+    assistant: AssistantBatch,
     current: Option<ModelAttemptId>,
     allowed_attempts: BTreeSet<ModelAttemptId>,
     accepted_tools: BTreeSet<ToolKey>,
@@ -69,7 +104,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             system,
             messages,
             recorded,
-            assistant: Vec::new(),
+            assistant: AssistantBatch::default(),
             current: None,
             allowed_attempts: BTreeSet::new(),
             accepted_tools: BTreeSet::new(),
@@ -109,7 +144,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let after = fact.revision;
         let work: BoxFuture<'b, Result<(), RunError>> = match &fact.fact {
             Fact::StepPrepared { step, .. } => Box::pin(async move {
-                flush_assistant(messages, assistant).await?;
+                assistant.flush(messages).await?;
                 *current = None;
                 let request = reader.request(view.run, *step).await?;
                 step_purposes.insert(*step, request.accounting.purpose);
@@ -177,7 +212,11 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 if *purpose == ModelPurpose::Main {
                     allowed_attempts.insert(*attempt);
                 }
-                return Ok(None);
+                Box::pin(async move {
+                    assistant.flush(messages).await?;
+                    *current = None;
+                    Ok(())
+                })
             }
             Fact::ModelObserved { attempt, part, .. } => {
                 let purpose = attempt_steps
@@ -193,13 +232,13 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 }
                 Box::pin(async move {
                     if !allowed_attempts.contains(attempt) {
-                        flush_assistant(messages, assistant).await?;
+                        assistant.flush(messages).await?;
                         *current = None;
                         messages.append(Message::user(format!("Late original-model observation (data only, not a replayable assistant item; no completion inferred):\n{}",serde_json::to_string(&json!({"attempt":attempt,"part":part})).map_err(RunError::Json)?))).await?;
                         return Ok(());
                     }
                     if *current != Some(*attempt) {
-                        flush_assistant(messages, assistant).await?;
+                        assistant.flush(messages).await?;
                         *current = Some(*attempt);
                     }
                     if matches!(
@@ -209,38 +248,34 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                             ..
                         }
                     ) {
-                        let step = attempt_steps.get(attempt).ok_or_else(|| {
-                            RunError::ReconciliationRequired(
-                                "reasoning lost its producing step".into(),
-                            )
-                        })?;
-                        let request = reader.request(view.run, *step).await?;
-                        let evidence: maka_agent_facts::context::RequestContextEvidence =
-                            reader.decode(view.run, &request.provenance).await?;
-                        let codex = evidence
-                            .model_context
-                            .as_ref()
-                            .and_then(|context| context.codex.as_ref());
+                        if assistant.producer.is_none() {
+                            let step = attempt_steps.get(attempt).ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "reasoning lost its producing step".into(),
+                                )
+                            })?;
+                            let request = reader.request(view.run, *step).await?;
+                            let evidence: maka_agent_facts::context::RequestContextEvidence =
+                                reader.decode(view.run, &request.provenance).await?;
+                            assistant.producer = Some(Producer {
+                                model_id: request.accounting.model_id,
+                                codex: evidence.model_context.and_then(|context| context.codex),
+                            });
+                        }
+                        let producer = assistant.producer.as_ref().expect("loaded batch producer");
                         if let Some(part) =
-                            target.part(part, &request.accounting.model_id, codex)?
+                            target.part(part, &producer.model_id, producer.codex.as_ref())?
                         {
-                            flush_assistant(messages, assistant).await?;
-                            super::append_observed(
-                                messages,
-                                Message::Assistant { content: vec![part], provider_options: None },
-                                maka_agent_facts::model::prompt_source::source::ReplayOrigin::observed(
-                                    &request.accounting.model_id, codex,
-                                ),
-                            ).await?;
+                            assistant.parts.push(part);
                         }
                     } else if let Some(part) = preparation::assistant_part(part)? {
-                        assistant.push(part);
+                        assistant.parts.push(part);
                     }
                     Ok(())
                 })
             }
             Fact::ToolResultAccepted { tool, result, .. } => Box::pin(async move {
-                flush_assistant(messages, assistant).await?;
+                assistant.flush(messages).await?;
                 let call = reader.tool_call(view.run, tool).await?;
                 if call.provider_executed {
                     return Ok(());
@@ -291,7 +326,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
             {
                 Box::pin(async move {
-                    flush_assistant(messages, assistant).await?;
+                    assistant.flush(messages).await?;
                     *current = None;
                     messages.append(Message::user(format!("Late original operation evidence (data; it does not replace an accepted tool result):\n{}",serde_json::to_string(&json!({"tool":tool,"reply":reply})).map_err(RunError::Json)?))).await?;
                     Ok(())
@@ -301,7 +336,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
             {
                 Box::pin(async move {
-                    flush_assistant(messages, assistant).await?;
+                    assistant.flush(messages).await?;
                     *current = None;
                     let call = reader.tool_call(view.run, tool).await?;
                     let output = if let Some(output) = driver
@@ -339,7 +374,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
             {
                 Box::pin(async move {
-                    flush_assistant(messages, assistant).await?;
+                    assistant.flush(messages).await?;
                     *current = None;
                     let call = reader.tool_call(view.run, tool).await?;
                     let output = if let Some(output) = driver
@@ -382,7 +417,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
     }
 
     pub(super) async fn finish(mut self) -> Result<Vec<FrozenCellKnowledge>, RunError> {
-        flush_assistant(self.messages, &mut self.assistant).await?;
+        self.assistant.flush(self.messages).await?;
         Ok(self.recorded.cells.into_values().collect())
     }
 }

@@ -34,8 +34,8 @@ fn main() -> native::Result<()> {
 #[cfg(windows)]
 mod native {
     use futures_util::FutureExt;
-    use maka_agent_facts::terminal::TerminalSize;
     use maka_host_runtime::sandbox::windows::{self, Backend, Installation, Status};
+    use maka_plugin_core::terminal::TerminalSize;
     use maka_process::{
         Command, ObservedProcess, PipeEvent, ProcessOutcome, Termination, bootstrap, pipe, pty,
     };

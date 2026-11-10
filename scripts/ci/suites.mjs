@@ -301,18 +301,14 @@ export const suites = {
   },
   'windows-shell': {
     workspace: 'root',
-    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native'],
-    cargoArgs: [
-      '--locked',
-      '-p',
-      'maka-process',
-      '-p',
-      'maka-settings-native',
-      '-p',
-      'maka-agent-native',
-    ],
-    filter:
-      'test(git_bash) | test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
+    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native', 'maka-host-runtime'],
+    cargoArgs: ['--locked', '--workspace'],
+    filter: [
+      'test(git_bash)',
+      'test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
+      'binary_id(=maka-process::integration)',
+      '(package(=maka-host-runtime) & test(sandbox::windows::guards::tests::))',
+    ].join(' | '),
   },
   native: {
     workspace: 'root',
