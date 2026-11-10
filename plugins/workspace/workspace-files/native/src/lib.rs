@@ -181,6 +181,11 @@ impl Handler for Files {
                 Err(error) if name == "readImage" => {
                     return Err(HandlerError::from(error.to_string()));
                 }
+                Err(ToolError::PermissionDenied(denial)) => FileResult::PermissionDenied {
+                    execution_state: maka_workspace_api::NotStarted::NotStarted,
+                    denial,
+                },
+
                 Err(ToolError::Failed(message) | ToolError::Io { message, .. }) => {
                     FileResult::Failed { message }
                 }

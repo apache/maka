@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_facts::interaction::PermissionRequest;
+use maka_agent_facts::tools::PermissionDenialReason;
 use std::path::Component;
 
 pub(super) async fn authorize(
@@ -56,7 +57,10 @@ pub(super) async fn authorize(
                 network: Network::Denied,
             };
             if !captured.ceiling.permits(&lexical).map_err(failed)? {
-                return Err(failed(
+                return Err(maka_agent_authority::permissions::denied(
+                    PermissionDenialReason::ProtectedBoundary,
+                    &lexical,
+                    None,
                     "Workspace metadata or Host-private files cannot be granted",
                 ));
             }
@@ -127,7 +131,10 @@ pub(super) async fn authorize(
                 network: Network::Denied,
             };
             if !captured.ceiling.permits(&permissions).map_err(failed)? {
-                return Err(failed(
+                return Err(maka_agent_authority::permissions::denied(
+                    PermissionDenialReason::ProtectedBoundary,
+                    &permissions,
+                    None,
                     "Workspace metadata or Host-private files cannot be granted",
                 ));
             }
@@ -165,7 +172,10 @@ pub(super) async fn authorize(
         .and_then(|sandbox| sandbox.intersect(&floor))
         .map_err(failed)?;
     if !captured.sandbox.permits(&required).map_err(failed)? {
-        return Err(failed(
+        return Err(maka_agent_authority::permissions::denied(
+            PermissionDenialReason::ApprovalInsufficient,
+            &required,
+            None,
             "Not all target files were approved; no files were changed",
         ));
     }

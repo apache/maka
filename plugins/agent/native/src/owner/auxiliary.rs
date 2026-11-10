@@ -268,7 +268,10 @@ impl Auxiliary {
             }
             Err(Error::Admission(_))
             | Err(Error::Tool(
-                ToolError::Failed(_) | ToolError::Native(_) | ToolError::Io { .. },
+                ToolError::PermissionDenied(_)
+                | ToolError::Failed(_)
+                | ToolError::Native(_)
+                | ToolError::Io { .. },
             )) => Outcome::Error,
         };
         custody.journal().settle(outcome, timestamp()?).await.map_err(|error| {

@@ -91,8 +91,34 @@ pub struct NativeToolError {
     pub message: String,
 }
 
+/// A Host decision made before the requested effect starts. Never inferred from stderr.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, thiserror::Error,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[error("{message}")]
+pub struct PermissionDenial {
+    pub reason: PermissionDenialReason,
+    pub permissions: maka_sandbox::grant::Permissions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<crate::interaction::PermissionCommand>,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDenialReason {
+    RequestsDisabled,
+    UserDenied,
+    ProtectedBoundary,
+    ApprovalInsufficient,
+    GrantExpired,
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ToolError {
+    #[error(transparent)]
+    PermissionDenied(Box<PermissionDenial>),
     /// An ordinary tool failure with a known outcome.
     #[error("tool failed: {0}")]
     Failed(String),

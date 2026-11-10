@@ -25,7 +25,7 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::PermissionDecision;
 use maka_agent_facts::interaction::PermissionRequest;
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::tools::{PermissionDenial, PermissionDenialReason, ToolError};
 use maka_event_log::{StoreError, sessions::SessionRecord};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -66,7 +66,10 @@ pub async fn request(
 ) -> Result<PermissionGrant, ToolError> {
     let configuration = access.live_configuration().await?;
     if !configuration.permissions.request_permissions {
-        return Err(failed(
+        return Err(denied(
+            PermissionDenialReason::RequestsDisabled,
+            &request.permissions,
+            request.command.as_ref(),
             "Workspace policy does not allow requesting additional permissions",
         ));
     }
@@ -103,7 +106,7 @@ pub async fn request(
                 )),
             },
             basis: configuration.permission_basis(),
-            request,
+            request: request.clone(),
         },
         outcome: None,
     };
@@ -126,14 +129,34 @@ pub async fn request(
     if cancellation.is_cancelled() {
         return Err(failed("Permission request cancelled"));
     }
-    if !matches!(
-        outcome,
+    match outcome {
         InteractionOutcome::PermissionsDecision {
             decision: PermissionDecision::Allow { .. },
             ..
+        } => {}
+        InteractionOutcome::PermissionsDecision {
+            decision: PermissionDecision::Deny,
+            ..
+        } => {
+            return Err(denied(
+                PermissionDenialReason::UserDenied,
+                &request.permissions,
+                request.command.as_ref(),
+                "User denied additional permissions. Do not repeat this request; continue within existing permissions or report the blocked operation.",
+            ));
         }
-    ) {
-        return Err(failed("Additional permissions were not granted"));
+        _ => {
+            let current = access.live_configuration().await?;
+            if current.permission_basis() != configuration.permission_basis() {
+                return Err(denied(
+                    PermissionDenialReason::GrantExpired,
+                    &request.permissions,
+                    request.command.as_ref(),
+                    "Permission authority changed while awaiting approval",
+                ));
+            }
+            return Err(failed("Permission request closed without a decision"));
+        }
     }
     access
         .permission_grants(target, &configuration.permission_basis())
@@ -141,7 +164,28 @@ pub async fn request(
         .map_err(|_| failed("Permission observation unavailable"))?
         .into_iter()
         .find(|grant| grant.request_id == record.request_id)
-        .ok_or_else(|| failed("Approved permissions are no longer current"))
+        .ok_or_else(|| {
+            denied(
+                PermissionDenialReason::GrantExpired,
+                &request.permissions,
+                request.command.as_ref(),
+                "Approved permissions are no longer current",
+            )
+        })
+}
+
+pub fn denied(
+    reason: PermissionDenialReason,
+    permissions: &maka_sandbox::grant::Permissions,
+    command: Option<&maka_agent_facts::interaction::PermissionCommand>,
+    message: impl Into<String>,
+) -> ToolError {
+    ToolError::PermissionDenied(Box::new(PermissionDenial {
+        reason,
+        permissions: permissions.clone(),
+        command: command.cloned(),
+        message: message.into(),
+    }))
 }
 
 fn failed(message: impl Into<String>) -> ToolError {

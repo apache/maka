@@ -266,6 +266,10 @@ impl Handler for Service {
             ticket.complete(cleanup);
             let result = match result {
                 Ok(value) => ProcessResult::Completed { value },
+                Err(ToolError::PermissionDenied(denial)) => ProcessResult::PermissionDenied {
+                    execution_state: maka_workspace_api::NotStarted::NotStarted,
+                    denial,
+                },
                 Err(ToolError::Failed(message) | ToolError::Io { message, .. }) => {
                     ProcessResult::Failed { message }
                 }

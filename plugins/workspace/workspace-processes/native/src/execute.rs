@@ -319,7 +319,10 @@ impl Processes {
             .map_err(failed)?
             .map_err(failed)?;
             if !captured.ceiling.permits(&required).map_err(failed)? {
-                return Err(failed(
+                return Err(maka_agent_authority::permissions::denied(
+                    maka_agent_facts::tools::PermissionDenialReason::ProtectedBoundary,
+                    &required,
+                    requested.command.as_ref(),
                     "Requested access exceeds the process installation or protected workspace boundary",
                 ));
             }
@@ -328,7 +331,7 @@ impl Processes {
                     access,
                     PermissionRequest {
                         reason: requested.reason,
-                        command: requested.command,
+                        command: requested.command.clone(),
                         permissions: required.clone(),
                     },
                     access.target(),
@@ -340,7 +343,10 @@ impl Processes {
                     .map_err(failed)?;
             }
             if !sandbox.permits(&required).map_err(failed)? {
-                return Err(failed(
+                return Err(maka_agent_authority::permissions::denied(
+                    maka_agent_facts::tools::PermissionDenialReason::ApprovalInsufficient,
+                    &required,
+                    requested.command.as_ref(),
                     "Not all requested process permissions were approved; command was not started",
                 ));
             }

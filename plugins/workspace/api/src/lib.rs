@@ -24,3 +24,9 @@ pub mod files;
 pub mod processes;
 pub mod protocol;
 pub mod terminal;
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NotStarted {
+    NotStarted,
+}
