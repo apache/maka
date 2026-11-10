@@ -738,7 +738,7 @@ mod tests {
     fn pixel_terminal_ignores_desktop_windows_and_tray_but_keeps_editing() {
         use super::TerminalSurface;
         use nsh_core::{
-            Command, MountItem, ROOT_ID,
+            Command, ModalAnimation, ModalConfig, MountItem, ROOT_ID,
             desktop::{DesktopCommand, OpenWindow, Tray, WindowRequest},
         };
         use nsh_engine::{App, Bundle, EngineConfig};
@@ -760,7 +760,7 @@ mod tests {
         let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
         config.ui_sets = vec![nsh_base::registry()];
         let terminal = TerminalSurface::new(
-            config,
+            config.clone(),
             size(DevicePixels(320), DevicePixels(240)),
             1.0,
             Box::new(|frame| {
@@ -874,6 +874,55 @@ mod tests {
             terminal.take_clipboard_write().as_deref(),
             Some("terminal transport")
         );
+        // A deleted rejected root can later be an ordinary Dialog. Reload
+        // clears the other rejected root's identity along with the old VM.
+        for (id, reload) in [(2000, false), (2002, true)] {
+            if reload {
+                terminal.load_with_config(config.clone());
+                until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+            } else {
+                let mut mounter = surface.mounter.borrow_mut();
+                mounter.apply(surface, &MountItem::Remove { id });
+                mounter.apply(surface, &MountItem::Delete { id });
+                mounter.end_batch(surface);
+            }
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                for item in [
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::Modal,
+                    },
+                    MountItem::ModalConfig {
+                        id,
+                        config: ModalConfig {
+                            animation: ModalAnimation::None,
+                            ..Default::default()
+                        },
+                    },
+                    MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    mounter.apply(surface, &item);
+                }
+                mounter.end_batch(surface);
+            }
+            assert_eq!(
+                terminal.editor_text(),
+                None,
+                "ordinary Dialog on reused id {id} must still own the focus scope (reload={reload})"
+            );
+            {
+                let mut mounter = surface.mounter.borrow_mut();
+                mounter.apply(surface, &MountItem::Remove { id });
+                mounter.apply(surface, &MountItem::Delete { id });
+                mounter.end_batch(surface);
+            }
+            until(&mut || terminal.editor_text().as_deref() == Some("terminal"));
+        }
         terminal.set_selected_text_range(8..8).unwrap();
         assert!(terminal.paste(nsh_core::PasteEvent::new("!")));
         until(&mut || terminal.editor_text().as_deref() == Some("terminal!"));
