@@ -1562,6 +1562,18 @@ impl Engine {
             }
             Completion::Observed { key, result } => {
                 live.work.remove(&WorkKey::Tool(key.clone()));
+                let result = match result {
+                    Err(RunError::Tool(
+                        maka_agent_facts::tools::ToolError::OperationCleanupUnconfirmed {
+                            message,
+                            observation,
+                        },
+                    )) => {
+                        tracing::warn!(cause=%message, "original operation reader cleanup remains pending");
+                        Ok(*observation)
+                    }
+                    other => other,
+                };
                 match result {
                     Ok(reply) => {
                         let (reply, content) =
@@ -1593,19 +1605,31 @@ impl Engine {
                     Err(error) => {
                         tracing::error!(cause=%error,"original operation could not be observed");
                         if !retiring {
-                            self.block(
-                                claim,
-                                &view,
-                                BlockerKind::OperationUnknown {
-                                    tool: key.clone(),
-                                    reference: view.tools[&tool_key(&key)]
-                                        .original
-                                        .clone()
-                                        .expect("original observation reference"),
+                            let tool = &view.tools[&tool_key(&key)];
+                            let reference = tool
+                                .original
+                                .clone()
+                                .expect("original observation reference");
+                            let reason = match &tool.receipt {
+                                Some(maka_agent_facts::operation::RecordedReceipt::Recorded {
+                                    outcome:
+                                        OperationOutcome::Returned { .. }
+                                        | OperationOutcome::NotExecuted { .. },
+                                    cleanup,
+                                }) => {
+                                    if *cleanup
+                                        == maka_plugin_core::operation::OperationCleanup::Confirmed
+                                    {
+                                        return Ok(());
+                                    }
+                                    BlockerKind::CleanupUnconfirmed { reference }
+                                }
+                                _ => BlockerKind::OperationUnknown {
+                                    tool: key,
+                                    reference,
                                 },
-                                now,
-                            )
-                            .await?;
+                            };
+                            self.block(claim, &view, reason, now).await?;
                         }
                     }
                 }
