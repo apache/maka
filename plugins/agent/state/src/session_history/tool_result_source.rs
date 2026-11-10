@@ -430,7 +430,7 @@ impl ToolResultReader {
         Ok(self.operation_source(reply_source, &budget).await?.0)
     }
 
-    async fn operation_source(
+    pub(super) async fn operation_source(
         &self,
         reply: JsonSource,
         budget: &Arc<dyn SourceBudget>,

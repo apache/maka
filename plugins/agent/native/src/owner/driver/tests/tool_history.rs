@@ -475,8 +475,13 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
     use maka_agent_facts::{
         model::prompt_source::source::json as stream, tool_output::DurableToolProjection,
     };
-    use maka_agent_state::session_history::tool_result_source::{
-        ToolProjectionSource, ToolResultReader, ToolResultSource,
+    use maka_agent_state::{
+        recall::Field,
+        session_history::{
+            navigation::SourceFind,
+            source_tree::SourceTree,
+            tool_result_source::{ToolProjectionSource, ToolResultReader, ToolResultSource},
+        },
     };
     use maka_plugin_core::operation::{
         OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
@@ -503,7 +508,7 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
             },
             namespace: owner.namespace.clone(),
             export: "history".into(),
-            method: "write".into(),
+            method: "original_host_method".into(),
             operation: Uuid::new_v4(),
             fingerprint: digest.clone(),
             contract: RecoveryContract {
@@ -535,7 +540,7 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
         *cleanup = OperationCleanup::Unconfirmed;
         rig.append(
             vec![
-                Fact::ToolOriginalBound { tool: tool.clone(), reference },
+                Fact::ToolOriginalBound { tool: tool.clone(), reference: reference.clone() },
                 Fact::OperationObserved { tool: tool.clone(), reply: legacy },
             ],
             vec![],
@@ -563,6 +568,32 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
                 cleanup: OperationCleanup::Confirmed,
             }) if content == expected.reference()
         ));
+
+        let host = ContentBlob::json(&AcceptedToolResult::Host { result: result.clone() })?;
+        let (observed, _) = rig.tool(attempt, "exec", "receipt-only", json!({})).await?;
+        let (reply, material) = maka_agent_state::operation::record_reply(OperationReply {
+            reference: RecoveryRef { operation: Uuid::new_v4(), method: "recovery".into(), ..reference },
+            receipt: Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success { value: json!("receipt-only evidence") },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        })?;
+        let receipt = ContentBlob::json(&AcceptedToolResult::ObservedOperation { reply: reply.clone() })?;
+        rig.append(
+            vec![
+                Fact::ToolResultAccepted {
+                    tool: tool.clone(), result: host.reference().clone(), outcome: AcceptedResult::Succeeded,
+                },
+                Fact::ToolOriginalBound { tool: observed.clone(), reference: reply.reference.clone() },
+                Fact::OperationObserved { tool: observed.clone(), reply },
+                Fact::ToolResultAccepted {
+                    tool: observed, result: receipt.reference().clone(), outcome: AcceptedResult::Succeeded,
+                },
+            ],
+            [host, receipt].into_iter().chain(material).collect(),
+        ).await?;
 
         let stop = CancellationToken::new();
         let captured = history
@@ -618,6 +649,18 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
         ] {
             let answer = stream::field(&source, path, budget.clone()).await?.ok_or("missing shared result")?;
             assert!(stream::text_eq(&answer.text()?, "shared operation evidence", budget.clone()).await?);
+        }
+        let tree = SourceTree::snapshot(&imported).await?;
+        for query in ["receipt-only evidence", "original_host_method"] {
+            let found = tree.find_page(SourceFind {
+                after: None,
+                query: query.into(),
+                case_sensitive: true,
+                whole_word: false,
+                include_internal: true,
+            }, stop.clone()).await?;
+            assert!(found.matches.iter().any(|item| item.field == Field::Receipt), "receipt missing for {query}");
+            assert!(found.matches.iter().any(|item| item.field == Field::Result), "accepted result missing for {query}");
         }
         root.shutdown().await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
