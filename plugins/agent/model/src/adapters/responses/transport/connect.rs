@@ -25,12 +25,11 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::sync::Arc;
 use std::{collections::BTreeMap, time::Duration};
 
-/// None permits HTTP fallback: no model request has been dispatched yet.
 pub(super) async fn open(
     network: &dyn Transport,
     url: &str,
     headers: &BTreeMap<String, String>,
-) -> Result<Option<Arc<dyn Socket>>> {
+) -> Result<Arc<dyn Socket>> {
     let mut request_headers = HeaderMap::new();
     for (name, value) in headers {
         if matches!(
@@ -59,11 +58,12 @@ pub(super) async fn open(
     // One initial attempt, then five exponential retries. The caller's select
     // owns cancellation and the model idle budget, including these sleeps. No
     // response.create has been sent yet, so reconnecting cannot replay it.
+    let mut last_failure = None;
     for attempt in 0..=5 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(100 << (attempt - 1))).await;
         }
-        if let Ok(Ok(socket)) = tokio::time::timeout(
+        match tokio::time::timeout(
             Duration::from_secs(15),
             network.connect(Connect {
                 url: url.into(),
@@ -84,8 +84,22 @@ pub(super) async fn open(
         )
         .await
         {
-            return Ok(Some(socket));
+            Ok(Ok(socket)) => return Ok(socket),
+            Ok(Err(maka_agent_ports::model::Error::LocalAuthorization(cause))) => {
+                return Err(super::super::Error::LocalAuthorization(cause));
+            }
+            Ok(Err(maka_agent_ports::model::Error::Cancelled)) => {
+                return Err(super::super::Error::Cancelled);
+            }
+            Ok(Err(maka_agent_ports::model::Error::CleanupUnconfirmed)) => {
+                return Err(super::super::Error::CleanupUnconfirmed);
+            }
+            Ok(Err(cause)) => last_failure = Some(cause.to_string()),
+            Err(cause) => last_failure = Some(cause.to_string()),
         }
     }
-    Ok(None)
+    Err(super::super::Error::Interrupted(format!(
+        "Responses WebSocket handshake failed before dispatch: {}",
+        last_failure.expect("six handshake attempts supplied their failure")
+    )))
 }

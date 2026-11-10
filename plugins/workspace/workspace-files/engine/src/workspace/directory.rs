@@ -20,7 +20,7 @@
 //! A published directory is a stable filesystem observation, not a string prefix.
 use super::{Workspace, invalid};
 use cap_std::{ambient_authority, fs::Dir};
-use maka_agent_facts::execution::DirectoryIdentity;
+use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
     io,
     path::{Component, Path, PathBuf},

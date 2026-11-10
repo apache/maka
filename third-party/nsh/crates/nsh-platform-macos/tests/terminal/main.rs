@@ -65,6 +65,10 @@ fn main() -> std::process::ExitCode {
             "rich_editor_composition_commit_matches_preedit_and_keeps_shortcuts",
             cases::rich_editor_composition_commit_matches_preedit,
         ),
+        (
+            "focused_rich_editor_yields_copy_to_selected_output",
+            cases::focused_rich_editor_yields_copy_to_selected_output,
+        ),
     ];
     #[cfg(not(target_os = "macos"))]
     let cases: &[(&str, fn())] = &[];

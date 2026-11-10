@@ -100,6 +100,7 @@ pub(super) async fn original(
                     if original.scope != request.scope
                         || original.session_id != request.session_id
                         || original.publication.fingerprint != request.publication.fingerprint
+                        || original.publication.history != request.publication.history
                         || original.publication.expected_revision
                             != request.publication.expected_revision
                         || original.publication.confirmed_subtree_digest
@@ -198,7 +199,6 @@ pub(super) async fn commit(
     request: Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    let notice = log.commits.notice();
     log.connection.run(move |db| {
         let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
         let mut value = receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
@@ -213,25 +213,19 @@ pub(super) async fn commit(
         let actual = head(&tx, &request.session_id)?.map(|head| head.revision);
         if actual != request.publication.expected_revision {
             value.state = PublicationState::Conflict { actual };
-            crate::snapshots::release_unpublished(&tx,&request.key()?)?;
         } else {
             let head = Head { revision: Revision(uuid::Uuid::new_v4()), manifest };
             tx.execute("INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json", rusqlite::params![&request.session_id, serde_json::to_string(&head)?])?;
             value.state = PublicationState::Published { head };
             boundary("head_written");
         }
-        if let PublicationState::Published { head } = &value.state {
-            crate::snapshots::publish(&tx,&request.key()?,&head.manifest.digest)?;
-        }
         write(&tx, &request, &value)?;
         tx.commit().map_err(StoreError::CommitUnknown)?;
-                notice.material_released();
         Ok(value)
     }).await
 }
 
 pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), StoreError> {
-    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
             let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
@@ -239,11 +233,9 @@ pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), St
                 receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
             if value.state == PublicationState::Capturing {
                 value.state = PublicationState::Interrupted;
-                crate::snapshots::release_unpublished(&tx, &request.key()?)?;
                 write(&tx, &request, &value)?;
             }
             tx.commit().map_err(StoreError::CommitUnknown)?;
-            notice.material_released();
             Ok(())
         })
         .await
@@ -273,7 +265,6 @@ pub(super) async fn unavailable(
     manifest: ObjectRef,
     cause: String,
 ) -> Result<Publication, StoreError> {
-    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
             let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
@@ -285,11 +276,9 @@ pub(super) async fn unavailable(
                 })
             {
                 value.state = PublicationState::Unavailable { manifest, cause };
-                crate::snapshots::release_unpublished(&tx, &request.key()?)?;
                 write(&tx, &request, &value)?;
             }
             tx.commit().map_err(StoreError::CommitUnknown)?;
-            notice.material_released();
             Ok(value)
         })
         .await

@@ -40,6 +40,35 @@ mod startup;
 mod windows;
 
 fn main() -> std::process::ExitCode {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(maka_process::isolated::HELPER))
+    {
+        let mut args = std::env::args_os().skip(2);
+        let result = match (args.next(), args.next()) {
+            (Some(resource), None) => tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .and_then(|runtime| {
+                    let result = runtime.block_on(maka_process::isolated::run_helper(
+                        std::path::Path::new(&resource),
+                    ));
+                    // Tokio's stdin read can outlive its cancelled relay; this process exits next.
+                    runtime.shutdown_background();
+                    result
+                }),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected exactly one isolated task resource path",
+            )),
+        };
+        return match result {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("isolated task helper: {error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     logging::initialize_extension_browser_trace_if_requested();
     if let Some(exit) = maka_computer_use::extension_browser_host::bootstrap() {
         return exit;

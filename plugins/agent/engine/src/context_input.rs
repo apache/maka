@@ -18,55 +18,26 @@
  */
 
 //! Fit only a provider's summary input. Canonical history is never shortened.
-use crate::RunInput;
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::language::Language;
 use maka_model::prompt::{AssistantPart, ContentPart, Message, ToolOutput};
 
 pub(super) use maka_agent_facts::context::measure::{estimate, json_tokens};
 
-/// Keep 4% of total context capacity (200k if unknown) available for summary
-/// output, even when the full prefix must first be sent to the provider.
-fn summary_output_reserve<W>(input: &RunInput<W>) -> u64 {
-    input
-        .context
-        .as_ref()
-        .and_then(|context| context.model_context_window)
-        .unwrap_or(200_000)
-        .saturating_mul(4)
-        .div_ceil(100)
-        .max(1)
-}
-
-/// The desired summary output may exceed the reserve; the final request caps
-/// it to available capacity. This is not a minimum summary length.
-pub(super) fn summary_output_budget<W>(input: &RunInput<W>) -> u64 {
-    summary_output_reserve(input).max(maka_agent_facts::context::effective_output_limit(
-        input.main_output_limit,
-    ))
-}
-
-pub(super) fn summary_budget<W>(input: &RunInput<W>) -> u64 {
-    let context = input.context.as_ref();
+pub fn summary_budget(context: Option<&maka_agent_facts::context::ModelRequestContext>) -> u64 {
     let total = context
-        .and_then(|context| context.model_context_window)
+        .and_then(|value| value.model_context_window)
         .unwrap_or(200_000);
-    let window = context
-        .and_then(|context| context.context_window)
-        .unwrap_or(total);
-    window.min(total.saturating_sub(summary_output_reserve(input)))
-}
-
-pub(super) fn summary_needs_fitting<W>(
-    input: &RunInput<W>,
-    prompt: &crate::prepared_prompt::PreparedPrompt,
-) -> bool {
-    prompt.breakdown().estimated_tokens() > summary_budget(input)
+    let reserve = total.saturating_mul(4).div_ceil(100).max(1);
+    context
+        .and_then(|value| value.context_window)
+        .unwrap_or(total)
+        .min(total.saturating_sub(reserve))
 }
 
 /// Overflow recovery scans a fixed view once while retaining only bounded excerpts.
 /// File bytes remain native media and are never copied into textual JSON excerpts.
-pub(super) async fn fit_prepared_summary(
+pub async fn fit_prepared_summary(
     prompt: &crate::prepared_prompt::PreparedPrompt,
     tokens: u64,
     language: Language,
@@ -343,7 +314,7 @@ fn excerpt(text: &str, bytes: usize, language: Language) -> String {
 
 /// The final request owns its output reserve, after all prompt/tool projections.
 /// This cap never changes the configured model limit or the persisted history.
-pub(super) fn output_limit(
+pub fn output_limit(
     window: Option<u64>,
     estimated_input_tokens: u64,
     requested: u64,

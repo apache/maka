@@ -17,7 +17,11 @@
  * under the License.
  */
 
-use crate::{Error, name};
+use crate::Error;
+use crate::name;
+use maka_agent_facts::durable::{
+    BlockerId, BlockerKind, ExecutionIdentity, RunId, Terminal, WaitReason,
+};
 use maka_agent_facts::input::MessageInput;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,7 +29,30 @@ use sha2::{Digest, Sha256};
 mod attachment;
 pub use attachment::CopyAttachment;
 mod interaction;
-pub use interaction::{OfferInteraction, Prompt};
+mod message;
+pub use message::{
+    AnswerCursor, Enqueue, Excerpt, InteractionKind, MessageObservation, MessageReceipt,
+    MessageResult, MessageState, PendingInteraction, SessionMessage,
+};
+mod root;
+pub use interaction::{Interactions, OfferInteraction, Prompt};
+pub use root::{CreateRoot, RootApproval, RootTemplate, Settings as RootSettings};
+
+/// Receipt identity within an operation kind and package/scope namespace.
+/// The target Session is explicit: the same operation ID in another Session
+/// names independent work, never a redirect to the first accepted execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionOperation {
+    pub session_id: String,
+    pub operation_id: String,
+}
+impl SessionOperation {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.session_id)?;
+        name(&self.operation_id)
+    }
+}
 
 /// Business identity belongs to package/scope and target Session, never an activation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,9 +61,18 @@ pub struct Submit {
     pub operation_id: String,
     pub session_id: String,
     pub content: MessageInput,
+    /// This execution only; never changes the Session's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestration_mode: Option<maka_agent_facts::execution::BehaviorId>,
 }
 
 impl Submit {
+    pub fn operation(&self) -> SessionOperation {
+        SessionOperation {
+            session_id: self.session_id.clone(),
+            operation_id: self.operation_id.clone(),
+        }
+    }
     pub fn validate(&self) -> Result<(), Error> {
         name(&self.operation_id)?;
         name(&self.session_id)?;
@@ -50,3 +86,492 @@ impl Submit {
         Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
     }
 }
+
+/// A terminal source is immutable. Exact operation retries return the same newly
+/// admitted Run; they never reactivate the source or substitute the Session tip.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinueRun {
+    pub operation_id: String,
+    pub session_id: String,
+    pub source_run_id: RunId,
+    pub source_high_water: u64,
+    pub target: Target,
+}
+impl ContinueRun {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.operation_id)?;
+        name(&self.session_id)?;
+        if !(1..=9_007_199_254_740_991).contains(&self.source_high_water) {
+            return Err(Error::Invalid("invalid continuation source fence".into()));
+        }
+        self.target.validate()
+    }
+}
+
+/// This decision settles the Agent blocker only, never the provider's original outcome.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdjudicateRisk {
+    pub operation_id: String,
+    pub session_id: String,
+    pub run_id: RunId,
+    /// Compare against the Run-local observation used for this decision.
+    pub expected_high_water: u64,
+    pub blocker_id: BlockerId,
+    pub decision: maka_agent_facts::durable::RiskDecision,
+}
+
+impl AdjudicateRisk {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.operation_id)?;
+        name(&self.session_id)?;
+        if !(1..=9_007_199_254_740_991).contains(&self.expected_high_water) {
+            return Err(Error::Invalid("invalid risk observation fence".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Acceptance is not completion. Outcomes remain in the Host's canonical log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Receipt {
+    pub execution: ExecutionIdentity,
+    pub message_id: String,
+    pub content_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateChild {
+    pub operation_id: String,
+    pub parent_session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<maka_agent_facts::execution::SandboxMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_tools: Option<std::collections::BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<ChildWorkspace>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildWorkspace {
+    Inherit,
+    IsolatedGit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Target {
+    Model {
+        model: maka_agent_facts::execution::ModelBinding,
+        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+    },
+    Executor {
+        executor_id: maka_agent_facts::executor::ExecutorId,
+        #[serde(default)]
+        settings: maka_agent_facts::executor::Settings,
+    },
+}
+impl Target {
+    pub fn validate(&self) -> Result<(), Error> {
+        if let Self::Model { model, .. } = self {
+            name(&model.connection_id)?;
+            name(&model.connection_slug)?;
+            name(&model.model)?;
+        }
+        if let Self::Executor { settings, .. } = self {
+            settings
+                .validate()
+                .map_err(|error| Error::Invalid(error.into()))?;
+        }
+        Ok(())
+    }
+}
+
+impl CreateChild {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.operation_id)?;
+        name(&self.parent_session_id)?;
+        if self.name.trim().is_empty()
+            || self.name.len() > 256
+            || self.name.chars().any(char::is_control)
+        {
+            return Err(Error::Invalid("invalid child Session name".into()));
+        }
+        if let Some(tools) = &self.bound_tools {
+            for tool in tools {
+                name(tool)?;
+            }
+        }
+        if let Some(target) = &self.target {
+            target.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChildSession {
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspacePatch {
+    pub artifact_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub bytes: u64,
+    pub base_commit: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Progress {
+    Pending,
+    Running,
+    Waiting { waits: Vec<WaitReason> },
+    Blocked { blockers: Vec<RunBlocker> },
+    Ended { outcome: Terminal },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunBlocker {
+    pub id: BlockerId,
+    pub reason: BlockerKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Observation {
+    pub receipt: Receipt,
+    pub progress: Progress,
+    /// Run-local revision from the same snapshot as progress; use it for fact pages.
+    pub through_revision: u64,
+    /// Canonical terminal record from this same observation, absent while unfinished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_fact_id: Option<maka_agent_facts::durable::FactId>,
+    /// Stable identity of the current blocking interaction set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPage {
+    pub facts: Vec<maka_agent_facts::durable::RecordedFact>,
+    pub through_revision: u64,
+    pub next_after: Option<u64>,
+}
+
+/// Registered extension names visible to this Session, narrowed by its tool ceiling.
+/// An advertisement is neither a frozen model request nor permission to call it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCapabilities {
+    pub tools: std::collections::BTreeSet<String>,
+    pub executors: Vec<maka_agent_facts::executor::ExecutorId>,
+}
+
+/// The latest Run is an observation. Capture its stable identity when recording
+/// a control intent; never retarget a retry to the Session tip.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Activity {
+    pub execution: Option<CurrentExecution>,
+    /// Includes queued work and cleanup, not just a live model request.
+    pub busy: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentExecution {
+    /// May already be terminal; it remains a safe identity for exact control.
+    pub execution: ExecutionIdentity,
+    /// Frozen behavior, not the current Session default.
+    pub behavior: Option<maka_agent_facts::execution::BehaviorId>,
+    pub progress: Progress,
+}
+
+/// A bounded read of an artifact belonging to the accepted operation's Turn.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadArtifact {
+    pub session_id: String,
+    pub operation_id: String,
+    pub artifact_id: String,
+    pub offset: u64,
+    pub limit: usize,
+}
+impl ReadArtifact {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.session_id)?;
+        name(&self.operation_id)?;
+        name(&self.artifact_id)?;
+        if self.offset >= (1 << 53) || !(1..=64 * 1024).contains(&self.limit) {
+            return Err(Error::Invalid("invalid execution artifact window".into()));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArtifactChunk {
+    pub bytes: Vec<u8>,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Configure {
+    pub session_id: String,
+    pub expected_revision: u64,
+    pub target: Target,
+}
+impl Configure {
+    pub fn validate(&self) -> Result<(), Error> {
+        name(&self.session_id)?;
+        if self.expected_revision >= 1 << 53 {
+            return Err(Error::Invalid("invalid Session revision".into()));
+        }
+        self.target.validate()
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Configured {
+    Committed {
+        session: Box<crate::session::View>,
+    },
+    RevisionConflict {
+        expected_revision: u64,
+        actual_revision: u64,
+    },
+}
+
+/// A Host-authorized, instance-bound interface. Plugins cannot supply another
+/// namespace or activation with a command; Host binds both when granting it.
+pub trait Access: Send + Sync {
+    /// Restore a Host-recorded consent reference, never plugin-supplied boundary data.
+    fn restore(
+        &self,
+        id: maka_capabilities::authorization::Id,
+    ) -> futures_util::future::BoxFuture<'_, Result<std::sync::Arc<dyn Commands>, CommandError>>;
+    /// Borrow a real Host call's execution authority. Entry placement and a
+    /// caller-supplied Session identity never authorize execution on their own.
+    fn acquire(
+        &self,
+        call: maka_capabilities::call::Scope,
+    ) -> futures_util::future::BoxFuture<'_, Result<std::sync::Arc<dyn Commands>, CommandError>>;
+}
+
+/// Durable decision when abandoning an owned revision draft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionDisposition {
+    Abandoned,
+    Retained,
+}
+
+/// An acquired execution capability retains its captured permission ceiling.
+pub trait Commands: Send + Sync + std::any::Any {
+    /// Copy an immutable attachment between two Host-issued capabilities. Both
+    /// endpoints are reauthorized; a source Session ID alone grants nothing.
+    fn copy_attachment(
+        &self,
+        source: std::sync::Arc<dyn Commands>,
+        request: CopyAttachment,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_agent_facts::attachment::AttachmentRef, CommandError>,
+    >;
+
+    fn continue_run(
+        &self,
+        request: ContinueRun,
+    ) -> futures_util::future::BoxFuture<'_, Result<ExecutionIdentity, CommandError>>;
+    fn adjudicate_risk(
+        &self,
+        request: AdjudicateRisk,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
+    /// Replace an idle Session's model/Executor selection without changing its
+    /// workspace, behavior or permission ceiling. Revision mismatch is explicit.
+    /// Every committed choice advances the revision, including identical values.
+    fn configure(
+        &self,
+        input: Configure,
+    ) -> futures_util::future::BoxFuture<'_, Result<Configured, CommandError>>;
+    /// Inspect an exact message in an authorized Session, including non-plugin input.
+    /// Absence is not proof of cancellation or delivery.
+    fn read_message(
+        &self,
+        message: SessionMessage,
+    ) -> futures_util::future::BoxFuture<'_, Result<Option<MessageState>, CommandError>>;
+    fn enqueue(
+        &self,
+        request: Enqueue,
+    ) -> futures_util::future::BoxFuture<'_, Result<MessageReceipt, CommandError>>;
+    fn message(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, MessageResult>;
+    fn retract(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, MessageResult>;
+    /// Exact retries reuse the canonical offer, including its outcome after the Run ended.
+    fn offer_interaction(
+        &self,
+        request: OfferInteraction,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_agent_facts::interaction::InteractionRecord, CommandError>,
+    >;
+    /// Only this package/scope's offers, within currently authorized Sessions.
+    fn interaction(
+        &self,
+        operation_id: String,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<Option<maka_agent_facts::interaction::InteractionRecord>, CommandError>,
+    >;
+    /// Cancellation stops observation, never withdraws an accepted offer.
+    fn wait_interaction(
+        &self,
+        operation_id: String,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_agent_facts::interaction::InteractionOutcome, CommandError>,
+    >;
+    /// Withdraw an offer without replacing an answer or other canonical terminal outcome.
+    fn close_interaction(
+        &self,
+        operation_id: String,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_agent_facts::interaction::InteractionRecord, CommandError>,
+    >;
+
+    /// Current configuration of an authorized Session; not a grant or an
+    /// unrestricted catalog. Returns no plugin-owned domain state.
+    fn session(
+        &self,
+        session_id: String,
+    ) -> futures_util::future::BoxFuture<'_, Result<crate::session::View, CommandError>>;
+    fn capabilities(
+        &self,
+        session_id: String,
+    ) -> futures_util::future::BoxFuture<'_, Result<SessionCapabilities, CommandError>>;
+    fn activity(
+        &self,
+        session_id: String,
+    ) -> futures_util::future::BoxFuture<'_, Result<Activity, CommandError>>;
+    /// Persist Stop for the captured stable Run.
+    /// Completion confirms the stop request, not that all cleanup has finished.
+    /// Repeating it never stops a later Turn in the same Session.
+    fn stop(
+        &self,
+        execution: ExecutionIdentity,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
+    /// Check current instance and Session boundaries without submitting work.
+    fn validate_authority(&self) -> futures_util::future::BoxFuture<'_, Result<(), CommandError>>;
+    fn create_root(
+        &self,
+        request: CreateRoot,
+    ) -> futures_util::future::BoxFuture<'_, Result<ChildSession, CommandError>>;
+    /// Recover a root created by this namespace without replaying its creation settings.
+    /// Rechecks the current workspace and source ceilings. Absence is only an
+    /// observation: a concurrent creation may still commit with this operation ID.
+    fn restore_root(
+        &self,
+        operation_id: String,
+    ) -> futures_util::future::BoxFuture<'_, Result<Option<ChildSession>, CommandError>>;
+    /// Abandon an unused revision created by this namespace. Accepted work
+    /// retains it; repeating an abandonment returns the durable decision.
+    fn abandon_revision(
+        &self,
+        operation_id: String,
+    ) -> futures_util::future::BoxFuture<'_, Result<RevisionDisposition, CommandError>>;
+    /// Host-captured constraints suitable for persisting with a business intent.
+    fn boundaries(&self) -> Result<Vec<SessionBoundary>, CommandError>;
+    /// Export a settled child workspace once; exact retries return its immutable Artifact.
+    fn workspace_patch(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, Result<Option<WorkspacePatch>, CommandError>>;
+    /// Missing artifacts and artifacts from another Turn are both absent.
+    fn artifact(
+        &self,
+        request: ReadArtifact,
+    ) -> futures_util::future::BoxFuture<'_, Result<Option<ArtifactChunk>, CommandError>>;
+    /// Exact durable fact at a Run-local revision fence, never a Root event row.
+    fn event(
+        &self,
+        operation: SessionOperation,
+        fact_id: maka_agent_facts::durable::FactId,
+        through: u64,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<Option<maka_agent_facts::durable::RecordedFact>, CommandError>,
+    >;
+    /// Immutable content of an authorized Run. Native checks current caller access
+    /// and Run ownership of the reference; a digest alone never grants a read.
+    fn content(
+        &self,
+        run: RunId,
+        reference: maka_agent_facts::durable::ContentRef,
+    ) -> futures_util::future::BoxFuture<'_, Result<Vec<u8>, String>>;
+    /// Invalidation only. The canonical query remains authoritative.
+    fn changes(&self) -> Result<tokio::sync::watch::Receiver<()>, CommandError>;
+    /// Page original facts by Run-local revision; no reconstructed transcript map.
+    fn events(
+        &self,
+        operation: SessionOperation,
+        after: u64,
+        through: u64,
+    ) -> futures_util::future::BoxFuture<'_, Result<EventPage, CommandError>>;
+    /// Recover access to an existing child using its original creation request.
+    /// Never creates a Session or workspace; current parent/child ceilings still apply.
+    fn restore_child(
+        &self,
+        request: CreateChild,
+    ) -> futures_util::future::BoxFuture<'_, Result<Option<ChildSession>, CommandError>>;
+    fn create_child(
+        &self,
+        request: CreateChild,
+    ) -> futures_util::future::BoxFuture<'_, Result<ChildSession, CommandError>>;
+    fn submit(
+        &self,
+        request: Submit,
+    ) -> futures_util::future::BoxFuture<'_, Result<Receipt, CommandError>>;
+    fn query(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>>;
+    fn cancel(
+        &self,
+        operation: SessionOperation,
+    ) -> futures_util::future::BoxFuture<'_, Result<Observation, CommandError>>;
+}
+
+use maka_capabilities::authorization::CommandError;
+use maka_plugin_core::authorization::SessionBoundary;

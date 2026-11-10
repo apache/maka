@@ -17,8 +17,8 @@
  * under the License.
  */
 
-use maka_agent_ports::usage::Selection;
-use maka_capabilities::storage;
+use maka_agent_facts::accounting::Selection;
+use maka_plugin_core::storage;
 use serde::{Deserialize, Serialize};
 
 const KEY: &str = "view";

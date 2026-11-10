@@ -202,9 +202,6 @@ pub(crate) struct Rv {
     pub(crate) table_preview: Signal<Option<TablePreview>>,
 }
 
-/// Copy and Cut (`mod+c`, `mod+x`). The editor takes them only while
-/// something is selected: with nothing selected they would copy nothing and
-/// keep the page's selection off the clipboard.
 fn copy_or_cut(event: &KeyEvent) -> bool {
     event.mod_key && !event.alt && !event.shift && matches!(event.key.as_str(), "c" | "x")
 }
@@ -339,29 +336,17 @@ impl Rv {
                 rv.editable()
             })
         };
-        let copying = {
-            let rv = self.clone();
-            computed(move || {
-                rv.sel_rev.get();
-                !rv.session.state().selection().empty()
-            })
-        };
         let rv = self.clone();
         effect(move || {
             if !rv.focused.get() || rv.composition.get().is_some() {
                 return;
             }
             let tab_navigation = rv.props.tab_navigation.get();
-            let copying = copying.get();
             for spec in keys::key_table(editable.get()) {
                 if tab_navigation
                     && spec.event.key == "Tab"
                     && !(spec.event.ctrl || spec.event.alt || spec.event.meta)
                 {
-                    continue;
-                }
-                // With nothing selected, leave them to the page.
-                if !copying && copy_or_cut(&spec.event) {
                     continue;
                 }
                 let rv = rv.clone();

@@ -19,7 +19,9 @@
 
 //! Safe diagnostic projections bind each domain's cause to its actual origin.
 
-use crate::event::{Invocation, ModelInterruption};
+use crate::durable::ExecutionIdentity;
+
+use crate::event::ModelInterruption;
 use crate::model::error::ModelFailureCause;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,7 @@ pub enum ExecutionFailureReason {
     InvalidInput,
     Cancelled,
     ModelIncomplete,
+    ModelInterrupted,
     EventCommit,
     EventStore,
     ModelTimeout,
@@ -77,20 +80,21 @@ pub enum ExecutionFailureReason {
 )]
 pub enum DiagnosticDetail {
     Execution {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         reason: ExecutionFailureReason,
         #[serde(skip_serializing_if = "Option::is_none")]
         model_failure: Option<ModelFailureCause>,
     },
     ModelStep {
-        invocation: Invocation,
-        step_id: String,
+        execution: ExecutionIdentity,
+        step_id: crate::durable::StepId,
+        attempt_id: crate::durable::ModelAttemptId,
         status: ModelInterruption,
         #[serde(skip_serializing_if = "Option::is_none")]
         model_failure: Option<ModelFailureCause>,
     },
     SessionTitle {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         cause: TitleFailureCause,
     },
 }

@@ -28,7 +28,7 @@ import type {
   AgentRecallPage,
   AgentRecallPassage,
   AgentSession,
-  HistoryRowPosition,
+  HistoryRowAddress,
   RecallQuery,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { useHost } from './host';
@@ -48,7 +48,7 @@ import {
 
 export type RecallTarget = {
   sessionId: string;
-  anchor?: { messageId: string; position: HistoryRowPosition };
+  anchor?: { messageId: string; position: HistoryRowAddress };
 };
 type Request = {
   id: number;

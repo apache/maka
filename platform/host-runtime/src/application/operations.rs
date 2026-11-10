@@ -32,8 +32,8 @@ impl Handler for Reader {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
-        Box::pin(async move {
+    ) -> BoxFuture<'static, HandlerResult> {
+        let result = async move {
             if method != "read" {
                 return Err("unknown original receipt method".into());
             }
@@ -47,6 +47,10 @@ impl Handler for Reader {
                 Err(error) => Err(error),
             };
             receipt_value(receipt_reply(reference, observation))
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

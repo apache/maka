@@ -40,7 +40,7 @@ use maka_host_runtime::{
     ipc::{self, LocalListener},
 };
 use maka_packages::Package;
-use maka_plugin_core::operation::{OperationOutcome, Receipt};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use nsh_platform_tui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
@@ -231,7 +231,11 @@ impl Fixture {
             sandbox_mode,
         )
         .await;
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(
+            maka_transport::open_store(owner, &maka_product_native::root_migrations())
+                .await
+                .unwrap(),
+        );
 
         let source =
             std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs"))
@@ -272,12 +276,20 @@ impl Fixture {
             )
             .await
             .unwrap();
+        let data = store.data_writer().unwrap();
+        let state = maka_agent_state::Store::new(
+            data.clone(),
+            maka_agent_state::DriverDomain::new(data).unwrap(),
+        )
+        .unwrap();
         let mut native = NativeRegistry::default();
         maka_product_native::provide(
             &mut native,
             Arc::new(maka_product_native::catalog::Catalog::new(
                 maka_product_native::catalog::Snapshot::bundled().unwrap(),
             )),
+            state,
+            crate::maka_executable(),
         )
         .unwrap();
         let host = Host::open(
@@ -493,8 +505,11 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
     let reply = mutation.confirm().await.unwrap();
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
-            ..
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
+            cleanup: OperationCleanup::Confirmed,
         } => value,
         other => panic!("unexpected actual Host receipt: {other:?}"),
     }

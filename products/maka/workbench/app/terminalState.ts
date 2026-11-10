@@ -322,6 +322,8 @@ export function createTerminals(
         const reply: OperationReply = await recoverTerminal(owner, target.id);
         if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
           throw new UiError('This action could not be completed.');
+        if (reply.receipt.outcome.result.kind === 'failure')
+          throw new Error(reply.receipt.outcome.result.diagnostic);
       }
       if (owns(target.sessionId) && scope === owner && options.active()) follow(target.sessionId);
     } catch (reason) {
@@ -397,7 +399,7 @@ function createTerminal(
   let queue: RawAction[] = [];
   let sending = false;
   const local = () => entry().ownership.kind === 'local';
-  const agentOwned = () => entry().sourceTurnId !== entry().sourceToolCallId;
+  const agentOwned = () => entry().visibility === 'model';
   const controllable = () =>
     alive &&
     active &&

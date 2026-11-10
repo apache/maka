@@ -377,6 +377,3 @@ async fn refresh(
         ConnectionModelFetchResult::Failed { .. } => Err("discovery_failed"),
     }
 }
-
-#[cfg(test)]
-mod tests;

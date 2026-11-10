@@ -18,9 +18,54 @@
  */
 
 use crate::{
-    archive::ToolResultAddress, attachment::ATTACHMENT_RESOURCE_PREFIX, interaction::entity_id,
-    shell_result::RESOURCE_REF_PREFIX,
+    archive::ToolResultAddress, attachment::ATTACHMENT_RESOURCE_PREFIX, history::HistoryRowAddress,
+    interaction::entity_id,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use maka_plugin_core::shell_result::RESOURCE_REF_PREFIX;
+
+const IMPORTED_TOOL_RESULT_PREFIX: &str = "maka://history/tool-result/";
+
+/// Only an address within a caller's actual source tree, never read authority.
+pub fn imported_tool_result_path(address: &HistoryRowAddress) -> Result<String, &'static str> {
+    if !matches!(address, HistoryRowAddress::Imported { .. }) {
+        return Err("Tool-result history addresses must identify an imported part");
+    }
+    address.validate()?;
+    let bytes = serde_json::to_vec(address).map_err(|_| "Invalid imported tool-result address")?;
+    let encoded_len = base64::encoded_len(bytes.len(), false)
+        .and_then(|length| length.checked_add(IMPORTED_TOOL_RESULT_PREFIX.len()))
+        .ok_or("Imported tool-result address length overflow")?;
+    let mut path = String::with_capacity(encoded_len);
+    path.push_str(IMPORTED_TOOL_RESULT_PREFIX);
+    URL_SAFE_NO_PAD.encode_string(bytes, &mut path);
+    Ok(path)
+}
+
+pub fn parse_imported_tool_result_path(
+    path: &str,
+) -> Result<Option<HistoryRowAddress>, &'static str> {
+    let Some(encoded) = path.strip_prefix(IMPORTED_TOOL_RESULT_PREFIX) else {
+        return Ok(None);
+    };
+    let invalid = "Invalid imported tool-result address";
+    let capacity = encoded
+        .len()
+        .checked_div(4)
+        .and_then(|length| length.checked_mul(3))
+        .and_then(|length| length.checked_add(3))
+        .ok_or(invalid)?;
+    let mut bytes = vec![0; capacity];
+    let length = URL_SAFE_NO_PAD
+        .decode_slice(encoded, &mut bytes)
+        .map_err(|_| invalid)?;
+    let address: HistoryRowAddress =
+        serde_json::from_slice(&bytes[..length]).map_err(|_| invalid)?;
+    if imported_tool_result_path(&address)? != path {
+        return Err(invalid);
+    }
+    Ok(Some(address))
+}
 
 /// A Session resource locator; resolving it never grants access to its content.
 #[derive(Clone, Debug, PartialEq, Eq)]

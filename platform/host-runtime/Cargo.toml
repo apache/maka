@@ -24,6 +24,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cap-std.workspace = true
+rusqlite.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
 maka-packages.workspace = true

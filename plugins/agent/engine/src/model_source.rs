@@ -17,13 +17,12 @@
  * under the License.
  */
 
-use crate::{RunError, RunInput};
+use crate::RunError;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::composition::SourceRevision;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_model::ProviderConfig;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 
 /// Host-owned preparation for one logical step. Selection remains bound to the
 /// admitted Session model; retries do not call this interface again.
@@ -39,33 +38,4 @@ pub struct PreparedModel {
     pub main_output_limit: Option<u64>,
     pub supports_vision: bool,
     pub revision: SourceRevision,
-}
-
-impl<W> RunInput<W> {
-    pub(crate) async fn refresh_model(
-        &mut self,
-        cancellation: &CancellationToken,
-    ) -> Result<(), RunError> {
-        let Some(source) = &self.model_source else {
-            return Ok(());
-        };
-        let model = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-            result = source.capture() => result?,
-        };
-        if model.provider.model != self.provider.model {
-            return Err(RunError::InvalidInput(
-                "model preparation changed the admitted model identity".into(),
-            ));
-        }
-        self.provider_id = model.provider_id;
-        self.provider = model.provider;
-        self.provider_options = model.options;
-        self.context = model.context;
-        self.main_output_limit = model.main_output_limit;
-        self.supports_vision = model.supports_vision;
-        self.model_revision = Some(model.revision);
-        Ok(())
-    }
 }

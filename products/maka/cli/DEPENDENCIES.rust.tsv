@@ -44,6 +44,7 @@ async-scoped@0.9.0		X										X
 async-signal@0.2.14		X										X						
 async-task@4.7.1		X										X						
 async-trait@0.1.92		X										X						
+asyncband@0.7.4		X																
 atoi@2.0.0												X						
 atomic_refcell@0.1.14		X										X						
 atomic-waker@1.1.2		X										X						
@@ -534,6 +535,7 @@ maka-agent-engine@0.2.0		X
 maka-agent-facts@0.2.0		X																
 maka-agent-native@0.2.0		X																
 maka-agent-ports@0.2.0		X																
+maka-agent-state@0.2.0		X																
 maka-app-client@0.2.0		X																
 maka-assistant@0.2.0		X																
 maka-capabilities@0.2.0		X																

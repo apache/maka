@@ -17,14 +17,6 @@
  * under the License.
  */
 
-mod native;
-mod repl_audio;
-#[cfg(feature = "native-desktop")]
-mod repl_browser;
-mod repl_clipboard;
-mod repl_contract;
-mod repl_dialogs;
-mod repl_playwright;
 mod repl_user_tab_context;
 
 #[cfg(all(feature = "native-desktop", target_os = "linux"))]

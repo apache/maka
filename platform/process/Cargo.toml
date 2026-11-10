@@ -24,6 +24,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 alacritty_terminal = { version = "0.26.0", default-features = false }
 maka-sandbox.workspace = true
@@ -31,8 +32,9 @@ maka-network.workspace = true
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["process", "net"] }
+tokio = { workspace = true, features = ["process", "net", "fs", "io-std"] }
 tokio-util.workspace = true
 unicode-width = "0.2.2"
 
@@ -40,13 +42,15 @@ unicode-width = "0.2.2"
 libc.workspace = true
 rustix = { version = "1.1.5", features = ["pty", "termios", "fs", "process", "net"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+notify = "8.2.1"
+
 [target.'cfg(windows)'.dependencies]
 dunce = "1.0.5"
 uuid.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemInformation", "Wdk_System_SystemServices"] }
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]

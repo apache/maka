@@ -73,6 +73,14 @@ pub enum ForkPosition {
         #[schemars(length(min = 1))]
         turn_id: String,
     },
+    /// Include the complete source Turn containing this qualified original row.
+    ThroughSourceTurn {
+        position: crate::history::HistoryRowAddress,
+    },
+    /// Exclude the complete source Turn containing this qualified original row.
+    BeforeSourceTurn {
+        position: crate::history::HistoryRowAddress,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

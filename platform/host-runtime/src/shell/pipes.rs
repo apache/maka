@@ -23,15 +23,15 @@ use super::{
     terminal::Decoder,
     worker::{exit_outcome, failed, finished, now},
 };
-use maka_agent_facts::shell_run::PipeStream;
-use maka_agent_facts::shell_run::ShellOutcome;
-use maka_agent_facts::shell_run::ShellOutput;
-use maka_agent_facts::shell_run::ShellPatch;
-use maka_agent_facts::shell_run::ShellRun;
-use maka_agent_facts::shell_run::ShellState;
 use maka_agent_facts::tools::ToolError;
 use maka_event_log::StoreError;
 use maka_event_log::root_store::SessionStore;
+use maka_plugin_core::shell_run::PipeStream;
+use maka_plugin_core::shell_run::ShellOutcome;
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
 use maka_process::{ObservedProcess, PipeEvent, ProcessOutcome, Termination};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;

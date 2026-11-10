@@ -17,16 +17,7 @@
  * under the License.
  */
 
-mod adapters;
-mod concurrency;
-mod context_overflow;
 mod provider_compatible;
-mod provider_ingress;
-mod provider_responses;
-mod provider_stream;
-mod provider_tools;
-mod responses_websocket;
-mod wire_encoding;
 
 // Mutable builders exist only in fixtures; production requests carry immutable views.
 fn edit_prompt(

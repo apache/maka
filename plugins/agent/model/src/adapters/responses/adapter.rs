@@ -34,6 +34,21 @@ pub struct Adapter {
     transport: Arc<Shared>,
 }
 impl ProviderAdapter for Adapter {
+    fn recovery_contract(
+        &self,
+        kind: &maka_agent_ports::model::ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<maka_agent_ports::model::RecoveryContract> {
+        super::recovery_contract(kind, tools)
+    }
+    fn continuation_cursor(
+        &self,
+        contract: &maka_agent_ports::model::RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        super::continuation_cursor(contract, part)
+    }
+
     fn supports_item_acceptance(&self) -> bool {
         true
     }
@@ -58,6 +73,14 @@ struct ResponsesSession {
     lane: Option<Lane>,
 }
 impl Session for ResponsesSession {
+    fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        self.lane.as_ref().map_or(
+            maka_agent_facts::model::retry_transport::FallbackAvailability::Unavailable,
+            |lane| lane.transport.fallback_availability(),
+        )
+    }
     fn retry_transport_phase(&self) -> RetryTransportPhase {
         self.lane
             .as_ref()
@@ -112,144 +135,5 @@ impl Session for ResponsesSession {
                 None => false,
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Conversation;
-    use maka_agent_facts::composition::{SourceKind, SourceRevision};
-    use maka_agent_facts::language::Language;
-    use maka_agent_facts::model::error::{ProviderFailure, ProviderFailureReason};
-    use maka_agent_facts::model::prompt::{Message, Prompt};
-    use maka_agent_ports::model::{
-        Binding, Connect, Credentials, Emission, Events, Provider, ProviderKind, Socket, Transport,
-    };
-    use maka_capabilities::http;
-    use std::{
-        collections::BTreeMap,
-        sync::atomic::{AtomicUsize, Ordering},
-        time::Duration,
-    };
-    use tokio_util::sync::CancellationToken;
-
-    #[derive(Default)]
-    struct Network {
-        connects: AtomicUsize,
-        sends: AtomicUsize,
-    }
-    impl Transport for Network {
-        fn identity(&self) -> u64 {
-            1
-        }
-        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
-            self.connects.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Err(Error::Adapter("WebSocket unavailable".into())) })
-        }
-        fn request(
-            &self,
-            _: http::Request,
-            _: CancellationToken,
-        ) -> BoxFuture<'_, Result<http::Response, Error>> {
-            self.sends.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async {
-                Err(Error::Provider(ProviderFailure::new(
-                    ProviderFailureReason::RateLimit,
-                    "retry later",
-                    true,
-                    None,
-                )))
-            })
-        }
-    }
-    struct NoEvents;
-    impl Events for NoEvents {
-        fn emit(&self, _: Emission) -> BoxFuture<'_, Result<(), Error>> {
-            Box::pin(async { panic!("fixture emits no output") })
-        }
-    }
-    fn request() -> Request {
-        Request {
-            operation: maka_agent_facts::context::ModelOperation::Inference,
-            language: Language::En,
-            provider: Provider {
-                kind: ProviderKind::OpenaiResponses,
-                model: "fixture".into(),
-                base_url: "https://fixture.invalid/v1".into(),
-                auth: Credentials::ApiKey("fixture-key".into()),
-                headers: BTreeMap::new(),
-                body_overlay: None,
-            },
-            prompt: Prompt::from_messages(vec![Message::user("frozen input")]),
-            tools: vec![],
-            tool_choice: Default::default(),
-            provider_options: serde_json::json!({"openai":{"store":false}}),
-            max_output_tokens: None,
-        }
-    }
-    fn binding() -> Binding {
-        Binding::new(
-            Arc::new(Adapter::default()),
-            SourceRevision {
-                kind: SourceKind::ModelAdapter,
-                name: "responses".into(),
-                package_id: "fixture".into(),
-                entry_id: "responses".into(),
-                activation: "fresh".into(),
-                revision: "1".into(),
-            },
-        )
-    }
-    async fn attempt(conversation: &Conversation, binding: &Binding, network: Arc<Network>) {
-        let session = conversation
-            .session(binding, CancellationToken::new())
-            .await
-            .unwrap();
-        let result = session
-            .stream(
-                request(),
-                Context {
-                    transport: network,
-                    events: Arc::new(NoEvents),
-                    cancellation: CancellationToken::new(),
-                    idle_timeout: Duration::from_secs(60),
-                    source: None,
-                },
-            )
-            .await;
-        assert!(matches!(result, Err(Error::Provider(_))));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn automatic_fallback_survives_fresh_conversation_and_adapter() {
-        let network = Arc::new(Network::default());
-        let conversation = Conversation::default();
-        attempt(&conversation, &binding(), network.clone()).await;
-        assert_eq!(network.connects.load(Ordering::SeqCst), 6);
-        let phase = conversation.retry_transport_phase();
-        assert_eq!(phase, RetryTransportPhase::Fallback);
-        drop(conversation);
-
-        let restored = Conversation::with_retry_transport_phase(phase);
-        attempt(&restored, &binding(), network.clone()).await;
-        assert_eq!(
-            network.connects.load(Ordering::SeqCst),
-            6,
-            "restored fallback must not reopen primary"
-        );
-        assert_eq!(network.sends.load(Ordering::SeqCst), 2);
-        assert!(
-            !restored.try_switch_fallback_transport(),
-            "consumed fallback cannot replenish retry budget"
-        );
-
-        attempt(&restored, &binding(), network.clone()).await;
-        assert_eq!(
-            network.connects.load(Ordering::SeqCst),
-            6,
-            "binding replacement must preserve fallback"
-        );
-        assert_eq!(network.sends.load(Ordering::SeqCst), 3);
     }
 }

@@ -30,7 +30,10 @@ use crate::{
     presentation::{Completion, State},
 };
 use maka_agent_api::contract::*;
-use maka_agent_facts::interaction::InteractionRecord;
+use maka_agent_facts::{
+    durable::{ModelAttemptId, StepId},
+    interaction::InteractionRecord,
+};
 use maka_capabilities::call::Attachments;
 use serde_json::json;
 use std::{
@@ -55,7 +58,7 @@ pub(crate) struct Foreground {
     capabilities: Capabilities,
     after: u64,
     history_through: u64,
-    parts: HashMap<(String, String), (String, ContentKind)>,
+    parts: HashMap<(StepId, ModelAttemptId, String), (String, ContentKind)>,
     message_starts: HashMap<String, u64>,
     user: Vec<HistoryChunk>,
 }
@@ -104,6 +107,10 @@ impl Foreground {
                 json!({"sessionId":self.session.id,"target":self.target,"cursor":null}),
             )
             .await?;
+        let was_blocked = self
+            .work
+            .execution()
+            .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
         self.work = match work {
             Work::Delivered {
                 shared, execution, ..
@@ -114,6 +121,18 @@ impl Foreground {
                 return Err("Original accepted Agent work is unavailable or changed".into());
             }
         };
+        let blocked = self
+            .work
+            .execution()
+            .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
+        if blocked != was_blocked {
+            self.state(if blocked {
+                State::RequiresAction
+            } else {
+                State::Running
+            })
+            .await?;
+        }
         Ok(())
     }
     async fn observe(&mut self) -> Result<Completion, Error> {
@@ -137,8 +156,19 @@ impl Foreground {
             let updates = self.projection.chunk(&chunk)?;
             self.publish(updates).await?;
         }
-        self.state(State::Running).await?;
         self.refresh().await?;
+        self.state(
+            if self
+                .work
+                .execution()
+                .is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }))
+            {
+                State::RequiresAction
+            } else {
+                State::Running
+            },
+        )
+        .await?;
         let mut callbacks = JoinSet::<Result<String, Error>>::new();
         let mut seen = HashSet::new();
         // Cancel only the client prompt wait; never abort an in-flight Host call.
@@ -173,7 +203,7 @@ impl Foreground {
                     || self
                         .work
                         .execution()
-                        .is_none_or(|execution| record.turn_id != execution.turn_id)
+                        .is_none_or(|execution| record.execution.run_id != execution.run_id)
                 {
                     continue;
                 }
@@ -199,7 +229,7 @@ impl Foreground {
                         .query(
                             "agent",
                             "interaction",
-                            json!({"sessionId":record.session_id,"requestId":record.request_id}),
+                            json!({"sessionId":record.execution.session_id,"requestId":record.request_id}),
                         )
                         .await?;
                     if current.outcome.is_some() || request_cancel.is_cancelled() {
@@ -210,7 +240,7 @@ impl Foreground {
                         .mutate(
                             "agent",
                             "respond",
-                            json!({"sessionId":current.session_id,"requestId":current.request_id,"answer":answer}),
+                            json!({"sessionId":current.execution.session_id,"requestId":current.request_id,"answer":answer}),
                             Attachments::new(),
                         )
                         .await?;
@@ -245,7 +275,10 @@ impl Foreground {
                     callback = callbacks.join_next(), if !callbacks.is_empty() => {
                         let request_id = callback.ok_or("ACP callback task missing")???;
                         live.remove(&request_id);
-                        if callbacks.is_empty() { self.state(State::Running).await?; }
+                        if callbacks.is_empty() {
+                            let blocked = self.work.execution().is_some_and(|execution| matches!(execution.state, ExecutionState::Blocked { .. }));
+                            self.state(if blocked { State::RequiresAction } else { State::Running }).await?;
+                        }
                     },
                     _ = heartbeat.tick() => {
                         self.refresh().await?;
@@ -283,10 +316,10 @@ impl Foreground {
             }
             let current = match page {
                 PreviewPage::Empty { .. } => true,
-                PreviewPage::Cut { invocation_id, .. } => self
+                PreviewPage::Cut { run_id, .. } => self
                     .work
                     .execution()
-                    .is_some_and(|execution| &execution.invocation_id == invocation_id),
+                    .is_some_and(|execution| &execution.run_id == run_id),
             };
             if current {
                 let updates = self.projection.preview(page)?;
@@ -310,18 +343,22 @@ impl Foreground {
                 if self
                     .work
                     .execution()
-                    .is_none_or(|execution| execution.invocation_id != event.invocation_id)
+                    .is_none_or(|execution| execution.run_id != event.run_id)
                 {
                     continue;
                 }
                 match event.fact {
-                    DeliveryFact::ExecutorMessageStarted { message_id } => {
+                    DeliveryFact::ExecutorMessageStarted {
+                        message_id,
+                        step_id,
+                        attempt_id,
+                    } => {
                         self.parts.insert(
-                            (message_id.clone(), "text".into()),
+                            (step_id, attempt_id, "text".into()),
                             (message_id.clone(), ContentKind::Text),
                         );
                         self.parts.insert(
-                            (message_id.clone(), "thinking".into()),
+                            (step_id, attempt_id, "thinking".into()),
                             (message_id.clone(), ContentKind::Thinking),
                         );
                         self.message_starts
@@ -330,24 +367,27 @@ impl Foreground {
                     }
                     DeliveryFact::Delta {
                         step_id,
+                        attempt_id,
                         part_id,
                         text,
                     } => {
                         let (message, kind) = self
                             .parts
-                            .get(&(step_id, part_id))
+                            .get(&(step_id, attempt_id, part_id))
                             .ok_or("Agent stream delta has no original part")?;
                         let updates = self.projection.append(&event.turn_id, message, kind, &text);
                         self.publish(updates).await?;
                     }
                     DeliveryFact::PartCommitted {
                         step_id,
+                        attempt_id,
                         message_id,
                         ..
                     } => {
                         self.projection.commit_preview(
-                            &event.invocation_id,
-                            &step_id,
+                            event.run_id,
+                            step_id,
+                            attempt_id,
                             Some(&message_id),
                         );
                         if let Some(start) = self.message_starts.remove(&message_id) {
@@ -355,10 +395,14 @@ impl Foreground {
                         }
                         catchup = true;
                     }
-                    DeliveryFact::StepEnded { step_id, .. } => {
+                    DeliveryFact::StepEnded {
+                        step_id,
+                        attempt_id,
+                        ..
+                    } => {
                         self.projection
-                            .commit_preview(&event.invocation_id, &step_id, None);
-                        ended_steps.insert(step_id);
+                            .commit_preview(event.run_id, step_id, attempt_id, None);
+                        ended_steps.insert((step_id, attempt_id));
                         catchup = true;
                     }
                     DeliveryFact::ToolDispatched { tool_use_id, .. } => {
@@ -400,7 +444,7 @@ impl Foreground {
         through: u64,
         after: u64,
         refresh_tools: HashSet<maka_agent_ports::session::history::RowPosition>,
-        ended_steps: Option<&HashSet<String>>,
+        ended_steps: Option<&HashSet<(StepId, ModelAttemptId)>>,
     ) -> Result<(), Error> {
         let snapshot = history::since(&self.client, &self.session.id, through, after).await?;
         let mut chunks = snapshot.chunks;
@@ -411,7 +455,7 @@ impl Foreground {
             if self
                 .work
                 .execution()
-                .is_some_and(|execution| chunk.turn_id == execution.turn_id)
+                .is_some_and(|execution| chunk.run_id == Some(execution.run_id))
             {
                 let updates = self.projection.chunk(&chunk)?;
                 self.publish(updates).await?;
@@ -455,8 +499,12 @@ impl Foreground {
             ExecutionState::Completed => Completion::Completed,
             ExecutionState::Cancelled => Completion::Cancelled,
             ExecutionState::Failed => Completion::Failed,
-            ExecutionState::Paused => Completion::Paused,
-            _ => return Err("Agent work is not physically settled".into()),
+            ExecutionState::Admitted
+            | ExecutionState::Running
+            | ExecutionState::Waiting { .. }
+            | ExecutionState::Blocked { .. } => {
+                return Err("Agent work is not physically settled".into());
+            }
         })
     }
     async fn stop(&mut self) -> Result<(), Error> {
@@ -468,7 +516,7 @@ impl Foreground {
                 if let WorkObservation::Delivered { execution, shared } = &self.work {
                     if *shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
                     if !requested {
-                        let _: Stopped = self.client.mutate("agent", "stop", json!({"sessionId":self.session.id,"invocationId":execution.invocation_id}), Attachments::new()).await?;
+                        let _: Stopped = self.client.mutate("agent", "stop", json!({"sessionId":self.session.id,"runId":execution.run_id}), Attachments::new()).await?;
                         requested = true;
                     }
                 } else if let WorkTarget::Message { message_id } = &self.target {
@@ -492,11 +540,11 @@ impl Foreground {
     }
 }
 fn terminal(state: &ExecutionState) -> bool {
-    matches!(
-        state,
-        ExecutionState::Completed
-            | ExecutionState::Failed
-            | ExecutionState::Cancelled
-            | ExecutionState::Paused
-    )
+    match state {
+        ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled => true,
+        ExecutionState::Admitted
+        | ExecutionState::Running
+        | ExecutionState::Waiting { .. }
+        | ExecutionState::Blocked { .. } => false,
+    }
 }

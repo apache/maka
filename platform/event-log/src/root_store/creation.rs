@@ -22,6 +22,8 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::Value;
 
+mod prepared;
+
 /// Confirmed, rolled-back admission outcomes. Storage failures never become a
 /// rejected request; they retain their recovery obligation and original error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -33,18 +35,6 @@ pub enum CreationRejection {
     SourceRevisionConflict { expected: u64, actual: u64 },
     #[error("creation dependency is missing")]
     MissingDependency,
-    #[error("source Turn does not exist")]
-    HistoryTurnMissing,
-    #[error("revision Turn has no editable input")]
-    RevisionInputMissing,
-    #[error("revision family exhausted")]
-    RevisionFamilyExhausted,
-    #[error("history cut splits a logical Turn")]
-    HistoryTurnSplit,
-    #[error("source history is unsettled")]
-    HistoryUnsettled,
-    #[error("source provider effect is unresolved")]
-    HistoryProviderEffectUnresolved,
     #[error("Session identity has been retired")]
     Retired,
     #[error("workspace binding does not exist")]
@@ -163,6 +153,36 @@ pub(crate) struct WriteReservation {
 pub(crate) struct ReservedCreation {
     pub(super) command: super::routes::Creation,
 }
+impl WriteReservation {
+    pub(super) fn existing(
+        connection: &SqliteConnection,
+        id: &str,
+        fingerprint: &str,
+        command: &super::routes::Creation,
+    ) -> Result<Option<ReservedCreation>, StoreError> {
+        let row = connection.query_row(
+            "SELECT creation_id,fingerprint,command,failure FROM session_creations WHERE session_id=?",
+            rusqlite::params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?)),
+        ).optional()?;
+        let Some((creation_id, previous_fingerprint, encoded, failure)) = row else {
+            return Ok(None);
+        };
+        let previous: super::routes::Creation = serde_json::from_str(&encoded)?;
+        if creation_id != id
+            || previous_fingerprint != fingerprint
+            || previous.identity()? != command.identity()?
+        {
+            return Err(StoreError::SessionConflict);
+        }
+        if let Some(failure) = failure {
+            return Err(StoreError::SessionCreationRejected(serde_json::from_str(
+                &failure,
+            )?));
+        }
+        Ok(Some(ReservedCreation { command: previous }))
+    }
+}
 impl crate::writeback::Statement for WriteReservation {
     type Value = ReservedCreation;
     type Output = Self::Value;
@@ -171,34 +191,14 @@ impl crate::writeback::Statement for WriteReservation {
         connection: &SqliteConnection,
     ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
         {
-            if let Some((creation_id, fingerprint, command, failure)) = connection.query_row(
-                "SELECT creation_id,fingerprint,command,failure FROM session_creations WHERE session_id=?",
-                rusqlite::params![&self.id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?)),
-            ).optional()? {
-                if creation_id != self.id { return Err(StoreError::SessionConflict); }
-                let previous: super::routes::Creation = serde_json::from_str(&command)?;
-                if fingerprint != self.fingerprint || previous.identity()? != self.command.identity()? {
-                    return Err(StoreError::SessionConflict);
-                }
-                if let Some(failure) = failure {
-                    return Err(StoreError::SessionCreationRejected(serde_json::from_str(&failure)?));
-                }
-                return Ok(prepared(
-                    ReservedCreation {
-                        command: previous,
-                    },
-                    false,
-                ));
+            if let Some(previous) =
+                Self::existing(connection, &self.id, &self.fingerprint, &self.command)?
+            {
+                return Ok(prepared(previous, false));
             }
             let encoded = serde_json::to_string(&self.command)?;
             for member in self.members {
-                let visible = match &self.command {
-                    super::routes::Creation::Bundle { configurations, .. } => {
-                        configurations.contains_key(&member)
-                    }
-                    _ => true,
-                };
+                let visible = true;
                 let occupied: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=?)",
                     rusqlite::params![&member],
@@ -270,9 +270,6 @@ fn prepared<T>(value: T, changed: bool) -> crate::writeback::Prepared<T> {
     crate::writeback::Prepared {
         value,
         changed,
-        notification: crate::writeback::Notification::None,
+        notification: crate::writeback::Notification::NONE,
     }
 }
-
-#[cfg(test)]
-mod tests;

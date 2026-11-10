@@ -18,10 +18,10 @@
  */
 
 //! Session checklists are plugin data, not execution evidence or a work queue.
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::watch;

@@ -104,13 +104,6 @@ pub struct GoalApproval {
     pub thinking_level: Option<ThinkingLevel>,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentGoalReceiptRead")]
-pub struct GoalReceiptRead {
-    pub reference: maka_plugin_core::operation::RecoveryRef,
-}
-
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentGoalBudget")]

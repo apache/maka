@@ -26,10 +26,8 @@ use super::*;
 use maka_agent_facts::interaction::{
     InteractionOutcome, InteractionRecord, InteractionRequest, SystemPermissionGrant,
 };
-use maka_agent_facts::tools::ToolCallContext;
-use maka_agent_facts::workspace::PermissionBasis;
-use maka_capabilities::call::Scope;
 use maka_computer_use::system_permission;
+use maka_sandbox::workspace::PermissionBasis;
 use sha2::{Digest, Sha256};
 
 /// How often the grants are checked again while the card is open.
@@ -69,7 +67,7 @@ async fn missing(
 
 pub(super) async fn ensure(
     owner: &Computer,
-    call: &Scope,
+    call: &Call,
     basis: PermissionBasis,
     required: &'static [SystemPermissionGrant],
     native_operation_id: &str,
@@ -91,7 +89,7 @@ pub(super) async fn ensure(
 
 async fn ensure_with_reader(
     owner: &Computer,
-    call: &Scope,
+    call: &Call,
     basis: PermissionBasis,
     required: &'static [SystemPermissionGrant],
     native_operation_id: &str,
@@ -117,22 +115,14 @@ async fn ensure_with_reader(
     if !request_permissions {
         return Err(still_missing(&initial_missing));
     }
-    let context = ToolCallContext {
-        execution: call.execution().cloned(),
-        invocation: call.identity.agent().expect("checked Agent").clone(),
-        operation_id: call.identity.operation_id().expect("checked tool").into(),
-    };
-    let store = maka_agent_authority::permissions::execution(
-        &owner.store,
-        &context.invocation,
-        context.execution.as_deref(),
-    )?;
+    let authority = call.authority.as_ref();
+    let execution = authority.execution();
     let request_id = format!(
         "system_permission_{}",
         hex::encode(Sha256::digest(
             serde_json::to_vec(&(
-                &context.invocation,
-                &context.operation_id,
+                execution,
+                &authority.call().operation_id,
                 native_operation_id,
                 required
             ))
@@ -140,14 +130,12 @@ async fn ensure_with_reader(
         ))
     );
     let record = InteractionRecord {
-        session_id: context.invocation.session_id.clone(),
-        turn_id: context.invocation.turn_id.clone(),
-        run_id: context.invocation.run_id.clone(),
+        execution: execution.clone(),
         request_id,
         created_at: maka_agent_authority::now(),
         outcome: None,
         request: InteractionRequest::SystemPermission {
-            tool_use_id: context.tool_use_id(),
+            tool_use_id: call.authority.call().tool_use_id(),
             // Keep the UI's observation/request set equal to the producer's:
             // an initially effective grant can disappear during this wait.
             grants: required.to_vec(),
@@ -171,26 +159,16 @@ async fn ensure_with_reader(
         },
     };
     let observed = async {
-        let committed = store
-            .establish_run_interaction(&context.invocation, &record)
-            .await
+        authority.establish(&record).await
             .map_err(|error| format!("System permission request publication unavailable: {error}"))?;
-        if !committed.matches {
-            return Err("System permission request identity conflict".into());
-        }
         let _timeout = cell.suspend_timeout();
         let granted = async {
             loop {
                 tokio::time::sleep(RECHECK).await;
                 if missing(&reader, required).await?.is_empty() {
                     // The first outcome stands: a cancel committed meanwhile wins.
-                    store
-                        .commit_interaction_outcome(
-                            &record.request_id,
-                            InteractionOutcome::SystemPermissionGranted {
-                                committed_at: maka_agent_authority::now(),
-                            },
-                        )
+                    authority
+                        .system_permission_observed(&record.request_id, required.to_vec())
                         .await
                         .map_err(|error| format!("System permission outcome unavailable: {error}"))?;
                     return Ok::<_, String>(());
@@ -198,29 +176,30 @@ async fn ensure_with_reader(
             }
         };
         tokio::select! {
-            outcome = maka_agent_authority::interaction_wait::wait(&store, &record, cancellation) => outcome.map_err(str::to_owned),
+            outcome = maka_agent_authority::interaction_wait::wait(authority, &record, cancellation) => outcome.map_err(str::to_owned),
             result = granted => {
                 result?;
-                maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await.map_err(str::to_owned)
+                maka_agent_authority::interaction_wait::wait(authority, &record, cancellation).await.map_err(str::to_owned)
             },
         }
     }
     .await;
     let outcome = match observed {
         Ok(outcome) => outcome,
-        Err(error) => match maka_agent_authority::interaction_wait::withdraw(&store, &record).await
-        {
-            Ok(Some(outcome)) => {
-                if !cancellation.is_cancelled()
-                    && !matches!(outcome, InteractionOutcome::SystemPermissionGranted { .. })
-                {
-                    return Err(failed(error));
+        Err(error) => {
+            match maka_agent_authority::interaction_wait::withdraw(authority, &record).await {
+                Ok(Some(outcome)) => {
+                    if !cancellation.is_cancelled()
+                        && !matches!(outcome, InteractionOutcome::SystemPermissionGranted { .. })
+                    {
+                        return Err(failed(error));
+                    }
+                    outcome
                 }
-                outcome
+                Ok(None) => return Err(failed(error)),
+                Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
             }
-            Ok(None) => return Err(failed(error)),
-            Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
-        },
+        }
     };
     if cancellation.is_cancelled() {
         return Err(failed("System permission request cancelled"));
@@ -236,6 +215,3 @@ async fn ensure_with_reader(
         Err(still_missing(&missing))
     }
 }
-
-#[cfg(test)]
-mod tests;

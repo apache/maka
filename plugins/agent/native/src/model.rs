@@ -90,14 +90,58 @@ pub(crate) struct AcceptedModel {
     model_override: Option<ModelOverride>,
     body_overlay: Option<Value>,
 }
+impl AcceptedModel {
+    pub(crate) fn same_execution_route(&self, current: &Self) -> bool {
+        self.binding.connection_id == current.binding.connection_id
+            && self.binding.model == current.binding.model
+            && self.provider == current.provider
+            && self.route == current.route
+    }
+    /// Decodes accepted route data only; the current activation must restore its own authority.
+    pub(crate) fn from_backend(
+        backend: &maka_agent_facts::durable::BackendSpec,
+        bytes: &[u8],
+    ) -> Result<Self, RunError> {
+        let maka_agent_facts::durable::BackendSpec::Model {
+            binding,
+            descriptor,
+        } = backend
+        else {
+            return Err(RunError::InvalidInput("run backend is not a model".into()));
+        };
+        if descriptor.bytes != bytes.len() as u64
+            || descriptor.digest != maka_agent_facts::artifact::content_digest(bytes)
+        {
+            return Err(RunError::ReconciliationRequired(
+                "accepted model descriptor changed".into(),
+            ));
+        }
+        let accepted: Self = serde_json::from_slice(bytes)
+            .map_err(|error| RunError::InvalidInput(format!("invalid accepted model: {error}")))?;
+        if &accepted.binding != binding {
+            return Err(RunError::ReconciliationRequired(
+                "accepted model binding changed".into(),
+            ));
+        }
+        Ok(accepted)
+    }
+}
+
+// The fixture starts at provider observation, not recorded requests or Host authority.
+#[cfg(test)]
+pub(crate) type Observation = fn(&ModelBinding, &mut Model) -> ModelRequestContext;
+
 #[derive(Clone)]
 pub(crate) struct Credentials {
     pub executor: maka_model::ModelExecutor,
     pub refresh: Arc<oauth::Authority>,
     pub inventory: Arc<codex_inventory::Authority>,
+    #[cfg(test)]
+    pub observation: Option<Observation>,
 }
 pub(crate) struct Source {
     configuration: Arc<ConfigurationStore>,
+    pricing: Arc<dyn maka_agent_engine::pricing::Pricing>,
     credentials: Credentials,
     pub accepted: AcceptedModel,
     definition: Arc<Definition>,
@@ -126,7 +170,7 @@ impl Source {
                     diagnostics::configuration("selected_model_observation", &error, Some(&selection.connection_id));
                     unavailable()
                 })?
-                .ok_or_else(unavailable)?;
+                .ok_or(RunError::ModelUnavailable)?;
             drop(public_guard);
             let define = |snapshot: &maka_providers::catalog::Snapshot,
                           row: &maka_agent_facts::configuration::ConnectionCatalogEntry| {
@@ -161,13 +205,18 @@ impl Source {
                 let public_guard = catalog.snapshot.read().await;
                 let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
                 let current = configuration.observe_selected_model(selection.clone()).await
-                    .map_err(|_| unavailable())?.ok_or_else(unavailable)?;
+                    .map_err(|_| unavailable())?.ok_or(RunError::ModelUnavailable)?;
                 (public_model, definition) = define(current_snapshot, &current.connection)?;
                 current
             } else {
                 material
             };
             let row = &material.connection;
+            let binding = ModelBinding {
+                connection_id: row.connection_id.clone(),
+                connection_slug: row.slug.clone(),
+                model: selection.model_id.clone(),
+            };
             let model = resolve(
                 &definition,
                 row,
@@ -175,8 +224,17 @@ impl Source {
                 thinking_level,
                 row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id)),
             ).await?;
+            #[cfg(test)]
+            let model = {
+                let mut model = model;
+                if let Some(observe) = credentials.observation {
+                    observe(&binding, &mut model);
+                }
+                model
+            };
             revision.name = row.provider.name.clone();
             let source = Self {
+                pricing:Arc::new(ConfigPricing(configuration.clone())),
                 configuration,
                 credentials,
                 accepted: AcceptedModel {
@@ -194,11 +252,7 @@ impl Source {
                         .and_then(|models| models.get(&selection.model_id))
                         .and_then(|overrides| overrides.code_mode_language)
                         .unwrap_or_default(),
-                    binding: ModelBinding {
-                        connection_id: row.connection_id.clone(),
-                        connection_slug: row.slug.clone(),
-                        model: selection.model_id,
-                    },
+                    binding,
                     thinking_level,
                     provider: row.provider.clone(),
                     route: ExecutionRoute::new(&model),
@@ -239,6 +293,7 @@ impl Source {
             })?);
         revision.name = accepted.provider.name.clone();
         Ok(Self {
+            pricing: Arc::new(ConfigPricing(configuration.clone())),
             configuration,
             credentials,
             accepted,
@@ -252,6 +307,15 @@ impl Source {
         material: ConnectionObservation,
         model: Model,
     ) -> Result<PreparedModel, RunError> {
+        #[cfg(test)]
+        let (model, observed_context) = {
+            let mut model = model;
+            let context = self
+                .credentials
+                .observation
+                .map(|observe| observe(&self.accepted.binding, &mut model));
+            (model, context)
+        };
         let capabilities = model.info.capabilities.unwrap_or_default();
         if capabilities.chat == Some(false) {
             tracing::warn!(
@@ -326,6 +390,10 @@ impl Source {
             }
             provenance.account_id = account_id;
             request_context.codex = Some(provenance);
+        }
+        #[cfg(test)]
+        if let Some(context) = observed_context {
+            request_context = context;
         }
         let credentials = self
             .definition
@@ -470,6 +538,14 @@ impl Source {
             self.accepted.model_override.as_ref(),
         )
         .await?;
+        #[cfg(test)]
+        let model = {
+            let mut model = model;
+            if let Some(observe) = self.credentials.observation {
+                observe(&self.accepted.binding, &mut model);
+            }
+            model
+        };
         if !self.accepted.route.matches(&model) {
             tracing::warn!(
                 stage = "accepted_model_observation",
@@ -614,37 +690,65 @@ fn unavailable() -> RunError {
     RunError::InvalidInput("agent_model_unavailable".into())
 }
 
-/// Capture the actual Root rate decision for every physical provider request.
-pub(crate) struct Prices(pub Arc<ConfigurationStore>);
-impl maka_agent_engine::pricing::Pricing for Prices {
+struct ConfigPricing(Arc<ConfigurationStore>);
+impl maka_agent_engine::pricing::Pricing for ConfigPricing {
     fn quote<'a>(
         &'a self,
         provider: &'a str,
         model: &'a str,
     ) -> BoxFuture<'a, Result<maka_agent_facts::pricing::Quote, RunError>> {
-        Box::pin(
-            async move {
-                self.0
-                    .quote_model(provider.into(), model.into())
-                    .await
-                    .map_err(|error| {
-                        diagnostics::configuration("model_pricing", &error, None);
-                        match error {
-                            maka_config::ConfigError::CommitUnknown => {
-                                maka_agent_facts::event::CommitError::OutcomeUnknown(
-                                    error.to_string(),
-                                )
-                                .into()
-                            }
-                            _ => RunError::Internal("model pricing unavailable".into()),
-                        }
-                    })
-            }
-            .instrument(tracing::warn_span!(
-                "agent_model_pricing",
-                provider,
-                model_id = model
-            )),
-        )
+        Box::pin(async move {
+            self.0
+                .quote_model(provider.to_owned(), model.to_owned())
+                .await
+                .map_err(|error| {
+                    diagnostics::configuration("model_pricing", &error, None);
+                    RunError::Internal(format!("model pricing snapshot unavailable: {error}"))
+                })
+        })
+    }
+}
+impl Source {
+    pub(crate) fn with_pricing(
+        mut self,
+        pricing: Arc<dyn maka_agent_engine::pricing::Pricing>,
+    ) -> Self {
+        self.pricing = pricing;
+        self
+    }
+    pub(crate) async fn quote(
+        &self,
+        prepared: &PreparedModel,
+    ) -> Result<maka_agent_facts::pricing::Quote, RunError> {
+        self.pricing
+            .quote(&prepared.provider_id, &prepared.provider.model)
+            .await
+    }
+}
+
+pub(crate) fn inference_outcome(
+    error: &maka_model::ModelError,
+) -> maka_agent_facts::accounting::Outcome {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        model::error::{ModelError, ProviderFailureReason},
+    };
+    match error {
+        ModelError::Cancelled | ModelError::LocalAuthorization(_) => Outcome::Aborted,
+        ModelError::Http { .. }
+        | ModelError::ContextOverflow { .. }
+        | ModelError::ImageInputPayloadTooLarge { .. }
+        | ModelError::ImageInputRejected { .. } => Outcome::Error,
+        ModelError::Provider(failure) => match failure.reason() {
+            ProviderFailureReason::RateLimit
+            | ProviderFailureReason::QuotaExhausted
+            | ProviderFailureReason::ProviderUnavailable => Outcome::Error,
+            ProviderFailureReason::Network
+            | ProviderFailureReason::TimedOut
+            | ProviderFailureReason::StreamTruncated => Outcome::Unknown,
+        },
+        ModelError::Adapter(_) | ModelError::TimedOut | ModelError::CleanupUnconfirmed => {
+            Outcome::Unknown
+        }
     }
 }

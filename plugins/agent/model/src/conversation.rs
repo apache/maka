@@ -66,6 +66,18 @@ impl Conversation {
         self.state.lock().unwrap().phase()
     }
 
+    /// Release the bound session owner after admission has stopped. This is
+    /// not an EOF observation; existing execution leases remain responsible
+    /// for their original I/O and cleanup receipts.
+    pub fn retire(&self) {
+        let bound = {
+            let mut state = self.state.lock().unwrap();
+            state.phase = state.phase();
+            state.bound.take()
+        };
+        drop(bound);
+    }
+
     pub fn try_switch_fallback_transport(&self) -> bool {
         self.state
             .lock()
@@ -73,6 +85,15 @@ impl Conversation {
             .bound
             .as_ref()
             .is_some_and(|bound| bound.session.try_switch_fallback_transport())
+    }
+
+    pub fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        self.state.lock().unwrap().bound.as_ref().map_or(
+            maka_agent_facts::model::retry_transport::FallbackAvailability::Unavailable,
+            |bound| bound.session.fallback_availability(),
+        )
     }
 
     pub(crate) async fn session(
@@ -127,57 +148,5 @@ impl Conversation {
             }
             None => false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::future::BoxFuture;
-    use maka_agent_facts::composition::{SourceKind, SourceRevision};
-    use maka_agent_ports::model::{Context, ProviderAdapter, Request};
-    use tokio_util::sync::CancellationToken;
-
-    struct PrimaryOnly;
-    impl Session for PrimaryOnly {
-        fn stream(&self, _: Request, _: Context) -> BoxFuture<'static, Result<(), Error>> {
-            Box::pin(async { panic!("unsupported restored fallback must fail before streaming") })
-        }
-    }
-    impl ProviderAdapter for PrimaryOnly {
-        fn open(
-            &self,
-            _: Lifetime,
-            _: CancellationToken,
-        ) -> BoxFuture<'_, Result<Arc<dyn Session>, Error>> {
-            Box::pin(async { Ok(Arc::new(Self) as Arc<dyn Session>) })
-        }
-    }
-    fn binding(provider: Arc<dyn ProviderAdapter>) -> Binding {
-        Binding::new(
-            provider,
-            SourceRevision {
-                kind: SourceKind::ModelAdapter,
-                name: "fixture".into(),
-                package_id: "fixture".into(),
-                entry_id: "fixture".into(),
-                activation: "fresh".into(),
-                revision: "1".into(),
-            },
-        )
-    }
-
-    #[tokio::test]
-    async fn unsupported_fallback_restore_fails_before_session_is_published() {
-        let conversation = Conversation::with_retry_transport_phase(RetryTransportPhase::Fallback);
-        let result = conversation
-            .session(&binding(Arc::new(PrimaryOnly)), CancellationToken::new())
-            .await;
-        assert!(matches!(result, Err(Error::Adapter(_))));
-        assert_eq!(
-            conversation.retry_transport_phase(),
-            RetryTransportPhase::Fallback
-        );
-        assert!(conversation.state.lock().unwrap().bound.is_none());
     }
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-mod storage;
+pub(crate) mod storage;
 
 use crate::StoreError;
 fn invalid(message: &str) -> StoreError {

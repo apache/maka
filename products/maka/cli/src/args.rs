@@ -274,20 +274,20 @@ impl Cli {
             Command::Acp(args) => command_exit(crate::acp::run(args)),
             Command::Inspect(args) => command_exit(async move {
                 let store = crate::application::open_store(args.root).await?;
-                let session = store.session(&args.session).await?;
-                let prefix = session
-                    .scoped_prefix(
-                        maka_agent_facts::event::LogScope::Session {
-                            id: session.id().into(),
-                        },
-                        10_000,
-                        8 * 1024 * 1024,
-                    )
-                    .await;
+                let inspection = async {
+                    let session = store.session(&args.session).await?;
+                    session
+                        .get::<serde_json::Value>()
+                        .await?
+                        .ok_or(maka_event_log::StoreError::SessionNotFound)?;
+                    let data = store.data_writer()?;
+                    maka_agent_state::session_history::inspection::read(&data, session.id()).await
+                }
+                .await;
                 let closed = store.shutdown().await;
-                let prefix = prefix?;
+                let inspection = inspection?;
                 closed?;
-                println!("{}", serde_json::to_string(&prefix)?);
+                println!("{}", serde_json::to_string(&inspection)?);
                 Ok(())
             }),
         }

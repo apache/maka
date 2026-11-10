@@ -85,6 +85,16 @@ pub struct HistoryCheckpointHead {
     pub revision: Uuid,
     pub manifest: HistoryCheckpointObject,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryCheckpointSnapshot")]
+pub struct HistoryCheckpointSnapshot {
+    pub object: HistoryCheckpointObject,
+    /// Exact Agent archive inventory descriptor bytes, not execution authority.
+    pub inventory: Vec<u8>,
+    /// Exact Agent source-cut descriptor bytes. Never a Root/Session capability.
+    pub cut: Vec<u8>,
+}
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryCheckpointInventory")]
@@ -157,11 +167,10 @@ pub struct HistoryCheckpointRead {
 )]
 #[schemars(rename = "AgentHistoryCheckpointFrame")]
 pub enum HistoryCheckpointFrame {
-    /// MAKA-SESSION v2 history bytes follow; Workspace objects are separate.
+    /// Versioned Agent snapshot archive bytes follow; Workspace objects are separate.
     Checkpoint {
         head: HistoryCheckpointHead,
-        inventory: HistoryCheckpointInventory,
-        bundle: HistoryCheckpointObject,
+        history: HistoryCheckpointSnapshot,
         workspace: Option<CheckpointWorkspaceSnapshot>,
     },
     Chunk {
@@ -243,12 +252,51 @@ pub struct CheckpointHistoryRead {
     pub position: super::HistoryPosition,
     #[serde(default)]
     pub include_thinking: bool,
+    #[serde(default)]
+    pub view: super::HistoryView,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointSourceRead")]
+pub struct CheckpointSourceRead {
+    pub inspection: CheckpointInspection,
+    pub address: maka_agent_ports::session::history::HistoryRowAddress,
+    pub field: maka_agent_ports::session::history::SourceField,
+    #[serde(default)]
+    pub path: Option<Vec<maka_agent_ports::session::history::SourceSegment>>,
+    pub position: maka_agent_ports::session::history::SourcePosition,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointToolImageRead")]
+pub struct CheckpointToolImageRead {
+    pub inspection: CheckpointInspection,
+    pub position: super::HistoryRowAddress,
+    #[serde(default)]
+    pub image: Option<u32>,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointAttachmentImageRead")]
+pub struct CheckpointAttachmentImageRead {
+    pub inspection: CheckpointInspection,
+    pub position: super::HistoryRowAddress,
+    pub attachment_index: u32,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCheckpointArtifactsRead")]
 pub struct CheckpointArtifactsRead {
     pub inspection: CheckpointInspection,
+    /// Original historical marker path, validated from the inspection root.
+    #[serde(default)]
+    pub path: Vec<maka_agent_facts::durable::RunId>,
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
@@ -259,6 +307,8 @@ pub struct CheckpointArtifactsRead {
 #[schemars(rename = "AgentCheckpointArtifactRead")]
 pub struct CheckpointArtifactRead {
     pub inspection: CheckpointInspection,
+    #[serde(default)]
+    pub path: Vec<maka_agent_facts::durable::RunId>,
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(length(min = 1))]
@@ -294,91 +344,6 @@ pub struct CheckpointArtifactChunk {
     /// Base64, at most 32 KiB decoded. Empty only at the end.
     #[schemars(length(max = 43692))]
     pub data: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_plugin_core::contract::{Interface, MethodMode};
-    use serde_json::json;
-
-    #[test]
-    fn checkpoint_inputs_preserve_explicit_cas_and_reject_caller_authority_or_paths() {
-        let Interface::Service { methods } = crate::contract().interface else {
-            unreachable!()
-        };
-        assert_eq!(methods["publishCheckpoint"].mode, MethodMode::Mutation);
-        assert_eq!(
-            methods["readHistoryCheckpoint"].mode,
-            MethodMode::Subscription
-        );
-        let publish = jsonschema::validator_for(&methods["publishCheckpoint"].input).unwrap();
-        let valid = json!({"sessionId":"source","expectedRevision":null,"confirmedSubtreeDigest":"a".repeat(64),"workspaceConsistency":null});
-        assert!(publish.is_valid(&valid));
-        for key in [
-            "expectedRevision",
-            "confirmedSubtreeDigest",
-            "workspaceConsistency",
-        ] {
-            let mut absent = valid.clone();
-            absent.as_object_mut().unwrap().remove(key);
-            assert!(!publish.is_valid(&absent));
-        }
-        for (key, value) in [
-            ("scope", json!({})),
-            ("path", json!("/tmp/output")),
-            ("operation", json!(Uuid::new_v4())),
-            ("expectedRevision", json!(23)),
-            ("confirmedSubtreeDigest", json!("member-count")),
-        ] {
-            let mut invalid = valid.clone();
-            invalid[key] = value;
-            assert!(!publish.is_valid(&invalid), "{key}");
-        }
-        let read = jsonschema::validator_for(&methods["readHistoryCheckpoint"].input).unwrap();
-        assert!(!read.is_valid(&json!({"sessionId":"source"})));
-        assert!(!read.is_valid(&json!({"sessionId":"source","revision":23})));
-        assert!(read.is_valid(&json!({"sessionId":"source","revision":Uuid::new_v4()})));
-    }
-    #[test]
-    fn checkpoint_load_requires_exact_revision_and_never_accepts_execution_authority() {
-        let Interface::Service { methods } = crate::contract().interface else {
-            unreachable!()
-        };
-        assert_eq!(methods["loadHistoryCheckpoint"].mode, MethodMode::Mutation);
-        for method in [
-            "historyCheckpointLoadReceipt",
-            "loadedHistoryCheckpointHistory",
-            "loadedHistoryCheckpointArtifacts",
-        ] {
-            assert_eq!(methods[method].mode, MethodMode::Query);
-        }
-        let validator = jsonschema::validator_for(&methods["loadHistoryCheckpoint"].input).unwrap();
-        let valid = json!({"sessionId":"source", "revision":Uuid::new_v4()});
-        assert!(validator.is_valid(&valid));
-        assert!(!validator.is_valid(&json!({"sessionId":"source"})));
-        for (key, value) in [
-            ("revision", json!(null)),
-            ("path", json!("/tmp/target")),
-            ("activate", json!(true)),
-            ("configuration", json!({})),
-            ("scope", json!({})),
-        ] {
-            let mut invalid = valid.clone();
-            invalid[key] = value;
-            assert!(!validator.is_valid(&invalid), "{key}");
-        }
-        assert_eq!(
-            methods["loadedHistoryCheckpointArtifact"].mode,
-            MethodMode::Subscription
-        );
-        let validator =
-            jsonschema::validator_for(&methods["loadedHistoryCheckpointArtifact"].input).unwrap();
-        let mut valid = json!({"inspection":{"sourceSessionId":"source","operationId":Uuid::new_v4()},"sessionId":"source","artifactId":"a","offset":0});
-        assert!(validator.is_valid(&valid));
-        valid["offset"] = json!(9_007_199_254_740_992u64);
-        assert!(!validator.is_valid(&valid));
-    }
 }
 
 /// Restore files into a new child of a selected directory and rebind the same,

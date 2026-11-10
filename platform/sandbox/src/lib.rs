@@ -19,11 +19,14 @@
 
 //! Execution policy and operating-system isolation. This crate neither grants
 //! authority nor retries effects; the Host owns both decisions and their receipts.
+mod account;
+pub use account::account_home;
 pub mod filesystem;
 pub mod grant;
 mod network;
 mod path;
 mod policy;
+pub mod workspace;
 pub use network::{Destination, Network};
 pub use policy::{Approval, ApprovalKind, Mode, Permissions, Sandbox};
 pub mod launch;

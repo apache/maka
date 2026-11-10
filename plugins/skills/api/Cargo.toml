@@ -26,6 +26,7 @@ publish.workspace = true
 test = false
 
 [dependencies]
+maka-sandbox.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-api.workspace = true
 maka-skills.workspace = true

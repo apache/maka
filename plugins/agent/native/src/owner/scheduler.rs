@@ -22,10 +22,10 @@ mod dispatch;
 mod repository;
 mod tools;
 use super::*;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::Store;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::Store;
 use maka_scheduler::{
     plan::TaskPlan,
     task::{Creator, Outcome, Run, Status},
@@ -36,13 +36,15 @@ use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Approval {
+pub(in crate::owner) enum Approval {
     Reminder,
-    Execution { basis: Box<MessageBasis> },
+    Execution {
+        approval: super::notifications::BackgroundApproval,
+    },
 }
 pub(crate) struct Scheduler {
     storage: Arc<maka_host_runtime::storage::Storage>,
-    gate: Mutex<()>,
+    pub(in crate::owner) gate: Arc<Mutex<()>>,
     wake: Notify,
     changed: tokio::sync::watch::Sender<u64>,
     link: OnceLock<Weak<Owner>>,
@@ -59,7 +61,7 @@ impl Scheduler {
                 )
                 .expect("scheduler namespace"),
             )),
-            gate: Mutex::new(()),
+            gate: Arc::new(Mutex::new(())),
             wake: Notify::new(),
             changed: tokio::sync::watch::channel(0).0,
             link: OnceLock::new(),
@@ -69,6 +71,9 @@ impl Scheduler {
         self.link
             .set(Arc::downgrade(owner))
             .expect("scheduler bound once");
+    }
+    pub fn execution_changed(&self) {
+        self.wake.notify_one();
     }
     pub async fn finish(&self) -> Result<(), String> {
         self.storage.finish().await
@@ -103,19 +108,6 @@ impl Owner {
     pub async fn schedules(&self, input: ScheduleRead) -> Result<Schedules, String> {
         let scheduler = &self.scheduler;
         let _gate = scheduler.gate.lock().await;
-        if let ScheduleRead::Receipt { reference } = input {
-            if reference.source.state_domain != self.data_source.state_domain
-                || reference.source.deployment != self.data_source.deployment
-                || reference.namespace != self.data_source.namespace
-                || reference.export != crate::EXPORT
-                || reference.method != "schedule"
-            {
-                return Err("scheduler_receipt_owner_invalid".into());
-            }
-            return Ok(Schedules::Receipt {
-                result: scheduler.receipt(&reference).await?,
-            });
-        }
         let catalog = scheduler.load().await?;
         match input {
             ScheduleRead::List {
@@ -153,7 +145,6 @@ impl Owner {
                     .get(&task_id)
                     .map(|saved| Box::new(saved.detail())),
             }),
-            ScheduleRead::Receipt { .. } => unreachable!(),
         }
     }
     pub async fn schedule_change(
@@ -161,26 +152,21 @@ impl Owner {
         input: ScheduleChange,
         operation: maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<ScheduleResult, String> {
-        // Management grants are explicit. Model tools have a separate proposal
-        // path and cannot turn their own arguments into background approval.
+    ) -> Result<NativeMutation<ScheduleResult>, String> {
         if scope.identity.agent().is_some() {
             return Err("scheduler_user_approval_required".into());
         }
         if !self.settings.scheduled_tasks {
             return Err("scheduler_disabled".into());
         }
-        let runs = self.runs.lock().await;
-        if runs.closing || self.stop.is_cancelled() {
-            return Err("agent_closed".into());
+        {
+            let runs = self.runs.state().await;
+            if runs.closing || self.stop.is_cancelled() {
+                return Err("agent_closed".into());
+            }
         }
         let owner = self.clone();
         let job = self.workers.spawn(async move {
-            let _gate = owner.scheduler.gate.lock().await;
-            if let Some(result) = owner.scheduler.receipt(&operation).await? {
-                return Ok(result);
-            }
-            let mut catalog = owner.scheduler.load().await?;
             let id = match &input {
                 ScheduleChange::Create { .. } => format!("task-{}", owner.operation_id(&operation)),
                 ScheduleChange::Update { task_id, .. }
@@ -193,179 +179,218 @@ impl Owner {
                 | ScheduleChange::ClearHistory { task_id, .. }
                 | ScheduleChange::Delete { task_id, .. } => task_id.clone(),
             };
-            let expected = match &input {
-                ScheduleChange::Create { .. } => None,
-                ScheduleChange::Update { revision, .. }
-                | ScheduleChange::Approve { revision, .. }
-                | ScheduleChange::Pause { revision, .. }
-                | ScheduleChange::Resume { revision, .. }
-                | ScheduleChange::TriggerNow { revision, .. }
-                | ScheduleChange::Snooze { revision, .. }
-                | ScheduleChange::Acknowledge { revision, .. }
-                | ScheduleChange::ClearHistory { revision, .. }
-                | ScheduleChange::Delete { revision, .. } => Some(*revision),
-            };
-            let actual = catalog.plans.get(&id).map(|saved| saved.revision);
-            let candidate = if expected != actual {
-                Err(ScheduleResult::Conflict { actual })
+            let writer = owner.store.data_writer().map_err(reason)?;
+            let approval = if needs_approval(&input) {
+                let saved = owner.scheduler.change_basis(&id).await?;
+                match schedule_candidate(&id, &input, saved.as_ref(), now() as i64) {
+                    Ok(Some(plan)) => owner
+                        .capture_schedule_approval(&plan, &writer)
+                        .await
+                        .map(Some),
+                    Ok(None) => Err("scheduler_approval_missing".into()),
+                    Err(error) => Err(error),
+                }
             } else {
-                owner
-                    .schedule_candidate(&id, input, catalog.plans.get(&id))
-                    .await
-                    .map_err(|reason| ScheduleResult::Rejected { reason })
+                Ok(None)
             };
-            let result = match candidate {
-                Ok(plan) => {
-                    let revision = actual.unwrap_or(0) + 1;
-                    let result = ScheduleResult::Committed {
-                        task_id: id.clone(),
-                        revision,
-                    };
-                    owner
-                        .scheduler
-                        .commit(
-                            &mut catalog,
-                            &id,
-                            plan,
-                            Some(repository::receipt_mutation(&operation, &result)?),
-                        )
-                        .await?;
-                    result
-                }
-                Err(result) => {
-                    owner.scheduler.remember(&operation, &result).await?;
-                    result
-                }
-            };
-            owner.scheduler.wake.notify_one();
-            Ok(result)
+            let gate = Arc::new(owner.scheduler.gate.clone().lock_owned().await);
+            let change = writer
+                .prepare_result(|writer| {
+                    Ok(repository::ScheduleMutation {
+                        scheduler: owner.scheduler.clone(),
+                        gate,
+                        writer,
+                        input,
+                        id,
+                        approval,
+                    })
+                })
+                .map_err(reason)?;
+            Ok(NativeMutation::Computed { change })
         });
-        drop(runs);
         job.await
             .map_err(|_| "scheduler_operation_unknown".to_string())?
     }
-    async fn schedule_candidate(
+    async fn capture_schedule_approval(
         &self,
-        id: &str,
-        input: ScheduleChange,
-        saved: Option<&Saved>,
-    ) -> Result<Option<Plan>, String> {
-        let at = now() as i64;
-        let plan = || {
-            saved
-                .map(|saved| &saved.plan)
-                .ok_or_else(|| "scheduler_task_missing".to_string())
-        };
-        let candidate = match input {
-            ScheduleChange::Create { input } => {
-                let mut plan =
-                    Plan::create(id.into(), input.task, Creator::User, input.timezone, at)
-                        .map_err(reason)?;
-                plan.misfire = input.misfire;
-                plan.authorization = Some(self.approve_schedule(&plan).await?);
-                plan
-            }
-            ScheduleChange::Update { input, .. } => {
-                let current = plan()?;
-                if current.pending.is_some() {
-                    return Err("scheduler_trigger_pending".into());
-                }
-                let mut base = current.clone();
-                base.timezone = input.timezone;
-                base.misfire = input.misfire;
-                let mut next = base
-                    .update(
-                        maka_scheduler::command::Update {
-                            title: Some(input.task.title),
-                            intent_body: Some(input.task.intent_body),
-                            schedule: Some(input.task.schedule),
-                            effect: Some(input.task.effect),
-                            max_fires: input.task.max_fires.map_or(
-                                maka_agent_facts::configuration::Patch::Clear,
-                                maka_agent_facts::configuration::Patch::Set,
-                            ),
-                            expires_at: input.task.expires_at.map_or(
-                                maka_agent_facts::configuration::Patch::Clear,
-                                maka_agent_facts::configuration::Patch::Set,
-                            ),
-                        },
-                        at,
-                    )
-                    .map_err(reason)?;
-                next.authorization = Some(self.approve_schedule(&next).await?);
-                next.validate().map_err(reason)?;
-                next
-            }
-            ScheduleChange::Approve { .. } => {
-                let mut next = plan()?.clone();
-                if next.pending.is_some() {
-                    return Err("scheduler_trigger_pending".into());
-                }
-                if !matches!(next.task.status, Status::Active | Status::Paused) {
-                    return Err("scheduler_task_terminal".into());
-                }
-                next.authorization = Some(self.approve_schedule(&next).await?);
-                if next.task.status == Status::Paused {
-                    next = next.resume(at).map_err(reason)?;
-                }
-                next
-            }
-            ScheduleChange::Pause { .. } => plan()?.pause(at),
-            ScheduleChange::Resume { .. } => {
-                let mut next = plan()?.resume(at).map_err(reason)?;
-                next.authorization = Some(self.approve_schedule(&next).await?);
-                next
-            }
-            ScheduleChange::TriggerNow { .. } => {
-                let mut next = plan()?.clone();
-                if next.task.status != Status::Active || next.pending.is_some() {
-                    return Err("scheduler_task_not_ready".into());
-                }
-                if next.authorization.is_none() {
-                    return Err("scheduler_user_approval_required".into());
-                }
-                next.task.next_fire_at = Some(at);
-                next.claim(at).map_err(reason)?;
-                next
-            }
-            ScheduleChange::Snooze { delay_ms, .. } => {
-                plan()?.snooze(delay_ms, at).map_err(reason)?
-            }
-            ScheduleChange::Acknowledge { fire_id, .. } => {
-                let mut next = plan()?.clone();
-                let pending = next
-                    .pending
-                    .as_ref()
-                    .filter(|fire| {
-                        fire.id == fire_id && matches!(fire.effect, ScheduledEffect::Reminder)
-                    })
-                    .ok_or("scheduler_reminder_changed")?;
-                next.settle(Run {
-                    id: fire_id,
-                    at: at.max(pending.scheduled_at),
-                    outcome: Outcome::Ok,
-                    message: "Reminder acknowledged".into(),
-                    session_id: None,
-                    run_id: None,
-                })
-                .map_err(reason)?;
-                next
-            }
-            ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),
-            ScheduleChange::Delete { .. } => {
-                if plan()?
-                    .pending
-                    .as_ref()
-                    .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
+        plan: &Plan,
+        writer: &maka_event_log::root_store::DataWriter,
+    ) -> Result<PreparedScheduleApproval, String> {
+        let authorization = self.approve_schedule(plan).await?;
+        let metadata = match &authorization {
+            Approval::Reminder => None,
+            Approval::Execution { approval } => {
+                let target = &approval.target;
+                let current = self.mutable_session(&target.session_id).await?;
+                if current.archived
+                    || current.configuration.workspace != target.workspace
+                    || current.configuration.permissions != target.permissions
+                    || current.configuration.boundary_revision != target.boundary_revision
+                    || current.configuration.binding != target.binding
                 {
-                    return Err("scheduler_trigger_pending".into());
+                    return Err("scheduler_authorization_changed".into());
                 }
-                return Ok(None);
+                Some(
+                    self.store
+                        .session(&target.session_id)
+                        .await
+                        .map_err(reason)?
+                        .revision_guard(writer, current.revision)
+                        .map_err(reason)?,
+                )
             }
         };
-        candidate.validate().map_err(reason)?;
-        Ok(Some(candidate))
+        Ok(PreparedScheduleApproval {
+            authorization,
+            metadata,
+            effect: plan.task.effect.clone(),
+        })
     }
+}
+
+struct PreparedScheduleApproval {
+    authorization: Approval,
+    metadata: Option<maka_event_log::root_store::SessionRevisionGuard>,
+    effect: ScheduledEffect,
+}
+fn expected_revision(input: &ScheduleChange) -> Option<u64> {
+    match input {
+        ScheduleChange::Create { .. } => None,
+        ScheduleChange::Update { revision, .. }
+        | ScheduleChange::Approve { revision, .. }
+        | ScheduleChange::Pause { revision, .. }
+        | ScheduleChange::Resume { revision, .. }
+        | ScheduleChange::TriggerNow { revision, .. }
+        | ScheduleChange::Snooze { revision, .. }
+        | ScheduleChange::Acknowledge { revision, .. }
+        | ScheduleChange::ClearHistory { revision, .. }
+        | ScheduleChange::Delete { revision, .. } => Some(*revision),
+    }
+}
+fn needs_approval(input: &ScheduleChange) -> bool {
+    matches!(
+        input,
+        ScheduleChange::Create { .. }
+            | ScheduleChange::Update { .. }
+            | ScheduleChange::Approve { .. }
+            | ScheduleChange::Resume { .. }
+    )
+}
+fn schedule_candidate(
+    id: &str,
+    input: &ScheduleChange,
+    saved: Option<&Saved>,
+    at: i64,
+) -> Result<Option<Plan>, String> {
+    let plan = || {
+        saved
+            .map(|saved| &saved.plan)
+            .ok_or_else(|| "scheduler_task_missing".to_string())
+    };
+    let candidate = match input {
+        ScheduleChange::Create { input } => {
+            let mut plan = Plan::create(
+                id.into(),
+                input.task.clone(),
+                Creator::User,
+                input.timezone.clone(),
+                at,
+            )
+            .map_err(reason)?;
+            plan.misfire = input.misfire;
+            plan
+        }
+        ScheduleChange::Update { input, .. } => {
+            let current = plan()?;
+            if current.pending.is_some() {
+                return Err("scheduler_trigger_pending".into());
+            }
+            let mut base = current.clone();
+            base.timezone = input.timezone.clone();
+            base.misfire = input.misfire;
+            let next = base
+                .update(
+                    maka_scheduler::command::Update {
+                        title: Some(input.task.title.clone()),
+                        intent_body: Some(input.task.intent_body.clone()),
+                        schedule: Some(input.task.schedule.clone()),
+                        effect: Some(input.task.effect.clone()),
+                        max_fires: input.task.max_fires.map_or(
+                            maka_agent_facts::configuration::Patch::Clear,
+                            maka_agent_facts::configuration::Patch::Set,
+                        ),
+                        expires_at: input.task.expires_at.map_or(
+                            maka_agent_facts::configuration::Patch::Clear,
+                            maka_agent_facts::configuration::Patch::Set,
+                        ),
+                    },
+                    at,
+                )
+                .map_err(reason)?;
+            next
+        }
+        ScheduleChange::Approve { .. } => {
+            let mut next = plan()?.clone();
+            if next.pending.is_some() {
+                return Err("scheduler_trigger_pending".into());
+            }
+            if !matches!(next.task.status, Status::Active | Status::Paused) {
+                return Err("scheduler_task_terminal".into());
+            }
+            if next.task.status == Status::Paused {
+                next = next.resume(at).map_err(reason)?;
+            }
+            next
+        }
+        ScheduleChange::Pause { .. } => plan()?.pause(at),
+        ScheduleChange::Resume { .. } => plan()?.resume(at).map_err(reason)?,
+        ScheduleChange::TriggerNow { .. } => {
+            let mut next = plan()?.clone();
+            if next.task.status != Status::Active || next.pending.is_some() {
+                return Err("scheduler_task_not_ready".into());
+            }
+            if next.authorization.is_none() {
+                return Err("scheduler_user_approval_required".into());
+            }
+            next.task.next_fire_at = Some(at);
+            next.claim(at).map_err(reason)?;
+            next
+        }
+        ScheduleChange::Snooze { delay_ms, .. } => plan()?.snooze(*delay_ms, at).map_err(reason)?,
+        ScheduleChange::Acknowledge { fire_id, .. } => {
+            let mut next = plan()?.clone();
+            let pending = next
+                .pending
+                .as_ref()
+                .filter(|fire| {
+                    fire.id == *fire_id && matches!(fire.effect, ScheduledEffect::Reminder)
+                })
+                .ok_or("scheduler_reminder_changed")?;
+            next.settle(Run {
+                id: fire_id.clone(),
+                at: at.max(pending.scheduled_at),
+                outcome: Outcome::Ok,
+                message: "Reminder acknowledged".into(),
+                session_id: None,
+                run_id: None,
+            })
+            .map_err(reason)?;
+            next
+        }
+        ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),
+        ScheduleChange::Delete { .. } => {
+            if plan()?
+                .pending
+                .as_ref()
+                .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
+            {
+                return Err("scheduler_trigger_pending".into());
+            }
+            return Ok(None);
+        }
+    };
+    candidate.validate().map_err(reason)?;
+    Ok(Some(candidate))
 }
 fn reason(error: impl std::fmt::Display) -> String {
     error.to_string()

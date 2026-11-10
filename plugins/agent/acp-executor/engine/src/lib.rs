@@ -78,7 +78,7 @@ pub enum Error {
     #[error(transparent)]
     Process(#[from] maka_capabilities::process::Error),
     #[error(transparent)]
-    Storage(#[from] maka_capabilities::storage::StoreError),
+    Storage(#[from] maka_plugin_core::storage::StoreError),
     #[error(transparent)]
     Output(#[from] maka_agent_ports::executor::Error),
     #[error("invalid ACP response: {0}")]
@@ -91,6 +91,8 @@ pub enum Error {
     Cancelled,
     #[error("external agent contract: {0}")]
     Invalid(&'static str),
+    #[error("ACP rejected the prompt before dispatch: {0}")]
+    RejectedBeforePrompt(#[source] Box<Error>),
 }
 
 fn digest(value: &impl Serialize) -> Result<String, serde_json::Error> {

@@ -260,7 +260,7 @@ impl Provider for Codex {
                             "{}/models?client_version=1.0.0",
                             base_url.trim_end_matches('/')
                         ),
-                        method: http::Method::Get,
+                        method: maka_plugin_core::http::Method::Get,
                         headers: headers.into_iter().collect(),
                         body: Default::default(),
                     },
