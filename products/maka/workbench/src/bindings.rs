@@ -26,6 +26,7 @@ mod links;
 mod mutation;
 mod permission_window;
 mod plugins;
+mod quick_tools;
 mod settings;
 mod system_permission;
 mod terminal;
@@ -357,6 +358,42 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::installed_applications()).await
+    }
+
+    pub async fn search_file_names(
+        this: Instance<Self>,
+        query: String,
+    ) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::search_file_names(query)).await
+    }
+
+    pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::open_local_path(path)).await
+    }
+
+    pub async fn capture_screen_region(this: Instance<Self>) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::capture_screen_region()).await
+    }
+
+    pub async fn clipboard_text_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::ClipboardChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_text_change(seen)).await
+    }
+
     pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
