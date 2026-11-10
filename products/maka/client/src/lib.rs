@@ -904,15 +904,11 @@ impl Client {
             .await
     }
 
-    /// Move a directory to the front, or remove its recent entry unless `remember`.
-    pub async fn set_recent_workspace(
-        &self,
-        path: String,
-        remember: bool,
-    ) -> Result<Vec<RecentWorkspace>> {
+    /// Move a directory to the front of the recent folders.
+    pub async fn set_recent_workspace(&self, path: String) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
-            .set_recent_workspace(self.workspace_owner().await?, path, remember)
+            .set_recent_workspace(self.workspace_owner().await?, path)
             .await
     }
 

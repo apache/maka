@@ -41,7 +41,17 @@ import {
   validSelection,
 } from './composerCompletionSyntax.ts';
 import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
-import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
+import {
+  C,
+  captionTextStyle,
+  controlDisabledStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuLabelStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
+} from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { createComposerPaste } from './composerPaste';
 import {
@@ -76,7 +86,13 @@ type Row = {
   id: string;
   title: string;
   detail?: string;
-  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command';
+  /** The keys or trigger that reach this row directly, in the row's trailing lane. */
+  shortcut?: string;
+  /** The section the row belongs to, named above its first row. */
+  heading?: string;
+  /** A separator above the row, between unnamed groups. */
+  divider?: boolean;
+  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command' | 'goal';
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -229,6 +245,9 @@ export function createComposerCompletion(options: Options) {
           command,
           title: `/${command.trigger}`,
           detail: command.title,
+          get heading() {
+            return tr('Commands');
+          },
           icon: 'command',
         }),
       );
@@ -239,9 +258,9 @@ export function createComposerCompletion(options: Options) {
           id: 'add:attachment',
           kind: 'attachment',
           get title() {
-            return tr('Attach files');
+            return tr('Attach files…');
           },
-          detail: keymap.label('mod+u'),
+          shortcut: keymap.label('mod+u'),
           icon: 'paperclip',
           disabled: isSession(read.owner)
             ? read.owner.attachments.restoring()
@@ -254,7 +273,7 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Reference a workspace file');
           },
-          detail: '@',
+          shortcut: '@',
           icon: 'file',
           disabled: read.owner.completion.files === null,
         }),
@@ -265,7 +284,8 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Use a skill');
           },
-          detail: '/',
+          shortcut: '/',
+          divider: true,
           icon: 'book',
         }),
         ...options
@@ -277,8 +297,8 @@ export function createComposerCompletion(options: Options) {
               kind: 'command',
               command,
               title: command.title,
-              detail: '/goal',
-              icon: 'command',
+              shortcut: '/goal',
+              icon: 'goal',
             }),
           ),
         row(read, {
@@ -288,7 +308,7 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Message commands');
           },
-          detail: '/',
+          shortcut: '/',
           icon: 'command',
         }),
       ];
@@ -343,6 +363,9 @@ export function createComposerCompletion(options: Options) {
               }
               const common = {
                 id: `file:${entry.path.bytesBase64}`,
+                get heading() {
+                  return tr('Files');
+                },
                 title: title + (entry.kind === 'directory' ? '/' : ''),
                 get detail() {
                   return insert === null
@@ -391,6 +414,9 @@ export function createComposerCompletion(options: Options) {
           insert: skill.invocation,
           title: skill.name,
           detail: skill.description,
+          get heading() {
+            return tr('Skills');
+          },
           icon: 'book',
         }),
       ),
@@ -855,7 +881,9 @@ export function createComposerCompletion(options: Options) {
           ? tr('Files')
           : opened()?.source === 'commands'
             ? tr('Commands')
-            : tr('Skills'),
+            : opened()?.source === 'slash'
+              ? tr('Commands and skills')
+              : tr('Skills'),
     empty: () =>
       opened()?.source === 'files'
         ? tr('No matching files.')
@@ -870,7 +898,7 @@ export function createComposerCompletion(options: Options) {
 export type ComposerCompletionState = ReturnType<typeof createComposerCompletion>;
 export type ComposerCompletionRow = Pick<
   Row,
-  'action' | 'detail' | 'disabled' | 'icon' | 'id' | 'title'
+  'action' | 'detail' | 'disabled' | 'divider' | 'heading' | 'icon' | 'id' | 'shortcut' | 'title'
 >;
 export type ComposerCompletionView = Pick<
   ComposerCompletionState,
@@ -910,51 +938,43 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
         onCancel={state.dismiss}
         accessibilityLabel={state.title()}
         style={{
+          ...floatingStyle(),
           width: Math.min(480, Math.max(0, windowSize().width - 32)),
           maxHeight: Math.max(0, windowSize().height - 32),
-          borderRadius: 12,
-          borderWidth: 1,
-          borderColor: C.line,
-          backgroundColor: C.surface,
-          padding: 8,
-          gap: 6,
         }}
       >
-        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 8 }}>
-          {state.title()}
-        </Text>
         <If when={state.opened()?.explicit && state.opened()?.source !== 'add'}>
-          <Input
-            ref={state.queryInput}
-            value={state.query()}
-            onChange={({ value: text }) => state.query.set(text)}
-            onSelectionChange={state.querySelection}
-            onSubmit={inputAction(state.acceptSelected, {
-              read: state.opened()!.serial,
-            })}
-            onCompositionChange={state.queryComposition}
-            placeholder={state.queryPlaceholder()}
-            accessibilityLabel={state.queryPlaceholder()}
-            style={{
-              ...bodyTextStyle,
-              color: C.text,
-              placeholderColor: C.muted,
-              backgroundColor: C.background,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              height: 36,
-            }}
-          />
+          <View style={menuRowStyle()}>
+            <Icon name="search" color={C.muted} />
+            <Input
+              ref={state.queryInput}
+              value={state.query()}
+              onChange={({ value: text }) => state.query.set(text)}
+              onSelectionChange={state.querySelection}
+              onSubmit={inputAction(state.acceptSelected, {
+                read: state.opened()!.serial,
+              })}
+              onCompositionChange={state.queryComposition}
+              placeholder={state.queryPlaceholder()}
+              accessibilityLabel={state.queryPlaceholder()}
+              style={{
+                ...captionTextStyle,
+                flex: 1,
+                minWidth: 0,
+                color: C.text,
+                placeholderColor: C.muted,
+              }}
+            />
+          </View>
+          <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
         </If>
         <If when={state.loading()}>
-          <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
+          <Text style={noteStyle()}>
             {state.opened()?.source === 'files' ? tr('Searching files…') : tr('Loading skills…')}
           </Text>
         </If>
         <If when={state.error()}>
-          <Text
-            style={[{ ...captionTextStyle, color: C.danger, padding: 8 }, { userSelect: 'text' }]}
-          >
+          <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
             {state.error()}
           </Text>
         </If>
@@ -963,52 +983,67 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
             each={state.rows()}
             keyExtractor={(row) => row.id}
             ref={state.list}
-            estimatedItemSize={52}
+            estimatedItemSize={ROW}
             style={{
-              height: Math.min(Math.max(1, state.rows().length) * 52, windowSize().height / 2),
+              height: Math.min(Math.max(ROW, listHeight(state.rows())), windowSize().height / 2),
               flexShrink: 1,
               minHeight: 0,
             }}
             empty={
               !state.loading() && !state.error() ? (
-                <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-                  {state.empty()}
-                </Text>
+                <Text style={noteStyle()}>{state.empty()}</Text>
               ) : (
                 <View />
               )
             }
           >
             {(row, index) => (
-              <Button
-                accessibilityLabel={row().title}
-                disabled={row().disabled}
-                onPress={inputAction(state.accept, row().action)}
-                style={{
-                  height: 52,
-                  borderRadius: 8,
-                  paddingHorizontal: 10,
-                  gap: 10,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: state.index() === index() ? C.raised : C.surface,
-                }}
-                hoverStyle={{ backgroundColor: C.raised }}
-                focusStyle={{ backgroundColor: C.line }}
-                disabledStyle={{ opacity: 0.5 }}
-              >
-                <Icon name={row().icon} color={C.secondary} />
-                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                  <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                    {row().title}
-                  </Text>
-                  <If when={row().detail}>
-                    <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-                      {row().detail}
+              <View>
+                <If when={opensSection(state.rows(), index())}>
+                  <Text style={menuLabelStyle()}>{row().heading}</Text>
+                </If>
+                <If when={row().divider && index() > 0}>
+                  <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+                </If>
+                <Button
+                  accessibilityLabel={row().title}
+                  disabled={row().disabled}
+                  onPress={inputAction(state.accept, row().action)}
+                  style={{
+                    ...menuRowStyle(),
+                    height: ROW,
+                    backgroundColor: state.index() === index() ? C.floatingRaised : undefined,
+                  }}
+                  hoverStyle={menuRowHoverStyle()}
+                  focusStyle={menuRowHoverStyle()}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Icon name={row().icon} color={C.secondary} />
+                  <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', gap: 8 }}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.text, flexShrink: 0, maxWidth: '70%' },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {row().title}
                     </Text>
+                    <If when={row().detail}>
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {row().detail}
+                      </Text>
+                    </If>
+                  </View>
+                  <If when={row().shortcut}>
+                    <Text style={{ ...menuDetailTextStyle, color: C.muted }}>{row().shortcut}</Text>
                   </If>
-                </View>
-              </Button>
+                </Button>
+              </View>
             )}
           </List>
         </If>
@@ -1016,3 +1051,24 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
     </If>
   );
 }
+
+const ROW = 32;
+const HEADING = 28;
+const DIVIDER = 9;
+const opensSection = (rows: readonly ComposerCompletionRow[], index: number) =>
+  !!rows[index]?.heading && rows[index]?.heading !== rows[index - 1]?.heading;
+const listHeight = (rows: readonly ComposerCompletionRow[]) =>
+  rows.reduce(
+    (height, row, index) =>
+      height +
+      ROW +
+      (opensSection(rows, index) ? HEADING : 0) +
+      (row.divider && index > 0 ? DIVIDER : 0),
+    0,
+  );
+const noteStyle = () => ({
+  ...menuDetailTextStyle,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingVertical: 8,
+});

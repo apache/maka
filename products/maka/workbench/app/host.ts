@@ -202,8 +202,7 @@ export function createHost(application: UiHost) {
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
     stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
-    setRecentWorkspace: (path: string, remember: boolean) =>
-      nativeHost.setRecentWorkspace(path, remember),
+    setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),

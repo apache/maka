@@ -284,10 +284,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, remember: boolean) => {
+  const setRecentWorkspace = (path: string) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -297,7 +297,7 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, true).catch(report);
+    void setRecentWorkspace(path).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -2531,10 +2531,6 @@ export function createConversationUi(
                     open={recentOpen}
                     changed={(open) => recentOpen.set(open)}
                     disabled={() => pendingSending() || pendingFileBusy()}
-                    forget={(path) => {
-                      recentOpen.set(false);
-                      void setRecentWorkspace(path, false).catch(report);
-                    }}
                     choose={(item) => {
                       recentOpen.set(false);
                       void create({ kind: 'directory', path: item.path }, selected(), item.path);
