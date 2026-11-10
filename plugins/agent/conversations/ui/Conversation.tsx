@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -489,6 +490,7 @@ export function Conversation(props: ConversationProps) {
     return formerBot() && ready() && !archived() ? 'ordinary' : identity;
   };
   const readingSize = signal({ width: 640, height: 192 });
+  let historyOffset = 0;
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
@@ -1546,6 +1548,20 @@ export function Conversation(props: ConversationProps) {
   };
   const loadOlder = () => extendHistory('before');
   const loadNewer = () => extendHistory('after');
+  const olderHistoryOwner = () => {
+    const owner = historyWindow();
+    return owner?.before && ownsWindow(owner.identity) && props.visible() && navigation() === null
+      ? owner.identity
+      : null;
+  };
+  const nearHistoryStart = () =>
+    historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
+  const olderHistory = createHistoryPrefetch({
+    owner: olderHistoryOwner,
+    nearStart: nearHistoryStart,
+    loadOlder,
+  });
+  const prefetchOlder = () => void olderHistory().catch(report);
   // A tail page can hold only the end of a long turn, whose process rows fold
   // into a few lines that leave the reader too short to scroll for older pages.
   // Read back to the message that opened the latest turn, within a few pages.
@@ -3613,9 +3629,17 @@ export function Conversation(props: ConversationProps) {
                 changedReadExposure();
               }}
               each={displayKeys()}
+              loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
+              onLoadMoreAtStart={prefetchOlder}
+              onScrollDragStart={({ offset }) => {
+                if (offset.y <= 1) prefetchOlder();
+              }}
               onScrollIntent={(event) => {
                 if (event.intent === 'start') void navigateStart().catch(report);
-                else cancelNavigation();
+                else {
+                  cancelNavigation();
+                  if (event.intent === 'scroll' && historyOffset <= 1) prefetchOlder();
+                }
               }}
               onBlur={() => {
                 // Latest returns to editing immediately; its expected blur does
@@ -3642,6 +3666,9 @@ export function Conversation(props: ConversationProps) {
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
+                const towardHistory = event.offset.y < historyOffset;
+                historyOffset = event.offset.y;
+                if (towardHistory && nearHistoryStart()) prefetchOlder();
                 changedReadExposure();
                 awayFromLatest.set(
                   !atHistoryTail() ||
@@ -3661,7 +3688,6 @@ export function Conversation(props: ConversationProps) {
                   event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
                 )
                   innerReader.set(null);
-                if (event.offset.y <= 32) void loadOlder();
                 if (
                   event.offset.y >=
                   Math.max(0, event.contentSize.height - event.size.height) - 32
