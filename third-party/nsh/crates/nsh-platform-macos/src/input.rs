@@ -563,20 +563,31 @@ pub(crate) fn cursor_update(surface: &Surface) {
 /// burst re-arms the deadline so the pick lands once, when it settles.
 const REPICK_MS: f64 = 120.0;
 
-/// What is under the mouse may have moved (`scrolled`: a scroll step, else
-/// a batch): hovered views and the cursor follow it, as AppKit's tracking
-/// areas do, though the mouse did not move. Once per main-queue turn,
-/// however many scroll views moved or batches came — and during a scroll
-/// burst it defers to `repick_at`, one trailing pick rather than a hit
-/// test per step.
-pub(crate) fn content_moved(surface: &Surface, scrolled: bool) {
+/// A scroll step clears hover inside the moving content at once, so a
+/// tooltip does not follow its old trigger. A scroll burst still gets one
+/// trailing hit test to pick what ended up under the mouse. Other layout
+/// changes (a batch) schedule a pick on the main queue as usual.
+pub(crate) fn content_moved(surface: &Surface, scrolled: Option<&NshView>) {
     let input = &surface.input;
-    if input.last.get().is_none() {
+    let Some((x, y)) = input.last.get() else {
         return;
+    };
+    if let Some(scroll) = scrolled {
+        let kept = {
+            let hovered = input.hovered.borrow();
+            let moved = hovered
+                .iter()
+                .take_while(|view| *view != scroll && view.ns().isDescendantOf(scroll.ns()))
+                .count();
+            (moved > 0).then(|| hovered[moved..].to_vec())
+        };
+        if let Some(kept) = kept {
+            set_hovered(surface, kept, x, y, Mouse::now());
+        }
     }
     let t = crate::scroll::now();
     let armed = input.repick.replace(true);
-    let at = repick_deadline(armed, input.repick_at.get(), t, scrolled);
+    let at = repick_deadline(armed, input.repick_at.get(), t, scrolled.is_some());
     input.repick_at.set(at);
     if armed {
         return;

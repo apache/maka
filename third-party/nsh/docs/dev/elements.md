@@ -446,10 +446,12 @@ dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/ba
   is disabled). `onMouseEnter` starts a task of the components' executor (`act_after`, `Action::Hint`) that wakes the
   engine after the delay; then the hint shows in the commit (`sync_overlays` leaves a hint the pointer has not asked
   for out of its root view). `onMouseLeave`, a touch down whose path holds the anchor, or the hint leaving the view hide
-  it. In every idiom the keyboard focus shows it too (WAI-ARIA's tooltip pattern; the focus is keyboard focus, a click
-  moves none): `Core::focus_hints`, after `update_focus_within`, shows the hint of the nearest anchor on the focus
-  chain (up to the overlay the focus is in, so a popup's focus is not on its trigger's hint) at once and hides it when
-  the focus leaves. While a hint is shown the core binds Escape (`Overlays::hint_escape`, the same `ESCAPE_BINDING`):
+  it. On macOS, scrolling ends the pointer's hover inside the moving content and picks what is under the pointer
+  again once scrolling settles. In every idiom the keyboard focus shows it too (WAI-ARIA's tooltip pattern; the focus
+  is keyboard focus, a click moves none): `Core::focus_hints`, after `update_focus_within`, shows the hint of the
+  nearest anchor on the focus chain (up to the overlay the focus is in, so a popup's focus is not on its trigger's
+  hint) at once and hides it when the focus leaves. While a hint is shown the core binds Escape
+  (`Overlays::hint_escape`, the same `ESCAPE_BINDING`):
   Escape hides the top shown hint, or goes to `onCancel` when the top overlay is no hint (`overlay_escape`); a hint
   Escape or a press hid shows for the focus again only once the focus comes back. The overlay hears what the pointer
   and the focus ask for (`Show`, `Dismiss`: `on_hint_show` / `on_hint_hide`, with a `HintReason`: `Pointer`, `Focus`,
