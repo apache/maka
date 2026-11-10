@@ -30,15 +30,25 @@ mod sessions;
 mod system_permission;
 
 use futures_util::{FutureExt, future::BoxFuture};
-use maka_agent_facts::{tool_call::ToolOrigin, tools::ToolError};
-use maka_capabilities::call::Resources;
+use maka_agent_facts::tools::ToolError;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeContext,
+    NativeOwner, NativeRegistry,
 };
+use maka_plugin_core::work::resources::Resources;
 use maka_workspace_api::computer::{self as api, Configuration, ReplState, ResultValue};
 use serde_json::Value;
 use std::{collections::BTreeMap, panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
+
+/// The Host-validated native capability travels with the same in-process call.
+/// Public identity remains an observation and cannot reconstruct this value.
+#[derive(Clone)]
+struct Call {
+    scope: maka_capabilities::call::Scope,
+    authority: Arc<dyn maka_agent_authority::computer::ComputerAccess>,
+    operation: Option<maka_plugin_core::operation::RecoveryRef>,
+}
 
 struct Computer {
     store: Arc<maka_event_log::RootStore>,
@@ -47,10 +57,13 @@ struct Computer {
     resources: Arc<Resources>,
     stopping: CancellationToken,
     tasks: tokio_util::task::TaskTracker,
-    origin: ToolOrigin,
     popup_provenance: Option<Arc<browser_popup::Provenance>>,
 }
-struct Service(Arc<Computer>);
+// The settlement tokens stay outside their retained Computer material.
+struct Service(
+    Arc<Computer>,
+    Arc<std::sync::Mutex<Vec<maka_event_log::root_store::RetainedWorkSettlement>>>,
+);
 
 pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     registry.insert(
@@ -59,7 +72,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
             Box::pin(async move {
                 match Computer::open(context, input) {
                     Ok(owner) => {
-                        let owner = Arc::new(Service(owner));
+                        let owner = Arc::new(Service(owner, Arc::default()));
                         NativeActivation {
                             exports: Ok(BTreeMap::from([(
                                 api::EXPORT.into(),
@@ -102,13 +115,6 @@ impl Computer {
             resources: Arc::new(Resources::default()),
             stopping: CancellationToken::new(),
             tasks,
-            origin: ToolOrigin::HostSdk {
-                package_id: context.package().id.clone(),
-                entry_id: serde_json::to_string(context.activation().instance())
-                    .map_err(message)?,
-                activation: context.activation().epoch().to_string(),
-                parent: None,
-            },
         });
         sessions::watch(&owner);
         Ok(owner)
@@ -118,24 +124,39 @@ impl Computer {
         name: &str,
         input: Value,
         context: Context,
-    ) -> Result<Value, ToolError> {
-        let invocation = context
-            .scope()
-            .identity
-            .agent()
-            .ok_or_else(|| failed("Computer Use requires an Agent invocation"))?
-            .clone();
-        if name == "state" {
-            maka_agent_authority::permissions::live(
-                &maka_agent_authority::permissions::execution(
-                    &self.store,
-                    &invocation,
-                    context.scope().execution().map(|token| token.as_ref()),
-                )?,
-                &invocation,
+    ) -> Result<HandlerValue, ToolError> {
+        let authority = context
+            .native_context::<maka_agent_authority::computer::NativeCallContext>()
+            .and_then(|context| context.computer())
+            .ok_or_else(|| failed("Computer Use requires its original native call capability"))?;
+        let invocation = authority.call().execution.clone();
+        self.store
+            .session_for_work(
+                context
+                    .work_custody()
+                    .ok_or_else(|| failed("Computer Use requires original Root work custody"))?
+                    .as_ref(),
+                &invocation.session_id,
             )
-            .await?;
+            .map_err(failed)?;
+        if context.scope().identity.agent() != Some(&invocation) {
+            return Err(failed("Computer capability belongs to another execution"));
+        }
+        let original = if name == "state" {
+            None
+        } else {
+            Some(authority.bind_original(&context).await?)
+        };
+        let call = Call {
+            scope: context.scope().clone(),
+            authority,
+            operation: original,
+        };
+
+        if name == "state" {
+            access::current(self, &call, "cua_repl").await?;
             return serde_json::to_value(self.sessions.state(&invocation.session_id).await)
+                .map(HandlerValue::Json)
                 .map_err(failed);
         }
         if context.operation().is_none() {
@@ -147,17 +168,18 @@ impl Computer {
             _ => return Err(failed("Computer method unavailable")),
         };
         api::validate(tool, &input).map_err(failed)?;
-        let (configuration, _) = access::current(self, context.scope(), tool).await?;
+        let (configuration, _) = access::current(self, &call, tool).await?;
         let cancellation = context.scope().cancellation.child_token();
         let execute = async {
             if name == "evaluate" {
-                access::approve(self, context.scope(), &configuration, &cancellation).await?;
+                access::resource_boundary(call.scope.sandbox_floor())?;
+                access::approve(self, &call, &configuration, &cancellation).await?;
             }
             let interaction = self.sessions.get(&invocation.session_id)?;
             let result = self.evaluate(
                 name,
                 input,
-                context.resource_capturer().into(),
+                evaluate::EvaluationScope::new(call.clone(), context.resource_capturer()),
                 configuration.permission_basis(),
                 interaction.clone(),
                 cancellation.clone(),
@@ -174,11 +196,14 @@ impl Computer {
             () = self.stopping.cancelled() => { cancellation.cancel(); execute.await },
         };
         match result {
-            Ok(value) => serde_json::to_value(value).map_err(failed),
+            Ok((value, change)) => context
+                .complete_change(serde_json::to_value(value).map_err(failed)?, change)
+                .map_err(failed),
             Err(ToolError::Failed(message)) => serde_json::to_value(ResultValue::Failed {
                 message,
                 state: self.sessions.state(&invocation.session_id).await,
             })
+            .map(HandlerValue::Json)
             .map_err(failed),
             Err(error) => Err(error),
         }
@@ -190,29 +215,34 @@ impl Handler for Service {
         name: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
         Box::pin(async move {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
-                return Err("computer_closed".into());
+                return Err(HandlerError::from("computer_closed".to_owned()));
             }
-            let mut owned = owner.resources.reserve().map_err(message)?;
-            let mut caller = context.scope().resources.reserve().map_err(message)?;
+            let mut owned = owner
+                .resources
+                .reserve()
+                .map_err(|error| HandlerError::from(message(error)))?;
+            let mut caller = context
+                .scope()
+                .resources
+                .reserve()
+                .map_err(|error| HandlerError::from(message(error)))?;
             // The original accepted worker retains both cleanup fences if its observer disappears.
             tokio::spawn(async move {
                 owned.start();
                 caller.start();
                 let result = AssertUnwindSafe(owner.call(&name, input, context))
                     .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(ToolError::CleanupUnconfirmed(
-                            "Computer worker panicked".into(),
-                        ))
-                    });
+                    .await;
                 let cleanup = if matches!(
                     result,
-                    Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
+                    Err(_)
+                        | Ok(Err(ToolError::Persistence(_)
+                            | ToolError::CleanupUnconfirmed(_)
+                            | ToolError::OperationCleanupUnconfirmed { .. }))
                 ) {
                     Err("Computer cleanup unconfirmed".into())
                 } else {
@@ -220,10 +250,25 @@ impl Handler for Service {
                 };
                 owned.complete(cleanup.clone());
                 caller.complete(cleanup);
-                result.map_err(message)
+                result
+                    .map_err(|_| HandlerError::Unknown {
+                        diagnostic: "Computer worker panicked".into(),
+                    })?
+                    .map_err(|error| match error {
+                        ToolError::OutcomeUnknown(_)
+                        | ToolError::OperationUnknown { .. }
+                        | ToolError::Persistence(_)
+                        | ToolError::CleanupUnconfirmed(_)
+                        | ToolError::OperationCleanupUnconfirmed { .. } => HandlerError::Unknown {
+                            diagnostic: message(error),
+                        },
+                        error => HandlerError::from(message(error)),
+                    })
             })
             .await
-            .map_err(message)?
+            .map_err(|error| HandlerError::Unknown {
+                diagnostic: message(error),
+            })?
         })
     }
 }
@@ -241,14 +286,44 @@ impl NativeOwner for Service {
     }
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         let owner = self.0.clone();
+        let retained = self.1.clone();
         owner.stopping.cancel();
         owner.tasks.close();
         Box::pin(async move {
             let native = owner.sessions.close().await.map_err(message);
+            if native.is_err() {
+                retained
+                    .lock()
+                    .unwrap()
+                    .extend(sessions::retain_sources(&owner));
+            }
             let work = owner.resources.settle().await.map_err(message);
             owner.tasks.wait().await;
-            work.and(native)
+            let result = work.and(native);
+            if result.is_ok() {
+                let confirmed = std::mem::take(&mut *retained.lock().unwrap());
+                for original in confirmed {
+                    original.confirm_cleanup();
+                }
+            } else {
+                retained
+                    .lock()
+                    .unwrap()
+                    .extend(sessions::retain_sources(&owner));
+            }
+            result
         })
+    }
+}
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.0.stopping.cancel();
+        self.0.tasks.close();
+        self.1
+            .lock()
+            .unwrap()
+            .extend(sessions::retain_sources(&self.0));
+        // Dropping an unconfirmed token deliberately leaves its original material retained.
     }
 }
 fn message(error: impl std::fmt::Display) -> String {

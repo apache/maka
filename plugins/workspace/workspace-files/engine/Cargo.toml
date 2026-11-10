@@ -44,6 +44,7 @@ imagesize.workspace = true
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

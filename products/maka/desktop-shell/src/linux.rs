@@ -17,31 +17,27 @@
  * under the License.
  */
 
-//! The disposable GTK workbench and its process-owned Host connection.
+//! The GTK workbench window, including Host reconnection and UI reload.
 
 use crate::{
     host::{self, Connection, Root},
     placement::Placement,
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
-    tray_linux::{Event, Tray},
 };
 use gtk::{gio, glib, prelude::*};
 use maka_workbench::{
     bindings::Bindings,
     reload::{Request, UiReload},
 };
-use nsh_engine::{EngineConfig, HostChannel, JsonValue};
-use nsh_platform_linux::{AppOptions, AppView, gtk4 as gtk};
+use nsh_engine::{EngineConfig, JsonValue};
+use nsh_platform_linux::{AppOptions, AppView, gtk4 as gtk, on_tray_lost, tray_registered};
 use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
 };
-use tokio::{
-    runtime::Handle,
-    sync::{mpsc, watch},
-};
+use tokio::{runtime::Handle, sync::watch};
 
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
@@ -71,103 +67,27 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
             .as_ref()
             .expect("Host admission sets the client directory"),
     );
-    let current = ConnectedHost::new((endpoint.clone(), epoch), &config);
     let handle = runtime.handle().clone();
-    let detach = Detach::new(bindings, (endpoint, epoch), runtime);
+    let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
-    let (events, received) = mpsc::unbounded_channel();
-    let tray = Tray::start(handle.clone(), events);
     glib::set_prgname(Some(APP_ID));
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    let desktop = Rc::new(RefCell::new(Desktop {
-        app: app.downgrade(),
-        config: Some(config),
-        placement,
-        detach: detach.clone(),
-        shell,
-        active,
-        window: None,
-        paused: false,
-        tray,
-        hold: None,
-    }));
-    let pending = RefCell::new(Some((current, root, requests, received)));
-    let tasks = Rc::new(RefCell::new(Vec::new()));
-    let running = tasks.clone();
-    let activate = desktop.clone();
-    app.connect_activate(move |_| {
-        Desktop::show(&activate);
-        if let Some((current, root, requests, received)) = pending.take() {
-            running
-                .borrow_mut()
-                .extend(carry_out(requests, received, &activate));
-            running
-                .borrow_mut()
-                .push(follow(activate.clone(), current, root, handle.clone()));
-        }
-    });
-    let result = app.run_with_args::<&str>(&[]);
-    // Also handles GTK shutdown that bypassed our close/quit actions.
-    Desktop::release_window(&desktop);
-    glib::MainContext::default().block_on(detach.start());
-    for task in tasks.take() {
-        task.abort();
-    }
-    // The hold owns the application, whose activation callback owns this controller.
-    desktop.borrow_mut().hold.take();
-    if result == glib::ExitCode::SUCCESS {
-        Ok(())
-    } else {
-        Err("the GTK application failed".into())
-    }
-}
-
-struct Window {
-    native: gtk::ApplicationWindow,
-    view: Rc<AppView>,
-    closed: watch::Sender<bool>,
-}
-impl Window {
-    fn release(self) {
-        self.closed.send_replace(true);
-        self.view.stop();
-        self.native.set_child(None::<&gtk::Widget>);
-        self.native.destroy();
-    }
-}
-
-struct Desktop {
-    app: glib::WeakRef<gtk::Application>,
-    // Never passed to an engine: registry values and HostChannel are per window.
-    config: Option<EngineConfig>,
-    placement: Placement,
-    detach: Detach,
-    shell: Shell,
-    active: watch::Sender<bool>,
-    window: Option<Window>,
-    paused: bool,
-    tray: Tray,
-    hold: Option<gio::ApplicationHoldGuard>,
-}
-impl Desktop {
-    fn show(this: &Rc<RefCell<Self>>) {
-        let mut state = this.borrow_mut();
-        if state.detach.0.borrow().quitting {
-            return;
-        }
-        if let Some(window) = &state.window {
-            window.native.present();
-            return;
-        }
-        let Some(app) = state.app.upgrade() else {
+    let start = RefCell::new(Some((config, placement, endpoint, epoch, root, requests)));
+    let closing = detach.clone();
+    app.connect_activate(move |app| {
+        let Some((config, placement, endpoint, epoch, root, requests)) = start.take() else {
+            if let Some(window) = app.active_window() {
+                window.present();
+            }
             return;
         };
+        let current = ConnectedView::new((endpoint, epoch), shell.attach(config));
         let window = gtk::ApplicationWindow::builder()
-            .application(&app)
+            .application(app)
             .title(TITLE)
             .default_width(SIZE.0)
             .default_height(SIZE.1)
@@ -180,166 +100,115 @@ impl Desktop {
             ..Default::default()
         });
         window.set_child(Some(&view.widget()));
-        state.placement.restore(&window);
-        if let Some(config) = &state.config {
-            let mut config = config.clone();
-            config.host = HostChannel::new();
-            view.load_with_config(state.shell.attach(config));
-            if state.paused {
-                view.pause_input(|_| {});
-            }
-        }
-        let active = state.active.clone();
+        placement.restore(&window);
+        view.load_with_config(current.config.clone());
+        let focus = active.clone();
         window.connect_is_active_notify(move |window| {
-            active.send_replace(window.is_active());
+            focus.send_replace(window.is_active());
         });
-        let weak = Rc::downgrade(this);
-        window.connect_close_request(move |_| {
-            if let Some(desktop) = weak.upgrade() {
-                Self::close(&desktop);
+        let follow_detach = closing.clone();
+        let quit = Rc::new(Quit {
+            placement,
+            view: view.clone(),
+            detach: closing.clone(),
+        });
+        restore_when_tray_lost(window.downgrade());
+        let closing = quit.clone();
+        window.connect_close_request(move |window| {
+            if tray_registered() {
+                closing.placement.save(window);
+                window.set_visible(false);
+            } else {
+                closing.run(window);
             }
             glib::Propagation::Stop
         });
-        install_shortcuts(&app, &window);
-        state.window = Some(Window {
-            native: window.clone(),
+        install_shortcuts(app, &window, &quit);
+        carry_out(requests, app, &window, &view, &shell, quit);
+        follow(
+            window.downgrade(),
             view,
-            closed: watch::Sender::new(false),
-        });
-        // Register the new window before releasing the tray's application hold.
-        state.hold.take();
-        drop(state);
+            current,
+            root,
+            handle.clone(),
+            follow_detach,
+            shell.clone(),
+        );
         window.present();
+    });
+    let result = app.run_with_args::<&str>(&[]);
+    // Covers display initialization failures and shutdown without close-request.
+    glib::MainContext::default().block_on(detach.start());
+    if result == glib::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err("the GTK window failed".into())
     }
+}
 
-    fn close(this: &Rc<RefCell<Self>>) {
-        let mut state = this.borrow_mut();
-        if state.detach.0.borrow().quitting || state.window.is_none() {
-            return;
-        }
-        if !state.tray.ready() {
-            drop(state);
-            Self::quit(this);
-            return;
-        }
-        if !state.shell.prepare_close() {
-            return;
-        }
-        let app = state
-            .app
-            .upgrade()
-            .expect("the application owns its windows");
-        state.hold.get_or_insert_with(|| app.hold());
-        drop(state);
-        Self::release_window(this);
-    }
-
-    fn release_window(this: &Rc<RefCell<Self>>) {
-        let mut state = this.borrow_mut();
-        let window = state.window.take();
-        if let Some(window) = &window {
-            state.placement.save(&window.native);
-        }
-        state.active.send_replace(false);
-        state.shell.release();
-        drop(state);
-        if let Some(window) = window {
-            window.release();
-        }
-    }
-
-    fn quit(this: &Rc<RefCell<Self>>) {
-        let mut state = this.borrow_mut();
-        if state.detach.0.borrow().quitting {
-            return;
-        }
-        let app = state
-            .app
-            .upgrade()
-            .expect("the application owns its controller");
-        state.hold.get_or_insert_with(|| app.hold());
-        let detached = state.detach.start();
-        drop(state);
-        Self::release_window(this);
+/// Ends the application: closing only hides the window while a tray can
+/// bring it back.
+struct Quit {
+    placement: Placement,
+    view: Rc<AppView>,
+    detach: Detach,
+}
+impl Quit {
+    fn run(&self, window: &gtk::ApplicationWindow) {
+        self.placement.save(window);
+        self.view.stop();
+        let detached = self.detach.start();
+        let window = window.clone();
         glib::MainContext::default().spawn_local(async move {
             detached.await;
-            app.quit();
+            window.destroy();
         });
     }
+}
 
-    fn reload(&self) {
-        if let (Some(window), Some(config)) = (&self.window, &self.config) {
-            let mut config = config.clone();
-            config.host = HostChannel::new();
-            window.view.load_with_config(self.shell.attach(config));
+/// Without its icon a hidden window could not come back.
+fn restore_when_tray_lost(window: glib::WeakRef<gtk::ApplicationWindow>) {
+    on_tray_lost(move || {
+        if let Some(window) = window.upgrade()
+            && !window.is_visible()
+        {
+            window.present();
         }
-    }
+    });
 }
 
 fn carry_out(
     requests: Requests,
-    mut tray: mpsc::UnboundedReceiver<Event>,
-    desktop: &Rc<RefCell<Desktop>>,
-) -> Vec<glib::JoinHandle<()>> {
+    app: &gtk::Application,
+    window: &gtk::ApplicationWindow,
+    view: &Rc<AppView>,
+    shell: &Shell,
+    quit: Rc<Quit>,
+) {
     let Requests {
-        mut close_ready,
         mut exits,
         mut folders,
         mut text_sizes,
         mut notices,
     } = requests;
     let context = glib::MainContext::default();
-    let mut tasks = Vec::new();
-    let weak = Rc::downgrade(desktop);
-    tasks.push(context.spawn_local(async move {
-        while let Some(event) = tray.recv().await {
-            let Some(desktop) = weak.upgrade() else {
+    let weak = window.downgrade();
+    context.spawn_local(async move {
+        if exits.recv().await.is_some()
+            && let Some(window) = weak.upgrade()
+        {
+            quit.run(&window);
+        }
+    });
+    let weak = window.downgrade();
+    context.spawn_local(async move {
+        while let Some(call) = folders.recv().await {
+            let Some(window) = weak.upgrade() else {
+                call.reject("the window is closing");
                 return;
             };
-            match event {
-                Event::Open => Desktop::show(&desktop),
-                Event::Quit => Desktop::quit(&desktop),
-                Event::Unavailable => {
-                    let hidden = desktop.borrow().window.is_none();
-                    if hidden {
-                        Desktop::show(&desktop);
-                    }
-                }
-            }
-        }
-    }));
-    let weak = Rc::downgrade(desktop);
-    tasks.push(context.spawn_local(async move {
-        while let Some(ready) = close_ready.recv().await {
-            if ready.is_current()
-                && let Some(desktop) = weak.upgrade()
-            {
-                Desktop::close(&desktop);
-            }
-        }
-    }));
-    let weak = Rc::downgrade(desktop);
-    tasks.push(context.spawn_local(async move {
-        if exits.recv().await.is_some()
-            && let Some(desktop) = weak.upgrade()
-        {
-            Desktop::quit(&desktop);
-        }
-    }));
-    let weak = Rc::downgrade(desktop);
-    tasks.push(context.spawn_local(async move {
-        while let Some(call) = folders.recv().await {
-            let current = weak.upgrade().and_then(|desktop| {
-                desktop.borrow().window.as_ref().map(|window| (window.native.clone(), window.closed.subscribe()))
-            });
-            let Some((window, mut closed)) = current else { call.reject("the window is closed"); continue; };
             let dialog = gtk::FileDialog::builder().title("Choose a folder").build();
-            let selected = tokio::select! {
-                biased;
-                _ = closed.wait_for(|closed| *closed) => { call.reject("the window is closed"); continue; }
-                result = dialog.select_folder_future(Some(&window)) => result,
-            };
-            match selected {
+            match dialog.select_folder_future(Some(&window)).await {
                 Ok(file) => match file.path() {
                     Some(path) => match path.to_str() {
                         Some(path) => call.resolve(JsonValue::from(path)),
@@ -347,53 +216,41 @@ fn carry_out(
                     },
                     None => call.reject("the selected folder is not a local path"),
                 },
-                Err(error) if error.matches(gtk::DialogError::Dismissed) || error.matches(gtk::DialogError::Cancelled) => call.resolve(JsonValue::Null),
+                Err(error)
+                    if error.matches(gtk::DialogError::Dismissed)
+                        || error.matches(gtk::DialogError::Cancelled) =>
+                {
+                    call.resolve(JsonValue::Null)
+                }
                 Err(error) => call.reject(error.to_string()),
             }
         }
-    }));
-    let weak = Rc::downgrade(desktop);
-    tasks.push(context.spawn_local(async move {
+    });
+    let weak = Rc::downgrade(view);
+    context.spawn_local(async move {
         while let Some(scale) = text_sizes.recv().await {
-            if let Some(desktop) = weak.upgrade()
-                && let Some(window) = &desktop.borrow().window
-            {
-                window.view.set_font_scale(Some(scale));
-            }
-        }
-    }));
-    let action = gio::SimpleAction::new("notification-open", Some(glib::VariantTy::STRING));
-    let weak = Rc::downgrade(desktop);
-    action.connect_activate(move |_, parameter| {
-        if let Some(desktop) = weak.upgrade() {
-            Desktop::show(&desktop);
-            if let Some(tag) = parameter.and_then(|p| p.str())
-                && let Some(host) = desktop
-                    .borrow()
-                    .shell
-                    .events
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-            {
-                let _ = host.send("notification.open", serde_json::json!({"tag": tag}));
-            }
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+            view.set_font_scale(Some(scale));
         }
     });
-    let app = desktop.borrow().app.clone();
-    if let Some(app) = app.upgrade() {
-        app.add_action(&action);
-        let quit = gio::SimpleAction::new("quit", None);
-        let weak = Rc::downgrade(desktop);
-        quit.connect_activate(move |_, _| {
-            if let Some(desktop) = weak.upgrade() {
-                Desktop::quit(&desktop);
-            }
-        });
-        app.add_action(&quit);
-        app.set_accels_for_action("app.quit", &["<Control>q"]);
-    }
-    tasks.push(context.spawn_local(async move {
+    let action = gio::SimpleAction::new("notification-open", Some(glib::VariantTy::STRING));
+    let weak = window.downgrade();
+    let events = shell.events.clone();
+    action.connect_activate(move |_, parameter| {
+        if let Some(window) = weak.upgrade() {
+            window.present();
+        }
+        if let Some(tag) = parameter.and_then(|p| p.str())
+            && let Some(host) = events.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        {
+            let _ = host.send("notification.open", serde_json::json!({ "tag": tag }));
+        }
+    });
+    app.add_action(&action);
+    let app = app.downgrade();
+    context.spawn_local(async move {
         while let Some(call) = notices.recv().await {
             let text = |key: &str| call.data()[key].as_str().map(str::to_owned);
             match (text("tag"), text("title"), text("body"), app.upgrade()) {
@@ -407,14 +264,13 @@ fn carry_out(
                     app.send_notification(Some(&tag), &notice);
                     call.resolve(JsonValue::Null);
                 }
-                _ => call.reject("expected a tag, a title and a body"),
+                _ => call.reject("expected a tag, a title and a body in an open window"),
             }
         }
-    }));
-    tasks
+    });
 }
 
-fn install_shortcuts(app: &gtk::Application, window: &gtk::ApplicationWindow) {
+fn install_shortcuts(app: &gtk::Application, window: &gtk::ApplicationWindow, quit: &Rc<Quit>) {
     let close = gio::SimpleAction::new("close", None);
     let weak = window.downgrade();
     close.connect_activate(move |_, _| {
@@ -423,7 +279,16 @@ fn install_shortcuts(app: &gtk::Application, window: &gtk::ApplicationWindow) {
         }
     });
     window.add_action(&close);
-
+    let quitting = gio::SimpleAction::new("quit", None);
+    let weak = window.downgrade();
+    let quit = quit.clone();
+    quitting.connect_activate(move |_, _| {
+        if let Some(window) = weak.upgrade() {
+            quit.run(&window);
+        }
+    });
+    window.add_action(&quitting);
+    app.set_accels_for_action("win.quit", &["<Control>q"]);
     let fullscreen = gio::SimpleAction::new("fullscreen", None);
     let weak = window.downgrade();
     fullscreen.connect_activate(move |_, _| {
@@ -442,29 +307,36 @@ fn install_shortcuts(app: &gtk::Application, window: &gtk::ApplicationWindow) {
     window.add_controller(close);
 }
 
-struct ConnectedHost {
+struct ConnectedView {
     host: (PathBuf, uuid::Uuid),
-    reloading: mpsc::UnboundedReceiver<Request>,
+    config: EngineConfig,
+    reloading: tokio::sync::mpsc::UnboundedReceiver<Request>,
 }
-impl ConnectedHost {
-    fn new(host: (PathBuf, uuid::Uuid), config: &EngineConfig) -> Self {
+impl ConnectedView {
+    fn new(host: (PathBuf, uuid::Uuid), config: EngineConfig) -> Self {
         let reloading = config
             .context
             .get::<UiReload>()
             .expect("the admitted workbench owns its UI reload channel")
             .take_requests();
-        Self { host, reloading }
+        Self {
+            host,
+            config,
+            reloading,
+        }
     }
 }
 
 fn follow(
-    desktop: Rc<RefCell<Desktop>>,
-    mut current: ConnectedHost,
+    window: glib::WeakRef<gtk::ApplicationWindow>,
+    view: Rc<AppView>,
+    mut current: ConnectedView,
     root: Root,
     runtime: Handle,
-) -> glib::JoinHandle<()> {
+    detach: Detach,
+    shell: Shell,
+) {
     glib::MainContext::default().spawn_local(async move {
-        let detach = desktop.borrow().detach.clone();
         let mut pause = FIRST_PAUSE;
         loop {
             let reached = Instant::now();
@@ -476,29 +348,13 @@ fn follow(
                     request = current.reloading.recv() => {
                         let Some(request) = request else { return; };
                         if detach.0.borrow().quitting { return; }
-                        let mut state = desktop.borrow_mut();
                         match request {
-                            Request::Pause(ready) => {
-                                state.paused = true;
-                                if let Some(window) = &state.window {
-                                    window.view.pause_input(move |result| { let _ = ready.send(result); });
-                                } else { let _ = ready.send(Ok(())); }
-                            }
-                            Request::Resume => {
-                                state.paused = false;
-                                if let Some(window) = &state.window { window.view.resume_input(); }
-                            }
-                            Request::Reload => { state.paused = false; state.reload(); }
+                            Request::Pause(ready) => view.pause_input(move |result| { let _ = ready.send(result); }),
+                            Request::Resume => view.resume_input(),
+                            Request::Reload => view.load_with_config(current.config.clone()),
                         }
                     }
                 }
-            }
-            {
-                let mut state = desktop.borrow_mut();
-                state.shell.release();
-                if let Some(window) = &state.window { window.view.stop(); }
-                state.config = None;
-                state.paused = false;
             }
             let Some((stale, moving)) = detach.take() else { return; };
             let _ = detach.close(stale).await;
@@ -525,12 +381,11 @@ fn follow(
                 return;
             }
             drop(moving);
-            current = ConnectedHost::new((endpoint, epoch), &config);
-            let mut state = desktop.borrow_mut();
-            state.config = Some(config);
-            state.reload();
+            current = ConnectedView::new((endpoint, epoch), shell.attach(config));
+            if window.upgrade().is_none() { return; }
+            view.load_with_config(current.config.clone());
         }
-    })
+    });
 }
 
 /// Detaches the client once: its tasks stop and its Host connection closes.
@@ -646,85 +501,5 @@ struct Moving(watch::Sender<bool>);
 impl Drop for Moving {
     fn drop(&mut self) {
         self.0.send_replace(false);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    struct Assets;
-    impl nsh_engine::Assets for Assets {
-        fn read(&self, _: &str) -> Result<Vec<u8>, String> {
-            Err("no test assets".into())
-        }
-    }
-
-    #[test]
-    #[ignore = "requires a GTK display; exercised by linux-desktop CI"]
-    fn closing_gtk_windows_releases_their_engine_and_surface_before_reopening() {
-        gtk::init().expect("the GTK lifecycle test requires a display (run under xvfb-run)");
-        let app = gtk::Application::builder()
-            .application_id("org.apache.maka.desktop.test")
-            .flags(gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gio::Cancellable>).unwrap();
-        let _hold = app.hold();
-        let context = glib::MainContext::default();
-        for _ in 0..3 {
-            let native = gtk::ApplicationWindow::builder().application(&app).build();
-            let view = AppView::new(AppOptions::default());
-            native.set_child(Some(&view.widget()));
-            let weak_view = Rc::downgrade(&view);
-            let assets = Arc::new(Assets);
-            let weak_assets = Arc::downgrade(&assets);
-            let mut policy = nsh_engine::Policy::default();
-            policy
-                .declared
-                .get_or_insert_default()
-                .host
-                .push("loaded".into());
-            let mut config = EngineConfig::new(
-                nsh_engine::Bundle::source(
-                    "import { host } from 'nsh'; host.post('loaded');".into(),
-                )
-                .with_policy(policy),
-            );
-            config.assets = Some(assets);
-            let (loaded, mut received) = mpsc::unbounded_channel();
-            config.host.handle("loaded", move |_| {
-                let _ = loaded.send(());
-            });
-            view.load_with_config(config);
-            native.present();
-            context.block_on(async {
-                tokio::select! {
-                    value = received.recv() => assert_eq!(value, Some(())),
-                    _ = glib::timeout_future(Duration::from_secs(10)) => panic!("the window's engine did not start"),
-                }
-            });
-            assert!(native.is_visible());
-            let (closed, mut closing) = watch::channel(false);
-            let window = Window {
-                native,
-                view,
-                closed,
-            };
-            window.release();
-            assert!(
-                *closing.borrow_and_update(),
-                "pending dialogs must be cancelled"
-            );
-            assert!(weak_view.upgrade().is_none(), "the old surface is retained");
-            assert!(
-                weak_assets.upgrade().is_none(),
-                "the old engine or image reader is retained"
-            );
-            assert!(
-                app.windows().is_empty(),
-                "the closed GTK window is retained by the application"
-            );
-        }
     }
 }

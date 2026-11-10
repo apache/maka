@@ -21,7 +21,7 @@ Off Windows the crates are empty (like the other platform crates off their targe
 
 ```sh
 cargo clippy -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app --all-targets
-cargo test -p nsh-platform-windows          # lifecycle tests create short-lived native windows
+cargo test -p nsh-platform-windows          # needs no window: tests do not open one
 cargo build -p nsh-windows-host             # target\debug\nsh-windows-host.exe
 ```
 
@@ -45,14 +45,6 @@ The Windows binaries are built for the machine itself, so the CLI finds them in 
 
 Features: `js` (default; JS apps; without it the crate only runs Rust apps and links no QuickJS) and `dev` (the dev
 server client, log forwarding, the error overlay: `dev.rs`). The host turns on `dev`, the runner only `js`.
-
-The opt-in `run_resident_app` runner owns a native tray independently of its current `AppView`.
-Closing a window drops its engine and views; Open builds a fresh configuration, while `quit_app`
-ends the application even when no window exists. The supplied close-admission callback may defer
-window destruction until application state has been captured; `AppView::request_close` reissues
-that ordinary close request. `TrayOptions` supplies the application's labels. `run_app` retains
-its existing close-and-exit behavior. The resident lifecycle test exercises real Win32 close and
-tray command messages and checks that closed views, surfaces and engine contexts are released.
 
 ## Architecture
 

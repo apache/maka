@@ -21,11 +21,11 @@
 use crate::Agent;
 use maka_capabilities::call::Scope;
 use maka_capabilities::http;
-use maka_capabilities::storage::Data;
 use maka_capabilities::storage::Directory;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, future::Future, io::Write, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -47,7 +47,7 @@ pub enum Error {
     #[error("Antigravity installation file operation failed")]
     Files(#[from] std::io::Error),
     #[error("Antigravity private storage unavailable")]
-    Storage(#[from] maka_capabilities::storage::StoreError),
+    Storage(#[from] maka_plugin_core::storage::StoreError),
     #[error("Antigravity installation cleanup is unconfirmed")]
     Cleanup,
     #[error("Antigravity was installed but its temporary download could not be removed")]
@@ -247,7 +247,7 @@ async fn install(
             call,
             http::Request {
                 url: release.url.clone(),
-                method: http::Method::Get,
+                method: maka_plugin_core::http::Method::Get,
                 headers: vec![],
                 body: Default::default(),
             },

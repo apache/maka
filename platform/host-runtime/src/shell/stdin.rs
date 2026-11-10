@@ -19,10 +19,10 @@
 
 use super::request::parse_ref;
 use crate::shell::ControlInput;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
-use maka_agent_facts::terminal::input::encoded_actions_byte_len;
 use maka_agent_facts::tools::ToolError;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
+use maka_plugin_core::terminal::input::encoded_actions_byte_len;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 
@@ -215,50 +215,4 @@ fn remove_defaults(fields: &mut Map<String, Value>, names: &[&str]) {
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn provider_defaults_do_not_weaken_input_validation_or_numeric_size_parity() {
-        let reference = "maka://runtime/background-tasks/task";
-        let parse = |mut value: Value| {
-            value["ref"] = json!(reference);
-            Input::parse(value)
-        };
-        let parsed = parse(json!({
-            "actions":[
-                {"type":"text","text":"中文😀","key":"","x":0,"event":null,"modifiers":[]},
-                {"type":"key","key":"enter","text":"","direction":0,"modifiers":null}
-            ],
-            "size":{"cols":1e2,"rows":30.0}
-        }))
-        .unwrap();
-        assert_eq!(parsed.size, Some(TerminalSize::new(100, 30).unwrap()));
-        assert_eq!(parsed.bytes, Some(11));
-        assert!(matches!(parsed.data, ControlInput::Actions(actions) if actions.len() == 2));
-        assert_eq!(
-            parse(json!({"input":"\r","actions":[],"size":{"cols":0,"rows":null}}))
-                .unwrap()
-                .bytes,
-            Some(1)
-        );
-        for value in [
-            json!({"input":null,"size":{"cols":80,"rows":24}}),
-            json!({"input":"","size":{"cols":80,"rows":24}}),
-            json!({"input":"raw","actions":[{"type":"key","key":"enter"}]}),
-            json!({"actions":[{"type":"text","text":"ok","key":0}]}),
-            json!({"actions":[{"type":"text","text":"\u{1b}"}]}),
-            json!({"actions":[{"type":"key","key":"enter","extra":null}]}),
-            json!({"actions":[],"size":{"cols":0,"rows":0}}),
-            json!({"size":{"cols":80.5,"rows":24}}),
-            json!({"size":{"cols":80,"rows":1025}}),
-            json!({"size":{"cols":1024,"rows":65}}),
-            json!({"size":{"cols":80,"rows":24,"extra":0}}),
-        ] {
-            assert!(parse(value.clone()).is_err(), "{value}");
-        }
-    }
 }

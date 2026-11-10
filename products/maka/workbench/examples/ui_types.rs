@@ -41,8 +41,6 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/tests/fixtures/composer-completion.tsx",
     "products/maka/workbench/tests/fixtures/skill-input.tsx",
     "products/maka/workbench/tests/fixtures/mermaid-view.tsx",
-    "products/maka/terminal-shell/tests/fixtures/components.tsx",
-    "products/maka/terminal-shell/tests/fixtures/turn-navigation.tsx",
     "products/maka/terminal-shell/tests/real_host/mermaid_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/model_settings_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/permission_preview.tsx",

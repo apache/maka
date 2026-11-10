@@ -511,7 +511,7 @@ pub(crate) fn popup_tray(surface: &Surface, items: Arc<[MenuItem]>, at: (f32, f3
 /// Quits the app, as its `quit` role: the windows close without asking
 /// (`closeOnPress` is not read), then the message loop ends, also while a
 /// tray icon would keep it running.
-fn quit(surface: &Surface) {
+pub(crate) fn quit(surface: &Surface) {
     crate::window_close::close(surface);
     // SAFETY: a plain call. The loop gets `WM_QUIT` only after the posted
     // close: the window closes first.

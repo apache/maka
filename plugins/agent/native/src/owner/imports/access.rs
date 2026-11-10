@@ -136,6 +136,37 @@ fn filename(name: &str) -> bool {
         && name != ".."
 }
 impl maka_session_import::access::ReadSource for SourceRead {
+    fn open_file(
+        &self,
+        path: String,
+    ) -> BoxFuture<'_, Result<maka_capabilities::filesystem::PinnedFile, maka_session_import::Error>>
+    {
+        Box::pin(async move {
+            if self.scope.cancellation.is_cancelled() || self.stopping.is_cancelled() {
+                return Err(ReadError::Retired.into());
+            }
+            let relative = Path::new(&path)
+                .strip_prefix(&self.source.path)
+                .ok()
+                .and_then(|path| path.to_str())
+                .filter(|path| {
+                    !path.is_empty()
+                        && Path::new(path)
+                            .components()
+                            .all(|part| matches!(part, std::path::Component::Normal(_)))
+                })
+                .ok_or(maka_session_import::Error::Invalid(
+                    "source media is outside the selected directory capability",
+                ))?;
+            Ok(self
+                .files
+                .open_file(OpenFile {
+                    path: relative.into(),
+                    symlinks: Symlinks::Reject,
+                })
+                .await?)
+        })
+    }
     fn directory(
         &self,
         path: String,

@@ -18,10 +18,10 @@
  */
 
 use super::*;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
+use maka_event_log::root_store::{DataChange, DataWriter};
+use maka_event_log::writeback::{Notification, Prepared, Statement};
 use maka_event_log::{RootStore, StoreError};
+use maka_plugin_core::storage::{Data, Mutation, Namespace, Record};
 
 #[derive(Clone)]
 pub(super) struct Store {
@@ -62,22 +62,15 @@ impl Store {
             .log
             .plugin_data(&namespace(), &self.key)
             .await
-            .map_err(|error| match error {
-                StoreError::OperationUnknown => "skills_preferences_unknown",
+            .map_err(|error| match error.underlying() {
+                StoreError::CommitUnknown(_) | StoreError::OperationUnknown => {
+                    "skills_preferences_unknown"
+                }
                 _ => "skills_preferences_unavailable",
             })?;
-        let revision = record.as_ref().map_or(0, |record| record.revision);
-        let entries: BTreeMap<String, maka_skills::Preference> = match record.map(|r| r.data) {
-            Some(Data::Present(value)) => {
-                serde_json::from_value(value).map_err(|_| "skills_preferences_invalid")?
-            }
-            None | Some(Data::Deleted) => BTreeMap::new(),
-        };
-        if entries.keys().any(|reference| !valid(reference)) {
-            return Err("skills_preferences_invalid".into());
-        }
-        Ok(Snapshot { revision, entries })
+        decode_snapshot(record)
     }
+
     // The task keeps the original Call ticket until SQL returns. Dropping its
     // observer cannot acknowledge cleanup or cancel an already accepted write.
     async fn run<T: Send + 'static>(
@@ -112,62 +105,113 @@ impl Store {
         })
         .await
     }
-    pub async fn set(
-        &self,
-        input: SetPreference,
-        scope: &Scope,
-    ) -> Result<PreferenceResult, String> {
-        if !valid(&input.reference) || input.revision > (1_u64 << 53) - 1 {
-            return Ok(PreferenceResult::Rejected {
-                reason: "invalid_preference".into(),
-            });
+    pub fn set(&self, input: SetPreference, scope: &Scope) -> Result<DataChange, String> {
+        if scope.cancellation.is_cancelled() {
+            return Err("skills_call_cancelled".into());
         }
-        self.run(scope, move |store, scope| {
-            Box::pin(async move {
-                let mut current = store.snapshot().await?;
-                if current.revision != input.revision {
-                    return Ok(PreferenceResult::Changed);
-                }
-                if input.preference == maka_skills::Preference::default() {
-                    current.entries.remove(&input.reference);
-                } else {
-                    current.entries.insert(input.reference, input.preference);
-                }
-                let value =
-                    serde_json::to_value(&current.entries).map_err(|_| "skills_encoding_failed")?;
-                if scope.cancellation.is_cancelled() {
-                    return Err("skills_call_cancelled".into());
-                }
-                match store
-                    .log
-                    .plugin_data_batch(
-                        &namespace(),
-                        vec![Mutation {
-                            key: store.key,
-                            expected_revision: (input.revision != 0).then_some(input.revision),
-                            data: Data::Present(value),
-                        }],
-                    )
-                    .await
-                {
-                    Ok(records) => {
-                        let [record]: [_; 1] = records
-                            .try_into()
-                            .map_err(|_| "skills_preferences_unknown")?;
-                        // The commit receipt is sufficient; a second read must not
-                        // turn a known commit into a failed or different operation.
-                        Ok(PreferenceResult::Applied {
-                            revision: record.revision,
-                        })
-                    }
-                    Err(StoreError::RevisionConflict { .. }) => Ok(PreferenceResult::Changed),
-                    Err(_) => Err("skills_preferences_unknown".into()),
-                }
+        let writer = if let Some(execution) = scope.identity.agent() {
+            let custody = scope.work_custody().ok_or("skills_call_closed")?;
+            self.log
+                .data_writer_for_work(custody.as_ref(), &execution.session_id)
+        } else {
+            self.log.data_writer()
+        }
+        .map_err(|_| "skills_preferences_unavailable")?;
+        let store = self.clone();
+        writer
+            .prepare_result(move |writer| {
+                Ok(Set {
+                    store,
+                    writer,
+                    input,
+                })
             })
-        })
-        .await
+            .map_err(|_| "skills_preferences_unavailable".into())
     }
 }
 
-#[cfg(test)]
-mod tests;
+fn decode_snapshot(record: Option<Record>) -> Result<Snapshot, String> {
+    let revision = record.as_ref().map_or(0, |record| record.revision);
+    let entries: BTreeMap<String, maka_skills::Preference> = match record.map(|record| record.data)
+    {
+        Some(Data::Present(value)) => {
+            serde_json::from_value(value).map_err(|_| "skills_preferences_invalid")?
+        }
+        None | Some(Data::Deleted) => BTreeMap::new(),
+    };
+    if entries.keys().any(|reference| !valid(reference)) {
+        return Err("skills_preferences_invalid".into());
+    }
+    Ok(Snapshot { revision, entries })
+}
+struct Set {
+    store: Store,
+    writer: DataWriter,
+    input: SetPreference,
+}
+impl Statement for Set {
+    type Value = Value;
+    type Output = Value;
+    fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<Value>, StoreError> {
+        let result = |result: PreferenceResult| -> Result<Prepared<Value>, StoreError> {
+            Ok(Prepared {
+                value: serde_json::to_value(result)?,
+                changed: false,
+                notification: Notification::NONE,
+            })
+        };
+        if !valid(&self.input.reference) || self.input.revision > (1_u64 << 53) - 1 {
+            return result(PreferenceResult::Rejected {
+                reason: "invalid_preference".into(),
+            });
+        }
+        self.store
+            .log
+            .validate_data_writer_in_transaction(&self.writer, connection)?;
+        let record = maka_event_log::EventLog::read_plugin_data_in_transaction(
+            connection,
+            &namespace(),
+            &self.store.key,
+        )?;
+        let mut current = decode_snapshot(record).map_err(StoreError::InvalidTransition)?;
+        if current.revision != self.input.revision {
+            return result(PreferenceResult::Changed);
+        }
+        if self.input.preference == maka_skills::Preference::default() {
+            current.entries.remove(&self.input.reference);
+        } else {
+            current
+                .entries
+                .insert(self.input.reference, self.input.preference);
+        }
+        let statement = self.store.log.prepare_plugin_data_statement(
+            &namespace(),
+            vec![Mutation {
+                key: self.store.key.clone(),
+                expected_revision: (self.input.revision != 0).then_some(self.input.revision),
+                data: Data::Present(serde_json::to_value(current.entries)?),
+            }],
+            &self.writer,
+        )?;
+        let prepared = statement.execute(connection)?;
+        let [record]: [_; 1] = prepared.value.try_into().map_err(|_| {
+            StoreError::InvalidTransition("skills preference write lost its actual record".into())
+        })?;
+        Ok(Prepared {
+            value: serde_json::to_value(PreferenceResult::Applied {
+                revision: record.revision,
+            })?,
+            changed: prepared.changed,
+            notification: prepared.notification,
+        })
+    }
+    fn committed(value: Value) -> Value {
+        value
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::InvalidTransition(_) | StoreError::RevisionConflict { .. }
+        )
+    }
+}

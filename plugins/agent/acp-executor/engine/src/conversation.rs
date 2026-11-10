@@ -21,9 +21,9 @@ use crate::ports::Ports;
 use crate::{Agent, Error, digest, driver::Driver, transport::Connection};
 use agent_client_protocol::v1::schema as acp;
 use maka_agent_ports::executor;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Store;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Store;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -39,7 +39,7 @@ pub(crate) enum State {
     },
     Running {
         session_id: String,
-        invocation_id: String,
+        task_id: maka_agent_facts::durable::ExternalTaskId,
     },
 }
 
@@ -230,14 +230,42 @@ impl Provider {
             Ok(outcome)
         }
         .await;
+        let business_kind = result.as_ref().err().map_or("Ok", failure_kind);
+        eprintln!("acp engine: stage=engine_business_return error_kind={business_kind}");
         if result.is_err() {
             // A lost connection can leave the remote prompt uncertain. The journal
             // remains Running, so another activation cannot silently duplicate it.
             if let Some(cleanup) = cleanup {
-                cleanup.close().await?;
+                if let Err(error) = cleanup.close().await {
+                    // The process port retains the original custody on failed close.
+                    eprintln!(
+                        "acp engine: stage=engine_cleanup_return error_kind={} business_preserved=true",
+                        failure_kind(&error)
+                    );
+                }
             }
         }
         result
+    }
+}
+
+fn failure_kind(error: &Error) -> &'static str {
+    match error {
+        Error::Sdk(_) => "Sdk",
+        Error::Process(maka_capabilities::process::Error::Denied) => "ProcessDenied",
+        Error::Process(maka_capabilities::process::Error::Invalid(_)) => "ProcessInvalid",
+        Error::Process(maka_capabilities::process::Error::Failed(_)) => "ProcessFailed",
+        Error::Process(maka_capabilities::process::Error::CleanupUnconfirmed(_)) => {
+            "ProcessCleanupUnconfirmed"
+        }
+        Error::Storage(_) => "Storage",
+        Error::Output(_) => "Output",
+        Error::Decode(_) => "Decode",
+        Error::Continuity(_) => "Continuity",
+        Error::Timeout => "Timeout",
+        Error::Cancelled => "Cancelled",
+        Error::Invalid(_) => "Invalid",
+        Error::RejectedBeforePrompt(_) => "RejectedBeforePrompt",
     }
 }
 
@@ -249,27 +277,25 @@ impl executor::Provider for Provider {
     ) -> futures_util::future::BoxFuture<'static, Result<executor::Outcome, executor::Error>> {
         let provider = self.clone();
         Box::pin(async move {
-            match Provider::execute(&provider, request, context).await {
+            let result = Provider::execute(&provider, request, context).await;
+            {
+                let error_kind = result.as_ref().err().map_or("Ok", failure_kind);
+                eprintln!("acp engine: stage=engine_provider_return error_kind={error_kind}");
+            }
+            match result {
                 Ok(outcome) => Ok(outcome),
                 Err(Error::Output(error)) => Err(error),
                 Err(Error::Process(maka_capabilities::process::Error::CleanupUnconfirmed(_))) => {
                     Err(executor::Error::CleanupUnconfirmed)
                 }
-                Err(Error::Cancelled) => Ok(executor::Outcome::Cancelled {
-                    reason: Some("cancelled".into()),
-                }),
-                Err(error) => Ok(executor::Outcome::Failed {
-                    code: Some(
-                        match error {
-                            Error::Continuity(_) => "external_conversation_unavailable",
-                            Error::Timeout => "external_agent_timeout",
-                            _ => "external_agent_failed",
-                        }
-                        .into(),
-                    ),
+                Err(error @ Error::RejectedBeforePrompt(_)) => Ok(executor::Outcome::Failed {
+                    code: Some("external_agent_prompt_rejected".into()),
                     message: error.to_string(),
                     recoverable: false,
                 }),
+                // Transport and observer errors cannot establish the original
+                // agent's business outcome, even if its process has exited.
+                Err(error) => Err(executor::Error::Provider(error.to_string())),
             }
         })
     }

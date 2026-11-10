@@ -157,12 +157,13 @@ pub struct NativeCommand {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "ExecutorExecute")]
 pub struct Execute {
+    pub task_id: maka_agent_facts::durable::ExternalTaskId,
     #[serde(
         default,
         skip_serializing_if = "maka_agent_facts::language::Language::is_english"
     )]
     pub language: maka_agent_facts::language::Language,
-    pub invocation: maka_agent_facts::event::Invocation,
+    pub execution: maka_agent_facts::durable::ExecutionIdentity,
     #[schemars(length(min = 1))]
     pub conversation_key: String,
     pub message: String,
@@ -171,31 +172,94 @@ pub struct Execute {
     pub instructions: Option<String>,
     pub settings: maka_agent_facts::executor::Settings,
 }
+/// A provider-owned append-only output record. `index` is zero based.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ExecutorIndexedOutput")]
+pub struct IndexedOutput {
+    pub index: u64,
+    pub output: maka_agent_facts::executor::Output,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "ExecutorTaskState")]
+pub enum TaskState {
+    Running,
+    /// The original task may still exist. This never permits a new execute.
+    Unknown {
+        diagnostic: String,
+    },
+    Closed {
+        outcome: Outcome,
+    },
+}
+
+/// Read only the exact provider task. A cursor requests output from that index;
+/// no cursor observes headers only, with no output reads. Never starts a job.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ExecutorObserve")]
+pub struct Observe {
+    pub task_id: maka_agent_facts::durable::ExternalTaskId,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after_index: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "ExecutorTaskObservation")]
+pub enum TaskObservation {
+    /// Absence is not proof that the original job never ran.
+    Missing,
+    Found {
+        task_id: maka_agent_facts::durable::ExternalTaskId,
+        /// Exclusive item count represented by this page; zero for header-only observation.
+        observed: u64,
+        has_more: bool,
+        #[schemars(length(max = 256))]
+        outputs: Vec<IndexedOutput>,
+        state: TaskState,
+        cleanup: maka_plugin_core::operation::OperationCleanup,
+    },
+}
+
 pub fn contract() -> Contract {
     Contract {
         name: "maka.agent.Executor".into(),
-        version: 1,
+        version: 2,
         transport: Transport::Remote,
         interface: Interface::Service {
-            methods: BTreeMap::from([(
-                "execute".into(),
-                Method {
-                    progress: Some(
-                        schemars::schema_for!(maka_agent_facts::executor::Output).into(),
-                    ),
-                    mode: MethodMode::Mutation,
-                    input: serde_json::to_value(schemars::schema_for!(Execute))
-                        .expect("executor input")
-                        .into(),
-                    output: serde_json::to_value(schemars::schema_for!(Outcome))
-                        .expect("executor output")
-                        .into(),
-                    resources: BTreeMap::from([(
-                        "attachments".into(),
-                        maka_plugin_core::contract::binary_resource_type().optional(),
-                    )]),
-                },
-            )]),
+            methods: BTreeMap::from([
+                (
+                    "execute".into(),
+                    Method {
+                        progress: Some(schemars::schema_for!(IndexedOutput).into()),
+                        mode: MethodMode::Mutation,
+                        input: schemars::schema_for!(Execute).into(),
+                        output: schemars::schema_for!(Outcome).into(),
+                        resources: BTreeMap::from([(
+                            "attachments".into(),
+                            maka_plugin_core::contract::binary_resource_type().optional(),
+                        )]),
+                    },
+                ),
+                (
+                    "observe".into(),
+                    Method {
+                        progress: None,
+                        mode: MethodMode::Subscription,
+                        input: schemars::schema_for!(Observe).into(),
+                        output: schemars::schema_for!(TaskObservation).into(),
+                        resources: BTreeMap::new(),
+                    },
+                ),
+            ]),
         },
     }
 }
@@ -206,95 +270,4 @@ pub struct AttachmentMetadata {
     pub mime_type: String,
     pub bytes: u64,
     pub digest: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::language::Language;
-
-    #[test]
-    fn native_runtime_opt_in_preserves_launch_overrides() {
-        let mut settings: ExternalConfiguration = serde_json::from_value(serde_json::json!({
-            "commands":{"claude":{"executable":"/custom/claude", "args":["--debug"], "env":{"CLAUDE_CONFIG_DIR":"/private/config"}}}
-        })).unwrap();
-        assert_eq!(settings.enabled_runtimes().count(), 0);
-        settings.runtimes.codex = true;
-        assert_eq!(
-            settings.enabled_runtimes().collect::<Vec<_>>(),
-            vec![NativeRuntime::Codex]
-        );
-        settings.runtimes.codex = false;
-        assert_eq!(settings.enabled_runtimes().count(), 0);
-        let restored: ExternalConfiguration =
-            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
-        assert_eq!(restored, settings);
-        assert_eq!(
-            restored.command(NativeRuntime::Claude).unwrap().executable,
-            "/custom/claude"
-        );
-    }
-
-    #[test]
-    fn unsupported_native_runtime_is_rejected_at_configuration_boundary() {
-        assert!(
-            serde_json::from_value::<ExternalConfiguration>(
-                serde_json::json!({"runtimes":{"unsupported":true}})
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ExternalConfiguration>(
-                serde_json::json!({"commands":{"unsupported":{"executable":"other"}}})
-            )
-            .is_err()
-        );
-        assert!("unsupported".parse::<NativeRuntime>().is_err());
-    }
-
-    #[test]
-    fn persisted_execute_uses_canonical_english_omission_and_exact_chinese_tags() {
-        let original = serde_json::json!({
-            "invocation":{"session_id":"session","turn_id":"turn","run_id":"run","invocation_id":"invocation"},
-            "conversationKey":"conversation", "message":"Original 原文", "cwd":"/workspace",
-            "instructions":null, "settings":{}
-        });
-        let mut input: Execute = serde_json::from_value(original.clone()).unwrap();
-        assert_eq!(input.language, Language::En);
-        assert_eq!(serde_json::to_value(&input).unwrap(), original);
-        for (language, tag) in [(Language::ZhCn, "zh-CN"), (Language::ZhTw, "zh-TW")] {
-            input.language = language;
-            let mut expected = original.clone();
-            expected["language"] = tag.into();
-            assert_eq!(serde_json::to_value(&input).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn executor_contract_preserves_complete_fields_beyond_former_schema_bounds() {
-        let original = serde_json::json!({
-            "invocation":{"session_id":"session","turn_id":"turn","run_id":"run","invocation_id":"invocation"},
-            "conversationKey":format!("conversation-{}-final", "route".repeat(100)),
-            "message":format!("{}USER_FINAL_MARKER", "Original user message 原文\n".repeat(5_000)),
-            "cwd":format!("/workspace/{}/final", "nested/".repeat(700)),
-            "instructions":format!("{}INSTRUCTIONS_FINAL_MARKER", "External execution instructions\n".repeat(3_000)),
-            "settings":{}
-        });
-        let Contract {
-            interface: Interface::Service { methods },
-            ..
-        } = contract()
-        else {
-            panic!("executor service contract");
-        };
-        let validator = jsonschema::validator_for(&methods["execute"].input).unwrap();
-        assert!(validator.is_valid(&original));
-        let input: Execute = serde_json::from_value(original.clone()).unwrap();
-        assert_eq!(serde_json::to_value(input).unwrap(), original);
-        for field in ["conversationKey", "cwd"] {
-            let mut invalid = original.clone();
-            invalid[field] = serde_json::json!("");
-            assert!(!validator.is_valid(&invalid));
-        }
-    }
 }

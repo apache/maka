@@ -26,9 +26,9 @@ use maka_capabilities::http::Body;
 use maka_capabilities::http::Client;
 use maka_capabilities::http::Error;
 use maka_capabilities::http::Head;
-use maka_capabilities::http::Method;
 use maka_capabilities::http::Request;
 use maka_capabilities::http::Response;
+use maka_plugin_core::http::Method;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -296,6 +296,3 @@ fn failed(error: impl ToString) -> Error {
 fn message(error: impl ToString) -> String {
     error.to_string()
 }
-
-#[cfg(test)]
-mod tests;

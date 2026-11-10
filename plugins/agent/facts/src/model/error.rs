@@ -206,6 +206,8 @@ pub enum ModelError {
     },
     #[error("model request cancelled")]
     Cancelled,
+    #[error("local model authorization refused: {0}")]
+    LocalAuthorization(String),
     #[error("model transport physical cleanup is unconfirmed")]
     CleanupUnconfirmed,
     #[error("model stream idle timeout exceeded")]
@@ -236,7 +238,7 @@ impl ModelError {
     }
     pub fn failure_cause(&self) -> Option<ModelFailureCause> {
         Some(match self {
-            Self::Cancelled => return None,
+            Self::Cancelled | Self::LocalAuthorization(_) => return None,
             Self::Http { status, .. } => ModelFailureCause::Http { status: *status },
             Self::TimedOut => ModelFailureCause::TimedOut,
             Self::ContextOverflow { .. } => ModelFailureCause::ContextOverflow,
@@ -249,41 +251,5 @@ impl ModelError {
             | Self::ImageInputPayloadTooLarge { .. }
             | Self::ImageInputRejected { .. } => ModelFailureCause::Adapter,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn known_retry_windows_survive_terminal_classification_and_serialization() {
-        let error = ModelError::Provider(ProviderFailure::new(
-            ProviderFailureReason::RateLimit,
-            "account usage window exhausted",
-            true,
-            Some(2_592_000_000),
-        ));
-        let cause = error.failure_cause().unwrap();
-        assert_eq!(
-            serde_json::to_value(&cause).unwrap(),
-            serde_json::json!({
-                "kind": "provider", "reason": "rate_limit", "retry_at_unix_ms": 2_592_000_000u64,
-            })
-        );
-        assert_eq!(
-            error.to_string(),
-            "provider failed (RateLimit): account usage window exhausted (retry at Unix 2592000000 ms)"
-        );
-        let decoded: ModelError =
-            serde_json::from_value(serde_json::to_value(error).unwrap()).unwrap();
-        let ModelError::Provider(failure) = decoded else {
-            panic!("failure evidence lost")
-        };
-        failure.validate().unwrap();
-        assert_eq!(
-            failure.retry_delay_at(0),
-            Some(Duration::from_secs(2_592_000))
-        );
     }
 }

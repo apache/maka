@@ -21,10 +21,12 @@
 //! from the small relationship frontier; no completed transcript is retained.
 pub mod directory;
 
+use crate::durable::{AgentStepLink, ExecutionIdentity, ModelAttemptId, StepId};
+
 use super::RowPosition;
 use crate::{
-    event::{Fact, Invocation, StoredEvent, ToolOutcome},
-    input::{InvocationInput, MessageInput},
+    event::{Fact, StoredEvent, ToolOutcome},
+    input::{MessageInput, RunInput},
     model::{
         ModelPart,
         recorded::{CompletionPart, ModelObservation},
@@ -45,7 +47,7 @@ pub struct SemanticRow {
     pub id: RowPosition,
     /// Canonical sequence that published this row version.
     pub revision: u64,
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     /// Projection order may use the completion position, not the producing
     /// request. item_index orders parts within that position.
     pub order: RowPosition,
@@ -78,7 +80,8 @@ pub enum SemanticKind {
         payload: PayloadKey,
     },
     AssistantPart {
-        step_id: String,
+        step_id: StepId,
+        attempt_id: ModelAttemptId,
         model_id: String,
         route_identity: String,
         accepted_at: u64,
@@ -140,7 +143,7 @@ pub enum Payload {
 pub struct Transition {
     pub rows: Vec<SemanticRow>,
     pub fragments: Vec<Fragment>,
-    /// Indexed by invocation; used by continuation selection, before rendering.
+    /// Indexed by execution; used by continuation selection, before rendering.
     pub stable_cut: Option<RowPosition>,
     /// Storage versions the existing result row at its original order position.
     pub archive: Option<crate::archive::ArchivedPlaceholder>,
@@ -149,7 +152,7 @@ pub struct Transition {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Frontier {
     pub opening: Option<OpeningKind>,
-    pub requests: BTreeMap<String, RequestFrontier>,
+    pub requests: BTreeMap<ModelAttemptId, RequestFrontier>,
     pub calls: BTreeMap<String, CallFrontier>,
     pub cells: BTreeMap<String, CellFrontier>,
     pub notifications: Vec<PendingNotification>,
@@ -165,6 +168,7 @@ pub enum OpeningKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestFrontier {
+    pub link: AgentStepLink,
     pub sequence: u64,
     pub source: u64,
     pub model_id: String,
@@ -187,13 +191,14 @@ pub enum RecordedKind {
     Result,
 }
 impl RecordedKind {
-    fn from_part(part: &ModelPart) -> Self {
+    fn from_part(part: &ModelPart, link: AgentStepLink) -> Self {
         match part {
             ModelPart::Source { .. } => Self::Source,
             ModelPart::Text { .. } => Self::Text,
             ModelPart::ToolResult { .. } => Self::Result,
             ModelPart::ToolCall { call } => Self::Call((!call.provider_executed).then(|| {
                 CallFrontier {
+                    link,
                     call_id: call.id.clone(),
                     name: call.name.clone(),
                     custom: call
@@ -210,6 +215,7 @@ impl RecordedKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallFrontier {
+    pub link: AgentStepLink,
     pub call_id: String,
     pub name: String,
     pub custom: bool,
@@ -224,7 +230,7 @@ pub struct CellFrontier {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingNotification {
     pub row: SemanticRow,
-    pub blocked_by: Vec<String>,
+    pub blocked_by: Vec<ModelAttemptId>,
 }
 
 fn position(sequence: u64, item_index: u64) -> RowPosition {
@@ -246,7 +252,7 @@ fn row(stored: &StoredEvent, index: u64, order: RowPosition, kind: SemanticKind)
     SemanticRow {
         id: position(stored.sequence, index),
         revision: stored.sequence,
-        invocation: stored.event.invocation.clone(),
+        execution: stored.event.execution.clone(),
         order,
         kind,
     }
@@ -300,7 +306,7 @@ impl Frontier {
         }
     }
 
-    fn close_request(&mut self, step: &str) {
+    fn close_request(&mut self, step: &ModelAttemptId) {
         self.requests.remove(step);
         for notification in &mut self.notifications {
             notification.blocked_by.retain(|blocked| blocked != step);
@@ -309,19 +315,22 @@ impl Frontier {
 }
 
 /// Interpret one already-admitted canonical fact. The owner persists fragments,
-/// rows and the changed invocation frontier in the same transaction. Admission
+/// rows and the changed execution frontier in the same transaction. Admission
 /// remains responsible for stream validity and execution authority.
 pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transition, &'static str> {
     let mut out = Transition::default();
     let key = position(stored.sequence, 0);
     match &stored.event.fact {
-        Fact::InvocationOpened { input, .. } => {
-            frontier.opening = Some(match input {
-                InvocationInput::ContextCompact { .. } => OpeningKind::Compact,
-                InvocationInput::Code { .. } => OpeningKind::Code,
-                _ => OpeningKind::Conversation,
-            });
-            if let InvocationInput::Message {
+        Fact::RunOpened { input, .. } => {
+            frontier.opening = match input {
+                RunInput::HistorySource { .. } => None,
+                RunInput::ContextCompact { .. } => Some(OpeningKind::Compact),
+                RunInput::Code { .. } => Some(OpeningKind::Code),
+                RunInput::Message { .. } | RunInput::Continuation { .. } => {
+                    Some(OpeningKind::Conversation)
+                }
+            };
+            if let RunInput::Message {
                 content,
                 source_messages,
                 ..
@@ -378,6 +387,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
         }
         Fact::ModelRequested {
             step_id,
+            attempt_id,
             model_id,
             route_identity,
             source_high_water,
@@ -388,12 +398,17 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             if !matches!(frontier.opening, Some(OpeningKind::Conversation)) {
                 return Err("model request lacks a conversation opening");
             }
-            if frontier.requests.contains_key(step_id) {
+            if frontier.requests.contains_key(attempt_id) {
                 return Err("duplicate model request");
             }
             frontier.requests.insert(
-                step_id.clone(),
+                *attempt_id,
                 RequestFrontier {
+                    link: AgentStepLink {
+                        run: stored.event.execution.run_id,
+                        step: *step_id,
+                        attempt: *attempt_id,
+                    },
                     sequence: stored.sequence,
                     source: *source_high_water,
                     model_id: model_id.clone(),
@@ -406,19 +421,29 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             if *purpose == crate::context::ModelPurpose::Main {
                 for pending in &mut frontier.notifications {
                     if pending.row.id.source_sequence > *source_high_water {
-                        pending.blocked_by.push(step_id.clone());
+                        pending.blocked_by.push(*attempt_id);
                     }
                 }
             }
         }
-        Fact::ModelObserved { step_id, event } => {
+        Fact::ModelObserved {
+            step_id,
+            attempt_id,
+            event,
+        } => {
             let request = frontier
                 .requests
-                .get_mut(step_id)
+                .get_mut(attempt_id)
                 .ok_or("model observation lacks request")?;
             if let ModelObservation::Part(record) = event {
                 let part_key = position(stored.sequence, record.ordinal);
-                let kind = RecordedKind::from_part(&record.part);
+                if request.link.step != *step_id
+                    || request.link.run != stored.event.execution.run_id
+                {
+                    return Err("model observation identity differs from request");
+                }
+                let kind = RecordedKind::from_part(&record.part, request.link);
+                register_call(&mut frontier.calls, &kind)?;
                 out.fragments.push(Fragment {
                     key: part_key,
 
@@ -429,9 +454,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 if request.item_acceptance && request.main {
                     accept_part(
                         &mut out,
-                        &mut frontier.calls,
                         stored,
-                        step_id,
                         request,
                         AcceptedPart {
                             ordinal: record.ordinal,
@@ -457,11 +480,18 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 }
             }
         }
-        Fact::ModelCompleted { step_id, output } => {
+        Fact::ModelCompleted {
+            step_id,
+            attempt_id,
+            output,
+        } => {
             let request = frontier
                 .requests
-                .get(step_id)
+                .get(attempt_id)
                 .ok_or("model completion lacks request")?;
+            if request.link.step != *step_id || request.link.run != stored.event.execution.run_id {
+                return Err("model completion identity differs from request");
+            }
             for part in &output.parts {
                 let (ordinal, part_key, kind) = match part {
                     CompletionPart::Own(record) => {
@@ -473,11 +503,9 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                                 ordinal: record.ordinal,
                             },
                         });
-                        (
-                            record.ordinal,
-                            part_key,
-                            RecordedKind::from_part(&record.part),
-                        )
+                        let kind = RecordedKind::from_part(&record.part, request.link);
+                        register_call(&mut frontier.calls, &kind)?;
+                        (record.ordinal, part_key, kind)
                     }
                     CompletionPart::Ref(reference) => {
                         let recorded = request
@@ -493,9 +521,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 if !request.item_acceptance && request.main {
                     accept_part(
                         &mut out,
-                        &mut frontier.calls,
                         stored,
-                        step_id,
                         request,
                         AcceptedPart {
                             ordinal,
@@ -506,10 +532,12 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                     )?;
                 }
             }
-            frontier.close_request(step_id);
+            frontier.close_request(attempt_id);
         }
         Fact::ModelInterrupted {
-            step_id, partial, ..
+            attempt_id,
+            partial,
+            ..
         } => {
             if let Some(partial) = partial {
                 for part in &partial.parts {
@@ -525,7 +553,7 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                     }
                 }
             }
-            frontier.close_request(step_id);
+            frontier.close_request(attempt_id);
         }
         Fact::ToolDispatched {
             operation_id,
@@ -533,12 +561,14 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             name,
             ..
         } => match &call.origin {
-            ToolOrigin::Provider { step_id } => {
+            ToolOrigin::Provider { link } => {
                 let pending = frontier
                     .calls
                     .get_mut(operation_id)
                     .ok_or("provider dispatch lacks accepted call")?;
-                if *operation_id != format!("{step_id}:{}", call.tool_call_id)
+                if *operation_id != format!("{}:{}", link.attempt, call.tool_call_id)
+                    || pending.link != *link
+                    || link.run != stored.event.execution.run_id
                     || pending.call_id != call.tool_call_id
                     || pending.name != *name
                     || pending.dispatched_at.is_some()
@@ -578,12 +608,14 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             input,
             reason,
         } => {
-            if let ToolOrigin::Provider { step_id } = &call.origin {
+            if let ToolOrigin::Provider { link } = &call.origin {
                 let pending = frontier
                     .calls
                     .remove(operation_id)
                     .ok_or("provider rejection lacks accepted call")?;
-                if *operation_id != format!("{step_id}:{}", call.tool_call_id)
+                if *operation_id != format!("{}:{}", link.attempt, call.tool_call_id)
+                    || pending.link != *link
+                    || link.run != stored.event.execution.run_id
                     || pending.call_id != call.tool_call_id
                     || pending.name != *name
                     || pending.dispatched_at.is_some()
@@ -710,13 +742,13 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             });
             frontier.stable(&mut out, position(stored.sequence, END_INDEX));
         }
-        Fact::InvocationEnded { .. } => {
+        Fact::RunEnded { .. } => {
             frontier.requests.clear();
             for pending in &mut frontier.notifications {
                 pending.blocked_by.clear();
             }
             // Keep physically pending cells/calls: recovery may still record a
-            // settlement or notification after the invocation terminal marker.
+            // settlement or notification after the execution terminal marker.
         }
         _ => {}
     }
@@ -751,7 +783,6 @@ fn user_row(
 
 fn assistant_row(
     stored: &StoredEvent,
-    step: &str,
     request: &RequestFrontier,
     index: u64,
     payload: PartPayload,
@@ -761,7 +792,8 @@ fn assistant_row(
         index,
         position(request.sequence, index),
         SemanticKind::AssistantPart {
-            step_id: step.into(),
+            step_id: request.link.step,
+            attempt_id: request.link.attempt,
             model_id: request.model_id.clone(),
             route_identity: request.route_identity.clone(),
             accepted_at: stored.sequence,
@@ -779,9 +811,7 @@ struct AcceptedPart<'part> {
 
 fn accept_part(
     out: &mut Transition,
-    calls: &mut BTreeMap<String, CallFrontier>,
     stored: &StoredEvent,
-    step: &str,
     request: &RequestFrontier,
     part: AcceptedPart<'_>,
     at_completion: bool,
@@ -790,18 +820,11 @@ fn accept_part(
     if matches!(kind, RecordedKind::Source) {
         return Ok(());
     }
-    let mut item = assistant_row(stored, step, request, ordinal, PartPayload::Complete(key));
+    let mut item = assistant_row(stored, request, ordinal, PartPayload::Complete(key));
     if at_completion {
         item.order.source_sequence = stored.sequence;
     }
     out.rows.push(item);
-    if let RecordedKind::Call(Some(call)) = kind
-        && calls
-            .insert(format!("{step}:{}", call.call_id), call.clone())
-            .is_some()
-    {
-        return Err("duplicate accepted tool call");
-    }
     if matches!(kind, RecordedKind::Result) {
         let cut = if at_completion {
             position(stored.sequence, ordinal + 1)
@@ -809,6 +832,19 @@ fn accept_part(
             position(stored.sequence, END_INDEX)
         };
         out.stable_cut = Some(out.stable_cut.map_or(cut, |old| old.max(cut)));
+    }
+    Ok(())
+}
+
+fn register_call(
+    calls: &mut BTreeMap<String, CallFrontier>,
+    kind: &RecordedKind,
+) -> Result<(), &'static str> {
+    if let RecordedKind::Call(Some(call)) = kind {
+        let operation = format!("{}:{}", call.link.attempt, call.call_id);
+        if calls.insert(operation, call.clone()).is_some() {
+            return Err("duplicate accepted tool call");
+        }
     }
     Ok(())
 }

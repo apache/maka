@@ -22,7 +22,7 @@
 
 use maka_agent_facts::language::Language;
 use maka_computer_use::{
-    Driver, InvocationContext, Session,
+    Driver, ExecutionCorrelation, InvocationContext, Session,
     protocol::{BrowserOptions, Command, InventoryOptions},
 };
 use std::{process::ExitCode, sync::Arc};
@@ -56,8 +56,16 @@ async fn run() -> Result<(), String> {
     let driver = Arc::new(Mutex::new(Driver::default()));
     let mut session = Session::new(driver.clone());
     let mut peer = Session::new(driver.clone());
-    let peer_invocation = InvocationContext::new("handoff-peer", "inventory");
-    let invocation = InvocationContext::new("handoff-example", "inventory");
+    let peer_invocation = InvocationContext::new(
+        "handoff-peer",
+        "inventory",
+        ExecutionCorrelation::new(uuid::Uuid::new_v4().to_string()).map_err(str::to_owned)?,
+    );
+    let invocation = InvocationContext::new(
+        "handoff-example",
+        "inventory",
+        ExecutionCorrelation::new(uuid::Uuid::new_v4().to_string()).map_err(str::to_owned)?,
+    );
     let cancellation = CancellationToken::new();
     let result = async {
         let before = session
@@ -148,7 +156,12 @@ async fn run() -> Result<(), String> {
         );
         println!("explicit release and reacquire shared the peer's live generation");
         session
-            .finish_turn("handoff-example", "inventory", Language::En)
+            .finish_turn(
+                "handoff-example",
+                "inventory",
+                invocation.execution_correlation(),
+                Language::En,
+            )
             .await
             .map_err(|error| error.to_string())?;
         let retained = peer
@@ -164,9 +177,14 @@ async fn run() -> Result<(), String> {
             "peer still connected after first turn: {} user tabs",
             retained.as_array().map_or(0, Vec::len)
         );
-        peer.finish_turn("handoff-peer", "inventory", Language::En)
-            .await
-            .map_err(|error| error.to_string())?;
+        peer.finish_turn(
+            "handoff-peer",
+            "inventory",
+            peer_invocation.execution_correlation(),
+            Language::En,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let resumed = session
             .invoke(
                 Command::GetBrowser {
@@ -187,7 +205,12 @@ async fn run() -> Result<(), String> {
             "returned host must start a fresh generation"
         );
         session
-            .finish_turn("handoff-example", "inventory", Language::En)
+            .finish_turn(
+                "handoff-example",
+                "inventory",
+                invocation.execution_correlation(),
+                Language::En,
+            )
             .await
             .map_err(|error| error.to_string())?;
         println!("reacquired fresh generation and returned it");

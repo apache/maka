@@ -18,7 +18,13 @@
  */
 
 use super::*;
-use maka_event_log::sessions::SessionMutation;
+use maka_agent_facts::durable::BackendSpec;
+use maka_agent_state::{SessionQuiescenceGuard, session_catalog::Record};
+use maka_event_log::{
+    StoreError,
+    writeback::{Notification, Prepared, Statement},
+};
+use maka_plugin_core::operation::RecoveryRef;
 
 impl Owner {
     pub(super) async fn backend_available(
@@ -31,11 +37,13 @@ impl Owner {
                 model_id,
                 ..
             } => {
-                let public_guard = self.catalog.snapshot.read().await;
-                let snapshot = public_guard
-                    .as_ref()
-                    .map_err(|_| "agent_configuration_unavailable")?
-                    .clone();
+                let snapshot = {
+                    let public_guard = self.catalog.snapshot.read().await;
+                    public_guard
+                        .as_ref()
+                        .map_err(|_| "agent_configuration_unavailable")?
+                        .clone()
+                };
                 self.configuration
                     .catalog()
                     .await
@@ -55,83 +63,193 @@ impl Owner {
         })
     }
 
-    pub async fn select_backend(&self, input: SelectBackend) -> Result<MetadataResult, String> {
-        let runs = self.runs.lock().await;
-        if runs.closing {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::Closed,
-            });
-        }
+    pub async fn select_backend(
+        self: &Arc<Self>,
+        input: SelectBackend,
+        _operation: &RecoveryRef,
+    ) -> Result<NativeMutation<MetadataResult>, String> {
         if !self.owns(&input.session_id) {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+            return Ok(metadata_rejected(Rejection::SessionUnavailable));
         }
-        let session = self.session(&input.session_id).await?;
-        if session.archived {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
+        let ordered = Arc::new(self.runs.ordered(&input.session_id).await);
+        if self.stop.is_cancelled() || self.runs.state().await.closing {
+            return Ok(metadata_rejected(Rejection::Closed));
         }
-        // Replaying the same preference is harmless even if a read marker or
-        // execution advanced the session revision in the meantime.
-        if session.configuration.backend.as_ref() == Some(&input.backend) {
-            return Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, session)),
-            });
-        }
-        let available = self.backend_available(&input.backend).await?;
-        if !available {
-            return Ok(MetadataResult::Rejected {
-                reason: Rejection::ToolsUnavailable,
-            });
-        }
-        match self
-            .store
-            .update_session_metadata(
-                &input.session_id,
-                session.revision,
-                move |configuration: &mut StoredSessionConfiguration| {
-                    configuration.backend = Some(input.backend);
-                    Ok(())
-                },
-            )
+        let Some(record) = self
+            .canonical_catalog()?
+            .record(&input.session_id)
             .await
-            .map_err(|_| "agent_preference_commit_unknown")?
-        {
-            SessionMutation::Committed(session) => Ok(MetadataResult::Committed {
-                session: Box::new(crate::service::summary(self, resolve_session(*session)?)),
-            }),
-            SessionMutation::RevisionConflict { expected, actual } => {
-                Ok(MetadataResult::RevisionConflict { expected, actual })
-            }
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(metadata_rejected(Rejection::SessionUnavailable));
+        };
+        if record.metadata.archived {
+            return Ok(metadata_rejected(Rejection::SessionUnavailable));
         }
+        let configuration: StoredSessionConfiguration =
+            serde_json::from_value(record.metadata.configuration.clone())
+                .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
+        if configuration.backend.as_ref() == Some(&input.backend) {
+            return Ok(NativeMutation::Returned(MetadataResult::Committed {
+                session: Box::new(crate::service::summary(self, record)?),
+            }));
+        }
+        if !self.backend_available(&input.backend).await? {
+            return Ok(metadata_rejected(Rejection::ToolsUnavailable));
+        }
+        self.prepare_configuration(record, ordered, None, move |configuration| {
+            configuration.backend = Some(input.backend);
+            Ok(())
+        })
+        .await
     }
 
     pub async fn remembered_backend(
         &self,
         session: &str,
     ) -> Result<Option<BackendPreference>, String> {
-        // Direct sends need not save a picker preference. Recover their last
-        // admitted model identity without substituting a global default.
-        let opening = self
-            .store
-            .session(session)
+        self.require_session(session).await?;
+        let Some((run, backend)) = self
+            .durable
+            .latest_message_backend(self.run_owner(), session.to_owned())
             .await
             .map_err(|error| error.to_string())?
-            .latest_message_opening(session)
-            .await
-            .map_err(|_| "agent_history_unavailable")?;
-        Ok(opening.and_then(|opening| match opening.event.fact {
-            maka_agent_facts::event::Fact::InvocationOpened {
-                configuration: Some(configuration),
-                ..
-            } => configuration.model.map(|model| BackendPreference::Model {
-                connection_id: model.connection_id,
-                model_id: model.model,
-                thinking_level: configuration.thinking_level,
-            }),
-            _ => None,
-        }))
+        else {
+            return Ok(None);
+        };
+        let preference = match &backend {
+            BackendSpec::Model { descriptor, .. } => {
+                let bytes = self
+                    .durable
+                    .content(run, descriptor.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let accepted = crate::model::AcceptedModel::from_backend(&backend, &bytes)
+                    .map_err(|error| error.to_string())?;
+                BackendPreference::Model {
+                    connection_id: accepted.binding.connection_id,
+                    model_id: accepted.binding.model,
+                    thinking_level: accepted.thinking_level,
+                }
+            }
+            BackendSpec::Executor {
+                descriptor,
+                selection,
+            } => {
+                let bytes = self
+                    .durable
+                    .content(run, descriptor.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let accepted: crate::executor::Accepted = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("agent_executor_descriptor_invalid: {error}"))?;
+                if &accepted.selection != selection {
+                    return Err("agent_executor_descriptor_changed".into());
+                }
+                BackendPreference::Executor {
+                    selection: accepted.selection,
+                }
+            }
+            BackendSpec::Historical {} => return Err("agent_message_backend_unavailable".into()),
+        };
+        Ok(Some(preference))
     }
+
+    pub(super) async fn prepare_configuration<F>(
+        &self,
+        mut record: Record,
+        ordered: Arc<runs::Ordered>,
+        guard: Option<SessionQuiescenceGuard>,
+        update: F,
+    ) -> Result<NativeMutation<MetadataResult>, String>
+    where
+        F: FnOnce(&mut StoredSessionConfiguration) -> Result<(), StoreError>
+            + std::marker::Send
+            + 'static,
+    {
+        let writer = match &guard {
+            Some(guard) => guard.data_writer().clone(),
+            None => self
+                .store
+                .data_writer()
+                .map_err(|error| error.to_string())?,
+        };
+        let prepared = self
+            .store
+            .prepare_session_metadata(
+                &record.metadata.id,
+                record.metadata.revision,
+                update,
+                &writer,
+                ConfigurationChange {
+                    ordered,
+                    guard,
+                    root: self
+                        .store
+                        .owned_root()
+                        .map_err(|_| "agent_root_unavailable")?,
+                },
+            )
+            .await;
+        let (preview, change) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return metadata_change_error(error),
+        };
+        let configuration = serde_json::to_value(&preview.configuration)
+            .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
+        record.metadata = preview.map_configuration(|_| configuration);
+        Ok(NativeMutation::Commit {
+            value: MetadataResult::Committed {
+                session: Box::new(crate::service::summary(self, record)?),
+            },
+            change,
+        })
+    }
+}
+
+struct ConfigurationChange {
+    root: Arc<maka_event_log::root::RootOwner>,
+    ordered: Arc<runs::Ordered>,
+    guard: Option<SessionQuiescenceGuard>,
+}
+impl Statement for ConfigurationChange {
+    type Value = Arc<maka_event_log::root::RootOwner>;
+    type Output = ();
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        vec![self.ordered.clone()]
+    }
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        if let Some(guard) = self.guard {
+            guard.validate(connection)?;
+        }
+        Ok(Prepared {
+            value: self.root,
+            changed: false,
+            notification: Notification::NONE,
+        })
+    }
+    fn committed(root: Self::Value) {
+        root.capability_source_changed();
+    }
+    fn isolated_rejection(_: &StoreError) -> bool {
+        false
+    }
+}
+fn metadata_rejected(reason: Rejection) -> NativeMutation<MetadataResult> {
+    NativeMutation::Returned(MetadataResult::Rejected { reason })
+}
+fn metadata_change_error(error: StoreError) -> Result<NativeMutation<MetadataResult>, String> {
+    Ok(match error {
+        StoreError::SessionRevisionConflict { expected, actual } => {
+            NativeMutation::Returned(MetadataResult::RevisionConflict { expected, actual })
+        }
+        StoreError::SessionBusy => metadata_rejected(Rejection::Busy),
+        StoreError::SessionNotFound | StoreError::SessionRetired => {
+            metadata_rejected(Rejection::SessionUnavailable)
+        }
+        error => return Err(format!("agent_metadata_prepare_failed: {error}")),
+    })
 }

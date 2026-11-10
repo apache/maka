@@ -20,7 +20,122 @@
 // Generated from Rust runtime schemas. Run npm run schema:generate -w @maka-agent/plugin-sdk.
 import type { Contract } from './generated/runtime.js';
 
-export const contracts = {
+export const contracts: {
+  agent: Contract & {
+    name: 'maka.agent.Agent';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  executor: Contract & {
+    name: 'maka.agent.Executor';
+    version: 2;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  questions: Contract & {
+    name: 'maka.interactions.Questions';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  forms: Contract & {
+    name: 'maka.interactions.Forms';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  skillLibrary: Contract & {
+    name: 'maka.skills.Library';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  workspaceFiles: Contract & {
+    name: 'maka.workspace.Files';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  workspaceProcesses: Contract & {
+    name: 'maka.workspace.Processes';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  protocolProcesses: Contract & {
+    name: 'maka.workspace.ProtocolProcesses';
+    version: 2;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  executorSetup: Contract & {
+    name: 'maka.agent.ExecutorSetup';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  terminal: Contract & {
+    name: 'maka.workspace.Terminal';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  settings: Contract & {
+    name: 'maka.settings.Settings';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  settingsAuthentication: Contract & {
+    name: 'maka.settings.Authentication';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  deploymentManager: Contract & {
+    name: 'maka.application.DeploymentManager';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  receiptReader: Contract & {
+    name: 'maka.operations.ReceiptReader';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  workspaceWeb: Contract & {
+    name: 'maka.workspace.Web';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  workspaceDecisionsApi: Contract & {
+    name: 'maka.workspace.DecisionsApi';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  hostLogs: Contract & {
+    name: 'maka.host.Logs';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  workspaceComputer: Contract & {
+    name: 'maka.workspace.Computer';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+  settingsSetup: Contract & {
+    name: 'maka.settings.Setup';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
+} = {
   agent: {
     name: 'maka.agent.Agent',
     version: 1,
@@ -28,6 +143,920 @@ export const contracts = {
     interface: {
       kind: 'service',
       methods: {
+        adjudicateRisk: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentAdjudicateRisk',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              runId: {
+                $ref: '#/$defs/RunId',
+              },
+              expectedHighWater: {
+                description: 'Compare against the Run-local observation used for this decision.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              blockerId: {
+                $ref: '#/$defs/BlockerId',
+              },
+              decision: {
+                $ref: '#/$defs/AgentRiskDecisionInput',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'runId', 'expectedHighWater', 'blockerId', 'decision'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRiskDecisionInput: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'record_external_observation',
+                      },
+                      evidence: {
+                        $ref: '#/$defs/AgentRiskEvidenceInput',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'evidence'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'authorize_replan',
+                      },
+                      evidence: {
+                        $ref: '#/$defs/AgentRiskEvidenceInput',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'evidence'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancel_blocked_run',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              AgentRiskEvidenceInput: {
+                description:
+                  'User-supplied evidence bytes. Native stores and pins the immutable content in\nthe same control transaction; callers cannot select a canonical ContentRef.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      text: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'json',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentExecutionResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'missing',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'found',
+                  },
+                  execution: {
+                    $ref: '#/$defs/AgentExecution',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'execution'],
+              },
+            ],
+            $defs: {
+              AgentExecution: {
+                description:
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  highWater: {
+                    description: 'Run-local event count, not the root-global transcript cursor.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentExecutionState',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
+                type: 'string',
+                enum: [
+                  'unknown',
+                  'conflict',
+                  'unsupported',
+                  'failed',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
+                ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          resources: {},
+        },
         attachmentImage: {
           mode: 'query',
           input: {
@@ -83,7 +1112,7 @@ export const contracts = {
                         maximum: 9007199254740991,
                       },
                       position: {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       attachmentIndex: {
                         type: 'integer',
@@ -96,26 +1125,108 @@ export const contracts = {
                   },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -195,7 +1306,7 @@ export const contracts = {
                         maximum: 9007199254740991,
                       },
                       position: {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       attachmentIndex: {
                         type: 'integer',
@@ -208,26 +1319,108 @@ export const contracts = {
                   },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -752,7 +1945,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -1610,7 +2938,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -2295,7 +3758,7 @@ export const contracts = {
               },
               OperationOutcome: {
                 description:
-                  'Unresolved means no durable result is known, including after process loss.',
+                  'Unresolved and Unknown may advance to authoritative original evidence.\nReturned and NotExecuted are immutable; handler errors are Returned too.',
                 oneOf: [
                   {
                     type: 'object',
@@ -2315,10 +3778,26 @@ export const contracts = {
                         type: 'string',
                         const: 'returned',
                       },
-                      value: true,
+                      result: {
+                        $ref: '#/$defs/OperationResult',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'value'],
+                    required: ['kind', 'result'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_executed',
+                      },
+                      proof: {
+                        $ref: '#/$defs/NotExecutedProof',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'proof'],
                   },
                   {
                     type: 'object',
@@ -2333,6 +3812,55 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationResult: {
+                description:
+                  'A definite handler return. Failure does not imply absence of side effects.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'success',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failure',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              NotExecutedProof: {
+                description:
+                  'An observation of a provider fence, not a capability to create that fence.\nOnly the original provider may establish this proof before handler start.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_prevented_before_start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
                   },
                 ],
               },
@@ -2642,7 +4170,7 @@ export const contracts = {
             $defs: {
               AgentExecution: {
                 description:
-                  'Canonical physical execution receipt, independent of the current Session tip.',
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
                 type: 'object',
                 properties: {
                   sessionId: {
@@ -2652,10 +4180,7 @@ export const contracts = {
                     type: 'string',
                   },
                   runId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
+                    $ref: '#/$defs/RunId',
                   },
                   highWater: {
                     description: 'Run-local event count, not the root-global transcript cursor.',
@@ -2668,19 +4193,740 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
                 type: 'string',
                 enum: [
-                  'admitted',
-                  'running',
-                  'waiting',
-                  'paused',
-                  'completed',
+                  'unknown',
+                  'conflict',
+                  'unsupported',
                   'failed',
-                  'cancelled',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
                 ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentCompactRejection: {
                 type: 'string',
@@ -2777,8 +5023,8 @@ export const contracts = {
               ComputerAppActivity: {
                 type: 'object',
                 properties: {
-                  invocation: {
-                    $ref: '#/$defs/Invocation',
+                  execution: {
+                    $ref: '#/$defs/ExecutionIdentity',
                   },
                   operationId: {
                     type: 'string',
@@ -2791,25 +5037,27 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocation', 'operationId', 'target', 'display'],
+                required: ['execution', 'operationId', 'target', 'display'],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               GrantTarget: {
                 type: 'object',
@@ -2998,6 +5246,18 @@ export const contracts = {
               sessionId: {
                 type: 'string',
               },
+              runId: {
+                description:
+                  'Null selects the latest actual readable source, not a caller-provided execution grant.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/RunId',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               through: {
                 description:
                   'Null captures the committed head; a supplied fence must not exceed it.',
@@ -3008,7 +5268,13 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'through'],
+            required: ['sessionId', 'runId', 'through'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -3040,11 +5306,15 @@ export const contracts = {
               AgentContextRequest: {
                 type: 'object',
                 properties: {
-                  invocationId: {
-                    type: 'string',
+                  execution: {
+                    description: 'Original canonical Run metadata; observation only.',
+                    $ref: '#/$defs/ExecutionIdentity',
                   },
                   stepId: {
-                    type: 'string',
+                    $ref: '#/$defs/StepId',
+                  },
+                  attemptId: {
+                    $ref: '#/$defs/ModelAttemptId',
                   },
                   sequence: {
                     type: 'integer',
@@ -3107,8 +5377,9 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
-                  'invocationId',
+                  'execution',
                   'stepId',
+                  'attemptId',
                   'sequence',
                   'recordedAt',
                   'sourceThrough',
@@ -3119,6 +5390,34 @@ export const contracts = {
                   'breakdown',
                   'reportedInputTokens',
                 ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentContextRequestState: {
                 type: 'string',
@@ -3213,6 +5512,1720 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['messages', 'media', 'toolCalls', 'toolResults', 'tools'],
+              },
+            },
+          },
+          resources: {},
+        },
+        continuationAvailability: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentExecutionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              runId: {
+                $ref: '#/$defs/RunId',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentContinuationAvailability',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  source: {
+                    $ref: '#/$defs/AgentExecution',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'source'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentContinuationRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentExecution: {
+                description:
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  highWater: {
+                    description: 'Run-local event count, not the root-global transcript cursor.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentExecutionState',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
+                type: 'string',
+                enum: [
+                  'unknown',
+                  'conflict',
+                  'unsupported',
+                  'failed',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
+                ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentContinuationRejection: {
+                type: 'string',
+                enum: [
+                  'closed',
+                  'archived',
+                  'busy',
+                  'source_missing',
+                  'source_changed',
+                  'source_not_terminal',
+                  'already_continued',
+                  'workspace_changed',
+                  'safety_check_failed',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        continueRun: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentContinueRun',
+            description:
+              'Manual continuation of a terminal Run always admits a new Run. Recovery of an\nunfinished Run is internal reconciliation, not this user command.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              sourceRunId: {
+                $ref: '#/$defs/RunId',
+              },
+              sourceHighWater: {
+                description: 'Exact immutable source fence returned by execution.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              model: {
+                $ref: '#/$defs/ModelSelection',
+              },
+              thinkingLevel: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ThinkingLevel',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'sourceRunId', 'sourceHighWater', 'model'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentContinuationResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'started',
+                  },
+                  execution: {
+                    $ref: '#/$defs/AgentExecution',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'execution'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentContinuationRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentExecution: {
+                description:
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  highWater: {
+                    description: 'Run-local event count, not the root-global transcript cursor.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentExecutionState',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
+                type: 'string',
+                enum: [
+                  'unknown',
+                  'conflict',
+                  'unsupported',
+                  'failed',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
+                ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentContinuationRejection: {
+                type: 'string',
+                enum: [
+                  'closed',
+                  'archived',
+                  'busy',
+                  'source_missing',
+                  'source_changed',
+                  'source_not_terminal',
+                  'already_continued',
+                  'workspace_changed',
+                  'safety_check_failed',
+                ],
               },
             },
           },
@@ -3676,7 +7689,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -4042,8 +8190,8 @@ export const contracts = {
                         type: 'string',
                         const: 'execution',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                       reason: {
                         $ref: '#/$defs/ExecutionFailureReason',
@@ -4060,7 +8208,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation', 'reason'],
+                    required: ['kind', 'execution', 'reason'],
                   },
                   {
                     type: 'object',
@@ -4069,11 +8217,14 @@ export const contracts = {
                         type: 'string',
                         const: 'model_step',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       status: {
                         $ref: '#/$defs/ModelInterruption',
@@ -4090,7 +8241,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation', 'stepId', 'status'],
+                    required: ['kind', 'execution', 'stepId', 'attemptId', 'status'],
                   },
                   {
                     type: 'object',
@@ -4099,35 +8250,37 @@ export const contracts = {
                         type: 'string',
                         const: 'session_title',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                       cause: {
                         $ref: '#/$defs/TitleFailureCause',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation', 'cause'],
+                    required: ['kind', 'execution', 'cause'],
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               ExecutionFailureReason: {
                 type: 'string',
@@ -4138,6 +8291,7 @@ export const contracts = {
                   'invalid_input',
                   'cancelled',
                   'model_incomplete',
+                  'model_interrupted',
                   'event_commit',
                   'event_store',
                   'model_timeout',
@@ -4239,6 +8393,14 @@ export const contracts = {
                   'provider_unavailable',
                   'stream_truncated',
                 ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               ModelInterruption: {
                 oneOf: [
@@ -4603,13 +8765,18 @@ export const contracts = {
                 type: 'string',
                 minLength: 1,
               },
-              invocationId: {
-                type: 'string',
-                minLength: 1,
+              runId: {
+                $ref: '#/$defs/RunId',
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'invocationId'],
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -4644,7 +8811,7 @@ export const contracts = {
             $defs: {
               AgentExecution: {
                 description:
-                  'Canonical physical execution receipt, independent of the current Session tip.',
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
                 type: 'object',
                 properties: {
                   sessionId: {
@@ -4654,10 +8821,7 @@ export const contracts = {
                     type: 'string',
                   },
                   runId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
+                    $ref: '#/$defs/RunId',
                   },
                   highWater: {
                     description: 'Run-local event count, not the root-global transcript cursor.',
@@ -4670,19 +8834,740 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
                 type: 'string',
                 enum: [
-                  'admitted',
-                  'running',
-                  'waiting',
-                  'paused',
-                  'completed',
+                  'unknown',
+                  'conflict',
+                  'unsupported',
                   'failed',
-                  'cancelled',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
                 ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -5619,7 +10504,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -5866,7 +10886,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -6445,7 +11600,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -7211,192 +12501,6 @@ export const contracts = {
           },
           resources: {},
         },
-        goalReceipt: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentGoalReceiptRead',
-            type: 'object',
-            properties: {
-              reference: {
-                $ref: '#/$defs/RecoveryRef',
-              },
-            },
-            additionalProperties: false,
-            required: ['reference'],
-            $defs: {
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'Nullable_AgentGoalResult',
-            anyOf: [
-              {
-                $ref: '#/$defs/AgentGoalResult',
-              },
-              {
-                type: 'null',
-              },
-            ],
-            $defs: {
-              AgentGoalResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
-                      goalId: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'goalId', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: ['integer', 'null'],
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reason'],
-                  },
-                ],
-              },
-            },
-          },
-          resources: {},
-        },
         history: {
           mode: 'query',
           input: {
@@ -7465,7 +12569,7 @@ export const contracts = {
                         const: 'row',
                       },
                       position: {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       field: {
                         $ref: '#/$defs/HistoryField',
@@ -7523,26 +12627,108 @@ export const contracts = {
                   },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -7559,7 +12745,7 @@ export const contracts = {
                     default: 'body',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -7591,7 +12777,7 @@ export const contracts = {
                     const: 'ready',
                   },
                   through: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
                   },
@@ -7630,6 +12816,21 @@ export const contracts = {
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
+                  importedTurn: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  runId: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RunId',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   modelPart: {
                     anyOf: [
                       {
@@ -7702,13 +12903,13 @@ export const contracts = {
                     $ref: '#/$defs/HistoryField',
                   },
                   messageId: {
-                    type: 'string',
+                    type: ['string', 'null'],
                   },
                   turnId: {
-                    type: 'string',
+                    type: ['string', 'null'],
                   },
                   timestamp: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
                   },
@@ -7718,10 +12919,10 @@ export const contracts = {
                   order: {
                     description:
                       'Stable display order; position remains the canonical source read address.',
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryOrder',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -7749,10 +12950,8 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'importedTurn',
                   'field',
-                  'messageId',
-                  'turnId',
-                  'timestamp',
                   'role',
                   'order',
                   'position',
@@ -7762,11 +12961,18 @@ export const contracts = {
                   'tool',
                 ],
               },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
                   stepId: {
-                    type: 'string',
+                    $ref: '#/$defs/StepId',
+                  },
+                  attemptId: {
+                    $ref: '#/$defs/ModelAttemptId',
                   },
                   ordinal: {
                     type: 'integer',
@@ -7775,7 +12981,15 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['stepId', 'ordinal'],
+                required: ['stepId', 'attemptId', 'ordinal'],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
@@ -7824,12 +13038,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -7865,23 +13079,21 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
               },
               HistoryCompaction: {
                 description:
@@ -7977,28 +13189,138 @@ export const contracts = {
                 description:
                   'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
                 type: 'string',
-                enum: ['compaction', 'failure', 'user', 'assistant', 'tool_call', 'tool_result'],
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
               },
-              HistoryRowPosition: {
+              HistoryOrder: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
                 type: 'object',
                 properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
                   },
                   itemIndex: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                    maximum: 9007199254740991,
                   },
                 },
                 additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                required: ['path', 'itemIndex'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryTool: {
                 description:
@@ -8053,7 +13375,7 @@ export const contracts = {
                     default: null,
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   name: {
                     type: 'string',
@@ -8129,7 +13451,7 @@ export const contracts = {
                     ],
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   isError: {
                     description:
@@ -8168,7 +13490,7 @@ export const contracts = {
                     default: 'body',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -8528,7 +13850,7 @@ export const contracts = {
               },
               OperationOutcome: {
                 description:
-                  'Unresolved means no durable result is known, including after process loss.',
+                  'Unresolved and Unknown may advance to authoritative original evidence.\nReturned and NotExecuted are immutable; handler errors are Returned too.',
                 oneOf: [
                   {
                     type: 'object',
@@ -8548,10 +13870,26 @@ export const contracts = {
                         type: 'string',
                         const: 'returned',
                       },
-                      value: true,
+                      result: {
+                        $ref: '#/$defs/OperationResult',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'value'],
+                    required: ['kind', 'result'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_executed',
+                      },
+                      proof: {
+                        $ref: '#/$defs/NotExecutedProof',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'proof'],
                   },
                   {
                     type: 'object',
@@ -8566,6 +13904,55 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationResult: {
+                description:
+                  'A definite handler return. Failure does not imply absence of side effects.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'success',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failure',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              NotExecutedProof: {
+                description:
+                  'An observation of a provider fence, not a capability to create that fence.\nOnly the original provider may establish this proof before handler start.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_prevented_before_start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
                   },
                 ],
               },
@@ -8821,15 +14208,26 @@ export const contracts = {
               AgentHistoryLandmark: {
                 type: 'object',
                 properties: {
+                  importedTurn: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  order: {
+                    $ref: '#/$defs/HistoryOrder',
+                  },
+                  lastOrder: {
+                    $ref: '#/$defs/HistoryOrder',
+                  },
                   turnId: {
-                    type: 'string',
+                    type: ['string', 'null'],
                     minLength: 1,
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   lastPosition: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   label: {
                     type: 'string',
@@ -8849,28 +14247,139 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['turnId', 'position', 'lastPosition', 'label'],
+                required: [
+                  'importedTurn',
+                  'order',
+                  'lastOrder',
+                  'position',
+                  'lastPosition',
+                  'label',
+                ],
               },
-              HistoryRowPosition: {
+              HistoryOrder: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
                 type: 'object',
                 properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
                   },
                   itemIndex: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                    maximum: 9007199254740991,
                   },
                 },
                 additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                required: ['path', 'itemIndex'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               MessageOrigin: {
                 description:
@@ -8883,12 +14392,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -8924,23 +14433,21 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
               },
             },
           },
@@ -8964,32 +14471,114 @@ export const contracts = {
                 maximum: 9007199254740991,
               },
               position: {
-                $ref: '#/$defs/HistoryRowPosition',
+                $ref: '#/$defs/HistoryRowAddress',
               },
             },
             additionalProperties: false,
             required: ['sessionId', 'through', 'position'],
             $defs: {
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -9011,7 +14600,7 @@ export const contracts = {
                 type: 'object',
                 properties: {
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   text: {
                     type: 'string',
@@ -9021,26 +14610,108 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['position', 'text'],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -9567,7 +15238,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -10569,7 +16375,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -10831,14 +16772,8 @@ export const contracts = {
             title: 'InteractionRecord',
             type: 'object',
             properties: {
-              sessionId: {
-                type: 'string',
-              },
-              turnId: {
-                type: 'string',
-              },
-              runId: {
-                type: 'string',
+              execution: {
+                $ref: '#/$defs/ExecutionIdentity',
               },
               requestId: {
                 type: 'string',
@@ -10863,16 +16798,28 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: [
-              'sessionId',
-              'turnId',
-              'runId',
-              'requestId',
-              'createdAt',
-              'request',
-              'outcome',
-            ],
+            required: ['execution', 'requestId', 'createdAt', 'request', 'outcome'],
             $defs: {
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               InteractionRequest: {
                 oneOf: [
                   {
@@ -10951,6 +16898,9 @@ export const contracts = {
                         type: 'string',
                         const: 'permissions',
                       },
+                      target: {
+                        $ref: '#/$defs/AuthorizationObligation',
+                      },
                       toolUseId: {
                         type: ['string', 'null'],
                       },
@@ -10962,7 +16912,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'basis', 'request'],
+                    required: ['kind', 'target', 'toolUseId', 'basis', 'request'],
                   },
                   {
                     type: 'object',
@@ -11236,7 +17186,7 @@ export const contracts = {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
-                        $ref: '#/$defs/Scope2',
+                        $ref: '#/$defs/PermissionScope',
                       },
                     },
                     additionalProperties: false,
@@ -11337,17 +17287,96 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['host', 'port'],
               },
-              Scope2: {
+              PermissionScope: {
+                description:
+                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
                 type: 'string',
-                enum: ['once', 'turn', 'session'],
+                enum: ['once', 'run', 'session'],
               },
               ComputerAppApproval: {
                 type: 'string',
                 enum: ['once', 'session', 'always'],
               },
+              AuthorizationObligation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell', 'operation'],
+                  },
+                ],
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
               PermissionRequest: {
-                description:
-                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
                 type: 'object',
                 properties: {
                   reason: {
@@ -11859,7 +17888,7 @@ export const contracts = {
                         const: 'permissions_decision',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision2',
+                        $ref: '#/$defs/PermissionDecision',
                       },
                       committedAt: {
                         type: 'integer',
@@ -12027,7 +18056,7 @@ export const contracts = {
                 type: 'string',
                 enum: ['allow', 'deny'],
               },
-              Decision2: {
+              PermissionDecision: {
                 oneOf: [
                   {
                     type: 'object',
@@ -12051,7 +18080,7 @@ export const contracts = {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
-                        $ref: '#/$defs/Scope2',
+                        $ref: '#/$defs/PermissionScope',
                       },
                     },
                     additionalProperties: false,
@@ -12087,8 +18116,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -12492,7 +18521,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -13058,6 +19222,13 @@ export const contracts = {
               inspection: {
                 $ref: '#/$defs/AgentCheckpointInspection',
               },
+              path: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/RunId',
+                },
+                default: [],
+              },
               sessionId: {
                 type: 'string',
                 minLength: 1,
@@ -13090,6 +19261,10 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSessionId', 'operationId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -13162,6 +19337,14 @@ export const contracts = {
               inspection: {
                 $ref: '#/$defs/AgentCheckpointInspection',
               },
+              path: {
+                description: 'Original historical marker path, validated from the inspection root.',
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/RunId',
+                },
+                default: [],
+              },
               sessionId: {
                 type: 'string',
                 minLength: 1,
@@ -13190,6 +19373,10 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSessionId', 'operationId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -13239,6 +19426,317 @@ export const contracts = {
           },
           resources: {},
         },
+        loadedHistoryCheckpointAttachmentImage: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointAttachmentImageRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              position: {
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              attachmentIndex: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+              offset: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+                default: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'position', 'attachmentIndex'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryImagePage',
+            description:
+              'A bounded image read through an actual history source capability, without a live Root fence.',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  totalBytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  mimeType: {
+                    type: 'string',
+                    pattern: '^image/(png|jpeg|gif|webp|avif)$',
+                  },
+                  digest: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  data: {
+                    type: 'string',
+                    maxLength: 43692,
+                    pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'kind',
+                  'position',
+                  'offset',
+                  'totalBytes',
+                  'mimeType',
+                  'digest',
+                  'data',
+                ],
+              },
+            ],
+            $defs: {
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          resources: {},
+        },
         loadedHistoryCheckpointHistory: {
           mode: 'query',
           input: {
@@ -13259,6 +19757,10 @@ export const contracts = {
               includeThinking: {
                 type: 'boolean',
                 default: false,
+              },
+              view: {
+                $ref: '#/$defs/HistoryView',
+                default: 'text',
               },
             },
             additionalProperties: false,
@@ -13315,7 +19817,7 @@ export const contracts = {
                         const: 'row',
                       },
                       position: {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       field: {
                         $ref: '#/$defs/HistoryField',
@@ -13373,26 +19875,108 @@ export const contracts = {
                   },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -13409,7 +19993,7 @@ export const contracts = {
                     default: 'body',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -13420,6 +20004,12 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['position', 'offset'],
+              },
+              HistoryView: {
+                description:
+                  'Tool output is available through source reads in both views. Conversation\nwindows carry tool metadata only, keeping large results out of chat paging.',
+                type: 'string',
+                enum: ['text', 'conversation'],
               },
             },
           },
@@ -13435,7 +20025,7 @@ export const contracts = {
                     const: 'ready',
                   },
                   through: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
                   },
@@ -13474,6 +20064,21 @@ export const contracts = {
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
+                  importedTurn: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  runId: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RunId',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   modelPart: {
                     anyOf: [
                       {
@@ -13546,13 +20151,13 @@ export const contracts = {
                     $ref: '#/$defs/HistoryField',
                   },
                   messageId: {
-                    type: 'string',
+                    type: ['string', 'null'],
                   },
                   turnId: {
-                    type: 'string',
+                    type: ['string', 'null'],
                   },
                   timestamp: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
                   },
@@ -13562,10 +20167,10 @@ export const contracts = {
                   order: {
                     description:
                       'Stable display order; position remains the canonical source read address.',
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryOrder',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -13593,10 +20198,8 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'importedTurn',
                   'field',
-                  'messageId',
-                  'turnId',
-                  'timestamp',
                   'role',
                   'order',
                   'position',
@@ -13606,11 +20209,18 @@ export const contracts = {
                   'tool',
                 ],
               },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
                   stepId: {
-                    type: 'string',
+                    $ref: '#/$defs/StepId',
+                  },
+                  attemptId: {
+                    $ref: '#/$defs/ModelAttemptId',
                   },
                   ordinal: {
                     type: 'integer',
@@ -13619,7 +20229,15 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['stepId', 'ordinal'],
+                required: ['stepId', 'attemptId', 'ordinal'],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
@@ -13668,12 +20286,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -13709,23 +20327,21 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
               },
               HistoryCompaction: {
                 description:
@@ -13821,28 +20437,138 @@ export const contracts = {
                 description:
                   'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
                 type: 'string',
-                enum: ['compaction', 'failure', 'user', 'assistant', 'tool_call', 'tool_result'],
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
               },
-              HistoryRowPosition: {
+              HistoryOrder: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
                 type: 'object',
                 properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
                   },
                   itemIndex: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                    maximum: 9007199254740991,
                   },
                 },
                 additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                required: ['path', 'itemIndex'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistoryTool: {
                 description:
@@ -13897,7 +20623,7 @@ export const contracts = {
                     default: null,
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   name: {
                     type: 'string',
@@ -13973,7 +20699,7 @@ export const contracts = {
                     ],
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   isError: {
                     description:
@@ -14012,7 +20738,7 @@ export const contracts = {
                     default: 'body',
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -14023,6 +20749,1119 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['position', 'offset'],
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedHistoryCheckpointSource: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointSourceRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              address: {
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              field: {
+                $ref: '#/$defs/SourceField',
+              },
+              path: {
+                type: ['array', 'null'],
+                items: {
+                  $ref: '#/$defs/HistorySourceSegment',
+                },
+                default: null,
+              },
+              position: {
+                $ref: '#/$defs/SourcePosition',
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'address', 'field', 'position'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              SourceField: {
+                description:
+                  'An explicitly selected canonical transcript field, never an execution grant.',
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: [
+                      'body',
+                      'thinking',
+                      'tool_name',
+                      'failure_message',
+                      'error_class',
+                      'arguments',
+                      'result',
+                    ],
+                  },
+                  {
+                    description:
+                      'The original service operation observation, separate from its returned value.',
+                    type: 'string',
+                    const: 'receipt',
+                  },
+                  {
+                    description:
+                      'Immutable adapter metadata; never active model options or a grant.',
+                    type: 'string',
+                    const: 'provider_metadata',
+                  },
+                  {
+                    description:
+                      'Original imported producer record, not the public display/context projection.',
+                    type: 'string',
+                    const: 'original',
+                  },
+                ],
+              },
+              HistorySourceSegment: {
+                description:
+                  'A structural selector into an original JSON field. Keys and array indices\nremain distinct; neither locates a filesystem resource nor grants access.',
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                ],
+              },
+              SourcePosition: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tail',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'offset'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after',
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'offset'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'HistorySource',
+            description:
+              'One literal UTF-8 excerpt of an immutable field. JSON excerpts need not be\nstandalone JSON. Image descriptors carry no artifact read authorization.',
+            type: 'object',
+            properties: {
+              model: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/HistoryModel',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              origin: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/MessageOrigin',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              position: {
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              timestamp: {
+                description:
+                  'Host-recorded milliseconds of this immutable row; not a client clock.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+              role: {
+                $ref: '#/$defs/HistorySourceRole',
+              },
+              fields: {
+                description:
+                  'Readable canonical fields of this same immutable row, in display order.',
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SourceField',
+                },
+                minItems: 1,
+              },
+              field: {
+                $ref: '#/$defs/SourceField',
+              },
+              path: {
+                description:
+                  'Omission reads the encoded field. A selected JSON string is literal text.',
+                type: ['array', 'null'],
+                items: {
+                  $ref: '#/$defs/HistorySourceSegment',
+                },
+              },
+              format: {
+                $ref: '#/$defs/SourceFormat',
+              },
+              offset: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+              totalBytes: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+              text: {
+                type: 'string',
+              },
+              tool: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/HistoryTool',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: [
+              'position',
+              'role',
+              'fields',
+              'field',
+              'format',
+              'offset',
+              'totalBytes',
+              'text',
+              'tool',
+            ],
+            $defs: {
+              HistoryModel: {
+                description: 'Model identity recorded for the exact historical assistant step.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native',
+                      },
+                      requestedModelId: {
+                        type: 'string',
+                      },
+                      reportedModelId: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'requestedModelId', 'reportedModelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      modelId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'modelId'],
+                  },
+                ],
+              },
+              MessageOrigin: {
+                description:
+                  'Trusted producer attribution, preserved independently of editable content.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              HistorySourceRole: {
+                description:
+                  'Presentation role of the exact row. This carries no execution authority.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                  'failure',
+                ],
+              },
+              SourceField: {
+                description:
+                  'An explicitly selected canonical transcript field, never an execution grant.',
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: [
+                      'body',
+                      'thinking',
+                      'tool_name',
+                      'failure_message',
+                      'error_class',
+                      'arguments',
+                      'result',
+                    ],
+                  },
+                  {
+                    description:
+                      'The original service operation observation, separate from its returned value.',
+                    type: 'string',
+                    const: 'receipt',
+                  },
+                  {
+                    description:
+                      'Immutable adapter metadata; never active model options or a grant.',
+                    type: 'string',
+                    const: 'provider_metadata',
+                  },
+                  {
+                    description:
+                      'Original imported producer record, not the public display/context projection.',
+                    type: 'string',
+                    const: 'original',
+                  },
+                ],
+              },
+              HistorySourceSegment: {
+                description:
+                  'A structural selector into an original JSON field. Keys and array indices\nremain distinct; neither locates a filesystem resource nor grants access.',
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                ],
+              },
+              SourceFormat: {
+                type: 'string',
+                enum: ['text', 'json', 'image_descriptor'],
+              },
+              HistoryTool: {
+                description:
+                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
+                type: 'object',
+                properties: {
+                  toolUseId: {
+                    type: 'string',
+                  },
+                  call: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolCall',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  result: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolResult',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['toolUseId', 'call', 'result'],
+              },
+              HistoryToolCall: {
+                type: 'object',
+                properties: {
+                  ancestorToolUseIds: {
+                    description:
+                      'Recorded ancestors in this Turn, nearest first; display references only.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
+                  presentation: {
+                    description:
+                      'Opaque display contract captured at dispatch; no execution authority.',
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  title: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/DisplayText',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  pending: {
+                    description:
+                      'This native Turn is still open at the history fence; not execution authority.',
+                    type: 'boolean',
+                  },
+                  dispatched: {
+                    description:
+                      'A unique original Host dispatch is recorded at this fence; not liveness.',
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'ancestorToolUseIds',
+                  'origin',
+                  'position',
+                  'name',
+                  'title',
+                  'pending',
+                  'dispatched',
+                ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+              },
+              DisplayText: {
+                description:
+                  'Presentation text is distinct from the stable identity used for navigation.',
+                type: 'object',
+                properties: {
+                  fallback: {
+                    type: 'string',
+                  },
+                  translations: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['fallback'],
+              },
+              HistoryToolResult: {
+                type: 'object',
+                properties: {
+                  settlement: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolSettlement',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  isError: {
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
+                    type: 'boolean',
+                  },
+                  image: {
+                    description:
+                      'Canonical content is an image; this does not grant artifact reads.',
+                    type: 'boolean',
+                  },
+                  images: {
+                    description:
+                      'Images the model received beside non-image content, readable by index.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['settlement', 'position', 'isError', 'image', 'images'],
+              },
+              ToolSettlement: {
+                description:
+                  'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
+                type: 'string',
+                enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedHistoryCheckpointToolImage: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointToolImageRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              position: {
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              image: {
+                type: ['integer', 'null'],
+                format: 'uint32',
+                minimum: 0,
+                default: null,
+              },
+              offset: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+                default: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'position'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryImagePage',
+            description:
+              'A bounded image read through an actual history source capability, without a live Root fence.',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  totalBytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  mimeType: {
+                    type: 'string',
+                    pattern: '^image/(png|jpeg|gif|webp|avif)$',
+                  },
+                  digest: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  data: {
+                    type: 'string',
+                    maxLength: 43692,
+                    pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'kind',
+                  'position',
+                  'offset',
+                  'totalBytes',
+                  'mimeType',
+                  'digest',
+                  'data',
+                ],
+              },
+            ],
+            $defs: {
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -14566,7 +22405,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -15304,7 +23278,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -16359,7 +24468,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -16653,8 +24897,8 @@ export const contracts = {
                   backend: {
                     $ref: '#/$defs/AgentRunBackend',
                   },
-                  invocationId: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                   turnId: {
                     type: 'string',
@@ -16664,7 +24908,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['backend', 'invocationId', 'turnId', 'state'],
+                required: ['backend', 'runId', 'turnId', 'state'],
               },
               AgentRunBackend: {
                 description:
@@ -16688,7 +24932,10 @@ export const contracts = {
                     type: 'string',
                   },
                   stepId: {
-                    type: 'string',
+                    $ref: '#/$defs/StepId',
+                  },
+                  attemptId: {
+                    $ref: '#/$defs/ModelAttemptId',
                   },
                   partId: {
                     type: 'string',
@@ -16698,7 +24945,22 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['startSequence', 'messageId', 'stepId', 'partId', 'textKind'],
+                required: [
+                  'startSequence',
+                  'messageId',
+                  'stepId',
+                  'attemptId',
+                  'partId',
+                  'textKind',
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentContentKind: {
                 type: 'string',
@@ -17943,12 +26205,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -17984,23 +26246,25 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentQueueKind: {
                 type: 'string',
@@ -18354,7 +26618,7 @@ export const contracts = {
                 oneOf: [
                   {
                     description:
-                      'MAKA-SESSION v2 history bytes follow; Workspace objects are separate.',
+                      'Versioned Agent snapshot archive bytes follow; Workspace objects are separate.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -18364,11 +26628,8 @@ export const contracts = {
                       head: {
                         $ref: '#/$defs/AgentHistoryCheckpointHead',
                       },
-                      inventory: {
-                        $ref: '#/$defs/AgentHistoryCheckpointInventory',
-                      },
-                      bundle: {
-                        $ref: '#/$defs/AgentHistoryCheckpointObject',
+                      history: {
+                        $ref: '#/$defs/AgentHistoryCheckpointSnapshot',
                       },
                       workspace: {
                         anyOf: [
@@ -18382,7 +26643,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'head', 'inventory', 'bundle'],
+                    required: ['kind', 'head', 'history'],
                   },
                   {
                     type: 'object',
@@ -18459,40 +26720,37 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
               },
-              AgentHistoryCheckpointInventory: {
+              AgentHistoryCheckpointSnapshot: {
                 type: 'object',
                 properties: {
-                  rootSessionId: {
-                    type: 'string',
+                  object: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
                   },
-                  subtreeDigest: {
-                    type: 'string',
-                  },
-                  sessions: {
+                  inventory: {
+                    description:
+                      'Exact Agent archive inventory descriptor bytes, not execution authority.',
                     type: 'array',
                     items: {
-                      $ref: '#/$defs/AgentHistoryCheckpointSession',
+                      type: 'integer',
+                      format: 'uint8',
+                      minimum: 0,
+                      maximum: 255,
+                    },
+                  },
+                  cut: {
+                    description:
+                      'Exact Agent source-cut descriptor bytes. Never a Root/Session capability.',
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint8',
+                      minimum: 0,
+                      maximum: 255,
                     },
                   },
                 },
                 additionalProperties: false,
-                required: ['rootSessionId', 'subtreeDigest', 'sessions'],
-              },
-              AgentHistoryCheckpointSession: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
+                required: ['object', 'inventory', 'cut'],
               },
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
@@ -18570,13 +26828,16 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  invocationId: {
-                    type: 'string',
-                    minLength: 1,
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'invocationId'],
+                required: ['sessionId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -18911,7 +27172,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -19155,7 +27551,7 @@ export const contracts = {
                     type: 'string',
                   },
                   anchorPosition: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   excerpt: {
                     description:
@@ -19185,27 +27581,6 @@ export const contracts = {
                   'highlights',
                   'matchedTerms',
                 ],
-              },
-              HistoryRowPosition: {
-                description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
               },
               AgentRecallHighlight: {
                 type: 'object',
@@ -19452,8 +27827,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -19554,7 +27929,7 @@ export const contracts = {
                         const: 'permissions',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision2',
+                        $ref: '#/$defs/PermissionDecision',
                       },
                     },
                     additionalProperties: false,
@@ -19682,7 +28057,7 @@ export const contracts = {
                 type: 'string',
                 enum: ['allow', 'deny'],
               },
-              Decision2: {
+              PermissionDecision: {
                 oneOf: [
                   {
                     type: 'object',
@@ -19706,7 +28081,7 @@ export const contracts = {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
-                        $ref: '#/$defs/Scope2',
+                        $ref: '#/$defs/PermissionScope',
                       },
                     },
                     additionalProperties: false,
@@ -19807,9 +28182,11 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['host', 'port'],
               },
-              Scope2: {
+              PermissionScope: {
+                description:
+                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
                 type: 'string',
-                enum: ['once', 'turn', 'session'],
+                enum: ['once', 'run', 'session'],
               },
               FormValue: {
                 anyOf: [
@@ -19876,14 +28253,8 @@ export const contracts = {
               InteractionRecord: {
                 type: 'object',
                 properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    type: 'string',
+                  execution: {
+                    $ref: '#/$defs/ExecutionIdentity',
                   },
                   requestId: {
                     type: 'string',
@@ -19908,15 +28279,27 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'sessionId',
-                  'turnId',
-                  'runId',
-                  'requestId',
-                  'createdAt',
-                  'request',
-                  'outcome',
-                ],
+                required: ['execution', 'requestId', 'createdAt', 'request', 'outcome'],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               InteractionRequest: {
                 oneOf: [
@@ -19996,6 +28379,9 @@ export const contracts = {
                         type: 'string',
                         const: 'permissions',
                       },
+                      target: {
+                        $ref: '#/$defs/AuthorizationObligation',
+                      },
                       toolUseId: {
                         type: ['string', 'null'],
                       },
@@ -20007,7 +28393,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'basis', 'request'],
+                    required: ['kind', 'target', 'toolUseId', 'basis', 'request'],
                   },
                   {
                     type: 'object',
@@ -20281,7 +28667,7 @@ export const contracts = {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
-                        $ref: '#/$defs/Scope2',
+                        $ref: '#/$defs/PermissionScope',
                       },
                     },
                     additionalProperties: false,
@@ -20382,17 +28768,96 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['host', 'port'],
               },
-              Scope2: {
+              PermissionScope: {
+                description:
+                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
                 type: 'string',
-                enum: ['once', 'turn', 'session'],
+                enum: ['once', 'run', 'session'],
               },
               ComputerAppApproval: {
                 type: 'string',
                 enum: ['once', 'session', 'always'],
               },
+              AuthorizationObligation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell', 'operation'],
+                  },
+                ],
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
               PermissionRequest: {
-                description:
-                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
                 type: 'object',
                 properties: {
                   reason: {
@@ -20904,7 +29369,7 @@ export const contracts = {
                         const: 'permissions_decision',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision2',
+                        $ref: '#/$defs/PermissionDecision',
                       },
                       committedAt: {
                         type: 'integer',
@@ -21072,7 +29537,7 @@ export const contracts = {
                 type: 'string',
                 enum: ['allow', 'deny'],
               },
-              Decision2: {
+              PermissionDecision: {
                 oneOf: [
                   {
                     type: 'object',
@@ -21096,7 +29561,7 @@ export const contracts = {
                         $ref: '#/$defs/Permissions',
                       },
                       scope: {
-                        $ref: '#/$defs/Scope2',
+                        $ref: '#/$defs/PermissionScope',
                       },
                     },
                     additionalProperties: false,
@@ -21132,8 +29597,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -21432,309 +29897,6 @@ export const contracts = {
                     type: 'string',
                     const: 'external_writers_not_fenced',
                   },
-                ],
-              },
-            },
-          },
-          resources: {},
-        },
-        resumable: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentResumableRead',
-            description:
-              'Observe the latest run using the model selected for a possible continuation.',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-                minLength: 1,
-              },
-              model: {
-                $ref: '#/$defs/ModelSelection',
-              },
-              thinkingLevel: {
-                anyOf: [
-                  {
-                    $ref: '#/$defs/ThinkingLevel',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'model'],
-            $defs: {
-              ModelSelection: {
-                description:
-                  'Stable model identity, resolved from current connection settings at admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentResumable',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
-                  source: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'source'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'unavailable',
-                  },
-                  reason: {
-                    $ref: '#/$defs/AgentResumeParkReason',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reason'],
-              },
-            ],
-            $defs: {
-              AgentExecution: {
-                description:
-                  'Canonical physical execution receipt, independent of the current Session tip.',
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
-                  },
-                  highWater: {
-                    description: 'Run-local event count, not the root-global transcript cursor.',
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  state: {
-                    $ref: '#/$defs/AgentExecutionState',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
-              },
-              AgentExecutionState: {
-                type: 'string',
-                enum: [
-                  'admitted',
-                  'running',
-                  'waiting',
-                  'paused',
-                  'completed',
-                  'failed',
-                  'cancelled',
-                ],
-              },
-              AgentResumeParkReason: {
-                type: 'string',
-                enum: [
-                  'closed',
-                  'archived',
-                  'busy',
-                  'source_missing',
-                  'source_changed',
-                  'source_not_resumable',
-                  'already_continued',
-                  'workspace_changed',
-                  'safety_check_failed',
-                ],
-              },
-            },
-          },
-          resources: {},
-        },
-        resume: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentResume',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-                minLength: 1,
-              },
-              sourceInvocationId: {
-                type: 'string',
-                minLength: 1,
-              },
-              sourceHighWater: {
-                description: 'Exact Run-local count returned by execution.',
-                type: 'integer',
-                format: 'uint64',
-                minimum: 1,
-                maximum: 9007199254740991,
-              },
-              model: {
-                description:
-                  'Explicit model selection for this new continuation; original input is replayed.',
-                $ref: '#/$defs/ModelSelection',
-              },
-              thinkingLevel: {
-                anyOf: [
-                  {
-                    $ref: '#/$defs/ThinkingLevel',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'sourceInvocationId', 'sourceHighWater', 'model'],
-            $defs: {
-              ModelSelection: {
-                description:
-                  'Stable model identity, resolved from current connection settings at admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentResumeResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'started',
-                  },
-                  execution: {
-                    $ref: '#/$defs/AgentExecution',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'execution'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'parked',
-                  },
-                  reason: {
-                    $ref: '#/$defs/AgentResumeParkReason',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reason'],
-              },
-            ],
-            $defs: {
-              AgentExecution: {
-                description:
-                  'Canonical physical execution receipt, independent of the current Session tip.',
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
-                  },
-                  highWater: {
-                    description: 'Run-local event count, not the root-global transcript cursor.',
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  state: {
-                    $ref: '#/$defs/AgentExecutionState',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
-              },
-              AgentExecutionState: {
-                type: 'string',
-                enum: [
-                  'admitted',
-                  'running',
-                  'waiting',
-                  'paused',
-                  'completed',
-                  'failed',
-                  'cancelled',
-                ],
-              },
-              AgentResumeParkReason: {
-                type: 'string',
-                enum: [
-                  'closed',
-                  'archived',
-                  'busy',
-                  'source_missing',
-                  'source_changed',
-                  'source_not_resumable',
-                  'already_continued',
-                  'workspace_changed',
-                  'safety_check_failed',
                 ],
               },
             },
@@ -22471,123 +30633,7 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['kind', 'taskId'],
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
-                  },
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reference'],
-              },
             ],
-            $defs: {
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -22654,27 +30700,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
-                  },
-                  result: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentScheduleResult',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind'],
               },
             ],
             $defs: {
@@ -23231,7 +31256,14 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                   runId: {
-                    type: ['string', 'null'],
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RunId',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
@@ -23241,62 +31273,13 @@ export const contracts = {
                 type: 'string',
                 enum: ['ok', 'failed', 'blocked'],
               },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               Misfire: {
                 type: 'string',
                 enum: ['skip', 'latest'],
-              },
-              AgentScheduleResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
-                      taskId: {
-                        type: 'string',
-                      },
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'taskId', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: ['integer', 'null'],
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reason'],
-                  },
-                ],
               },
             },
           },
@@ -23324,7 +31307,7 @@ export const contracts = {
                 description: 'Exclusive transcript-row position; null starts a scan.',
                 anyOf: [
                   {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   {
                     type: 'null',
@@ -23360,26 +31343,108 @@ export const contracts = {
               'includeInternal',
             ],
             $defs: {
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -23411,7 +31476,7 @@ export const contracts = {
                       'Continue even when this batch has no matches. Null is the end of the scan.',
                     anyOf: [
                       {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       {
                         type: 'null',
@@ -23427,6 +31492,9 @@ export const contracts = {
               AgentHistoryMatch: {
                 type: 'object',
                 properties: {
+                  order: {
+                    $ref: '#/$defs/HistoryOrder',
+                  },
                   field: {
                     description:
                       'Exact canonical field to read through the source query; history body may omit it.',
@@ -23435,7 +31503,7 @@ export const contracts = {
                   position: {
                     description:
                       'Exact transcript row. Open with HistoryPosition::Row at the same raw-event\nfence: Thinking for a thinking match, Body for every other source field.',
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   preview: {
                     type: 'string',
@@ -23443,7 +31511,29 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['field', 'position', 'preview'],
+                required: ['order', 'field', 'position', 'preview'],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
               },
               SourceField: {
                 description:
@@ -23467,28 +31557,122 @@ export const contracts = {
                     type: 'string',
                     const: 'receipt',
                   },
+                  {
+                    description:
+                      'Immutable adapter metadata; never active model options or a grant.',
+                    type: 'string',
+                    const: 'provider_metadata',
+                  },
+                  {
+                    description:
+                      'Original imported producer record, not the public display/context projection.',
+                    type: 'string',
+                    const: 'original',
+                  },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -23851,7 +32035,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -24228,10 +32547,17 @@ export const contracts = {
                   'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
                 $ref: '#/$defs/AgentSendDelivery',
               },
-              expectedInvocationId: {
+              expectedRunId: {
                 description:
                   'An active send must not start new work after Stop fences its original Run.',
-                type: ['string', 'null'],
+                anyOf: [
+                  {
+                    $ref: '#/$defs/RunId',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               attachments: {
                 description:
@@ -24331,6 +32657,10 @@ export const contracts = {
                     const: 'queue',
                   },
                 ],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -24470,15 +32800,15 @@ export const contracts = {
                   sessionId: {
                     type: 'string',
                   },
-                  invocationId: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                   messageId: {
                     type: 'string',
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'sessionId', 'invocationId', 'messageId'],
+                required: ['kind', 'sessionId', 'runId', 'messageId'],
               },
               {
                 type: 'object',
@@ -24668,6 +32998,10 @@ export const contracts = {
               SkillSource: {
                 type: 'string',
                 enum: ['maka', 'agents', 'custom'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -25102,7 +33436,7 @@ export const contracts = {
               },
               OperationOutcome: {
                 description:
-                  'Unresolved means no durable result is known, including after process loss.',
+                  'Unresolved and Unknown may advance to authoritative original evidence.\nReturned and NotExecuted are immutable; handler errors are Returned too.',
                 oneOf: [
                   {
                     type: 'object',
@@ -25122,10 +33456,26 @@ export const contracts = {
                         type: 'string',
                         const: 'returned',
                       },
-                      value: true,
+                      result: {
+                        $ref: '#/$defs/OperationResult',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'value'],
+                    required: ['kind', 'result'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_executed',
+                      },
+                      proof: {
+                        $ref: '#/$defs/NotExecutedProof',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'proof'],
                   },
                   {
                     type: 'object',
@@ -25140,6 +33490,55 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationResult: {
+                description:
+                  'A definite handler return. Failure does not imply absence of side effects.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'success',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failure',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              NotExecutedProof: {
+                description:
+                  'An observation of a provider fence, not a capability to create that fence.\nOnly the original provider may establish this proof before handler start.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_prevented_before_start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
                   },
                 ],
               },
@@ -25737,7 +34136,142 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'turnId'],
                   },
+                  {
+                    description:
+                      'Include the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete source Turn containing this qualified original row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_source_turn',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position'],
+                  },
                 ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:
@@ -26285,13 +34819,18 @@ export const contracts = {
                 type: 'string',
                 minLength: 1,
               },
-              invocationId: {
-                type: 'string',
-                minLength: 1,
+              runId: {
+                $ref: '#/$defs/RunId',
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'invocationId'],
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -26423,7 +34962,7 @@ export const contracts = {
                         const: 'row',
                       },
                       position: {
-                        $ref: '#/$defs/HistoryRowPosition',
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                     },
                     additionalProperties: false,
@@ -26446,26 +34985,108 @@ export const contracts = {
                   },
                 ],
               },
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               SourceField: {
                 description:
@@ -26488,6 +35109,18 @@ export const contracts = {
                       'The original service operation observation, separate from its returned value.',
                     type: 'string',
                     const: 'receipt',
+                  },
+                  {
+                    description:
+                      'Immutable adapter metadata; never active model options or a grant.',
+                    type: 'string',
+                    const: 'provider_metadata',
+                  },
+                  {
+                    description:
+                      'Original imported producer record, not the public display/context projection.',
+                    type: 'string',
+                    const: 'original',
                   },
                 ],
               },
@@ -26623,12 +35256,12 @@ export const contracts = {
                     ],
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   timestamp: {
                     description:
                       'Host-recorded milliseconds of this immutable row; not a client clock.',
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
                     maximum: 9007199254740991,
@@ -26644,7 +35277,6 @@ export const contracts = {
                       $ref: '#/$defs/SourceField',
                     },
                     minItems: 1,
-                    maxItems: 7,
                   },
                   field: {
                     $ref: '#/$defs/SourceField',
@@ -26689,7 +35321,6 @@ export const contracts = {
                 additionalProperties: false,
                 required: [
                   'position',
-                  'timestamp',
                   'role',
                   'fields',
                   'field',
@@ -26747,12 +35378,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -26788,50 +35419,139 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-              HistoryRowPosition: {
-                description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
                 additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
               },
               HistorySourceRole: {
                 description:
                   'Presentation role of the exact row. This carries no execution authority.',
                 type: 'string',
-                enum: ['user', 'assistant', 'tool_call', 'tool_result', 'failure'],
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                  'failure',
+                ],
               },
               SourceField: {
                 description:
@@ -26854,6 +35574,18 @@ export const contracts = {
                       'The original service operation observation, separate from its returned value.',
                     type: 'string',
                     const: 'receipt',
+                  },
+                  {
+                    description:
+                      'Immutable adapter metadata; never active model options or a grant.',
+                    type: 'string',
+                    const: 'provider_metadata',
+                  },
+                  {
+                    description:
+                      'Original imported producer record, not the public display/context projection.',
+                    type: 'string',
+                    const: 'original',
                   },
                 ],
               },
@@ -26928,7 +35660,7 @@ export const contracts = {
                     default: null,
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   name: {
                     type: 'string',
@@ -27004,7 +35736,7 @@ export const contracts = {
                     ],
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   isError: {
                     description:
@@ -27048,13 +35780,18 @@ export const contracts = {
                 type: 'string',
                 minLength: 1,
               },
-              invocationId: {
-                type: 'string',
-                minLength: 1,
+              runId: {
+                $ref: '#/$defs/RunId',
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'invocationId'],
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -27062,6 +35799,8 @@ export const contracts = {
             type: 'object',
             properties: {
               requested: {
+                description:
+                  'The original operation accepted a Stop intent for the existing Run, not\nproof of a new state write or physical cleanup. Missing/already-terminal\npreparation may return false; a terminal race after acceptance stays true.',
                 type: 'boolean',
               },
             },
@@ -27095,6 +35834,8 @@ export const contracts = {
             type: 'object',
             properties: {
               requested: {
+                description:
+                  'The original operation accepted a Stop intent for the existing Run, not\nproof of a new state write or physical cleanup. Missing/already-terminal\npreparation may return false; a terminal race after acceptance stays true.',
                 type: 'boolean',
               },
             },
@@ -27193,8 +35934,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -27253,7 +35994,7 @@ export const contracts = {
                 maximum: 9007199254740991,
               },
               position: {
-                $ref: '#/$defs/HistoryRowPosition',
+                $ref: '#/$defs/HistoryRowAddress',
               },
               image: {
                 description:
@@ -27273,26 +36014,108 @@ export const contracts = {
             additionalProperties: false,
             required: ['sessionId', 'through', 'position', 'offset'],
             $defs: {
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -27313,7 +36136,7 @@ export const contracts = {
                     minimum: 0,
                   },
                   position: {
-                    $ref: '#/$defs/HistoryRowPosition',
+                    $ref: '#/$defs/HistoryRowAddress',
                   },
                   offset: {
                     type: 'integer',
@@ -27355,26 +36178,108 @@ export const contracts = {
               },
             ],
             $defs: {
-              HistoryRowPosition: {
+              HistoryRowAddress: {
                 description:
-                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
-                type: 'object',
-                properties: {
-                  sourceSequence: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
                   },
-                },
-                additionalProperties: false,
-                required: ['sourceSequence', 'itemIndex'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
             },
           },
@@ -27739,8 +36644,8 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
-                  invocationId: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                   turnId: {
                     type: 'string',
@@ -27750,7 +36655,11 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['sequence', 'invocationId', 'turnId', 'fact'],
+                required: ['sequence', 'runId', 'turnId', 'fact'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentDeliveryFact: {
                 oneOf: [
@@ -27788,9 +36697,15 @@ export const contracts = {
                       messageId: {
                         type: 'string',
                       },
+                      stepId: {
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'messageId'],
+                    required: ['kind', 'messageId', 'stepId', 'attemptId'],
                   },
                   {
                     description:
@@ -27813,7 +36728,10 @@ export const contracts = {
                         const: 'step_ended',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       completed: {
                         description:
@@ -27822,7 +36740,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'stepId', 'completed'],
+                    required: ['kind', 'stepId', 'attemptId', 'completed'],
                   },
                   {
                     type: 'object',
@@ -27832,7 +36750,10 @@ export const contracts = {
                         const: 'part_committed',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       messageId: {
                         type: 'string',
@@ -27844,7 +36765,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'stepId', 'messageId', 'ordinal'],
+                    required: ['kind', 'stepId', 'attemptId', 'messageId', 'ordinal'],
                   },
                   {
                     type: 'object',
@@ -27854,7 +36775,10 @@ export const contracts = {
                         const: 'delta',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       partId: {
                         type: 'string',
@@ -27864,7 +36788,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'stepId', 'partId', 'text'],
+                    required: ['kind', 'stepId', 'attemptId', 'partId', 'text'],
                   },
                   {
                     description:
@@ -27879,7 +36803,10 @@ export const contracts = {
                         type: 'string',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       name: {
                         type: 'string',
@@ -27889,7 +36816,14 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'stepId', 'name', 'providerExecuted'],
+                    required: [
+                      'kind',
+                      'toolUseId',
+                      'stepId',
+                      'attemptId',
+                      'name',
+                      'providerExecuted',
+                    ],
                   },
                   {
                     description:
@@ -28039,6 +36973,14 @@ export const contracts = {
                   },
                 ],
               },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
               DisplayText: {
                 description:
                   'Presentation text is distinct from the stable identity used for navigation.',
@@ -28091,14 +37033,17 @@ export const contracts = {
                       hostEpoch: {
                         type: 'string',
                       },
-                      invocationId: {
-                        type: 'string',
+                      runId: {
+                        $ref: '#/$defs/RunId',
                       },
                       turnId: {
                         type: 'string',
                       },
                       stepId: {
-                        type: 'string',
+                        $ref: '#/$defs/StepId',
+                      },
+                      attemptId: {
+                        $ref: '#/$defs/ModelAttemptId',
                       },
                       revision: {
                         type: 'integer',
@@ -28127,9 +37072,10 @@ export const contracts = {
                     required: [
                       'kind',
                       'hostEpoch',
-                      'invocationId',
+                      'runId',
                       'turnId',
                       'stepId',
+                      'attemptId',
                       'revision',
                       'dependsOn',
                       'first',
@@ -28277,12 +37223,12 @@ export const contracts = {
                         type: 'string',
                         const: 'session',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -28318,23 +37264,21 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
               },
               AgentQueueKind: {
                 type: 'string',
@@ -28416,8 +37360,8 @@ export const contracts = {
               ComputerAppActivity: {
                 type: 'object',
                 properties: {
-                  invocation: {
-                    $ref: '#/$defs/Invocation',
+                  execution: {
+                    $ref: '#/$defs/ExecutionIdentity',
                   },
                   operationId: {
                     type: 'string',
@@ -28430,7 +37374,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocation', 'operationId', 'target', 'display'],
+                required: ['execution', 'operationId', 'target', 'display'],
               },
               GrantTarget: {
                 type: 'object',
@@ -29171,123 +38115,7 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['kind', 'taskId'],
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
-                  },
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reference'],
-              },
             ],
-            $defs: {
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -29354,27 +38182,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'receipt',
-                  },
-                  result: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentScheduleResult',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind'],
               },
             ],
             $defs: {
@@ -29931,7 +38738,14 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                   runId: {
-                    type: ['string', 'null'],
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RunId',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
@@ -29941,62 +38755,13 @@ export const contracts = {
                 type: 'string',
                 enum: ['ok', 'failed', 'blocked'],
               },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               Misfire: {
                 type: 'string',
                 enum: ['skip', 'latest'],
-              },
-              AgentScheduleResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
-                      taskId: {
-                        type: 'string',
-                      },
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'taskId', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: ['integer', 'null'],
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reason'],
-                  },
-                ],
               },
             },
           },
@@ -30037,15 +38802,14 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'invocation',
+                        const: 'run',
                       },
-                      invocationId: {
-                        type: 'string',
-                        minLength: 1,
+                      runId: {
+                        $ref: '#/$defs/RunId',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'invocationId'],
+                    required: ['kind', 'runId'],
                   },
                   {
                     type: 'object',
@@ -30064,12 +38828,15 @@ export const contracts = {
                   },
                 ],
               },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               AgentAnswerCursor: {
                 type: 'object',
                 properties: {
-                  invocationId: {
-                    type: 'string',
-                    minLength: 1,
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                   offset: {
                     type: 'integer',
@@ -30079,7 +38846,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocationId', 'offset'],
+                required: ['runId', 'offset'],
               },
             },
           },
@@ -30169,7 +38936,7 @@ export const contracts = {
             $defs: {
               AgentExecution: {
                 description:
-                  'Canonical physical execution receipt, independent of the current Session tip.',
+                  'Stable logical Run receipt, independent of activations and the current Session tip.',
                 type: 'object',
                 properties: {
                   sessionId: {
@@ -30179,10 +38946,7 @@ export const contracts = {
                     type: 'string',
                   },
                   runId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
+                    $ref: '#/$defs/RunId',
                   },
                   highWater: {
                     description: 'Run-local event count, not the root-global transcript cursor.',
@@ -30195,19 +38959,740 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
+                required: ['sessionId', 'turnId', 'runId', 'highWater', 'state'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentExecutionState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'admitted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'waiting',
+                      },
+                      waits: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/WaitReason',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'waits'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocked',
+                      },
+                      blockers: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentRunBlocker',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blockers'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              WaitReason: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_backoff',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'approval',
+                      },
+                      approval: {
+                        $ref: '#/$defs/ApprovalId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'approval'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retry',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'child',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'blocker',
+                      },
+                      blocker: {
+                        $ref: '#/$defs/BlockerId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'blocker'],
+                  },
+                ],
+              },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ApprovalId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ToolKey: {
+                type: 'object',
+                properties: {
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  call: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['attempt', 'call'],
+              },
+              BlockerId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRunBlocker: {
+                description:
+                  'A durable blocker is an observation, never permission to replay an operation.',
+                type: 'object',
+                properties: {
+                  id: {
+                    $ref: '#/$defs/BlockerId',
+                  },
+                  reason: {
+                    $ref: '#/$defs/BlockerKind',
+                  },
+                  offeredActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/OfferedRiskAction',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'reason', 'offeredActions'],
+              },
+              BlockerKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_unavailable',
+                      },
+                      publication: {
+                        $ref: '#/$defs/ExternalPublicationId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'publication', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_publication_item',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalPublicationKey',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ExternalPublicationBlocker',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'key', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'current_authority_unavailable',
+                      },
+                      stage: {
+                        $ref: '#/$defs/AuthorityStage',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'stage', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_effect_unknown',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'operation_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_effect_unknown',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'original_admission_unknown',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'code_cell_recovery_unavailable',
+                      },
+                      cell: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported_protocol',
+                      },
+                      protocol: {
+                        type: 'string',
+                      },
+                      version: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'protocol', 'version'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_cleanup_unconfirmed',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_cleanup_unconfirmed',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'diagnostic'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cleanup_unconfirmed',
+                      },
+                      reference: {
+                        $ref: '#/$defs/RecoveryRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'resources_unavailable',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external_task_unobservable',
+                      },
+                      descriptor: {
+                        $ref: '#/$defs/ContentRef',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'descriptor'],
+                  },
+                ],
+              },
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExternalPublicationKey: {
+                type: 'object',
+                properties: {
+                  publication: {
+                    $ref: '#/$defs/ExternalPublicationId',
+                  },
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['publication', 'index'],
+              },
+              ExternalPublicationBlocker: {
                 type: 'string',
                 enum: [
-                  'admitted',
-                  'running',
-                  'waiting',
-                  'paused',
-                  'completed',
+                  'unknown',
+                  'conflict',
+                  'unsupported',
                   'failed',
-                  'cancelled',
+                  'not_attempted',
+                  'cleanup_unconfirmed',
                 ],
+              },
+              AuthorityStage: {
+                type: 'string',
+                enum: [
+                  'current_session',
+                  'workspace_scope',
+                  'tool_bindings',
+                  'backend_scope',
+                  'input_codec',
+                ],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              ContentRef: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              OfferedRiskAction: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/RiskActionKind',
+                  },
+                  scope: {
+                    $ref: '#/$defs/RiskActionScope',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'scope'],
+              },
+              RiskActionKind: {
+                type: 'string',
+                enum: ['record_external_observation', 'authorize_replan', 'cancel_blocked_run'],
+              },
+              RiskActionScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      tool: {
+                        $ref: '#/$defs/ToolKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'tool'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model_replan',
+                      },
+                      attempt: {
+                        $ref: '#/$defs/ModelAttemptId',
+                      },
+                      base_step: {
+                        $ref: '#/$defs/StepId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'attempt', 'base_step'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run_cancellation',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
               },
               AgentAnswerPage: {
                 type: 'object',
@@ -30232,9 +39717,8 @@ export const contracts = {
               AgentAnswerCursor: {
                 type: 'object',
                 properties: {
-                  invocationId: {
-                    type: 'string',
-                    minLength: 1,
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                   offset: {
                     type: 'integer',
@@ -30244,9 +39728,135 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocationId', 'offset'],
+                required: ['runId', 'offset'],
               },
             },
+          },
+          resources: {},
+        },
+        workReadiness: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentWorkRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              target: {
+                $ref: '#/$defs/AgentWorkTarget',
+              },
+              cursor: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentAnswerCursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'target'],
+            $defs: {
+              AgentWorkTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'run',
+                      },
+                      runId: {
+                        $ref: '#/$defs/RunId',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'runId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                ],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentAnswerCursor: {
+                type: 'object',
+                properties: {
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['runId', 'offset'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentWorkReadiness',
+            description:
+              "Metadata readiness only. Retirement also requires the actual Root work fence\nheld continuously through the caller's original pending-retirement commit.",
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'pending',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
           },
           resources: {},
         },
@@ -30255,7 +39865,7 @@ export const contracts = {
   },
   executor: {
     name: 'maka.agent.Executor',
-    version: 1,
+    version: 2,
     transport: 'remote',
     interface: {
       kind: 'service',
@@ -30263,17 +39873,17 @@ export const contracts = {
         execute: {
           mode: 'mutation',
           input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'ExecutorExecute',
-            description:
-              'Observations and text; immutable attachments travel in the actual request resources.\nNo path, invocation or conversation key is authority.',
             type: 'object',
+            additionalProperties: false,
             properties: {
+              taskId: {
+                $ref: '#/$defs/ExternalTaskId',
+              },
               language: {
                 $ref: '#/$defs/Language',
               },
-              invocation: {
-                $ref: '#/$defs/Invocation',
+              execution: {
+                $ref: '#/$defs/ExecutionIdentity',
               },
               conversationKey: {
                 type: 'string',
@@ -30293,35 +39903,43 @@ export const contracts = {
                 $ref: '#/$defs/ExecutorSettings',
               },
             },
-            additionalProperties: false,
-            required: ['invocation', 'conversationKey', 'message', 'cwd', 'settings'],
+            required: ['taskId', 'execution', 'conversationKey', 'message', 'cwd', 'settings'],
+            description:
+              'Observations and text; immutable attachments travel in the actual request resources.\nNo path, invocation or conversation key is authority.',
+            title: 'ExecutorExecute',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
               Language: {
                 type: 'string',
                 enum: ['en', 'zh-CN', 'zh-TW'],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
               },
               ExecutorSettings: {
-                description:
-                  'Executor-owned model selection, independent of Host model connections.',
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                   model: {
                     type: ['string', 'null'],
@@ -30340,36 +39958,36 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                 },
-                additionalProperties: false,
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
               },
               ExecutorEffort: {
-                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
                 type: 'string',
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
               },
             },
           },
           output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'ExecutorOutcome',
             oneOf: [
               {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                   status: {
                     type: 'string',
                     const: 'completed',
                   },
                   message_id: {
+                    type: ['string', 'null'],
                     description:
                       'Final completed assistant message, or no answer for a tool-only turn.',
-                    type: ['string', 'null'],
                   },
                 },
-                additionalProperties: false,
                 required: ['status'],
               },
               {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                   status: {
                     type: 'string',
@@ -30379,11 +39997,11 @@ export const contracts = {
                     type: ['string', 'null'],
                   },
                 },
-                additionalProperties: false,
                 required: ['status'],
               },
               {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                   status: {
                     type: 'string',
@@ -30400,136 +40018,155 @@ export const contracts = {
                     default: false,
                   },
                 },
-                additionalProperties: false,
                 required: ['status', 'message'],
               },
             ],
+            title: 'ExecutorOutcome',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           progress: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'message_start',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                },
-                required: ['type', 'messageId'],
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              index: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
               },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'output_delta',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                  text: {
-                    type: 'string',
-                  },
-                },
-                required: ['type', 'messageId', 'text'],
+              output: {
+                $ref: '#/$defs/ExecutorOutput',
               },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'thinking_delta',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                  text: {
-                    type: 'string',
-                  },
-                },
-                required: ['type', 'messageId', 'text'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'message_end',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                },
-                required: ['type', 'messageId'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'tool_start',
-                  },
-                  toolCallId: {
-                    type: 'string',
-                  },
-                  name: {
-                    type: 'string',
-                  },
-                  input: true,
-                },
-                required: ['type', 'toolCallId', 'name', 'input'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'tool_progress',
-                  },
-                  toolCallId: {
-                    type: 'string',
-                  },
-                  text: {
-                    type: 'string',
-                  },
-                },
-                required: ['type', 'toolCallId', 'text'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  type: {
-                    type: 'string',
-                    const: 'tool_result',
-                  },
-                  toolCallId: {
-                    type: 'string',
-                  },
-                  text: {
-                    type: 'string',
-                  },
-                  isError: {
-                    type: 'boolean',
-                    default: false,
-                  },
-                },
-                required: ['type', 'toolCallId', 'text'],
-              },
-            ],
-            description:
-              'External tool activity is observation, never a request to dispatch a Host tool.',
-            title: 'ExecutorOutput',
+            },
+            required: ['index', 'output'],
+            description: 'A provider-owned append-only output record. `index` is zero based.',
+            title: 'ExecutorIndexedOutput',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ExecutorOutput: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'message_start',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'output_delta',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'thinking_delta',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'message_end',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_start',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                      input: true,
+                    },
+                    required: ['type', 'toolCallId', 'name', 'input'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_progress',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_result',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                      isError: {
+                        type: 'boolean',
+                        default: false,
+                      },
+                    },
+                    required: ['type', 'toolCallId', 'text'],
+                  },
+                ],
+                description:
+                  'External tool activity is observation, never a request to dispatch a Host tool.',
+              },
+            },
           },
           resources: {
             attachments: {
@@ -30540,6 +40177,377 @@ export const contracts = {
               optional: true,
             },
           },
+        },
+        observe: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              taskId: {
+                $ref: '#/$defs/ExternalTaskId',
+              },
+              afterIndex: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            required: ['taskId'],
+            description:
+              'Read only the exact provider task. A cursor requests output from that index;\nno cursor observes headers only, with no output reads. Never starts a job.',
+            title: 'ExecutorObserve',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'missing',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+                description: 'Absence is not proof that the original job never ran.',
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'found',
+                  },
+                  taskId: {
+                    $ref: '#/$defs/ExternalTaskId',
+                  },
+                  observed: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    description:
+                      'Exclusive item count represented by this page; zero for header-only observation.',
+                  },
+                  hasMore: {
+                    type: 'boolean',
+                  },
+                  outputs: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ExecutorIndexedOutput',
+                    },
+                    maxItems: 256,
+                  },
+                  state: {
+                    $ref: '#/$defs/ExecutorTaskState',
+                  },
+                  cleanup: {
+                    $ref: '#/$defs/OperationCleanup',
+                  },
+                },
+                required: ['kind', 'taskId', 'observed', 'hasMore', 'outputs', 'state', 'cleanup'],
+              },
+            ],
+            title: 'ExecutorTaskObservation',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ExecutorIndexedOutput: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  index: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output: {
+                    $ref: '#/$defs/ExecutorOutput',
+                  },
+                },
+                required: ['index', 'output'],
+                description: 'A provider-owned append-only output record. `index` is zero based.',
+              },
+              ExecutorOutput: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'message_start',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'output_delta',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'thinking_delta',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'message_end',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_start',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                      input: true,
+                    },
+                    required: ['type', 'toolCallId', 'name', 'input'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_progress',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'tool_result',
+                      },
+                      toolCallId: {
+                        type: 'string',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                      isError: {
+                        type: 'boolean',
+                        default: false,
+                      },
+                    },
+                    required: ['type', 'toolCallId', 'text'],
+                  },
+                ],
+                description:
+                  'External tool activity is observation, never a request to dispatch a Host tool.',
+              },
+              ExecutorTaskState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'running',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'diagnostic'],
+                    description:
+                      'The original task may still exist. This never permits a new execute.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closed',
+                      },
+                      outcome: {
+                        $ref: '#/$defs/ExecutorOutcome',
+                      },
+                    },
+                    required: ['kind', 'outcome'],
+                  },
+                ],
+              },
+              ExecutorOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      status: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                      message_id: {
+                        type: ['string', 'null'],
+                        description:
+                          'Final completed assistant message, or no answer for a tool-only turn.',
+                      },
+                    },
+                    required: ['status'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      status: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                      reason: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    required: ['status'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      status: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      message: {
+                        type: 'string',
+                      },
+                      code: {
+                        type: ['string', 'null'],
+                      },
+                      recoverable: {
+                        type: 'boolean',
+                        default: false,
+                      },
+                    },
+                    required: ['status', 'message'],
+                  },
+                ],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
         },
       },
     },
@@ -30674,8 +40682,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -31013,8 +41021,8 @@ export const contracts = {
                 type: 'string',
                 enum: [
                   'steered',
-                  'turn_stopped',
-                  'turn_terminal',
+                  'run_stopped',
+                  'run_terminal',
                   'producer_cancelled',
                   'timed_out',
                   'host_restarted',
@@ -34004,6 +44012,119 @@ export const contracts = {
           },
           resources: {},
         },
+        publishChange: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              publication: {
+                $ref: '#/$defs/ExternalPublicationId',
+              },
+              index: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['publication', 'index'],
+            title: 'PublishChange',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ExternalPublicationId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'applied',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  reason: {
+                    $ref: '#/$defs/PublicationConflict',
+                  },
+                },
+                required: ['kind', 'reason'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unsupported',
+                  },
+                  reason: {
+                    $ref: '#/$defs/PublicationUnsupported',
+                  },
+                },
+                required: ['kind', 'reason'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_attempted',
+                  },
+                  reason: {
+                    $ref: '#/$defs/PublicationNotAttempted',
+                  },
+                },
+                required: ['kind', 'reason'],
+              },
+            ],
+            title: 'PublicationResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              PublicationConflict: {
+                type: 'string',
+                enum: ['workspace_identity', 'entry_type', 'mode', 'content', 'entry_visibility'],
+              },
+              PublicationUnsupported: {
+                type: 'string',
+                enum: [
+                  'structural_change',
+                  'uncaptured_workspace',
+                  'mode_platform',
+                  'aliased_target',
+                ],
+              },
+              PublicationNotAttempted: {
+                type: 'string',
+                enum: ['cancelled'],
+              },
+            },
+          },
+          resources: {
+            content: {
+              type: {
+                name: 'maka.bytes',
+                version: 1,
+              },
+              optional: true,
+            },
+          },
+        },
         readImage: {
           mode: 'subscription',
           input: {
@@ -34067,20 +44188,36 @@ export const contracts = {
               },
               {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                   kind: {
                     type: 'string',
                     const: 'complete',
                   },
+                  detail: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageDetail',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 required: ['kind'],
-                additionalProperties: false,
               },
             ],
             description:
               'Bounded image bytes from a selected subscription. Complete is a producer\nreturn value, never an emitted item or an executor-cleanup acknowledgement.',
             title: 'AgentToolImageFrame',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ImageDetail: {
+                type: 'string',
+                enum: ['auto', 'low', 'high', 'original'],
+              },
+            },
           },
           resources: {},
         },
@@ -34681,11 +44818,45 @@ export const contracts = {
   },
   protocolProcesses: {
     name: 'maka.workspace.ProtocolProcesses',
-    version: 1,
+    version: 2,
     transport: 'remote',
     interface: {
       kind: 'service',
       methods: {
+        close: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            required: ['id'],
+            title: 'ProtocolProcessClose',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              bytes: {
+                type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              closed: {
+                type: 'boolean',
+              },
+            },
+            required: ['bytes', 'closed'],
+            title: 'ProtocolProcessWritten',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
         input: {
           mode: 'mutation',
           input: {
@@ -34927,8 +45098,13 @@ export const contracts = {
                     type: 'string',
                     format: 'uuid',
                   },
+                  resource_ref: {
+                    type: 'string',
+                    description:
+                      'Original protected private-task resource address, not launch authority.',
+                  },
                 },
-                required: ['kind', 'id'],
+                required: ['kind', 'id', 'resource_ref'],
               },
               {
                 type: 'object',
@@ -34961,6 +45137,285 @@ export const contracts = {
               ProtocolProcessStream: {
                 type: 'string',
                 enum: ['stdout', 'stderr'],
+              },
+            },
+          },
+          resources: {},
+        },
+        observe: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              original: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+            },
+            required: ['original'],
+            title: 'ProtocolProcessObserve',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+              },
+              RecoveryContract: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                required: ['name', 'version', 'transport', 'digest'],
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+            },
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              original: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              cleanup: {
+                $ref: '#/$defs/OperationCleanup',
+              },
+            },
+            required: ['original', 'id', 'cleanup'],
+            title: 'ProtocolProcessObservation',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+              },
+              RecoveryContract: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                required: ['name', 'version', 'transport', 'digest'],
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
               },
             },
           },
@@ -35162,8 +45617,13 @@ export const contracts = {
                     type: 'string',
                     format: 'uuid',
                   },
+                  resource_ref: {
+                    type: 'string',
+                    description:
+                      'Original protected private-task resource address, not launch authority.',
+                  },
                 },
-                required: ['kind', 'id'],
+                required: ['kind', 'id', 'resource_ref'],
               },
               {
                 type: 'object',
@@ -35459,17 +45919,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -35516,6 +45974,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -36092,17 +46554,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -36149,6 +46609,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -36425,17 +46889,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -36482,6 +46944,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -37492,17 +47958,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -37549,6 +48013,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -37838,17 +48306,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -37895,6 +48361,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -38171,17 +48641,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -38228,6 +48696,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -38534,17 +49006,15 @@ export const contracts = {
                   ownership: {
                     $ref: '#/$defs/Ownership',
                   },
-                  sourceTurnId: {
-                    type: 'string',
-                  },
-                  sourceToolCallId: {
-                    type: 'string',
+                  correlation: true,
+                  visibility: {
+                    $ref: '#/$defs/ShellVisibility',
                   },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'sourceTurnId', 'sourceToolCallId', 'result'],
+                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
               },
               Ownership: {
                 oneOf: [
@@ -38591,6 +49061,10 @@ export const contracts = {
                     required: ['kind', 'sourceSessionId'],
                   },
                 ],
+              },
+              ShellVisibility: {
+                type: 'string',
+                enum: ['model', 'user'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -44693,6 +55167,11 @@ export const contracts = {
               UsageFence: {
                 type: 'object',
                 properties: {
+                  schemaVersion: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                   stateDomain: {
                     type: 'string',
                   },
@@ -44701,9 +55180,29 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  auxiliarySequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cellSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  queryDigest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'sequence'],
+                required: [
+                  'schemaVersion',
+                  'stateDomain',
+                  'sequence',
+                  'auxiliarySequence',
+                  'cellSequence',
+                  'queryDigest',
+                ],
               },
               UsageSelection: {
                 description:
@@ -44798,6 +55297,11 @@ export const contracts = {
               UsageFence: {
                 type: 'object',
                 properties: {
+                  schemaVersion: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                   stateDomain: {
                     type: 'string',
                   },
@@ -44806,13 +55310,31 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  auxiliarySequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cellSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  queryDigest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'sequence'],
+                required: [
+                  'schemaVersion',
+                  'stateDomain',
+                  'sequence',
+                  'auxiliarySequence',
+                  'cellSequence',
+                  'queryDigest',
+                ],
               },
               UsageActivity: {
-                description:
-                  'A physical model call or tool attempt, never copied conversation membership.',
                 oneOf: [
                   {
                     type: 'object',
@@ -44826,6 +55348,7 @@ export const contracts = {
                       },
                     },
                     required: ['kind', 'attempt'],
+                    additionalProperties: false,
                   },
                   {
                     type: 'object',
@@ -44835,10 +55358,11 @@ export const contracts = {
                         const: 'tool',
                       },
                       attempt: {
-                        $ref: '#/$defs/UsageToolAttempt',
+                        $ref: '#/$defs/ToolUsage',
                       },
                     },
                     required: ['kind', 'attempt'],
+                    additionalProperties: false,
                   },
                 ],
               },
@@ -44920,14 +55444,17 @@ export const contracts = {
                         type: 'string',
                         const: 'agent',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                      link: {
+                        $ref: '#/$defs/AgentStepLink',
                       },
                       purpose: {
                         $ref: '#/$defs/ModelPurpose',
                       },
                     },
-                    required: ['kind', 'invocation', 'purpose'],
+                    required: ['kind', 'execution', 'link', 'purpose'],
                   },
                   {
                     type: 'object',
@@ -44944,23 +55471,49 @@ export const contracts = {
                   },
                 ],
               },
-              Invocation: {
+              ExecutionIdentity: {
                 type: 'object',
                 properties: {
-                  session_id: {
+                  sessionId: {
                     type: 'string',
                   },
-                  turn_id: {
+                  turnId: {
                     type: 'string',
                   },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
+                  runId: {
+                    $ref: '#/$defs/RunId',
                   },
                 },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentStepLink: {
+                type: 'object',
+                properties: {
+                  run: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  step: {
+                    $ref: '#/$defs/StepId',
+                  },
+                  attempt: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['run', 'step', 'attempt'],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
               },
               ModelPurpose: {
                 type: 'string',
@@ -44995,18 +55548,18 @@ export const contracts = {
                   },
                   {
                     description:
-                      'One Host-owned title request, authorized by the first committed user opening.\nIt may finish after that invocation ends and cannot execute tools.',
+                      'One Host-owned title request, authorized by the first committed user opening.\nIt may finish after that execution ends and cannot execute tools.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'session_title',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                     },
-                    required: ['kind', 'invocation'],
+                    required: ['kind', 'execution'],
                   },
                   {
                     type: 'object',
@@ -45015,14 +55568,14 @@ export const contracts = {
                         type: 'string',
                         const: 'agent',
                       },
-                      invocation: {
-                        $ref: '#/$defs/Invocation',
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
                       },
                       operation_id: {
                         type: 'string',
                       },
                     },
-                    required: ['kind', 'invocation', 'operation_id'],
+                    required: ['kind', 'execution', 'operation_id'],
                   },
                   {
                     type: 'object',
@@ -45186,17 +55739,14 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['modelKey', 'inputUsdPer1M', 'outputUsdPer1M'],
               },
-              UsageToolAttempt: {
+              ToolUsage: {
                 type: 'object',
                 properties: {
                   requestId: {
                     type: 'string',
                   },
-                  invocation: {
-                    $ref: '#/$defs/Invocation',
-                  },
-                  call: {
-                    $ref: '#/$defs/ToolCallIdentity',
+                  source: {
+                    $ref: '#/$defs/ToolUsageSource',
                   },
                   name: {
                     type: 'string',
@@ -45216,18 +55766,91 @@ export const contracts = {
                     format: 'double',
                   },
                   result: {
-                    $ref: '#/$defs/UsageToolResult',
+                    $ref: '#/$defs/ToolUsageResult',
+                  },
+                  cleanup: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/OperationCleanup',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                 },
                 additionalProperties: false,
                 required: [
                   'requestId',
-                  'invocation',
-                  'call',
+                  'source',
                   'name',
                   'binding',
                   'completedAt',
                   'result',
+                  'cleanup',
+                ],
+              },
+              ToolUsageSource: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                      call: {
+                        $ref: '#/$defs/ToolCallIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cell',
+                      },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                      owner: {
+                        $ref: '#/$defs/CellOwner',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cell', 'owner', 'operation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      owner: {
+                        $ref: '#/$defs/RunOwner',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'owner', 'operation'],
+                  },
                 ],
               },
               ToolCallIdentity: {
@@ -45253,12 +55876,12 @@ export const contracts = {
                         type: 'string',
                         const: 'provider',
                       },
-                      step_id: {
-                        type: 'string',
+                      link: {
+                        $ref: '#/$defs/AgentStepLink',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'step_id'],
+                    required: ['kind', 'link'],
                   },
                   {
                     type: 'object',
@@ -45267,6 +55890,12 @@ export const contracts = {
                         type: 'string',
                         const: 'code_mode',
                       },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                      owner: {
+                        $ref: '#/$defs/CellOwner',
+                      },
                       parent_operation_id: {
                         type: 'string',
                       },
@@ -45275,7 +55904,13 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
+                    required: [
+                      'kind',
+                      'cell',
+                      'owner',
+                      'parent_operation_id',
+                      'parent_tool_call_id',
+                    ],
                   },
                   {
                     type: 'object',
@@ -45284,6 +55919,12 @@ export const contracts = {
                         type: 'string',
                         const: 'code_cell',
                       },
+                      cell: {
+                        $ref: '#/$defs/CellId',
+                      },
+                      owner: {
+                        $ref: '#/$defs/CellOwner',
+                      },
                       parent_operation_id: {
                         type: 'string',
                       },
@@ -45292,7 +55933,13 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
+                    required: [
+                      'kind',
+                      'cell',
+                      'owner',
+                      'parent_operation_id',
+                      'parent_tool_call_id',
+                    ],
                   },
                   {
                     type: 'object',
@@ -45304,6 +55951,33 @@ export const contracts = {
                     },
                     required: ['kind'],
                     additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'external',
+                      },
+                      task: {
+                        $ref: '#/$defs/ExternalTaskId',
+                      },
+                      operation: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      package_id: {
+                        type: 'string',
+                      },
+                      entry_id: {
+                        type: 'string',
+                      },
+                      activation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'task', 'operation', 'package_id', 'entry_id', 'activation'],
                   },
                   {
                     type: 'object',
@@ -45346,6 +56020,49 @@ export const contracts = {
                   },
                 ],
               },
+              CellId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              CellOwner: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent',
+                      },
+                      link: {
+                        $ref: '#/$defs/AgentStepLink',
+                      },
+                      call: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'link', 'call'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'standalone',
+                      },
+                      session: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'session'],
+                  },
+                ],
+              },
+              ExternalTaskId: {
+                type: 'string',
+                format: 'uuid',
+              },
               HostSdkRelationship: {
                 oneOf: [
                   {
@@ -45364,10 +56081,23 @@ export const contracts = {
                   },
                 ],
               },
-              UsageToolResult: {
+              RunOwner: {
+                type: 'object',
+                properties: {
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['deployment', 'namespace'],
+              },
+              ToolUsageResult: {
                 oneOf: [
                   {
-                    description: 'No effect was admitted, so no execution duration is reported.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -45375,9 +56105,17 @@ export const contracts = {
                         const: 'rejected',
                       },
                       reason: {
-                        $ref: '#/$defs/RejectionKind',
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/RejectionKind',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                     },
+                    additionalProperties: false,
                     required: ['kind', 'reason'],
                   },
                   {
@@ -45395,6 +56133,7 @@ export const contracts = {
                         $ref: '#/$defs/UsageToolStatus',
                       },
                     },
+                    additionalProperties: false,
                     required: ['kind', 'startedAt', 'outcome'],
                   },
                 ],
@@ -45415,6 +56154,46 @@ export const contracts = {
               UsageToolStatus: {
                 type: 'string',
                 enum: ['success', 'error', 'unknown'],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
               },
               UsageActivityCursor: {
                 type: 'object',
@@ -45496,6 +56275,11 @@ export const contracts = {
               UsageFence: {
                 type: 'object',
                 properties: {
+                  schemaVersion: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                   stateDomain: {
                     type: 'string',
                   },
@@ -45504,9 +56288,29 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  auxiliarySequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cellSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  queryDigest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'sequence'],
+                required: [
+                  'schemaVersion',
+                  'stateDomain',
+                  'sequence',
+                  'auxiliarySequence',
+                  'cellSequence',
+                  'queryDigest',
+                ],
               },
               UsageGroup: {
                 description: 'Breakdown selected for a bounded summary page.',
@@ -45520,8 +56324,6 @@ export const contracts = {
                     $ref: '#/$defs/UsageGroup',
                   },
                   key: {
-                    description:
-                      'None identifies the unknown-provider group, not the start of pagination.',
                     type: ['string', 'null'],
                   },
                 },
@@ -45558,6 +56360,11 @@ export const contracts = {
               UsageFence: {
                 type: 'object',
                 properties: {
+                  schemaVersion: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                   stateDomain: {
                     type: 'string',
                   },
@@ -45566,9 +56373,29 @@ export const contracts = {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  auxiliarySequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cellSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  queryDigest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'sequence'],
+                required: [
+                  'schemaVersion',
+                  'stateDomain',
+                  'sequence',
+                  'auxiliarySequence',
+                  'cellSequence',
+                  'queryDigest',
+                ],
               },
               SettingsUsageTotals: {
                 type: 'object',
@@ -45836,8 +56663,6 @@ export const contracts = {
                     $ref: '#/$defs/UsageGroup',
                   },
                   key: {
-                    description:
-                      'None identifies the unknown-provider group, not the start of pagination.',
                     type: ['string', 'null'],
                   },
                 },
@@ -51175,7 +62000,7 @@ export const contracts = {
                 oneOf: [
                   {
                     description:
-                      'An authorized lookup found no row at the exact original reference.',
+                      'An authorized lookup found no row at the exact original reference.\nThis is not proof of non-execution: the original request may arrive later.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -51221,7 +62046,7 @@ export const contracts = {
               },
               OperationOutcome: {
                 description:
-                  'Unresolved means no durable result is known, including after process loss.',
+                  'Unresolved and Unknown may advance to authoritative original evidence.\nReturned and NotExecuted are immutable; handler errors are Returned too.',
                 oneOf: [
                   {
                     type: 'object',
@@ -51241,10 +62066,26 @@ export const contracts = {
                         type: 'string',
                         const: 'returned',
                       },
-                      value: true,
+                      result: {
+                        $ref: '#/$defs/OperationResult',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'value'],
+                    required: ['kind', 'result'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_executed',
+                      },
+                      proof: {
+                        $ref: '#/$defs/NotExecutedProof',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'proof'],
                   },
                   {
                     type: 'object',
@@ -51259,6 +62100,55 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationResult: {
+                description:
+                  'A definite handler return. Failure does not imply absence of side effects.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'success',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failure',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              NotExecutedProof: {
+                description:
+                  'An observation of a provider fence, not a capability to create that fence.\nOnly the original provider may establish this proof before handler start.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'provider_prevented_before_start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
                   },
                 ],
               },
@@ -53532,4 +64422,4 @@ export const contracts = {
       },
     },
   },
-} satisfies Record<string, Contract>;
+};

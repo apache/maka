@@ -22,7 +22,7 @@ use rusqlite::Connection;
 
 pub(crate) fn schema(include: impl Fn(&str, &str) -> bool) -> String {
     let db = Connection::open_in_memory().unwrap();
-    for migration in super::MIGRATIONS.iter() {
+    for migration in super::ROOT_MIGRATIONS.iter() {
         db.execute_batch(migration.sql.as_ref()).unwrap();
     }
     let mut query = db.prepare(

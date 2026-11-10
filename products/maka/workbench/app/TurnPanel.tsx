@@ -186,8 +186,8 @@ export function TurnSummary(props: {
         : '';
     return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
   };
-  const choose = (action: { turnId: string; open: boolean }) => {
-    if (props.turn().turnId === action.turnId && props.canFold()) props.toggle(action.open);
+  const choose = (action: { turnKey: string; open: boolean }) => {
+    if (props.turn().turnKey === action.turnKey && props.canFold()) props.toggle(action.open);
   };
   return (
     <View style={{ marginTop: 8, marginBottom: platform.idiom === 'terminal' ? 0 : 8 }}>
@@ -197,7 +197,7 @@ export function TurnSummary(props: {
         foldable={props.canFold()}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(choose, {
-          turnId: props.turn().turnId,
+          turnKey: props.turn().turnKey,
           open: !props.expanded(),
         })}
         trailing={

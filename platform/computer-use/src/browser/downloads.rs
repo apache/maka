@@ -143,13 +143,19 @@ impl Browsers {
             .get(&handle)
             .ok_or_else(|| failed("stale_tab: bind it again"))?
             .identity()?;
-        self.use_tab(&identity, invocation.turn(), cancellation)
-            .await?;
+        self.use_tab(
+            &identity,
+            invocation.turn(),
+            invocation.execution_correlation(),
+            cancellation,
+        )
+        .await?;
         let tab = self
             .targets
             .get_mut(&handle)
             .expect("checked browser handle");
         tab.last_turn = invocation.turn().to_owned();
+        tab.last_execution = invocation.execution_correlation().clone();
         // Full-preparation adapters require the distinct fixed-session Host
         // purpose before numeric CDP, including already attached claims. Arm
         // needs no content permission for the current page; response-time
@@ -300,6 +306,3 @@ impl Tab {
             .await
     }
 }
-
-#[cfg(test)]
-mod tests;

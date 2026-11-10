@@ -18,9 +18,9 @@
  */
 
 use super::*;
-use maka_agent_facts::shell_result::{ShellOutput, ShellStatus};
-use maka_capabilities::call::Attachments;
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
+use maka_plugin_core::shell_result::{ShellOutput, ShellStatus};
 use maka_web_api::probe::{Endpoint, Input};
 use serde::Serialize;
 
@@ -45,8 +45,9 @@ impl Processes {
         &self,
         context: &Context,
         input: Value,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
     ) -> Result<Value, ToolError> {
+        let tool = access.call();
         let input: Health = serde_json::from_value(input).map_err(failed)?;
         let target = input
             .url
@@ -54,15 +55,7 @@ impl Processes {
             .transpose()
             .map_err(failed)?;
         cancelled(&context.scope().cancellation)?;
-        maka_agent_authority::permissions::live(
-            &maka_agent_authority::permissions::execution(
-                &self.store,
-                &tool.invocation,
-                tool.execution.as_deref(),
-            )?,
-            &tool.invocation,
-        )
-        .await?;
+        access.current().await?;
         let id = maka_host_runtime::shell::request::parse_ref(&input.reference)
             .ok_or_else(|| failed("Invalid process resource ref"))?;
         let record = self.read_model(tool, id).await?;
@@ -85,13 +78,34 @@ impl Processes {
         let endpoint = match target {
             None => Endpoint::NotChecked,
             Some(target) => {
+                let probe_input = serde_json::json!({"url": target});
+                let resources = maka_host_runtime::application::CallResources::default();
+                let recovery = serde_json::json!({
+                    "kind": "process_health_probe",
+                    "version": 1,
+                    "correlation": {
+                        "execution": tool.execution,
+                        "operationId": tool.operation_id,
+                        "toolUseId": tool.tool_use_id(),
+                        "caller": context.scope().identity,
+                        "processId": id,
+                    },
+                    "target": {"kind": "import", "name": "web", "member": 0},
+                    "method": "probe",
+                    "input": probe_input,
+                    "resources": {
+                        "descriptors": resources.descriptors().map_err(failed)?,
+                        "reacquisition": {"kind": "none"},
+                    },
+                });
                 let request = context.mutate(
                     "web",
                     0,
                     "probe".into(),
-                    serde_json::json!({"url":target}),
+                    probe_input,
                     uuid::Uuid::new_v4(),
-                    Attachments::default(),
+                    recovery,
+                    resources,
                 );
                 match request {
                     Err(_) => Endpoint::Unknown {
@@ -107,7 +121,10 @@ impl Processes {
                         },
                         Ok(reply) => match reply.receipt {
                             Receipt::Recorded {
-                                outcome: OperationOutcome::Returned { value },
+                                outcome:
+                                    OperationOutcome::Returned {
+                                        result: OperationResult::Success { value },
+                                    },
                                 cleanup: OperationCleanup::Confirmed,
                             } => {
                                 match serde_json::from_value::<maka_web_api::contract::ResultValue>(
@@ -135,6 +152,17 @@ impl Processes {
                                     "Health probe cleanup unconfirmed".into(),
                                 ));
                             }
+                            Receipt::Recorded {
+                                outcome:
+                                    OperationOutcome::Returned {
+                                        result: OperationResult::Failure { diagnostic },
+                                    },
+                                ..
+                            } => return Err(failed(diagnostic)),
+                            Receipt::Recorded {
+                                outcome: OperationOutcome::NotExecuted { .. },
+                                ..
+                            } => return Err(failed("Health probe was prevented before execution")),
                             _ => return Err(ToolError::OutcomeUnknown(
                                 "Health probe outcome unknown; read the original operation receipt"
                                     .into(),

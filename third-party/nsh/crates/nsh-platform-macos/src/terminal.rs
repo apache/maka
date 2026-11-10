@@ -856,6 +856,8 @@ pub(crate) fn dispatch_terminal_key(
                     {
                         let selected = text.substringWithRange(range).to_string();
                         crate::system::write_clipboard(surface, &selected);
+                    } else {
+                        crate::text::copy(surface);
                     }
                 }
                 handled = true;

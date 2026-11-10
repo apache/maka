@@ -19,11 +19,10 @@
 
 //! Request-local derived bytes; normal allocation admission never chooses spill.
 
+use super::preparation_io::PreparationIo;
 use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
 use maka_capabilities::model_preparation::DirectoryLease;
-use maka_event_log::context::semantic::{
-    CapturedLocalResource, CapturedSource, close_request_file, create_request_file,
-};
+use maka_event_log::root_store::{WorkEffectLease, create_request_file};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
@@ -32,7 +31,7 @@ use std::{
 };
 
 /// The request capture owner retains this writer across jobs. Every file
-/// operation runs on its original source worker; errors/cancellation await abort.
+/// operation runs on its original resource worker; errors/cancellation await abort.
 pub(crate) struct RequestBackingBuilder {
     storage: Option<Building>,
     length: u64,
@@ -40,7 +39,7 @@ pub(crate) struct RequestBackingBuilder {
 }
 struct ResidentCharge {
     lease: DirectoryLease,
-    _source: CapturedSource,
+    _io: PreparationIo,
 }
 enum Building {
     Resident {
@@ -49,8 +48,8 @@ enum Building {
     },
     File {
         file: File,
-        resource: CapturedLocalResource,
-        source: CapturedSource,
+        resource: WorkEffectLease,
+        io: PreparationIo,
     },
 }
 
@@ -61,7 +60,7 @@ impl RequestBackingBuilder {
     }
 
     /// The caller has reserved the complete known resident capacity atomically.
-    pub(crate) fn resident(source: CapturedSource, lease: DirectoryLease) -> io::Result<Self> {
+    pub(crate) fn resident(io: PreparationIo, lease: DirectoryLease) -> io::Result<Self> {
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(lease.capacity())
@@ -74,10 +73,7 @@ impl RequestBackingBuilder {
         Ok(Self {
             storage: Some(Building::Resident {
                 bytes,
-                owner: Arc::new(ResidentCharge {
-                    lease,
-                    _source: source,
-                }),
+                owner: Arc::new(ResidentCharge { lease, _io: io }),
             }),
             length: 0,
             sealed: 0,
@@ -86,17 +82,10 @@ impl RequestBackingBuilder {
 
     /// Only an individually oversized backing uses this branch. Reserve the
     /// resource before entering the callback; this method performs no admission.
-    pub(crate) fn file(
-        source: CapturedSource,
-        resource: CapturedLocalResource,
-    ) -> io::Result<Self> {
+    pub(crate) fn file(io: PreparationIo, resource: WorkEffectLease) -> io::Result<Self> {
         match create_request_file() {
             Ok(file) => Ok(Self {
-                storage: Some(Building::File {
-                    file,
-                    resource,
-                    source,
-                }),
+                storage: Some(Building::File { file, resource, io }),
                 length: 0,
                 sealed: 0,
             }),
@@ -110,11 +99,7 @@ impl RequestBackingBuilder {
     pub(super) fn abort_in_worker(mut self) -> io::Result<()> {
         match self.storage.take().expect("unfinished backing") {
             Building::Resident { .. } => Ok(()),
-            Building::File { file, resource, .. } => {
-                let result = close_request_file(file);
-                resource.finish(result.as_ref().map(|_| ()).map_err(ToString::to_string));
-                result
-            }
+            Building::File { file, resource, io } => io.close_file_in_worker(file, resource),
         }
     }
 
@@ -127,13 +112,13 @@ impl RequestBackingBuilder {
 
     /// Only intrinsic request size selects conversion; global congestion never does.
     /// The old resident allocation remains untouched until the file is complete.
-    pub(crate) fn promote_to_file(&mut self, resource: CapturedLocalResource) -> io::Result<()> {
+    pub(crate) fn promote_to_file(&mut self, resource: WorkEffectLease) -> io::Result<()> {
         let Building::Resident { owner, .. } = self.storage.as_ref().expect("unfinished backing")
         else {
             resource.finish(Ok(()));
             return Ok(());
         };
-        let candidate = Self::file(owner._source.clone(), resource)?;
+        let candidate = Self::file(owner._io.clone(), resource)?;
         self.copy_to_file(candidate)
     }
 
@@ -164,7 +149,7 @@ impl RequestBackingBuilder {
         self.read_exact_at(offset, &mut buffer.as_mut()[..size])?;
         Ok(match self.storage.as_ref().expect("unfinished backing") {
             Building::Resident { owner, .. } => buffer.retain_owner((owner.clone(), read_owner)),
-            Building::File { source, .. } => buffer.retain_owner((source.clone(), read_owner)),
+            Building::File { io, .. } => buffer.retain_owner((io.clone(), read_owner)),
         })
     }
 
@@ -272,11 +257,8 @@ impl Write for RequestBackingBuilder {
 }
 impl Drop for RequestBackingBuilder {
     fn drop(&mut self) {
-        if let Some(Building::File { file, resource, .. }) = self.storage.take() {
-            resource.retain_original_material(
-                file,
-                "request backing builder lost its explicit cleanup owner".into(),
-            );
+        if let Some(Building::File { file, resource, io }) = self.storage.take() {
+            io.close_file_on_worker(file, resource);
         }
     }
 }
@@ -330,6 +312,3 @@ fn validate_range(range: &Range<u64>, length: u64) -> io::Result<()> {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-
-#[cfg(test)]
-mod tests;

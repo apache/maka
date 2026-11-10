@@ -181,7 +181,6 @@ export type RuntimeProtocol =
   | AgentGoalView
   | AgentGoalChange
   | AgentGoalResult
-  | AgentGoalReceiptRead
   | AgentChecklistRead
   | AgentChecklist
   | AgentRecapRead
@@ -220,10 +219,9 @@ export type RuntimeProtocol =
   | AgentStop
   | AgentExecutionRead
   | AgentExecutionResult
-  | AgentResumableRead
-  | AgentResumable
-  | AgentResume
-  | AgentResumeResult
+  | AgentContinueRun
+  | AgentContinuationResult
+  | AgentAdjudicateRisk
   | AgentUploadAttachment
   | AgentAttachment
   | AgentAttachmentUploadResult
@@ -326,7 +324,9 @@ export type RuntimeProtocol =
   | HostObservation
   | OperationObservation
   | OperationReply
-  | ResourceMetadata;
+  | ResourceMetadata
+  | StateRecord
+  | StatePage;
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -351,7 +351,8 @@ export type Receipt =
       diagnostic: string;
     };
 /**
- * Unresolved means no durable result is known, including after process loss.
+ * Unresolved and Unknown may advance to authoritative original evidence.
+ * Returned and NotExecuted are immutable; handler errors are Returned too.
  */
 export type OperationOutcome =
   | {
@@ -359,12 +360,35 @@ export type OperationOutcome =
     }
   | {
       kind: 'returned';
-      value: unknown;
+      result: OperationResult;
+    }
+  | {
+      kind: 'not_executed';
+      proof: NotExecutedProof;
     }
   | {
       kind: 'unknown';
       diagnostic: string;
     };
+/**
+ * A definite handler return. Failure does not imply absence of side effects.
+ */
+export type OperationResult =
+  | {
+      kind: 'success';
+      value: unknown;
+    }
+  | {
+      kind: 'failure';
+      diagnostic: string;
+    };
+/**
+ * An observation of a provider fence, not a capability to create that fence.
+ * Only the original provider may establish this proof before handler start.
+ */
+export type NotExecutedProof = {
+  kind: 'provider_prevented_before_start';
+};
 export type OperationCleanup =
   | {
       kind: 'unconfirmed';
@@ -965,7 +989,9 @@ export type AgentExternalModels =
       kind: 'error';
       detail: string;
     };
+export type ExternalTaskId = string;
 export type Language = 'en' | 'zh-CN' | 'zh-TW';
+export type RunId = string;
 export type ExecutorSetupAction =
   | {
       kind: 'check';
@@ -1074,6 +1100,10 @@ export type ProtocolProcessProgress =
   | {
       kind: 'started';
       id: string;
+      /**
+       * Original protected private-task resource address, not launch authority.
+       */
+      resource_ref: string;
     }
   | {
       kind: 'output';
@@ -1098,8 +1128,8 @@ export type ProtocolProcessCompletion =
     };
 export type AgentWorkTarget =
   | {
-      kind: 'invocation';
-      invocationId: string;
+      kind: 'run';
+      runId: RunId;
     }
   | {
       kind: 'message';
@@ -1129,13 +1159,168 @@ export type AgentWork =
       pendingInteractions: number;
     };
 export type AgentExecutionState =
-  | 'admitted'
-  | 'running'
-  | 'waiting'
-  | 'paused'
-  | 'completed'
+  | {
+      kind: 'admitted';
+    }
+  | {
+      kind: 'running';
+    }
+  | {
+      kind: 'waiting';
+      waits: WaitReason[];
+    }
+  | {
+      kind: 'blocked';
+      blockers: AgentRunBlocker[];
+    }
+  | {
+      kind: 'completed';
+    }
+  | {
+      kind: 'failed';
+    }
+  | {
+      kind: 'cancelled';
+    };
+export type WaitReason =
+  | {
+      kind: 'cell';
+      cell: CellId;
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+    }
+  | {
+      kind: 'provider_backoff';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'model';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'approval';
+      approval: ApprovalId;
+    }
+  | {
+      kind: 'retry';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'operation';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'child';
+      run: RunId;
+    }
+  | {
+      kind: 'blocker';
+      blocker: BlockerId;
+    };
+export type CellId = string;
+export type ModelAttemptId = string;
+export type ApprovalId = string;
+export type BlockerId = string;
+export type BlockerKind =
+  | {
+      kind: 'external_publication_unavailable';
+      publication: ExternalPublicationId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_publication_item';
+      key: ExternalPublicationKey;
+      reason: ExternalPublicationBlocker;
+    }
+  | {
+      kind: 'current_authority_unavailable';
+      stage: AuthorityStage;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_effect_unknown';
+      task: ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'operation_unknown';
+      tool: ToolKey;
+      reference: RecoveryRef;
+    }
+  | {
+      kind: 'provider_effect_unknown';
+      attempt: ModelAttemptId;
+      call: string;
+    }
+  | {
+      kind: 'original_admission_unknown';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'code_cell_recovery_unavailable';
+      cell: string;
+    }
+  | {
+      kind: 'unsupported_protocol';
+      protocol: string;
+      version: number;
+    }
+  | {
+      kind: 'tool_cleanup_unconfirmed';
+      tool: ToolKey;
+      diagnostic: string;
+    }
+  | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'cleanup_unconfirmed';
+      reference: RecoveryRef;
+    }
+  | {
+      kind: 'resources_unavailable';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'external_task_unobservable';
+      descriptor: ContentRef;
+    };
+export type ExternalPublicationId = string;
+export type ExternalPublicationBlocker =
+  | 'unknown'
+  | 'conflict'
+  | 'unsupported'
   | 'failed'
-  | 'cancelled';
+  | 'not_attempted'
+  | 'cleanup_unconfirmed';
+export type AuthorityStage =
+  | 'current_session'
+  | 'workspace_scope'
+  | 'tool_bindings'
+  | 'backend_scope'
+  | 'input_codec';
+export type RiskActionKind =
+  | 'record_external_observation'
+  | 'authorize_replan'
+  | 'cancel_blocked_run';
+export type RiskActionScope =
+  | {
+      kind: 'tool';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'model_replan';
+      attempt: ModelAttemptId;
+      base_step: StepId;
+    }
+  | {
+      kind: 'run_cancellation';
+    };
+export type StepId = string;
 export type SettingsModelsRead =
   | {
       kind: 'start';
@@ -1149,24 +1334,20 @@ export type SettingsModelsRead =
     };
 export type UsageActivityKind = 'model' | 'tool';
 export type UsageActivityStatus = 'success' | 'error' | 'aborted' | 'unknown' | 'rejected';
-/**
- * A physical model call or tool attempt, never copied conversation membership.
- */
 export type UsageActivity =
   | {
       kind: 'model';
       attempt: UsageModelAttempt;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'tool';
-      attempt: UsageToolAttempt;
-      [k: string]: unknown | undefined;
+      attempt: ToolUsage;
     };
 export type UsageOrigin =
   | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
+      link: AgentStepLink;
       purpose: ModelPurpose;
       [k: string]: unknown | undefined;
     }
@@ -1187,12 +1368,12 @@ export type UsageAuxiliarySource =
     }
   | {
       kind: 'session_title';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       [k: string]: unknown | undefined;
     }
   | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       operation_id: string;
       [k: string]: unknown | undefined;
     }
@@ -1202,23 +1383,53 @@ export type UsageAuxiliarySource =
       [k: string]: unknown | undefined;
     };
 export type UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type ToolUsageSource =
+  | {
+      kind: 'agent';
+      execution: ExecutionIdentity;
+      call: ToolCallIdentity;
+    }
+  | {
+      kind: 'cell';
+      cell: CellId;
+      owner: CellOwner;
+      operation: string;
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      owner: RunOwner;
+      operation: string;
+    };
 export type ToolOrigin =
   | {
       kind: 'provider';
-      step_id: string;
+      link: AgentStepLink;
     }
   | {
       kind: 'code_mode';
+      cell: CellId;
+      owner: CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'code_cell';
+      cell: CellId;
+      owner: CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'standalone';
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      operation: string;
+      package_id: string;
+      entry_id: string;
+      activation: string;
     }
   | {
       kind: 'host_sdk';
@@ -1228,21 +1439,29 @@ export type ToolOrigin =
       parent_operation_id?: string | null;
       parent_relationship?: HostSdkRelationship | null;
     };
+export type CellOwner =
+  | {
+      kind: 'agent';
+      link: AgentStepLink;
+      call: string;
+    }
+  | {
+      kind: 'standalone';
+      session: string;
+    };
 export type HostSdkRelationship = {
   kind: 'evaluation_observer';
   epoch: string;
 };
-export type UsageToolResult =
+export type ToolUsageResult =
   | {
       kind: 'rejected';
-      reason: RejectionKind;
-      [k: string]: unknown | undefined;
+      reason?: RejectionKind | null;
     }
   | {
       kind: 'settled';
       startedAt: number;
       outcome: UsageToolStatus;
-      [k: string]: unknown | undefined;
     };
 /**
  * Refusal category without input-derived explanation text.
@@ -2228,10 +2447,6 @@ export type AgentScheduleRead =
   | {
       kind: 'get';
       taskId: string;
-    }
-  | {
-      kind: 'receipt';
-      reference: RecoveryRef;
     };
 export type AgentSchedules =
   | {
@@ -2247,10 +2462,6 @@ export type AgentSchedules =
   | {
       kind: 'changed';
       revision: number;
-    }
-  | {
-      kind: 'receipt';
-      result?: AgentScheduleResult | null;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
 export type Intent = {
@@ -2313,20 +2524,6 @@ export type Creator =
     };
 export type Outcome = 'ok' | 'failed' | 'blocked';
 export type Misfire = 'skip' | 'latest';
-export type AgentScheduleResult =
-  | {
-      kind: 'committed';
-      taskId: string;
-      revision: number;
-    }
-  | {
-      kind: 'conflict';
-      actual?: number | null;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
-    };
 export type AgentScheduleChange =
   | {
       kind: 'create';
@@ -2380,6 +2577,20 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
     };
+export type AgentScheduleResult =
+  | {
+      kind: 'committed';
+      taskId: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual?: number | null;
+    }
+  | {
+      kind: 'rejected';
+      reason: string;
+    };
 /**
  * A complete logical Turn boundary within the source session.
  */
@@ -2397,7 +2608,42 @@ export type AgentForkPosition =
   | {
       kind: 'before_turn';
       turnId: string;
+    }
+  | {
+      kind: 'through_source_turn';
+      position: HistoryRowAddress;
+    }
+  | {
+      kind: 'before_source_turn';
+      position: HistoryRowAddress;
     };
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type FactId = string;
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentImportsRead =
   | {
@@ -3114,33 +3360,50 @@ export type AgentExecutionResult =
       kind: 'found';
       execution: AgentExecution;
     };
-export type AgentResumable =
-  | {
-      kind: 'ready';
-      source: AgentExecution;
-    }
-  | {
-      kind: 'unavailable';
-      reason: AgentResumeParkReason;
-    };
-export type AgentResumeParkReason =
-  | 'closed'
-  | 'archived'
-  | 'busy'
-  | 'source_missing'
-  | 'source_changed'
-  | 'source_not_resumable'
-  | 'already_continued'
-  | 'workspace_changed'
-  | 'safety_check_failed';
-export type AgentResumeResult =
+export type AgentContinuationResult =
   | {
       kind: 'started';
       execution: AgentExecution;
     }
   | {
-      kind: 'parked';
-      reason: AgentResumeParkReason;
+      kind: 'rejected';
+      reason: AgentContinuationRejection;
+    };
+export type AgentContinuationRejection =
+  | 'closed'
+  | 'archived'
+  | 'busy'
+  | 'source_missing'
+  | 'source_changed'
+  | 'source_not_terminal'
+  | 'already_continued'
+  | 'workspace_changed'
+  | 'safety_check_failed';
+export type AgentRiskDecisionInput =
+  | {
+      kind: 'record_external_observation';
+      evidence: AgentRiskEvidenceInput;
+    }
+  | {
+      kind: 'authorize_replan';
+      evidence: AgentRiskEvidenceInput;
+    }
+  | {
+      kind: 'cancel_blocked_run';
+      diagnostic: string;
+    };
+/**
+ * User-supplied evidence bytes. Native stores and pins the immutable content in
+ * the same control transaction; callers cannot select a canonical ContentRef.
+ */
+export type AgentRiskEvidenceInput =
+  | {
+      kind: 'text';
+      text: string;
+    }
+  | {
+      kind: 'json';
+      value: unknown;
     };
 export type AgentAttachmentUploadResult =
   | {
@@ -3181,7 +3444,7 @@ export type InteractionAnswer =
     }
   | {
       kind: 'permissions';
-      decision: Decision2;
+      decision: PermissionDecision;
     }
   | {
       kind: 'question';
@@ -3222,16 +3485,20 @@ export type InteractionAnswer =
       kind: 'system_permission_cancel';
     };
 export type Decision = 'allow' | 'deny';
-export type Decision2 =
+export type PermissionDecision =
   | {
       decision: 'deny';
     }
   | {
       decision: 'allow';
       permissions: Permissions;
-      scope: Scope2;
+      scope: PermissionScope;
     };
-export type Scope2 = 'once' | 'turn' | 'session';
+/**
+ * The Host supplies the real operation description; it is display information,
+ * not authority inferred from a command string or a plugin-supplied Session ID.
+ */
+export type PermissionScope = 'once' | 'run' | 'session';
 export type FormValue = string | number | boolean | string[];
 export type ComputerAppDecision = 'once' | 'session' | 'always' | 'deny';
 export type AgentInteractionResult =
@@ -3263,6 +3530,7 @@ export type InteractionRequest =
     }
   | {
       kind: 'permissions';
+      target: AuthorizationObligation;
       toolUseId: string | null;
       basis: PermissionBasis;
       request: PermissionRequest;
@@ -3338,9 +3606,24 @@ export type ApprovalAllow = 'allow';
 export type PermissionApproval = {
   decision: 'allow';
   permissions: Permissions;
-  scope: Scope2;
+  scope: PermissionScope;
 };
 export type ComputerAppApproval = 'once' | 'session' | 'always';
+export type AuthorizationObligation =
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'tool';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'cell';
+      cell: CellId;
+      operation: string;
+    };
 export type FormField = {
   name: string;
   label: string;
@@ -3440,7 +3723,7 @@ export type InteractionOutcome =
     }
   | {
       kind: 'permissions_decision';
-      decision: Decision2;
+      decision: PermissionDecision;
       committedAt: number;
     }
   | {
@@ -3490,8 +3773,8 @@ export type InteractionOutcome =
     };
 export type ClosureReason =
   | 'steered'
-  | 'turn_stopped'
-  | 'turn_terminal'
+  | 'run_stopped'
+  | 'run_terminal'
   | 'producer_cancelled'
   | 'timed_out'
   | 'host_restarted'
@@ -3669,6 +3952,7 @@ export type Ownership =
       kind: 'source_unavailable';
       sourceSessionId: string;
     };
+export type ShellVisibility = 'model' | 'user';
 export type SnapshotKind = 'shell_run';
 export type ShellMode = 'pipes' | 'pty';
 export type ShellStatus =
@@ -3779,7 +4063,7 @@ export type AgentSendResult =
   | {
       kind: 'started';
       sessionId: string;
-      invocationId: string;
+      runId: RunId;
       messageId: string;
     }
   | {
@@ -3803,13 +4087,16 @@ export type AgentDeliveryFact =
   | {
       kind: 'executor_message_started';
       messageId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
     }
   | {
       kind: 'transcript_changed';
     }
   | {
       kind: 'step_ended';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       /**
        * The model/executor completed; this says nothing about tool business success.
        */
@@ -3817,20 +4104,23 @@ export type AgentDeliveryFact =
     }
   | {
       kind: 'part_committed';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       messageId: string;
       ordinal: number;
     }
   | {
       kind: 'delta';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       partId: string;
       text: string;
     }
   | {
       kind: 'tool_input_ready';
       toolUseId: string;
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       name: string;
       providerExecuted: boolean;
     }
@@ -3899,20 +4189,21 @@ export type AgentDiagnosticPosition =
 export type DiagnosticDetail =
   | {
       kind: 'execution';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       reason: ExecutionFailureReason;
       modelFailure?: ModelFailureCause | null;
     }
   | {
       kind: 'model_step';
-      invocation: Invocation;
-      stepId: string;
+      execution: ExecutionIdentity;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       status: ModelInterruption;
       modelFailure?: ModelFailureCause | null;
     }
   | {
       kind: 'session_title';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       cause: TitleFailureCause;
     };
 export type ExecutionFailureReason =
@@ -3922,6 +4213,7 @@ export type ExecutionFailureReason =
   | 'invalid_input'
   | 'cancelled'
   | 'model_incomplete'
+  | 'model_interrupted'
   | 'event_commit'
   | 'event_store'
   | 'model_timeout'
@@ -4000,7 +4292,7 @@ export type HistoryPosition =
     }
   | {
       kind: 'row';
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
       field: HistoryField;
     }
   | {
@@ -4030,7 +4322,7 @@ export type HistoryView = 'text' | 'conversation';
 export type MessageOrigin =
   | {
       kind: 'session';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
     }
   | {
       kind: 'goal';
@@ -4075,9 +4367,10 @@ export type AgentPreviewPage =
   | {
       kind: 'cut';
       hostEpoch: string;
-      invocationId: string;
+      runId: RunId;
       turnId: string;
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       revision: number;
       dependsOn: number;
       first: boolean;
@@ -4175,7 +4468,16 @@ export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
  * Canonical message author/kind; the field identifies body versus thinking.
  * Tool body JSON contributes string values, never its keys.
  */
-export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
+export type Role =
+  | 'system'
+  | 'context'
+  | 'tool'
+  | 'compaction'
+  | 'failure'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result';
 /**
  * Who made a call: a model step, a script the model wrote, a tool's own work
  * through the Host SDK, or a foreign record.
@@ -4183,7 +4485,7 @@ export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call'
 export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
 export type AgentHistoryPage = {
   kind: 'ready';
-  through: number;
+  through: number | null;
   chunks: AgentHistoryChunk[];
   before: Cursor | null;
   after: Cursor | null;
@@ -4353,18 +4655,20 @@ export type AgentHistorySearchPage = {
   /**
    * Continue even when this batch has no matches. Null is the end of the scan.
    */
-  nextAfter: HistoryRowPosition | null;
+  nextAfter: HistoryRowAddress | null;
 };
 /**
  * An explicitly selected canonical transcript field, never an execution grant.
  */
 export type SourceField =
   | ('body' | 'thinking' | 'tool_name' | 'failure_message' | 'error_class' | 'arguments' | 'result')
-  | 'receipt';
+  | 'receipt'
+  | 'provider_metadata'
+  | 'original';
 export type AgentHistorySourceReference =
   | {
       kind: 'row';
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
     }
   | {
       kind: 'tool_use';
@@ -4403,7 +4707,15 @@ export type AgentHistorySourcePage = {
 /**
  * Presentation role of the exact row. This carries no execution authority.
  */
-export type HistorySourceRole = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'failure';
+export type HistorySourceRole =
+  | 'system'
+  | 'context'
+  | 'tool'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result'
+  | 'failure';
 export type SourceFormat = 'text' | 'json' | 'image_descriptor';
 /**
  * Bounded image bytes from a selected subscription. Complete is a producer
@@ -4419,11 +4731,13 @@ export type AgentToolImageFrame =
     }
   | {
       kind: 'complete';
+      detail?: ImageDetail | null;
     };
+export type ImageDetail = 'auto' | 'low' | 'high' | 'original';
 export type AgentToolImagePage = {
   kind: 'ready';
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   offset: number;
   totalBytes: number;
   mimeType: string;
@@ -4441,7 +4755,7 @@ export type AgentAttachmentImageSource =
   | {
       kind: 'history';
       through: number;
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
       attachmentIndex: number;
     };
 export type AgentAttachmentImagePage = {
@@ -4460,6 +4774,19 @@ export type AgentAttachmentImagePage = {
  * Resource names select slots in the current request, not durable grants.
  */
 export type HostRequest =
+  | {
+      operation: 'stateRead';
+      key: string;
+    }
+  | {
+      operation: 'stateScan';
+      query: Scan;
+    }
+  | {
+      operation: 'completeState';
+      mutations: Mutation[];
+      value: unknown;
+    }
   | {
       operation: 'emit';
       value: unknown;
@@ -4481,9 +4808,14 @@ export type HostRequest =
       method: string;
       input: unknown;
       operationId: string;
+      recovery: unknown;
       attachments: {
         [k: string]: string | undefined;
       };
+    }
+  | {
+      operation: 'lookupIntent';
+      operationId: string;
     }
   | {
       operation: 'recover';
@@ -4499,10 +4831,22 @@ export type HostRequest =
       start: number;
       end: number;
     };
+export type Data =
+  | {
+      kind: 'present';
+      value: unknown;
+    }
+  | {
+      kind: 'deleted';
+    };
 export type Identity2 =
   | {
+      kind: 'native';
+      [k: string]: unknown | undefined;
+    }
+  | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       operationId?: string | null;
       [k: string]: unknown | undefined;
     }
@@ -5507,20 +5851,19 @@ export interface AgentExternalRuntime {
  * No path, invocation or conversation key is authority.
  */
 export interface ExecutorExecute {
+  taskId: ExternalTaskId;
   language?: Language;
-  invocation: Invocation;
+  execution: ExecutionIdentity;
   conversationKey: string;
   message: string;
   cwd: string;
   instructions?: string | null;
   settings: ExecutorSettings;
 }
-export interface Invocation {
-  session_id: string;
-  turn_id: string;
-  run_id: string;
-  invocation_id: string;
-  [k: string]: unknown | undefined;
+export interface ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: RunId;
 }
 export interface AgentExecutorSetup {
   executor: string;
@@ -5698,22 +6041,45 @@ export interface AgentWorkRead {
   cursor?: AgentAnswerCursor | null;
 }
 export interface AgentAnswerCursor {
-  invocationId: string;
+  runId: RunId;
   offset: number;
 }
 /**
- * Canonical physical execution receipt, independent of the current Session tip.
+ * Stable logical Run receipt, independent of activations and the current Session tip.
  */
 export interface AgentExecution {
   sessionId: string;
   turnId: string;
-  runId: string;
-  invocationId: string;
+  runId: RunId;
   /**
    * Run-local event count, not the root-global transcript cursor.
    */
   highWater: number;
   state: AgentExecutionState;
+}
+export interface ToolKey {
+  attempt: ModelAttemptId;
+  call: string;
+}
+/**
+ * A durable blocker is an observation, never permission to replay an operation.
+ */
+export interface AgentRunBlocker {
+  id: BlockerId;
+  reason: BlockerKind;
+  offeredActions: OfferedRiskAction[];
+}
+export interface ExternalPublicationKey {
+  publication: ExternalPublicationId;
+  index: number;
+}
+export interface ContentRef {
+  digest: string;
+  bytes: number;
+}
+export interface OfferedRiskAction {
+  kind: RiskActionKind;
+  scope: RiskActionScope;
 }
 export interface AgentAnswerPage {
   text: string;
@@ -5745,8 +6111,12 @@ export interface SettingsUsageRange {
   through: UsageFence | null;
 }
 export interface UsageFence {
+  schemaVersion: number;
   stateDomain: string;
   sequence: number;
+  auxiliarySequence: number;
+  cellSequence: number;
+  queryDigest: string;
 }
 /**
  * Filters only the activity list, never headline accounting for the range.
@@ -5782,6 +6152,11 @@ export interface UsageModelAttempt {
   quote?: Quote | null;
   costUsd?: number | null;
 }
+export interface AgentStepLink {
+  run: RunId;
+  step: StepId;
+  attempt: ModelAttemptId;
+}
 /**
  * Public model identity. Credentials and provider handles never belong here.
  */
@@ -5811,14 +6186,14 @@ export interface Pricing {
   cacheReadUsdPer1M?: number;
   cacheWriteUsdPer1M?: number;
 }
-export interface UsageToolAttempt {
+export interface ToolUsage {
   requestId: string;
-  invocation: Invocation;
-  call: ToolCallIdentity;
+  source: ToolUsageSource;
   name: string;
   binding?: ModelBinding | null;
   completedAt: number;
-  result: UsageToolResult;
+  result: ToolUsageResult;
+  cleanup?: OperationCleanup | null;
 }
 /**
  * A Tool Call is distinct from its durable host operation. Origin determines
@@ -5828,6 +6203,10 @@ export interface ToolCallIdentity {
   tool_call_id: string;
   origin: ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface RunOwner {
+  deployment: string;
+  namespace: InstanceId;
 }
 export interface SettingsUsageSummary {
   through: UsageFence;
@@ -5922,9 +6301,6 @@ export interface UsageToolSummary {
 }
 export interface UsageGroupCursor {
   group: UsageGroup;
-  /**
-   * None identifies the unknown-provider group, not the start of pagination.
-   */
   key?: string | null;
 }
 export interface SettingsUsageSummaryRead {
@@ -6710,9 +7086,6 @@ export interface BindingStamp {
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
 }
-export interface AgentGoalReceiptRead {
-  reference: RecoveryRef;
-}
 export interface AgentChecklistRead {
   sessionId: string;
   offset?: number;
@@ -6785,7 +7158,7 @@ export interface Run {
   outcome: Outcome;
   message: string;
   sessionId?: string | null;
-  runId?: string | null;
+  runId?: RunId | null;
 }
 export interface AgentScheduledInput {
   task: Create;
@@ -6866,7 +7239,7 @@ export interface AgentSessionBranch {
 export interface AgentRecallPassage {
   session: AgentSession;
   anchorMessageId: string;
-  anchorPosition: HistoryRowPosition;
+  anchorPosition: HistoryRowAddress;
   /**
    * Display preview beginning at the first match. The anchor opens the complete source.
    */
@@ -6876,14 +7249,6 @@ export interface AgentRecallPassage {
    */
   highlights: AgentRecallHighlight[];
   matchedTerms: string[];
-}
-/**
- * Disposable presentation locator, never authority or a canonical execution fact.
- * The source is the original emitting fact; the index precedes UI filtering.
- */
-export interface HistoryRowPosition {
-  sourceSequence: number;
-  itemIndex: number;
 }
 export interface AgentRecallHighlight {
   start: number;
@@ -7187,7 +7552,7 @@ export interface AgentSend {
   /**
    * An active send must not start new work after Stop fences its original Run.
    */
-  expectedInvocationId?: string | null;
+  expectedRunId?: RunId | null;
   /**
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
@@ -7216,32 +7581,35 @@ export interface SessionQuoteSource {
 }
 export interface AgentStop {
   sessionId: string;
-  invocationId: string;
+  runId: RunId;
 }
 export interface AgentExecutionRead {
   sessionId: string;
-  invocationId: string;
+  runId: RunId;
 }
 /**
- * Observe the latest run using the model selected for a possible continuation.
+ * Manual continuation of a terminal Run always admits a new Run. Recovery of an
+ * unfinished Run is internal reconciliation, not this user command.
  */
-export interface AgentResumableRead {
+export interface AgentContinueRun {
   sessionId: string;
+  sourceRunId: RunId;
+  /**
+   * Exact immutable source fence returned by execution.
+   */
+  sourceHighWater: number;
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
 }
-export interface AgentResume {
+export interface AgentAdjudicateRisk {
   sessionId: string;
-  sourceInvocationId: string;
+  runId: RunId;
   /**
-   * Exact Run-local count returned by execution.
+   * Compare against the Run-local observation used for this decision.
    */
-  sourceHighWater: number;
-  /**
-   * Explicit model selection for this new continuation; original input is replayed.
-   */
-  model: ModelSelection;
-  thinkingLevel?: ThinkingLevel | null;
+  expectedHighWater: number;
+  blockerId: BlockerId;
+  decision: AgentRiskDecisionInput;
 }
 export interface AgentUploadAttachment {
   sessionId: string;
@@ -7283,9 +7651,7 @@ export interface AgentInteractionRespond {
   answer: InteractionAnswer;
 }
 export interface InteractionRecord {
-  sessionId: string;
-  turnId: string;
-  runId: string;
+  execution: ExecutionIdentity;
   requestId: string;
   createdAt: number;
   request: InteractionRequest;
@@ -7298,10 +7664,6 @@ export interface PermissionBasis {
   boundaryRevision: number;
   binding: BindingStamp;
 }
-/**
- * The Host supplies the real operation description; it is display information,
- * not authority inferred from a command string or a plugin-supplied Session ID.
- */
 export interface PermissionRequest {
   reason: string;
   command?: PermissionCommand | null;
@@ -7409,6 +7771,10 @@ export interface WorkspacePath {
 export interface AgentContextRead {
   sessionId: string;
   /**
+   * Null selects the latest actual readable source, not a caller-provided execution grant.
+   */
+  runId: RunId | null;
+  /**
    * Null captures the committed head; a supplied fence must not exceed it.
    */
   through: number | null;
@@ -7421,8 +7787,12 @@ export interface AgentContextReport {
   request: AgentContextRequest | null;
 }
 export interface AgentContextRequest {
-  invocationId: string;
-  stepId: string;
+  /**
+   * Original canonical Run metadata; observation only.
+   */
+  execution: ExecutionIdentity;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   sequence: number;
   /**
    * Original request timestamp in milliseconds since the Unix epoch.
@@ -7590,8 +7960,8 @@ export interface TerminalPage {
 export interface ResourceUpdate {
   sessionId: string;
   ownership: Ownership;
-  sourceTurnId: string;
-  sourceToolCallId: string;
+  correlation: unknown;
+  visibility: ShellVisibility;
   result: ShellSnapshot;
 }
 export interface ShellSnapshot {
@@ -7651,11 +8021,16 @@ export interface AgentSessionPage {
   after: string | null;
 }
 export interface AgentStopped {
+  /**
+   * The original operation accepted a Stop intent for the existing Run, not
+   * proof of a new state write or physical cleanup. Missing/already-terminal
+   * preparation may return false; a terminal race after acceptance stays true.
+   */
   requested: boolean;
 }
 export interface AgentDelivery {
   sequence: number;
-  invocationId: string;
+  runId: RunId;
   turnId: string;
   fact: AgentDeliveryFact;
 }
@@ -7704,14 +8079,15 @@ export interface AgentSessionMetrics {
 }
 export interface AgentRun {
   backend: AgentRunBackend;
-  invocationId: string;
+  runId: RunId;
   turnId: string;
   state: AgentRunState;
 }
 export interface AgentPart {
   startSequence: number;
   messageId: string;
-  stepId: string;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   partId: string;
   textKind: AgentContentKind;
 }
@@ -7755,7 +8131,7 @@ export interface AgentHistoryRead {
  */
 export interface Cursor {
   field?: HistoryField & string;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   offset: number;
 }
 export interface AgentHistoryLandmarksRead {
@@ -7774,25 +8150,36 @@ export interface AgentHistoryLandmarks {
   landmarks: AgentHistoryLandmark[];
 }
 export interface AgentHistoryLandmark {
-  turnId: string;
-  position: HistoryRowPosition;
-  lastPosition: HistoryRowPosition;
+  importedTurn: number | null;
+  order: HistoryOrder;
+  lastOrder: HistoryOrder;
+  turnId?: string | null;
+  position: HistoryRowAddress;
+  lastPosition: HistoryRowAddress;
   label: string;
   /**
    * The Host's attribution of the Turn's opening message, when it generated it.
    */
   origin?: MessageOrigin | null;
 }
+/**
+ * Lexicographic tree order: original marker sequences followed by the leaf
+ * sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+ */
+export interface HistoryOrder {
+  path: number[];
+  itemIndex: number;
+}
 export interface AgentHistoryPromptRead {
   sessionId: string;
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
 }
 /**
  * A bounded presentation preview; the original message remains in history.
  */
 export interface AgentHistoryPrompt {
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   text: string;
 }
 export interface AgentPreviewPart {
@@ -7826,7 +8213,7 @@ export interface AgentComputerAppActivityState {
   stopped: boolean;
 }
 export interface ComputerAppActivity {
-  invocation: Invocation;
+  execution: ExecutionIdentity;
   operationId: string;
   target: GrantTarget;
   display: ComputerAppDisplay;
@@ -7842,6 +8229,8 @@ export interface AgentQueueMutation {
   edit: AgentQueueAction;
 }
 export interface AgentHistoryChunk {
+  importedTurn: number | null;
+  runId?: RunId | null;
   modelPart?: ModelPartIdentity | null;
   /**
    * The original user input has quotes, directory references or inline references.
@@ -7862,22 +8251,23 @@ export interface AgentHistoryChunk {
   attachments?: AgentHistoryAttachment[];
   timing?: HistoryTurnTiming | null;
   field: HistoryField;
-  messageId: string;
-  turnId: string;
-  timestamp: number;
+  messageId?: string | null;
+  turnId?: string | null;
+  timestamp?: number | null;
   role: Role;
   /**
    * Stable display order; position remains the canonical source read address.
    */
-  order: HistoryRowPosition;
-  position: HistoryRowPosition;
+  order: HistoryOrder;
+  position: HistoryRowAddress;
   offset: number;
   totalBytes: number;
   text: string;
   tool: HistoryTool | null;
 }
 export interface ModelPartIdentity {
-  stepId: string;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   ordinal: number;
 }
 /**
@@ -7924,7 +8314,7 @@ export interface HistoryToolCall {
    * Opaque display contract captured at dispatch; no execution authority.
    */
   presentation?: string | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   name: string;
   title: DisplayText | null;
   /**
@@ -7938,7 +8328,7 @@ export interface HistoryToolCall {
 }
 export interface HistoryToolResult {
   settlement: ToolSettlement | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * A failed or unknown effect, or a returned result that reports failure.
    */
@@ -7961,7 +8351,7 @@ export interface AgentHistorySearch {
   /**
    * Exclusive transcript-row position; null starts a scan.
    */
-  after?: HistoryRowPosition | null;
+  after?: HistoryRowAddress | null;
   /**
    * Literal query; no normalization.
    */
@@ -7978,6 +8368,7 @@ export interface AgentHistorySearch {
   includeInternal: boolean;
 }
 export interface AgentHistoryMatch {
+  order: HistoryOrder;
   /**
    * Exact canonical field to read through the source query; history body may omit it.
    */
@@ -7986,7 +8377,7 @@ export interface AgentHistoryMatch {
    * Exact transcript row. Open with HistoryPosition::Row at the same raw-event
    * fence: Thinking for a thinking match, Body for every other source field.
    */
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   preview: string;
 }
 export interface AgentHistorySourceRead {
@@ -8007,26 +8398,18 @@ export interface AgentHistorySourceRead {
 export interface HistorySource {
   model?: HistoryModel | null;
   origin?: MessageOrigin | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * Host-recorded milliseconds of this immutable row; not a client clock.
    */
-  timestamp: number;
+  timestamp?: number | null;
   role: HistorySourceRole;
   /**
    * Readable canonical fields of this same immutable row, in display order.
    *
    * @minItems 1
-   * @maxItems 7
    */
-  fields:
-    | [SourceField]
-    | [SourceField, SourceField]
-    | [SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField, SourceField, SourceField];
+  fields: [SourceField, ...SourceField[]];
   field: SourceField;
   /**
    * Omission reads the encoded field. A selected JSON string is literal text.
@@ -8041,7 +8424,7 @@ export interface HistorySource {
 export interface AgentToolImageRead {
   sessionId: string;
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * Selects one of `HistoryToolResult.images`; absent when the content is the image.
    */
@@ -8066,6 +8449,15 @@ export interface HostActivation {
   contract: Contract;
   service: string[];
 }
+export interface Scan {
+  prefix?: string;
+  after?: string | null;
+}
+export interface Mutation {
+  key: string;
+  expectedRevision?: number | null;
+  data: Data;
+}
 /**
  * Actual callback observation. Neither the source nor receipt is a grant.
  */
@@ -8086,4 +8478,20 @@ export interface ResourceMetadata {
   type: ResourceType;
   bytes: number;
   metadata: unknown;
+}
+/**
+ * Deletions retain a revision, preventing stale writers from recreating a key
+ * as if it had never existed. Revision is not a business schema version.
+ */
+export interface StateRecord {
+  revision: number;
+  data: Data;
+}
+export interface StatePage {
+  entries: Entry[];
+  nextAfter?: string | null;
+}
+export interface Entry {
+  key: string;
+  record: StateRecord;
 }

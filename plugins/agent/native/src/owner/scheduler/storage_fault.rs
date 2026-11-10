@@ -17,8 +17,8 @@
  * under the License.
  */
 
-use maka_capabilities::storage::{Mutation, Namespace, Record, Store, StoreError};
 use maka_event_log::root_store::RootStore;
+use maka_plugin_core::storage::{Mutation, Namespace, Record, Store, StoreError};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -29,7 +29,7 @@ enum Fault {
 
 /// Keep real atomic writes and retirement semantics; only alter their acknowledgement.
 pub(in crate::owner) struct Storage {
-    inner: maka_host_runtime::storage::Storage,
+    inner: Arc<maka_host_runtime::storage::Storage>,
     fault: Mutex<Option<(&'static str, Fault)>>,
 }
 impl std::ops::Deref for Storage {
@@ -39,9 +39,14 @@ impl std::ops::Deref for Storage {
     }
 }
 impl Storage {
+    pub(super) fn inner(&self) -> Arc<maka_host_runtime::storage::Storage> {
+        self.inner.clone()
+    }
     pub(super) fn new(store: Arc<RootStore>, prefix: String, namespace: Namespace) -> Self {
         Self {
-            inner: maka_host_runtime::storage::Storage::new(store, prefix, namespace),
+            inner: Arc::new(maka_host_runtime::storage::Storage::new(
+                store, prefix, namespace,
+            )),
             fault: Mutex::new(None),
         }
     }

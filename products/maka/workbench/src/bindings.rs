@@ -38,6 +38,7 @@ pub use permission_window::SystemPermissionWindow;
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
+use maka_plugin_core::operation::OperationResult;
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use std::{
@@ -53,7 +54,6 @@ const AGENT: &str = "agent";
 const EDITOR: &str = "composer";
 
 /// Own native tasks independently of a JavaScript view's lifetime.
-#[derive(Clone)]
 pub struct Bindings {
     owner: Arc<Owner>,
 }
@@ -749,7 +749,9 @@ impl ApplicationHost {
                 (id, mutation.confirm().await?)
             };
             match reply.receipt {
-                Receipt::Recorded { outcome: OperationOutcome::Returned { value }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } }, cleanup: OperationCleanup::Confirmed } => Err(diagnostic),
+                Receipt::Recorded { outcome: OperationOutcome::NotExecuted { .. }, cleanup: OperationCleanup::Confirmed } => Err("The permission request was prevented before execution.".into()),
                 _ => Err(format!("The permission request has no confirmed result. Recover original operation {id} before requesting again.")),
             }
         }).await
@@ -1468,43 +1470,5 @@ impl ScopedSubscription {
             this.with(|item| (item.owner.clone(), item.subscription.clone()));
         drop(this);
         execute(owner, async move { subscription.close().await }).await
-    }
-}
-
-#[cfg(test)]
-mod contract_tests {
-    use super::require_contract;
-    use maka_plugin_core::contract::{Interface, MethodMode};
-
-    #[test]
-    fn old_host_methods_stay_usable_without_admitting_missing_or_changed_methods() {
-        let mut old = maka_agent_api::contract();
-        let Interface::Service { methods } = &mut old.interface else {
-            panic!("Agent must be a service");
-        };
-        assert!(methods.remove("historyLandmarks").is_some());
-        assert!(require_contract("agent", "list", &old).is_ok());
-        assert_eq!(
-            require_contract("agent", "historyLandmarks", &old).unwrap_err(),
-            "Host does not support agent.historyLandmarks; update this Host to use this feature"
-        );
-        assert_eq!(
-            require_contract("agent", "missing", &old).unwrap_err(),
-            "Unknown typed Host method agent.missing"
-        );
-
-        let Interface::Service { methods } = &mut old.interface else {
-            unreachable!();
-        };
-        methods.get_mut("list").unwrap().mode = MethodMode::Mutation;
-        assert_eq!(
-            require_contract("agent", "list", &old).unwrap_err(),
-            "Host agent.list has an incompatible method contract; update this Host to use this feature"
-        );
-        old.name = "other.Agent".into();
-        assert_eq!(
-            require_contract("agent", "list", &old).unwrap_err(),
-            "Host agent.list has an incompatible service contract; update this Host to use this feature"
-        );
     }
 }

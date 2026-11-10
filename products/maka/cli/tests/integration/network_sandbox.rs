@@ -85,7 +85,7 @@ async fn private_namespace_routes_pipes_and_ptys_only_through_the_owned_gateway(
         assert_eq!(output["output"]["stdout"], "OK", "{output}");
         let (mut child, terminal) = maka_process::pty::spawn(
             executor.command_pty(&command).unwrap(),
-            maka_agent_facts::terminal::TerminalSize::new(80, 24).unwrap(),
+            maka_plugin_core::terminal::TerminalSize::new(80, 24).unwrap(),
         )
         .await
         .unwrap();

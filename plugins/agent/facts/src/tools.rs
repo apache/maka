@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,7 +28,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::event::{EventSink, Invocation};
+use crate::event::EventSink;
 
 mod journal;
 mod preparation;
@@ -36,11 +38,25 @@ pub use journal::{
     AdmittedTool, ApprovalContinuation, PublishedTool, ToolContinuation, ToolJournal,
 };
 pub use preparation::{
-    ApprovalAnswerFuture, EffectAdmission, EstablishNativeApproval, EstablishedApproval, Execute,
-    ExecutionCustody, PreparationFuture, PreparedEffect, PreparedExecution, PreparedNativeApproval,
-    ToolCallContext, ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
+    ApprovalAnswerFuture, EffectAdmission, EffectCustody, EstablishNativeApproval,
+    EstablishedApproval, Execute, PreparationFuture, PreparedEffect, PreparedExecution,
+    PreparedNativeApproval, RunningEffect, ToolCallContext, ToolHandler, ToolNesting, ToolPreparer,
+    ToolRegistration, ToolSemantics,
 };
 pub use provider::{ModelToolContext, ProviderTool, ProviderToolProtocol};
+
+impl From<maka_plugin_core::work::resources::ResourceError> for ToolError {
+    fn from(error: maka_plugin_core::work::resources::ResourceError) -> Self {
+        match error {
+            maka_plugin_core::work::resources::ResourceError::Closed => {
+                Self::Failed(error.to_string())
+            }
+            maka_plugin_core::work::resources::ResourceError::CleanupUnconfirmed(reason) => {
+                Self::CleanupUnconfirmed(reason)
+            }
+        }
+    }
+}
 
 /// A callable function's closed contract; only its JSON Schema is open-ended.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,7 +137,7 @@ pub trait ToolExecutor: Send + Sync + 'static {
 }
 
 /// Durable dispatch precedes effects, and durable outcomes precede delivery.
-/// The inner executor does not own invocation terminal facts.
+/// The inner executor does not own execution terminal facts.
 pub struct JournaledTools {
     journal: ToolJournal,
     executor: Arc<dyn ToolExecutor>,
@@ -130,11 +146,11 @@ pub struct JournaledTools {
 impl JournaledTools {
     pub fn new(
         sink: Arc<dyn EventSink>,
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         executor: Arc<dyn ToolExecutor>,
     ) -> Self {
         Self {
-            journal: ToolJournal::new(sink, invocation),
+            journal: ToolJournal::new(sink, execution),
             executor,
         }
     }

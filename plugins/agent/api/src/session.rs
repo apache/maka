@@ -18,7 +18,7 @@
  */
 
 use crate::contract::{Workspace, WorkspacePermissions};
-use maka_agent_facts::workspace::{BindingRef, BindingStamp};
+use maka_sandbox::workspace::{BindingRef, BindingStamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -101,8 +101,8 @@ impl StoredSessionConfiguration {
 }
 
 impl ResolvedConfiguration {
-    pub fn permission_basis(&self) -> maka_agent_facts::workspace::PermissionBasis {
-        maka_agent_facts::workspace::PermissionBasis {
+    pub fn permission_basis(&self) -> maka_sandbox::workspace::PermissionBasis {
+        maka_sandbox::workspace::PermissionBasis {
             boundary_revision: self.boundary_revision,
             binding: self.binding,
         }

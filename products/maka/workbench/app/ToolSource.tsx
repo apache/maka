@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
@@ -24,18 +25,18 @@ import { Button } from 'nsh/base';
 import type { AgentHistorySourceRead } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { Host } from './host';
-import { messageBytes, type Position } from './history';
+import { messageBytes } from './history';
 import { C, captionTextStyle, codeTextStyle, controlStyle } from './ui';
 
 export type ToolSourceRef = {
   key: string;
   field: 'arguments' | 'result';
   toolUseId: string;
-  position: Position;
+  position: HistoryRowAddress;
   name?: string;
   presentation?: string | null;
-  callPosition: Position | null;
-  resultPosition: Position | null;
+  callPosition: HistoryRowAddress | null;
+  resultPosition: HistoryRowAddress | null;
 };
 
 // One mounted reader owns one immutable field/path at its opening fence.
@@ -91,7 +92,6 @@ export function createToolSource(
         source?.field !== original.field ||
         !sameValue(source.path ?? null, original.path) ||
         !sameValue(source.position, original.position) ||
-        source.role !== (original.field === 'arguments' ? 'tool_call' : 'tool_result') ||
         tool?.toolUseId !== original.toolUseId ||
         !sameValue(owned?.position, original.position) ||
         !sameValue(tool?.call?.position ?? null, original.callPosition) ||

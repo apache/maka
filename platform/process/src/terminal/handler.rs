@@ -53,7 +53,7 @@ pub(super) struct State {
     pub term: Term<Events>,
     events: Events,
     pub truncated: bool,
-    pub last_alternate: Option<std::sync::Arc<maka_agent_facts::terminal::display::Alternate>>,
+    pub last_alternate: Option<std::sync::Arc<maka_plugin_core::terminal::display::Alternate>>,
     pub mouse: MouseTracking,
     pub encoding: MouseEncoding,
     failed: bool,
@@ -83,7 +83,7 @@ impl State {
         self.truncated |= !self.term.mode().contains(TermMode::ALT_SCREEN)
             && origin == 0
             && self.term.history_size().saturating_add(lines)
-                > maka_agent_facts::terminal::history_rows(self.term.columns() as u16);
+                > maka_plugin_core::terminal::history_rows(self.term.columns() as u16);
     }
     fn line_wrap(&mut self) {
         if self.term.grid().cursor.point.line.0 as usize == self.region.end - 1 {
@@ -99,7 +99,7 @@ impl State {
             self.last_alternate = None;
         } else if !enabled && active {
             self.last_alternate = Some(std::sync::Arc::new(
-                maka_agent_facts::terminal::display::Alternate {
+                maka_plugin_core::terminal::display::Alternate {
                     size: TerminalSize::new(
                         self.term.columns() as u16,
                         self.term.screen_lines() as u16,

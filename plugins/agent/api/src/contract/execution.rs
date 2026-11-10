@@ -18,6 +18,7 @@
  */
 
 use super::ModelSelection;
+use maka_agent_facts::durable::{BlockerId, BlockerKind, RunId, WaitReason};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -39,9 +40,8 @@ pub struct WorkRead {
 )]
 #[schemars(rename = "AgentWorkTarget")]
 pub enum WorkTarget {
-    Invocation {
-        #[schemars(length(min = 1))]
-        invocation_id: String,
+    Run {
+        run_id: RunId,
     },
     Message {
         #[schemars(length(min = 1))]
@@ -52,8 +52,7 @@ pub enum WorkTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentAnswerCursor")]
 pub struct AnswerCursor {
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: RunId,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub offset: u64,
 }
@@ -92,8 +91,17 @@ pub enum Work {
 pub struct ExecutionRead {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: RunId,
+}
+/// Metadata readiness only. Retirement also requires the actual Root work fence
+/// held continuously through the caller's original pending-retirement commit.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentWorkReadiness")]
+pub enum WorkReadiness {
+    Ready,
+    Pending,
+    Unavailable,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -143,82 +151,117 @@ pub enum ExecutionResult {
     Missing,
     Found { execution: Execution },
 }
-/// Canonical physical execution receipt, independent of the current Session tip.
+/// Stable logical Run receipt, independent of activations and the current Session tip.
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentExecution")]
 pub struct Execution {
     pub session_id: String,
     pub turn_id: String,
-    pub run_id: String,
-    pub invocation_id: String,
+    pub run_id: RunId,
     /// Run-local event count, not the root-global transcript cursor.
     pub high_water: u64,
     pub state: ExecutionState,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentExecutionState")]
 pub enum ExecutionState {
     Admitted,
     Running,
-    Waiting,
-    Paused,
+    Waiting { waits: Vec<WaitReason> },
+    Blocked { blockers: Vec<RunBlocker> },
     Completed,
     Failed,
     Cancelled,
 }
-/// Observe the latest run using the model selected for a possible continuation.
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentResumableRead")]
-pub struct ResumableRead {
-    #[schemars(length(min = 1))]
-    pub session_id: String,
-    pub model: ModelSelection,
-    pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-}
+/// A durable blocker is an observation, never permission to replay an operation.
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentResumable")]
-pub enum Resumable {
-    Ready { source: Execution },
-    Unavailable { reason: ResumeParkReason },
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRunBlocker")]
+pub struct RunBlocker {
+    pub id: BlockerId,
+    pub reason: BlockerKind,
+    pub offered_actions: Vec<maka_agent_facts::durable::OfferedRiskAction>,
 }
 
+/// Manual continuation of a terminal Run always admits a new Run. Recovery of an
+/// unfinished Run is internal reconciliation, not this user command.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentResume")]
-pub struct Resume {
+#[schemars(rename = "AgentContinueRun")]
+pub struct ContinueRun {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub source_invocation_id: String,
-    /// Exact Run-local count returned by execution.
+    pub source_run_id: RunId,
+    /// Exact immutable source fence returned by execution.
     #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
     pub source_high_water: u64,
-    /// Explicit model selection for this new continuation; original input is replayed.
     pub model: ModelSelection,
     pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentResumeResult")]
-pub enum ResumeResult {
+#[schemars(rename = "AgentContinuationResult")]
+pub enum ContinuationResult {
     Started { execution: Execution },
-    Parked { reason: ResumeParkReason },
+    Rejected { reason: ContinuationRejection },
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentContinuationAvailability")]
+pub enum ContinuationAvailability {
+    Ready { source: Execution },
+    Rejected { reason: ContinuationRejection },
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(rename = "AgentResumeParkReason")]
-pub enum ResumeParkReason {
+#[schemars(rename = "AgentContinuationRejection")]
+pub enum ContinuationRejection {
     Closed,
     Archived,
     Busy,
     SourceMissing,
     SourceChanged,
-    SourceNotResumable,
+    SourceNotTerminal,
     AlreadyContinued,
     WorkspaceChanged,
     SafetyCheckFailed,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentAdjudicateRisk")]
+pub struct AdjudicateRisk {
+    pub session_id: String,
+    pub run_id: RunId,
+    /// Compare against the Run-local observation used for this decision.
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub expected_high_water: u64,
+    pub blocker_id: BlockerId,
+    pub decision: RiskDecisionInput,
+}
+
+/// User-supplied evidence bytes. Native stores and pins the immutable content in
+/// the same control transaction; callers cannot select a canonical ContentRef.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentRiskEvidenceInput")]
+pub enum RiskEvidenceInput {
+    Text {
+        #[schemars(length(min = 1))]
+        text: String,
+    },
+    Json {
+        value: serde_json::Value,
+    },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentRiskDecisionInput")]
+pub enum RiskDecisionInput {
+    RecordExternalObservation { evidence: RiskEvidenceInput },
+    AuthorizeReplan { evidence: RiskEvidenceInput },
+    CancelBlockedRun { diagnostic: String },
 }

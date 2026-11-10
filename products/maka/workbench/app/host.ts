@@ -313,7 +313,9 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
     throw new UiError('This action could not be completed.');
-  return reply.receipt.outcome.value as Output<'terminal', M>;
+  if (reply.receipt.outcome.result.kind === 'failure')
+    throw new Error(reply.receipt.outcome.result.diagnostic);
+  return reply.receipt.outcome.result.value as Output<'terminal', M>;
 }
 export const pendingTerminals = (scope: ScopedHost) =>
   scope.pendingTerminals() as Promise<ClientOperation[]>;

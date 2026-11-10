@@ -119,3 +119,12 @@ pub struct ModelPartial {
     pub model: Option<String>,
     pub timestamp: Option<String>,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrivateModelPartial {
+    pub binding: super::assembly::AttemptBinding,
+    pub revision: u64,
+    pub depends_on: u64,
+    pub partial: ModelPartial,
+}

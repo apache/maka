@@ -20,10 +20,10 @@
 //! Durable allocation precedes checkout; an accepted allocation never follows a new HEAD.
 use super::*;
 use maka_capabilities::call::Scope;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Namespace;
 use maka_fs_tools::worktree::{Binding, Worktrees};
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Namespace;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Serialize, Deserialize)]
@@ -33,7 +33,7 @@ struct Allocation {
     fingerprint: String,
     /// The source directory as the Host captured it when allocating.
     path: String,
-    identity: maka_agent_facts::execution::DirectoryIdentity,
+    identity: maka_sandbox::workspace::DirectoryIdentity,
     binding: Binding,
 }
 

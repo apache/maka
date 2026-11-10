@@ -20,7 +20,7 @@
 use maka_agent_facts::attachment::StorageRef;
 
 /// Pure owned projection cannot mint inherited artifact authority.
-pub(super) struct Resources<'a> {
+pub(crate) struct Resources<'a> {
     session: &'a str,
 }
 impl<'a> Resources<'a> {

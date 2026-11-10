@@ -77,9 +77,7 @@ Root catalog 和 usage 在 runtime 数据库中使用有索引的 keyset 分页�
 
 语义行、payload 和子项目录是有限的派生描述符，采用 Postcard 编码。writer 在发布事务内编码一次；分页把已存字节和固定小端序定位字段直接复制到调用者计费的缓冲区，消费端恢复原有类型，无需读取整个正文。原始字节位置与叶子摘要保持不变，目录编码不参与规范事实或来源身份。
 
-`event_storage_bench` 测量真实 Root 写入、冻结目录、子项分页、首尾及重复 64 字节窗口、顺序正文、事件前缀和 bundle 导出。在两个版本上用 release 构建同一 example 并各自保存二进制后，运行 `python3 scripts/bench-event-storage.py --output /tmp/storage-comparison original=/path/to/original candidate=/path/to/candidate`。脚本交错执行至少五轮，校验事件、目录、正文与导出摘要。首次读取用于校验和预热；重开测量保留操作系统缓存。记录保留原始分布、进程 CPU/RSS/I/O 可用性、SQLite 缓存计数，以及分列的主库、WAL、SHM 大小。存活 prepared statement 的快照不能代表全部 SQL 工作；另外分别记录 JSON／文本／多段内容的叶子读取和结算写入耗时。
-
-`prefix_read` 在前缀 API 返回时停止计时；`prefix_all` 还包含重新序列化及完整结果摘要验证，解释差异时保留两者。`--operation prefix` 仅将计量迭代切换为连续前缀读取，首次完整校验／预热及每次前缀校验仍然执行；两个二进制必须使用相同选项。这是保留操作系统缓存的定向工作负载，与默认混合操作循环分别报告。
+原 Agent 语义存储基准及其比较脚本已从 Root 配对退休。Agent 历史、冻结语义来源与 bundle 属于 Agent 领域；Root 不再提供这些基准测量。
 
 语句失败会回滚 writer 整组，只有由请求保存点隔离的领域拒绝例外。复用连接要求确认回滚完成、处于 autocommit 状态且所有权仍有效。提交失败返回结果未知，不产生执行凭据；无法确认清理时让连接退出。单键与分页插件数据读取使用独立 reader 连接，读取已提交快照；依赖写入的读取等待前一写入的持久化回执。
 

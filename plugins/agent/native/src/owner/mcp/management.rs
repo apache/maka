@@ -251,6 +251,7 @@ impl Owner {
                             let _ = directory.remove_file(&name);
                         }
                         result?;
+                        root.capability_source_changed();
                         Ok(McpConfigurationResult::Saved)
                     })();
                     Ok(match result {

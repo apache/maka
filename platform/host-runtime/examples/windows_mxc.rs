@@ -34,8 +34,8 @@ fn main() -> native::Result<()> {
 #[cfg(windows)]
 mod native {
     use futures_util::FutureExt;
-    use maka_agent_facts::terminal::TerminalSize;
     use maka_host_runtime::sandbox::windows::{self, Backend, Installation, Status};
+    use maka_plugin_core::terminal::TerminalSize;
     use maka_process::{
         Command, ObservedProcess, PipeEvent, ProcessOutcome, Termination, bootstrap, pipe, pty,
     };
@@ -681,7 +681,7 @@ mod native {
     }
 
     async fn guard_registry(fixture: &Fixture) -> Result<()> {
-        let home = maka_event_log::root::windows::account_home()?;
+        let home = maka_sandbox::account_home()?;
         let registry = home.join(".maka-sandbox-guards");
         maka_event_log::root::private_directory(&registry)?;
         let id = uuid::Uuid::new_v4();
@@ -896,7 +896,7 @@ mod native {
                     settled = true;
                     match outcome? {
                         Ok(mut spawned) => {
-                            spawned.child.terminate()?;
+                            spawned.child.terminate().await?;
                             spawned.child.wait().await?;
                             return Err("hung-helper admission unexpectedly started a command".into());
                         }
@@ -922,7 +922,7 @@ mod native {
         let failure = match outcome? {
             Err(failure) => failure,
             Ok(mut spawned) => {
-                spawned.child.terminate()?;
+                spawned.child.terminate().await?;
                 spawned.child.wait().await?;
                 return Err("cancelled hung-helper admission started a command".into());
             }
@@ -950,7 +950,7 @@ mod native {
         if !settled {
             match startup.await? {
                 Ok(mut spawned) => {
-                    spawned.child.terminate()?;
+                    spawned.child.terminate().await?;
                     spawned.child.wait().await?;
                 }
                 Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message)) => {

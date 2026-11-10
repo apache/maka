@@ -379,6 +379,21 @@ fn copy_writes_markdown() {
     );
 }
 
+#[test]
+fn copy_with_nothing_selected_preserves_existing_clipboard() {
+    let mut app = start(paragraphs(&["hello"]));
+    app.set_clipboard(Some("page output".into()));
+    focus(&mut app);
+    keys(&mut app, &["mod+c"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(app.screen().clipboard(), Some("page output"));
+
+    select_right(&mut app, 3);
+    keys(&mut app, &["mod+c"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(app.screen().clipboard(), Some("hel"));
+}
+
 // The history.
 
 #[test]

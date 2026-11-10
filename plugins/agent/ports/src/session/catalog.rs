@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 /// A continuation binds to one catalog revision. A conflict requires a fresh first page.
@@ -40,4 +41,31 @@ impl List {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Summary {
+    pub session: super::View,
+    pub archived: bool,
+    pub labels: Vec<String>,
+    pub updated_at: u64,
+    pub last_message_at: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Page {
+    pub revision: String,
+    pub entries: Vec<Summary>,
+    pub next_cursor: Option<String>,
+}
+
+/// Read-only metadata, never execution authority or conversation content.
+/// Agent calls see only their Session; independent calls require ReadSessions consent.
+pub trait Queries: Send + Sync {
+    fn list(
+        &self,
+        call: maka_capabilities::call::Scope,
+        input: List,
+    ) -> BoxFuture<'_, Result<Page, maka_capabilities::authorization::CommandError>>;
 }

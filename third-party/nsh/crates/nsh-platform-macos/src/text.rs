@@ -2177,6 +2177,13 @@ pub(crate) fn selection_key(
     }
 }
 
+/// Whether the surface has a selection Copy could put on the clipboard: the
+/// Edit menu's Copy is offered then, whichever of the surface's views has
+/// the keyboard focus.
+pub(crate) fn has_selection(surface: &crate::surface::Surface) -> bool {
+    surface.selection.area.has_selection() || surface.selection.with_range().is_some()
+}
+
 /// Copies the selection to the surface clipboard (the Edit menu's Copy).
 /// False if there is none.
 pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {

@@ -104,7 +104,7 @@ Shell tools accept an optional model-authored `title`, enabled by default. Assis
 
 The default Maka composition enables `todo`: `todo_read` and `todo_write` maintain a persistent checklist for the current session, including in Code Mode and read-only workspaces. Writes replace the whole list with revision checks. The UI shows reported progress and a read-only Checklist panel, with bounded pages covering up to 200 items. Checklist completion is model-reported progress, not proof that an operation succeeded.
 
-The default Maka composition enables `bot`, the Bot mode. `openBot` returns the installation's single Bot Session, creating it in the given workspace on first use or after the previous one was archived; the record is claimed before the Session is created, so concurrent and retried opens converge on one Session. That registered record is the only source of Bot identity: tool grants, recovery and `SendUser` all consult it, so forks and Sessions derived from the Bot are ordinary Sessions. The Bot Session is created with agent-native coordination tools (scheduled tasks, goals, recall, checklist, Session delegation/inspection and skills), and `SendUser` and `sleep` are granted by identity rather than by that list; ordinary creation cannot request either. `sleep` takes no arguments and has no duration: it ends the Turn and the Bot is woken by a user message, a background worker result or a scheduled event, each of which starts its own Turn. It is refused only while a queued message is already bound for the running Invocation's next step, and it must be called on its own, not in the same step as `SendUser`. A call records its messages in Host-owned storage kept apart from Run state, one record per call and per message: the same `messageId` with the same content is a duplicate and is not recorded again, the same id with different content is refused, and sending nothing is valid. Calls are never evicted, so a reused id is always recognized. `botOutbox` pages messages oldest first after a sequence cursor, and `watchBotOutbox` signals head and read-cursor changes. Each page carries `readThrough` and a `preview` of the latest message, at most 160 characters. `markBotRead` advances a per-Session read cursor, for a former Bot Session too; it only moves forward and cannot pass the head. Queued wakes of the Bot Session, including scheduled and worker-origin messages, continue after an unknown tool outcome with the model told rather than the tool replayed; ordinary Sessions keep the stricter rule.
+The default Maka composition enables `bot`, the Bot mode. `openBot` returns the installation's single Bot Session, creating it in the given workspace on first use or after the previous one was archived; the record is claimed before the Session is created, so concurrent and retried opens converge on one Session. That registered record is the only source of Bot identity: tool grants, recovery and `SendUser` all consult it, so forks and Sessions derived from the Bot are ordinary Sessions. The Bot Session is created with agent-native coordination tools (scheduled tasks, goals, recall, checklist and skills), and `SendUser` and `sleep` are granted by identity rather than by that list; ordinary creation cannot request either. `sleep` takes no arguments and has no duration: it ends the Turn and the Bot is woken by a user message or a scheduled event, each of which starts its own Turn. It is refused only while a queued message is already bound for the running Invocation's next step, and it must be called on its own, not in the same step as `SendUser`. A call records its messages in Host-owned storage kept apart from Run state, one record per call and per message: the same `messageId` with the same content is a duplicate and is not recorded again, the same id with different content is refused, and sending nothing is valid. Calls are never evicted, so a reused id is always recognized. `botOutbox` pages messages oldest first after a sequence cursor, and `watchBotOutbox` signals head changes. Queued wakes of the Bot Session, including scheduled messages, continue after an unknown tool outcome with the model told rather than the tool replayed; ordinary Sessions keep the stricter rule.
 
 The default Maka composition enables `automaticTitles`. Conversations created with `automaticTitle: true` receive one title attempt after their first admitted message, using the accepted model with a bounded, separately accounted request. Explicit titles, manual renames (including the unchanged placeholder), archived and managed sessions retain their names. Retries and Host restarts do not repeat an admitted title attempt; Host shutdown waits for its physical cleanup.
 
@@ -116,7 +116,7 @@ Each logical request resolves context capacity and any independent input ceiling
 
 The default composition enables `recaps`. The Session recap command reads cached text; generating a new recap requires explicit confirmation of the selected model and possible charges. Each request reads at most 256 bounded history pages, keeps at most 32 KiB of history text, and limits output to 1,024 tokens and 30 seconds. Session access is checked even for cached reads. Refresh and original operation recovery never regenerate; an unknown request remains pending across restart. Auxiliary usage belongs to the original application operation, and shutdown waits for physical model cleanup.
 
-The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Original operation identities and receipts survive restart, and sealed Host handoffs use their reserved successors rather than replaying effects. Archived Sessions and changed execution prerequisites require user action before further execution.
+The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Goal iterations retain their original admitted Run and Host receipt identities across restart. Recovery reconciles that Run’s effects and physical cleanup; a later iteration is a new policy-authorized submission, not a physical handoff or request replay. Archived Sessions and changed execution prerequisites require user action before further execution.
 
 ## Read-only discovery
 
@@ -141,14 +141,14 @@ The scheduler waits for actual execution cleanup: admission is not completion.
 `no_report` settles silently; a report is admitted to the Bot once, using its existing
 notification path, where the Bot decides whether to call `SendUser`. The recorded run
 links to the worker and distinguishes report admission from user delivery. Pausing
-cancels the current execution, including a handoff successor, and discards unsent
+retracts the original queued request or stops its admitted Run and discards unsent
 reports; it cannot retract an already admitted Bot message. Restart reconciles the
-original fire, Turn and receipt instead of creating replacement work. A sealed Host
-handoff uses its reserved successor; an interrupted terminal run is recorded as failed.
+original fire, durable queue receipt and Run instead of creating replacement work.
+The investigation slot stays occupied until the original execution and its cleanup settle.
 
 Disabling Bot or scheduling withdraws outstanding investigation work and unsent reports.
 Resuming a plan schedules future work without reviving its cancelled fire. Settlement
-tracks the investigation's original Turn, so later user work in its Session cannot hold
+tracks the investigation's original Run, so later user work in its Session cannot hold
 the investigation slot. Result-write uncertainty remains an unknown tool outcome.
 
 Plans, the active job and completed receipts use the existing scheduler KV namespace;
@@ -171,7 +171,9 @@ The Bot can include `discovery: {record, reason}` in `SendUser` or `sleep`, reco
 notification or withholding in the same model step. A recorded outbox message is required
 for a notification decision. If message publication succeeds but decision acknowledgement
 fails, the tool preserves an unknown outcome; retrying the same message ID does not send
-again. `DiscoveryMemory` also supports explicit decisions and corrections. `feedback`
+again. Reopening alone does not prove an unknown effect or its cleanup has settled;
+the Agent's original reconciliation and risk-decision rules still apply.
+`DiscoveryMemory` also supports explicit decisions and corrections. `feedback`
 links a Bot interpretation to an actual human input in the current Turn; it cannot use
 worker notifications as user feedback. Exact text and quotes stay in the original
 message and are readable through paginated `feedback_source`. `send` accepts optional
@@ -179,7 +181,7 @@ immutable `quotes`, including a quote-only message, through ordinary and steerin
 admission. The native Bot uses this path; external executors retain their existing
 rich-input restrictions. No quote grants access to the referenced Session.
 
-This slice does not import TS discovery data or observe external events. The [discovery tests](src/owner/tests/discovery_tests.rs)
+This slice does not import TS discovery data or observe external events. The [discovery tests](src/owner/driver/tests/model_recovery/discovery.rs)
 exercise the real Host with local model fixtures.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

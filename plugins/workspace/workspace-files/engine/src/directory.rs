@@ -20,7 +20,7 @@
 //! Read-only identity checks for ordinary file grants. No workspace marker is created.
 use cap_fs_ext::MetadataExt;
 use cap_std::{ambient_authority, fs::Dir};
-use maka_agent_facts::execution::DirectoryIdentity;
+use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
     io,
     path::{Path, PathBuf},

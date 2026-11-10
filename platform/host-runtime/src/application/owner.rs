@@ -31,6 +31,14 @@ use std::panic::AssertUnwindSafe;
 type Close = BoxFuture<'static, Result<()>>;
 type Jobs = FuturesUnordered<BoxFuture<'static, Done>>;
 
+// A refused entry is not a handler error, and a panic is not a definite return.
+enum HandlerOutcome {
+    NotInvoked(String),
+    Returned(Result<Value>),
+    Computed,
+    Unknown(String),
+}
+
 struct Failed {
     _execution: Execution<Service>,
     _scope: Scope,
@@ -175,6 +183,7 @@ enum Done {
     IntentRecorded {
         call: Box<Call>,
         recorded: Result<Box<maka_event_log::applications::intents::RecordedIntent>>,
+        resource: Resource,
     },
     Initialized {
         activation: Activation,
@@ -196,6 +205,16 @@ enum Done {
         attachments: Attachments,
         _resources: OwnedSemaphorePermit,
         confirmation: Option<Confirmation>,
+    },
+    IntentLookedUp {
+        consumer: Activation,
+        operation: Uuid,
+        caller: Box<Scope>,
+        resource: Resource,
+        parent: Ticket,
+        result: Box<Result<Option<CallerIntent>>>,
+        reply: oneshot::Sender<Result<Option<CallerIntent>>>,
+        _bytes: OwnedSemaphorePermit,
     },
     Recovered {
         consumer: Activation,
@@ -1400,7 +1419,8 @@ impl Owner {
                                     operation,
                                     input: input.clone(),
                                     capture,
-                                    origin: scope.identity.clone(),
+                                    origin: serde_json::to_value(&scope.identity)
+                                        .map_err(|error| error.to_string())?,
                                 })
                                 .map_err(|e| e.to_string())
                         })
@@ -1435,8 +1455,7 @@ impl Owner {
                                 return Err("Host attachment slots or types mismatch".into());
                             }
                             let size = resource_ingress::attachment_size(&attachments)?;
-                            let input_size =
-                                maka_plugin_core::json::value_size(&input, usize::MAX)?.max(1);
+                            let input_size = kind.input_size(&input)?.max(1);
                             let bytes_needed = size
                                 .descriptors
                                 .checked_add(input_size)
@@ -1466,6 +1485,7 @@ impl Owner {
                                 selected_native_method: self
                                     .issuer
                                     .evidence::<native_context::NativeOrigin>(&scope)
+                                    .filter(|origin| origin.is_direct(&scope))
                                     .and_then(|origin| origin.selected_method.as_deref())
                                     .filter(|selected| selected.matches(&binding, &method)),
                                 consumer: binding.0.consumer(),
@@ -1495,11 +1515,7 @@ impl Owner {
                     }
                     if matches!(
                         kind,
-                        CallKind::PrepareMutation { .. }
-                            | CallKind::Mutation {
-                                confirmation: None,
-                                ..
-                            }
+                        CallKind::PrepareMutation { .. } | CallKind::PendingMutation { .. }
                     ) {
                         return Ok((None, None, request, reference, authenticated_caller, None));
                     }
@@ -1546,14 +1562,42 @@ impl Owner {
                             }));
                             return;
                         }
-                        if matches!(
-                            kind,
-                            CallKind::Mutation {
+                        if let CallKind::PendingMutation {
+                            operation,
+                            recovery,
+                            reply,
+                        } = kind
+                        {
+                            let kind = CallKind::Mutation {
+                                operation,
                                 confirmation: None,
-                                ..
-                            }
-                        ) {
+                                reply,
+                            };
                             let request = request.expect("checked original mutation");
+                            let resource = match self.runtime.own_resource(
+                                binding.0.consumer(),
+                                "original caller intent persistence",
+                            ) {
+                                Ok(resource) => resource,
+                                Err(error) => {
+                                    drop((
+                                        attachments,
+                                        resources,
+                                        bytes,
+                                        input,
+                                        scope,
+                                        capture,
+                                        recovery,
+                                        request,
+                                        binding,
+                                    ));
+                                    if let Some(ticket) = parent.take() {
+                                        ticket.complete(Ok(()));
+                                    }
+                                    kind.reject(error.to_string());
+                                    return;
+                                }
+                            };
                             // Capture the original activation's checked source before any
                             // adoption can replace the desired deployment snapshot.
                             let source = self.origins[request.consumer()].clone();
@@ -1587,12 +1631,16 @@ impl Owner {
                                         &source,
                                         request.consumer().clone(),
                                         reference.expect("checked original reference"),
-                                        serde_json::Value::Null,
+                                        recovery,
                                     )
                                     .await
                                     .map(Box::new)
                                     .map_err(|e| format!("caller intent was not confirmed: {e}"));
-                                Done::IntentRecorded { call, recorded }
+                                Done::IntentRecorded {
+                                    call,
+                                    recorded,
+                                    resource,
+                                }
                             }));
                             return;
                         }
@@ -1617,7 +1665,7 @@ impl Owner {
                         if let Some(ticket) = &mut parent {
                             ticket.start();
                         }
-                        let (output, stream) = kind.accept(
+                        let (mut output, stream) = kind.accept(
                             execution.id(),
                             reference.clone(),
                             execution.value().methods[&method].output.clone(),
@@ -1627,11 +1675,51 @@ impl Owner {
                         let mut context = Context {
                             stream: stream.clone(),
                             caller: authenticated_caller,
+                            native_context: self
+                                .issuer
+                                .evidence::<native_context::NativeOrigin>(&scope)
+                                .filter(|origin| {
+                                    origin.activation == consumer && origin.is_direct(&caller)
+                                })
+                                .filter(|origin| {
+                                    origin
+                                        .selected_method
+                                        .as_deref()
+                                        .is_none_or(|selected| selected.matches(&binding, &method))
+                                })
+                                .and_then(|origin| origin.caller_context.clone()),
                             scope: scope.clone(),
                             consumer: execution.provider().clone(),
                             requester: consumer.clone(),
                             operation: reference.clone(),
                             operation_scope: None,
+                            state: store
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    "provider state requires original Root persistence".to_string()
+                                })
+                                .and_then(|store| {
+                                    let provider = execution.provider();
+                                    let instance = self
+                                        .runtime
+                                        .instance(provider)
+                                        .map_err(|error| error.to_string())?;
+                                    let source = self.origins[provider.instance()].reference();
+                                    let namespace = maka_plugin_core::storage::Namespace::new(
+                                        instance.package.id.clone(),
+                                        maka_plugin_core::scope::Scope::Profile,
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                    Ok(crate::storage::Storage::new(
+                                        store.clone(),
+                                        crate::storage::instance_prefix(
+                                            &source.state_domain,
+                                            source.deployment,
+                                            provider.instance(),
+                                        ),
+                                        namespace,
+                                    ))
+                                }),
                             attachments: attachments.clone(),
                             imports: self.owned[execution.provider().instance()].imports.clone(),
                             exports: self.owned[execution.provider().instance()].exports.clone(),
@@ -1651,68 +1739,216 @@ impl Owner {
                                     operation_store = Some(selected);
                                     result
                                 }.await;
-                                match dispatched.map_err(|error| {
-                                    let original = reference.as_ref().expect("original operation reference");
-                                    tracing::error!(target: "maka_host_runtime::application", stage = "operation_dispatch", cause = diagnostics::cause(&error),
-                                        sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
-                                        operation_id = %original.operation, execution_id = %execution.id(),
-                                        state_domain = %original.source.state_domain, deployment_id = %original.source.deployment, source_revision = original.source.revision,
-                                        "Host runtime failure");
-                                    error.to_string()
-                                }) {
+                                match dispatched.map_err(|error| operation_failure(
+                                    "operation_dispatch", &error,
+                                    reference.as_ref().expect("original operation reference"), execution.id(),
+                                )) {
                                     Ok(OperationDispatch::New(new)) => {
-                                        context.operation_scope = Some(new.auxiliary_scope());
-                                        claim = Some(new); Ok(())
-                                    },
-                                    Ok(OperationDispatch::Existing(observation)) => { historical = Some(Box::new(observation)); Ok(()) },
+                                        claim = Some(new);
+                                        Ok(())
+                                    }
+                                    Ok(OperationDispatch::Existing(observation)) => {
+                                        historical = Some(Box::new(observation));
+                                        Ok(())
+                                    }
                                     Err(error) => {
-                                        let error=format!("operation dispatch was not confirmed: {error}");
-                                        receipt=Some(Err(error.clone())); Err(error)
-                                    },
+                                        receipt = Some(Err(error.clone()));
+                                        Err(error)
+                                    }
                                 }
                             } else { Ok(()) };
-                            let invocation = async {
-                                dispatched?;
-                                if historical.is_some() { return Ok::<Value, String>(Value::Null); }
-                                if scope.cancellation.is_cancelled() { return Err("Host invocation was revoked before callback".into()); }
-                                let service = execution.value();
-                                let value = service.implementation.call(method.clone(), input, context).await?;
-                                if !is_subscription || !value.is_null() {
-                                    service.methods[&method].output.validate(&value).map_err(|e| e.to_string())?;
+                            let entry = dispatched.and_then(|()| {
+                                if historical.is_some() { return Ok(()); }
+                                if scope.cancellation.is_cancelled() {
+                                    return Err("Host invocation was revoked before callback".into());
                                 }
-                                Ok(value)
+                                if let Some(claim) = &claim {
+                                    operation_store.as_ref().expect("original operation store")
+                                        .start_operation(claim)
+                                        .map_err(|error| operation_failure(
+                                            "operation_start", &error, claim.reference(), execution.id(),
+                                        ))?;
+                                    context.operation_scope = Some(claim.auxiliary_scope());
+                                }
+                                Ok(())
+                            });
+                            // No suspension separates the original start fence and handler
+                            // entry. An old auxiliary scope cannot acquire work before start.
+                            let mut state = None;
+                            let mut handler = match entry {
+                                Err(error) => HandlerOutcome::NotInvoked(error),
+                                Ok(()) if historical.is_some() => HandlerOutcome::Returned(Ok(Value::Null)),
+                                Ok(()) => {
+                                    let invocation = async {
+                                        let service = execution.value();
+                                        let value = service.implementation.call(method.clone(), input, context).await?;
+                                        if let Some(output) = value.value() {
+                                            if !is_subscription || !output.is_null() {
+                                                service.methods[&method].output.validate(output)
+                                                    .map_err(|error| HandlerError::Returned { diagnostic: error.to_string() })?;
+                                            }
+                                        }
+                                        Ok(value)
+                                    };
+                                    match AssertUnwindSafe(invocation).catch_unwind().await {
+                                        Ok(Ok(HandlerValue::Json(value))) => HandlerOutcome::Returned(Ok(value)),
+                                        Ok(Ok(HandlerValue::Commit { value, state: change })) if is_mutation && claim.is_some() => {
+                                            state = Some(change);
+                                            HandlerOutcome::Returned(Ok(value))
+                                        }
+                                        Ok(Ok(HandlerValue::Computed { state: change })) if is_mutation && claim.is_some() => {
+                                            state = Some(change);
+                                            HandlerOutcome::Computed
+                                        }
+                                        Ok(Ok(HandlerValue::Commit { .. } | HandlerValue::Computed { .. })) => HandlerOutcome::Returned(Err(
+                                            "pure state completion requires a durable mutation".into(),
+                                        )),
+                                        Ok(Err(HandlerError::Returned { diagnostic })) => HandlerOutcome::Returned(Err(diagnostic)),
+                                        Ok(Err(HandlerError::Unknown { diagnostic })) => HandlerOutcome::Unknown(diagnostic),
+                                        Err(_) => HandlerOutcome::Unknown("Host service executor panicked".into()),
+                                    }
+                                }
                             };
-                            let result = AssertUnwindSafe(invocation).catch_unwind().await;
                             if let Some(stream) = stream { stream.close(); }
-                            let cleanup = scope.finish().await.map_err(|e| e.to_string());
-                            let (result, cleanup) = match result {
-                                Ok(result) => (result, cleanup),
-                                Err(_) => (Err("Host service executor panicked".into()), Err("Host service executor disappeared".into())),
-                            };
-                            if let Some(claim) = claim {
-                                let outcome = match &result {
-                                    Ok(value) => OperationOutcome::Returned { value: value.clone() },
-                                    Err(error) => OperationOutcome::Unknown { diagnostic: diagnostic(error) },
+                            if let Some(claim) = &claim {
+                                let store = operation_store.as_ref().expect("original operation store");
+                                let state_commit = if let Some(state) = state {
+                                    Some(match &handler {
+                                        HandlerOutcome::Returned(Ok(value)) => state.commit(claim, value.clone()).await,
+                                        HandlerOutcome::Computed => state.commit_result(claim, execution.value().methods[&method].output.clone()).await,
+                                        _ => unreachable!("only an original successful or computed completion carries state"),
+                                    })
+                                } else { None };
+                                if let Some(Ok(observation)) = &state_commit {
+                                    if matches!(handler, HandlerOutcome::Computed) {
+                                        handler = match &observation.outcome {
+                                            OperationOutcome::Returned { result: OperationResult::Success { value } } => HandlerOutcome::Returned(Ok(value.clone())),
+                                            OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } } => HandlerOutcome::Returned(Err(diagnostic.clone())),
+                                            _ => HandlerOutcome::Unknown("computed completion has no original Returned outcome".into()),
+                                        };
+                                    }
+                                }
+                                if let Some(Err(error)) = &state_commit {
+                                    let diagnostic = operation_failure("operation_state_commit", error, claim.reference(), execution.id());
+                                    handler = if super::completion::state_rejected(error) {
+                                        let diagnostic = match error.underlying() {
+                                            maka_event_log::StoreError::StatementRejected { diagnostic, .. } => diagnostic.clone(),
+                                            _ => diagnostic,
+                                        };
+                                        HandlerOutcome::Returned(Err(diagnostic))
+                                    } else {
+                                        HandlerOutcome::Unknown(diagnostic)
+                                    };
+                                }
+                                let recorded = match state_commit {
+                                    Some(Ok(observation)) => Ok(observation),
+                                    Some(Err(error)) if super::completion::state_conflict(&error) => Err(error),
+                                    _ => match &handler {
+                                        HandlerOutcome::Computed => unreachable!("computed completion must settle on its original claim"),
+                                        HandlerOutcome::NotInvoked(_) => store.prevent_operation_before_start(claim).await,
+                                        HandlerOutcome::Returned(result) => {
+                                            let result = match result {
+                                                Ok(value) => OperationResult::Success { value: value.clone() },
+                                                Err(error) => OperationResult::Failure { diagnostic: diagnostic(error) },
+                                            };
+                                            store.record_operation_outcome(claim, OperationOutcome::Returned { result }).await
+                                        }
+                                        HandlerOutcome::Unknown(error) => store.record_operation_outcome(claim, OperationOutcome::Unknown {
+                                            diagnostic: diagnostic(error),
+                                        }).await,
+                                    },
                                 };
+                                receipt = Some(recorded.map_err(|error| operation_failure(
+                                    "operation_outcome", &error, claim.reference(), execution.id(),
+                                )));
+                            }
+                            if is_mutation && historical.is_none() {
+                                let receipt = receipt.get_or_insert_with(|| Err("operation receipt unavailable; read original reference".into()));
+                                output.publish_receipt(receipt);
+                            }
+                            // SQL failures affect receipt knowledge, never whether we drain
+                            // the actual executor or independently attempt its cleanup write.
+                            let cleanup = AssertUnwindSafe(scope.finish()).catch_unwind().await
+                                .map_err(|_| "Host service cleanup panicked".to_string())
+                                .and_then(|result| result.map_err(|e| e.to_string()));
+                            let (result, cleanup) = match handler {
+                                HandlerOutcome::Computed => (Err("computed completion has no original receipt".into()), cleanup),
+                                HandlerOutcome::NotInvoked(error) => (Err(error), cleanup),
+                                HandlerOutcome::Returned(result) => (result, cleanup),
+                                HandlerOutcome::Unknown(error) => (Err(error), cleanup),
+                            };
+                            if let Some(claim) = &claim {
                                 let settled_cleanup = match &cleanup {
                                     Ok(()) => OperationCleanup::Confirmed,
                                     Err(error) => OperationCleanup::Failed { diagnostic: diagnostic(error) },
                                 };
-                                receipt=Some(operation_store.as_ref().expect("original operation store").finish_operation(&claim, outcome, settled_cleanup).await.map_err(|error| {
-                                    let original = claim.reference();
-                                    tracing::error!(target: "maka_host_runtime::application", stage = "operation_settlement", cause = diagnostics::cause(&error),
-                                        sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
-                                        operation_id = %original.operation, execution_id = %execution.id(),
-                                        state_domain = %original.source.state_domain, deployment_id = %original.source.deployment, source_revision = original.source.revision,
-                                        "Host runtime failure");
-                                    format!("operation settlement outcome unknown; read original receipt: {error}")
-                                }));
-                            }
-                            if is_mutation && historical.is_none() && receipt.is_none() {
-                                receipt=Some(Err("operation receipt unavailable; read original reference".into()));
+                                let recorded = operation_store.as_ref().expect("original operation store")
+                                    .record_operation_cleanup(claim, settled_cleanup).await
+                                    .map_err(|error| operation_failure(
+                                        "operation_cleanup", &error, claim.reference(), execution.id(),
+                                    ));
+                                // Do not hide an earlier failed/uncertain outcome write with a
+                                // successful cleanup write. Both errors remain observable.
+                                receipt = Some(match (receipt.take().expect("original outcome attempt"), recorded) {
+                                    (Ok(_), recorded) => recorded,
+                                    (Err(error), Ok(_)) => Err(error),
+                                    (Err(outcome), Err(cleanup)) => Err(format!("{outcome}; {cleanup}")),
+                                });
                             }
                             Done::Called { parent, execution, result, historical, consumer, caller: Box::new(caller),
                                 scope: Box::new(scope), cleanup, receipt: receipt.map(Box::new), reply: output, _bytes: bytes, attachments, _resources: resources, confirmation }
+                        }));
+                    }
+                }
+            }
+            Command::LookupIntent {
+                consumer,
+                operation,
+                scope,
+                mut parent,
+                reply,
+                _bytes,
+            } => {
+                let admission = self
+                    .intent_lookup_gate(&consumer, operation, &scope)
+                    .and_then(|source| {
+                        let store = self
+                            .persisted
+                            .as_ref()
+                            .ok_or("caller intent lookup requires an owned State Root")?
+                            .1
+                            .clone();
+                        let resource = self
+                            .runtime
+                            .own_resource(&consumer, "original caller intent lookup")
+                            .map_err(|e| e.to_string())?;
+                        Ok((source.deployment, store, resource))
+                    });
+                match admission {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok((deployment, store, resource)) => {
+                        parent.start();
+                        self.jobs.push(Box::pin(async move {
+                            let result = store
+                                .application_intent(
+                                    deployment,
+                                    consumer.instance().clone(),
+                                    operation,
+                                )
+                                .await
+                                .map_err(|e| e.to_string());
+                            Done::IntentLookedUp {
+                                consumer,
+                                operation,
+                                caller: Box::new(scope),
+                                resource,
+                                parent,
+                                result: Box::new(result),
+                                reply,
+                                _bytes,
+                            }
                         }));
                     }
                 }
@@ -1776,7 +2012,8 @@ impl Owner {
             .map(|origin| &origin.activation)
     }
     fn check_native_origin(&mut self, scope: &Scope) -> Result<()> {
-        if let Some(origin) = self.native_origin(scope) {
+        if let Some(origin) = self.issuer.evidence::<native_context::NativeOrigin>(scope) {
+            let origin = &origin.activation;
             self.check_vm(origin)?;
             if self
                 .runtime
@@ -1789,6 +2026,53 @@ impl Owner {
             }
         }
         Ok(())
+    }
+    fn intent_lookup_gate(
+        &mut self,
+        consumer: &Activation,
+        operation: Uuid,
+        scope: &Scope,
+    ) -> Result<DeploymentRef> {
+        if self.closing || !self.issuer.owns(scope) || scope.cancellation.is_cancelled() {
+            return Err("foreign or closed Host caller intent lookup".into());
+        }
+        self.check_native_origin(scope)?;
+        self.check_vm(consumer)?;
+        if self
+            .runtime
+            .status(consumer)
+            .map_err(|e| e.to_string())?
+            .phase
+            != Phase::Active
+        {
+            return Err("Host caller intent consumer is not active".into());
+        }
+        let source = self
+            .origins
+            .get(consumer.instance())
+            .ok_or("caller intent lookup requires the original consumer source")?
+            .reference()
+            .clone();
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.policy.lookup_intent(IntentLookupInvocation {
+                scope,
+                native_origin: self.native_origin(scope),
+                selected_native_method: self
+                    .issuer
+                    .evidence::<native_context::NativeOrigin>(scope)
+                    .filter(|origin| origin.is_direct(scope))
+                    .and_then(|origin| origin.selected_method.as_deref())
+                    .filter(|selected| selected.binding.consumer() == consumer),
+                consumer,
+                source: &source,
+                operation,
+            })
+        }))
+        .map_err(|_| "Host caller intent lookup policy panicked".to_string())??;
+        if scope.cancellation.is_cancelled() {
+            return Err("Host caller intent lookup was revoked".into());
+        }
+        Ok(source)
     }
     fn recovery_gate(
         &mut self,
@@ -1817,6 +2101,7 @@ impl Owner {
                 selected_native_method: self
                     .issuer
                     .evidence::<native_context::NativeOrigin>(scope)
+                    .filter(|origin| origin.is_direct(scope))
                     .and_then(|origin| origin.selected_method.as_deref())
                     .filter(|selected| selected.recovers(consumer, reference)),
                 consumer,
@@ -1854,32 +2139,41 @@ impl Owner {
                     let _ = reply.send(result);
                 }
             }
-            Done::IntentRecorded { mut call, recorded } => match recorded {
-                Ok(intent) => {
-                    let CallKind::Mutation { confirmation, .. } = &mut call.kind else {
-                        unreachable!("recording belongs to a mutation")
-                    };
-                    *confirmation = Some(Confirmation::Recorded(intent));
-                    self.command(Command::Call(call));
-                }
-                Err(error) => {
-                    let parent = call.parent.take();
-                    let Call {
-                        kind,
-                        attachments,
-                        resources,
-                        bytes,
-                        input,
-                        scope,
-                        ..
-                    } = *call;
-                    drop((attachments, resources, bytes, input, scope));
-                    if let Some(ticket) = parent {
-                        ticket.complete(Ok(()));
+            Done::IntentRecorded {
+                mut call,
+                recorded,
+                resource,
+            } => {
+                match recorded {
+                    Ok(intent) => {
+                        let CallKind::Mutation { confirmation, .. } = &mut call.kind else {
+                            unreachable!("recording belongs to a mutation")
+                        };
+                        *confirmation = Some(Confirmation::Recorded(intent));
+                        self.command(Command::Call(call));
                     }
-                    kind.reject(error);
+                    Err(error) => {
+                        let parent = call.parent.take();
+                        let Call {
+                            kind,
+                            attachments,
+                            resources,
+                            bytes,
+                            input,
+                            scope,
+                            ..
+                        } = *call;
+                        drop((attachments, resources, bytes, input, scope));
+                        if let Some(ticket) = parent {
+                            ticket.complete(Ok(()));
+                        }
+                        kind.reject(error);
+                    }
                 }
-            },
+                self.runtime
+                    .complete_resource(&resource, Ok(()))
+                    .expect("owned caller intent persistence");
+            }
             Done::Initialized {
                 activation,
                 exports,
@@ -1986,6 +2280,33 @@ impl Owner {
                 }
                 reply.send(result, cleanup, receipt.map(|receipt| *receipt));
             }
+            Done::IntentLookedUp {
+                consumer,
+                operation,
+                caller,
+                resource,
+                parent,
+                result,
+                reply,
+                _bytes,
+            } => {
+                let result = self
+                    .intent_lookup_gate(&consumer, operation, &caller)
+                    .and_then(|_| {
+                        let intent = (*result)?;
+                        if let Some(intent) = &intent {
+                            // Only original receipt policy may authorize disclosure of this
+                            // target and method; no current binding reconstructs the reference.
+                            self.recovery_gate(&consumer, &intent.reference, &caller)?;
+                        }
+                        Ok(intent)
+                    });
+                self.runtime
+                    .complete_resource(&resource, Ok(()))
+                    .expect("owned caller intent lookup");
+                parent.complete(Ok(()));
+                let _ = reply.send(result);
+            }
             Done::Recovered {
                 consumer,
                 reference,
@@ -2090,6 +2411,20 @@ impl Owner {
     }
 }
 
+fn operation_failure(
+    stage: &'static str,
+    error: &maka_event_log::StoreError,
+    original: &RecoveryRef,
+    execution: Uuid,
+) -> String {
+    tracing::error!(target: "maka_host_runtime::application", stage, cause = diagnostics::cause(error),
+        sql_code = diagnostics::sql_code(error), os_code = diagnostics::os_code(error),
+        operation_id = %original.operation, execution_id = %execution,
+        state_domain = %original.source.state_domain, deployment_id = %original.source.deployment, source_revision = original.source.revision,
+        "Host runtime failure");
+    format!("{stage} was not confirmed; read original receipt: {error}")
+}
+
 pub(super) fn diagnostic(error: &str) -> String {
     // Keep the encoded diagnostic within the journal budget as well as its
     // raw UTF-8 size. A control character may occupy six JSON bytes.
@@ -2113,6 +2448,3 @@ pub(super) fn diagnostic(error: &str) -> String {
     }
     diagnostic
 }
-
-#[cfg(test)]
-mod tests;

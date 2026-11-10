@@ -17,8 +17,8 @@
  * under the License.
  */
 
-use crate::storage::StoreError;
 use futures_util::future::BoxFuture;
+use maka_plugin_core::storage::StoreError;
 use serde::{Deserialize, Serialize};
 
 /// Tombstones retain their revision, so deletion cannot revive a stale writer.
@@ -39,7 +39,7 @@ pub struct Write {
 }
 impl Write {
     pub fn validate(&self) -> Result<(), crate::Error> {
-        crate::storage::validate_key(&self.key)?;
+        maka_plugin_core::storage::validate_key(&self.key)?;
         if self
             .expected_revision
             .is_some_and(|value| value == 0 || value >= (1 << 53) - 1)
