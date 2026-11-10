@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectProcessGroups } from '../app/processGroups.ts';
 import { historyTurnKey } from '../app/history.ts';
+import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
 const row = (messageId, text, sequence, changes = {}) => ({
   key: messageId,
@@ -32,6 +33,47 @@ const row = (messageId, text, sequence, changes = {}) => ({
   position: { kind: 'live', sequence, fact: '00000000-0000-4000-8000-000000000003', itemIndex: 0 },
   order: { path: [sequence], itemIndex: 0 },
   ...changes,
+});
+
+test('streaming thoughts and tool inputs wait for the history they follow', () => {
+  const overlay = new TranscriptOverlay();
+  overlay.history(new Map(), 6);
+  overlay.page({
+    kind: 'cut',
+    hostEpoch: 'host',
+    runId: 'run',
+    turnId: 'turn',
+    stepId: 'step',
+    attemptId: 'attempt',
+    revision: 1,
+    dependsOn: 8,
+    first: true,
+    last: true,
+    parts: [
+      {
+        ordinal: 0,
+        messageId: 'thought',
+        field: { kind: 'text', textKind: 'thinking' },
+        offset: 0,
+        totalBytes: 8,
+        text: 'Checking',
+      },
+      {
+        messageId: 'input',
+        field: { kind: 'tool_input', toolUseId: 'tool', name: 'read', providerExecuted: false },
+        offset: 0,
+        totalBytes: 2,
+        text: '{}',
+      },
+    ],
+  });
+  const preview = () => {
+    const { rows, tools } = overlay.snapshot();
+    return [...rows.map((row) => row.text), ...tools.map((tool) => tool.name)];
+  };
+  assert.deepEqual(preview(), []);
+  overlay.history(new Map(), 8);
+  assert.deepEqual(preview(), ['Checking', 'read']);
 });
 
 test('a turn has work to fold only beside its final answer', () => {

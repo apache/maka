@@ -348,9 +348,7 @@ export function projectProcessGroups(input: {
   };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
-    .toSorted(
-      (left, right) => (left.startSequence ?? Infinity) - (right.startSequence ?? Infinity),
-    );
+    .toSorted((left, right) => left.startSequence - right.startSequence);
   let nextActivity = 0;
   for (const position of positions) {
     const row = rowsById.get(position.rowId)!;
@@ -366,9 +364,7 @@ export function projectProcessGroups(input: {
           : activity.previewOrder !== undefined && row.preview !== undefined
             ? activity.previewOrder < row.preview.stepOrder
             : compareOptionalOrder(
-                activity.startSequence === undefined
-                  ? undefined
-                  : { path: [activity.startSequence], itemIndex: 0 },
+                { path: [activity.startSequence], itemIndex: 0 },
                 position.order,
               ) <= 0;
       if (!before) break;

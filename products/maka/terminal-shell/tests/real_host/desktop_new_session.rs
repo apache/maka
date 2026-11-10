@@ -1167,6 +1167,20 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await;
     desktop.press("Turn work details").await;
     desktop.control("Toggle tool GetGoal").await;
+    answer
+        .thinking("Checking the log\n\nLook for the next step.")
+        .await;
+    let thinking = desktop.control("Thinking · Checking the log").await;
+    let user = desktop.control("Copy user message").await;
+    let tool = desktop.control("Toggle tool GetGoal").await;
+    let [working] = desktop
+        .controls("Turn work details")
+        .try_into()
+        .expect("the running summary remains visible and expandable while thinking streams");
+    assert!(user.bottom() < working.top());
+    assert!(working.bottom() <= tool.top());
+    assert!(tool.bottom() <= thinking.top());
+    desktop.artifact("streaming-thinking-order");
     answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;
