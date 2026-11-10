@@ -391,17 +391,7 @@ impl Engine {
     /// Drive one original logical Run using a live Native claim. Model streaming,
     /// tool preparation and original receipt observation are polled concurrently.
     /// No parked checkpoint or physical successor Run participates in recovery.
-    // Construct the large future outside the caller's poll frame; keep default-stack Hosts bounded.
-    pub fn drive(
-        &self,
-        claim: DriverClaim,
-        ports: Arc<dyn DriverPorts>,
-        cancellation: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<DriverExit, RunError>> + Send {
-        Box::pin(self.drive_inner(claim, ports, cancellation))
-    }
-
-    async fn drive_inner(
+    pub async fn drive(
         &self,
         claim: DriverClaim,
         ports: Arc<dyn DriverPorts>,

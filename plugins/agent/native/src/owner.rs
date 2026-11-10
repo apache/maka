@@ -521,7 +521,7 @@ impl Owner {
             if settings.scheduled_tasks {
                 catalog.tools = catalog
                     .tools
-                    .with_always_visible(&[discovery::COMPLETE, discovery::MEMORY])
+                    .with_always_visible(&[discovery::MEMORY])
                     .map_err(|e| e.to_string())?;
             }
             Ok(catalog)

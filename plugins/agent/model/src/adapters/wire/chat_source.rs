@@ -317,17 +317,7 @@ fn textual_content(
 ) -> Result<Vec<F>, ModelError> {
     source::chat_textual_array(parts, language).map_err(error)
 }
-// Construct the large future outside the caller's poll frame; keep default-stack Hosts bounded.
-fn encode(
-    message: MessageRecipe,
-    options: &PromptOptions,
-    language: Language,
-    budget: Arc<dyn SourceBudget>,
-) -> impl std::future::Future<Output = Result<Vec<SourceItem>, ModelError>> + Send {
-    Box::pin(encode_inner(message, options, language, budget))
-}
-
-async fn encode_inner(
+async fn encode(
     message: MessageRecipe,
     options: &PromptOptions,
     language: Language,

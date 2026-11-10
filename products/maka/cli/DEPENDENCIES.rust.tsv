@@ -826,6 +826,7 @@ ratex-layout@0.1.15												X
 ratex-lexer@0.1.15												X						
 ratex-parser@0.1.15												X						
 ratex-types@0.1.15												X						
+raw-window-handle@0.6.2		X										X						X
 rayon-core@1.13.0		X										X						
 rayon@1.12.0		X										X						
 ref-cast-impl@1.0.27		X										X						

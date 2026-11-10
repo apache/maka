@@ -829,7 +829,6 @@ impl Owner {
             return Some(
                 COORDINATION_TOOLS
                     .iter()
-                    .chain([&SEND_USER, &SLEEP])
                     .filter(|name| self.tools.contains(name))
                     .map(|name| (*name).to_owned())
                     .collect(),

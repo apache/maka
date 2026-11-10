@@ -21,7 +21,6 @@ use crate::{
     Engine, RunError,
     reconcile::{CompactionLevel, ModelLevel},
 };
-use futures_util::future::BoxFuture;
 use maka_agent_facts::{
     accounting::Outcome,
     context::{
@@ -59,49 +58,43 @@ fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
 }
 
 impl Engine {
-    // Keep the recovery projection future out of the driver's debug poll frame.
-    pub(super) fn recover_legacy_compaction<'a>(
-        &'a self,
-        claim: &'a DriverClaim,
-        view: &'a RunView,
+    pub(super) async fn recover_legacy_compaction(
+        &self,
+        claim: &DriverClaim,
+        view: &RunView,
         at: UnixMillis,
-    ) -> BoxFuture<'a, Result<bool, RunError>> {
-        Box::pin(async move {
-            let Some((blocker, _)) = view.blockers.iter().find(|(_, blocker)| {
-                blocker.resolved_by.is_none()
-                    && blocker.decision.is_none()
-                    && blocker.reason.is_legacy_compaction_lookup()
-            }) else {
-                return Ok(false);
-            };
-            if view.stopped
-                || view.has_unsettled_recovery()
-                || view.recovery_failures().count() != 1
-            {
-                return Ok(false);
-            }
-            let Ok(level) = self.model_level(view).await else {
-                // An invalid or missing summary still fails with the recorded diagnostic.
-                return Ok(false);
-            };
-            let (CompactionLevel::Candidate { summary, .. } | CompactionLevel::Adopted { summary }) =
-                level.compaction
-            else {
-                return Ok(false);
-            };
-            let evidence = ContentBlob::json(&summary)?;
-            self.publish(
-                Some(claim),
-                view,
-                vec![Fact::BlockerResolved {
-                    blocker: *blocker,
-                    evidence: evidence.reference().clone(),
-                }],
-                vec![evidence],
-                at,
-            )
-            .await
-        })
+    ) -> Result<bool, RunError> {
+        let Some((blocker, _)) = view.blockers.iter().find(|(_, blocker)| {
+            blocker.resolved_by.is_none()
+                && blocker.decision.is_none()
+                && blocker.reason.is_legacy_compaction_lookup()
+        }) else {
+            return Ok(false);
+        };
+        if view.stopped || view.has_unsettled_recovery() || view.recovery_failures().count() != 1 {
+            return Ok(false);
+        }
+        let Ok(level) = self.model_level(view).await else {
+            // An invalid or missing summary still fails with the recorded diagnostic.
+            return Ok(false);
+        };
+        let (CompactionLevel::Candidate { summary, .. } | CompactionLevel::Adopted { summary }) =
+            level.compaction
+        else {
+            return Ok(false);
+        };
+        let evidence = ContentBlob::json(&summary)?;
+        self.publish(
+            Some(claim),
+            view,
+            vec![Fact::BlockerResolved {
+                blocker: *blocker,
+                evidence: evidence.reference().clone(),
+            }],
+            vec![evidence],
+            at,
+        )
+        .await
     }
 
     pub(super) async fn model_level(&self, view: &RunView) -> Result<ModelLevel, RunError> {
