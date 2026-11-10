@@ -30,7 +30,7 @@ use nsh_core::{
     platform::Os,
 };
 use objc2::{rc::Retained, runtime::AnyObject};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindow};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSTextView, NSView, NSWindow};
 
 use crate::surface::Surface;
 
@@ -187,6 +187,28 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     if keystroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
         return false;
     }
+    let ctrl_for_command = surface.environment.get().ctrl_for_command;
+    if !fallback && editing && crate::text::has_selection(surface) {
+        let field_selected = window.firstResponder().is_some_and(|r| {
+            r.downcast_ref::<NSTextView>()
+                .is_some_and(|v| v.selectedRange().length > 0)
+        });
+        if !field_selected {
+            let m = keystroke.modifiers;
+            let is_copy = keystroke.key == Key::Char('c')
+                && !m.alt
+                && !m.shift
+                && ((m.cmd && !m.ctrl) || (ctrl_for_command && m.ctrl && !m.cmd));
+            if is_copy {
+                return crate::text::copy(surface);
+            }
+            if keystroke.key == Key::Escape && m == Modifiers::default() {
+                crate::text::clear(surface);
+                return true;
+            }
+            crate::text::clear(surface);
+        }
+    }
     let path = crate::input::focus_path(surface);
     let found = match_table(
         &table,
@@ -194,7 +216,7 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
         editing,
         event.isARepeat(),
         fallback,
-        surface.environment.get().ctrl_for_command,
+        ctrl_for_command,
         |id| path.contains(&id),
     );
     if let Some(id) = found.fired() {

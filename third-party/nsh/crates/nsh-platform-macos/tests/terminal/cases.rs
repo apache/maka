@@ -1390,3 +1390,111 @@ mount(App);
     assert_eq!(copy_focused(), next);
     surface.shutdown();
 }
+
+pub(super) fn focused_rich_editor_yields_copy_to_selected_output() {
+    use nsh_terminal::{MouseButton, MouseDownEvent, MouseUpEvent, point, px};
+
+    const PAGE_COPY_APP: &str = r#"
+import { keymap, mount, signal, Text, View } from "nsh";
+import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
+
+function App() {
+  const session = createRichEditor({ extensions: [StarterKit], content: "draft text" });
+  const focused = signal(false);
+  let editor = null;
+  keymap.bind("f6", () => editor?.focus(), { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <View selectable style={{ height: 32 }}>
+      <Text>Model output</Text>
+    </View>
+    <View
+      onPress={() => {}}
+      accessibilityLabel={focused() ? "EditorFocused" : "EditorBlurred"}
+      style={{ width: 20, height: 20 }}
+    />
+    <RichEditor
+      editor={session}
+      ref={(node) => { editor = node; }}
+      autoFocus
+      onFocus={() => focused.set(true)}
+      onBlur={() => focused.set(false)}
+      style={{ flex: 1, height: 120 }}
+    />
+  </View>;
+}
+mount(App);
+"#;
+
+    let code = nsh_bundler::compile_module("PageCopy.tsx", PAGE_COPY_APP, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    config.ui_sets = vec![nsh_base::registry()];
+    let surface = TerminalSurface::new(
+        config,
+        size(DevicePixels(320), DevicePixels(240)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let chord = |name: &str| {
+        let mut stroke = Keystroke::default();
+        stroke.key = name.into();
+        stroke.modifiers.control = true;
+        let mut down = KeyDownEvent::default();
+        down.keystroke = stroke.clone();
+        let mut up = KeyUpEvent::default();
+        up.keystroke = stroke;
+        surface
+            .dispatch_input(PlatformInput::KeyDown(down))
+            .unwrap();
+        surface.dispatch_input(PlatformInput::KeyUp(up)).unwrap();
+    };
+    let expect_copied = |expected: &str| {
+        let mut copied = None;
+        pump_until(&surface, || {
+            if copied.is_none() {
+                copied = surface.take_clipboard_write();
+            }
+            copied.is_some()
+        });
+        assert_eq!(copied.as_deref(), Some(expected));
+    };
+
+    pump_until(&surface, || {
+        !surface.pressable_bounds("EditorFocused").is_empty()
+    });
+
+    // Double-click "Model" in the selectable output (blurring RichEditor), then
+    // refocus RichEditor programmatically so the output selection remains active.
+    let at = point(px(12.0), px(12.0));
+    let mut down = MouseDownEvent::default();
+    down.button = MouseButton::Left;
+    down.position = at;
+    down.click_count = 2;
+    let mut up = MouseUpEvent::default();
+    up.button = MouseButton::Left;
+    up.position = at;
+    up.click_count = 2;
+    surface
+        .dispatch_input(PlatformInput::MouseDown(down))
+        .unwrap();
+    surface.dispatch_input(PlatformInput::MouseUp(up)).unwrap();
+    pump_until(&surface, || {
+        !surface.pressable_bounds("EditorBlurred").is_empty()
+    });
+
+    key(&surface, "f6");
+    pump_until(&surface, || {
+        !surface.pressable_bounds("EditorFocused").is_empty()
+    });
+
+    let _ = surface.take_clipboard_write();
+    chord("c");
+    expect_copied("Model");
+
+    let _ = surface.take_clipboard_write();
+    chord("a");
+    chord("c");
+    expect_copied("draft text");
+    surface.shutdown();
+}

@@ -455,3 +455,97 @@ fn a_click_on_a_codes_cells_gives_it_the_keys() {
     assert_eq!(view.handle(key("5")), Handled::Yes);
     draw_until(&mut view, &mut terminal, &rx, "5");
 }
+
+#[test]
+fn focused_rich_editor_yields_copy_to_page_selection_and_keeps_select_all_copy_burst() {
+    use std::sync::Arc;
+
+    use nsh_core::clipboard::{ClipboardBackend, MemoryClipboard};
+    use nsh_engine::Bundle;
+    use nsh_platform_tui::{AppOptions, MouseButton::Left, MouseKind};
+
+    let code = nsh_bundler::compile_module(
+        "PageAndComposer.tsx",
+        r#"
+        import { keymap, mount, signal, Text, View } from "nsh";
+        import { createRichEditor, RichEditor, StarterKit } from "nsh/base";
+
+        function App() {
+          const session = createRichEditor({ extensions: [StarterKit], content: "draft text" });
+          const focused = signal(false);
+          let editor = null;
+          keymap.bind("f2", () => editor?.focus(), { when: "always" });
+          return <View style={{ flex: 1 }}>
+            <View selectable>
+              <Text>page output</Text>
+            </View>
+            <Text>{`editor-focused:${focused() ? "yes" : "no"}`}</Text>
+            <RichEditor
+              editor={session}
+              ref={(node) => { editor = node; }}
+              autoFocus
+              onFocus={() => focused.set(true)}
+              onBlur={() => focused.set(false)}
+              style={{ flex: 1 }}
+            />
+          </View>;
+        }
+        mount(App);
+        "#,
+        &[],
+    )
+    .unwrap();
+
+    let clipboard = Arc::new(MemoryClipboard::default());
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut options = AppOptions::default();
+    options.clipboard = Some(clipboard.clone());
+    options.cache = nsh_platform_tui::CacheOptions::off();
+    options.wake = Some(Arc::new(move || {
+        let _ = tx.send(());
+    }));
+    options.ui_sets = vec![nsh_base::registry()];
+    let mut view = AppView::new(options);
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    view.load(Bundle::source(code)).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "editor-focused:yes");
+
+    // Drag-select "page" in the output row (which blurs RichEditor), then
+    // programmatically refocus RichEditor via F2 while keeping the page selection.
+    view.handle(mouse(MouseKind::Down(Left), 0, 0));
+    view.handle(mouse(MouseKind::Move, 4, 0));
+    view.handle(mouse(MouseKind::Up(Left), 4, 0));
+    draw_until(&mut view, &mut terminal, &rx, "editor-focused:no");
+    assert_eq!(view.handle(key("F2")), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "editor-focused:yes");
+
+    let ctrl = |k: &str| Input::Key {
+        key: k.into(),
+        modifiers: Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        release: false,
+    };
+
+    // With nothing selected in RichEditor, Ctrl+C copies the active page selection.
+    assert_eq!(view.handle(ctrl("c")), Handled::Yes);
+    assert_eq!(clipboard.text().as_deref(), Some("page"));
+
+    // Back-to-back Ctrl+A -> Ctrl+C without an intermediate frame clears the page
+    // selection and copies RichEditor's own content in FIFO order.
+    assert_eq!(view.handle(ctrl("a")), Handled::Yes);
+    assert_eq!(view.handle(ctrl("c")), Handled::Yes);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while clipboard.text().as_deref() != Some("draft text") {
+        assert!(
+            Instant::now() < deadline,
+            "clipboard={:?}",
+            clipboard.text()
+        );
+        let _ = rx.recv_timeout(Duration::from_millis(20));
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+    }
+}
