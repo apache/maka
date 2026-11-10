@@ -91,6 +91,7 @@ maka-schema.workspace = true
 maka-skills-api.workspace = true
 maka-workspace-api.workspace = true
 maka-agent-api.workspace = true
+maka-agent-native.workspace = true
 maka-host-js.workspace = true
 maka-transport.workspace = true
 maka-computer-use.workspace = true
@@ -149,6 +150,9 @@ http-body-util = "0.1.5"
 futures-util.workspace = true
 libc.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1.1.5", features = ["fs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

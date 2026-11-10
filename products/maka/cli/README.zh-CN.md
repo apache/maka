@@ -39,6 +39,19 @@
 
 使用 `maka inspect --root DIRECTORY --session SESSION_ID` 查看会话已提交的执行日志。
 
+## 可携带的 Session 存档
+
+从已发布的 checkpoint 回执取出 Session ID 和精确的 revision，导出到新文件。把文件复制到另一台安装了 Maka 的机器，使用新目录打开。
+
+```sh
+maka checkpoint export --root /path/to/host --session "$SESSION_ID" --revision "$REVISION" --output session.tar.gz
+maka checkpoint open session.tar.gz --output inspection
+```
+
+打开后，`checkpoint.json` 记录来源和工作区一致性声明，`history.jsonl` 可逐行查看对话和工具结果，`history.snapshot` 保留完整历史。按 `artifacts.jsonl` 中的摘要可在 `artifacts/` 读取附件。如果存档包含工作区，文件在 `workspace/`。打开过程离线完成，不启动原 Session。源 Head 变化会使导出失败，已有输出也不会被覆盖。
+
+接收端先校验完整性，再发布目标目录。检查目录中所有文件合计的默认限额为 8 GiB，可用 `--max-bytes` 调整；临时校验数据库和暂存对象还需要额外磁盘空间。强制结束进程可能留下隐藏的 `.maka-inspection-*` 临时目录，确认进程退出后可删除。应通过可信渠道获取压缩包，工作区一致性仍以发布时的声明为准。
+
 ## 产品更新、恢复与 URL 安装
 
 组合命令读取完整的 JSON 来源和远程导出文件。插件组合编辑器按最多 64 KiB 的 UTF-8 分页加载指定来源版本，并基于该版本保存已确认的原生编辑器快照。整份文档没有独立字节上限；类型校验、包校验、Host 权限、版本冲突和实际资源准入仍然生效。已提交版本保留完整来源，供后续读取和重新打开 Root 使用。

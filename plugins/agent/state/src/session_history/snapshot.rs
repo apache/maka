@@ -479,13 +479,20 @@ impl Snapshot {
         reference: &ContentRef,
         consume: impl FnOnce(&mut dyn std::io::Read) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
+        self.with_pinned_content(Some(run), reference, consume)
+            .await
+    }
+
+    /// Stream a specific immutable inventory reference under this snapshot's
+    /// custody. Imported entries may have no originating canonical Run.
+    pub async fn with_pinned_content<T: Send + 'static>(
+        &self,
+        run: Option<RunId>,
+        reference: &ContentRef,
+        consume: impl FnOnce(&mut dyn std::io::Read) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
         self.data
-            .query(read::Content(
-                self.clone(),
-                Some(run),
-                reference.clone(),
-                consume,
-            ))
+            .query(read::Content(self.clone(), run, reference.clone(), consume))
             .await
     }
     pub async fn with_source<T: Send + 'static>(

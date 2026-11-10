@@ -28,6 +28,7 @@ use std::future::Future;
 mod journal;
 pub(in crate::root_store) mod load;
 mod objects;
+pub mod portable;
 pub(crate) mod restore;
 mod workspace;
 use objects::Objects;

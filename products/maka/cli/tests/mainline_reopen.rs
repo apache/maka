@@ -23,6 +23,8 @@
 // Cooperative Stop and a clean process restart, not crash/Unknown recovery.
 #[path = "support/host.rs"]
 mod host;
+#[path = "support/portable.rs"]
+mod portable;
 use futures_util::FutureExt;
 use host::{Host, Sandbox};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
@@ -459,7 +461,8 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         }), Attachments::new()).await;
         assert_eq!(created["kind"], "created");
         let session = created["session"]["id"].as_str().unwrap();
-        let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":format!("Use Shell for the one fsynced effect {nonce}."),"delivery":"queue"}), Attachments::new()).await;
+        let attachment = portable::upload(&client, session).await;
+        let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":format!("Use Shell for the one fsynced effect {nonce}."),"attachments":[attachment],"delivery":"queue"}), Attachments::new()).await;
         assert_eq!(sent["kind"], "queued");
         let target = json!({"kind":"message","messageId":sent["messageId"]});
         eprintln!("mainline stage: waiting for the actual Shell result");
@@ -498,6 +501,9 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             }
         }
         let checkpoint = publish_workspace_checkpoint(&client, session, Value::Null).await;
+        let recipient = Sandbox::new().await.unwrap();
+        let archive = recipient.home.join("session.tar.gz");
+        portable::export(&sandbox, session, &checkpoint, &archive).await;
         hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
         eprintln!("mainline stage: original Host exited; inspect canonical identities");
         let original = identities(&sandbox, session, &run).await;
@@ -549,11 +555,18 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             json!({"kind":"message","messageId":followup["messageId"]}), Some("completed")).await;
         assert_ne!(finished["execution"]["runId"], run);
         assert_eq!(finished["answer"]["text"], "Checkpoint follow-up completed.");
-        let successor = publish_workspace_checkpoint(&client, session, checkpoint["revision"].clone()).await;
+        let successor = portable::advance_during_export(&client, &sandbox, session, &checkpoint).await;
         assert_ne!(successor["revision"], checkpoint["revision"]);
+        portable::check_stale(&sandbox, session, &checkpoint).await;
         assert_eq!(tokio::fs::read_to_string(restored_path.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
+        let fork_archive = recipient.home.join("fork.tar.gz");
+        portable::export_fork(&client, &sandbox, session, &fork_archive).await;
         hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
         assert_eq!(identities(&sandbox, session, &run).await, original);
+        tokio::fs::rename(&sandbox.root, sandbox.directory.path().join("offline-source")).await.unwrap();
+        tokio::fs::rename(workspace, sandbox.directory.path().join("offline-project")).await.unwrap();
+        portable::check(&recipient, &archive, session, &checkpoint, &nonce).await;
+        portable::check_fork(&recipient, &fork_archive, session).await;
         stop_wire.cancel();
         server.await.unwrap();
     })).catch_unwind().await;
