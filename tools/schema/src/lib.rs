@@ -200,7 +200,6 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::GoalView>(&mut g),
         root::<maka_agent_api::contract::GoalChange>(&mut g),
         root::<maka_agent_api::contract::GoalResult>(&mut g),
-        root::<maka_agent_api::contract::GoalReceiptRead>(&mut g),
         root::<maka_agent_api::contract::ChecklistRead>(&mut g),
         root::<maka_agent_api::contract::Checklist>(&mut g),
         root::<maka_agent_api::contract::RecapRead>(&mut g),
@@ -239,10 +238,9 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::Stop>(&mut g),
         root::<maka_agent_api::contract::ExecutionRead>(&mut g),
         root::<maka_agent_api::contract::ExecutionResult>(&mut g),
-        root::<maka_agent_api::contract::ResumableRead>(&mut g),
-        root::<maka_agent_api::contract::Resumable>(&mut g),
-        root::<maka_agent_api::contract::Resume>(&mut g),
-        root::<maka_agent_api::contract::ResumeResult>(&mut g),
+        root::<maka_agent_api::contract::ContinueRun>(&mut g),
+        root::<maka_agent_api::contract::ContinuationResult>(&mut g),
+        root::<maka_agent_api::contract::AdjudicateRisk>(&mut g),
         root::<maka_agent_api::contract::UploadAttachment>(&mut g),
         root::<maka_agent_api::contract::Attachment>(&mut g),
         root::<maka_agent_api::contract::AttachmentUploadResult>(&mut g),
@@ -358,6 +356,8 @@ pub fn catalog() -> Value {
         root::<maka_plugin_core::operation::OperationObservation>(&mut g),
         root::<maka_plugin_core::operation::OperationReply>(&mut g),
         root::<ResourceMetadata>(&mut g),
+        root::<maka_plugin_core::storage::Record>(&mut g),
+        root::<maka_plugin_core::storage::Page>(&mut g),
     ];
     // The union makes actual ABI types reachable to the generator. It is not
     // an additional message format or admission contract.

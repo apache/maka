@@ -19,13 +19,16 @@
 
 //! Explicit user-input service. The Host labels this Agent input service; model input cannot impersonate a requester.
 use futures_util::future::BoxFuture;
+use maka_agent_authority::computer::NativeCallContext;
+use maka_agent_authority::executor::ExecutorCallContext;
 use maka_agent_facts::capability::FormRequester;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_event_log::RootStore;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeOwner,
+    NativeRegistry,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -59,47 +62,54 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     )
 }
 struct Forms(Arc<RootStore>);
+enum Caller {
+    Native(Arc<NativeCallContext>),
+    Executor(Arc<ExecutorCallContext>),
+}
 impl Handler for Forms {
     fn call(
         &self,
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
-        let store = self.0.clone();
-        Box::pin(async move {
+    ) -> BoxFuture<'static, HandlerResult> {
+        let result = async move {
             if method != "ask" {
                 return Err("form_method_unavailable".into());
             }
-            let invocation = context
+            let execution = context
                 .scope()
                 .identity
                 .agent()
-                .ok_or("form_requires_agent")?
-                .clone();
-            let store = store
-                .session_for_execution(
-                    context
-                        .execution_custody()
-                        .ok_or("interaction_requires_execution")?
-                        .as_ref(),
-                    &invocation,
-                )
-                .map_err(|error| error.to_string())?;
+                .ok_or("form_requires_agent")?;
             let operation_id = context
                 .scope()
                 .identity
                 .operation_id()
                 .ok_or("form_requires_tool")?;
             let operation = context.operation().ok_or("form_requires_mutation")?;
-            let tool = maka_agent_facts::tools::ToolCallContext {
-                invocation: invocation.clone(),
-                operation_id: operation_id.into(),
-                execution: context.execution_custody().cloned(),
+            let caller = if let Some(native) = context.native_context::<NativeCallContext>() {
+                Caller::Native(native)
+            } else if let Some(executor) = context.native_context::<ExecutorCallContext>() {
+                Caller::Executor(executor)
+            } else {
+                return Err("agent_native_call_context_missing".into());
+            };
+            let tool_use_id = match &caller {
+                Caller::Native(native) => {
+                    let tool = native.access().call();
+                    if &tool.execution != execution || tool.operation_id != operation_id {
+                        return Err("interaction_native_call_mismatch".into());
+                    }
+                    tool.tool_use_id()
+                }
+                Caller::Executor(_) => {
+                    maka_agent_facts::tool_call::tool_use_id(execution.run_id, operation_id)
+                }
             };
             let input: Ask = serde_json::from_value(input).map_err(|_| "form_input_invalid")?;
             let request = InteractionRequest::Form {
-                tool_use_id: tool.tool_use_id(),
+                tool_use_id,
                 message: input.message,
                 requester: FormRequester {
                     name: "Agent".into(),
@@ -117,10 +127,15 @@ impl Handler for Forms {
                     reason: maka_interactions_api::questions::Rejection::Unavailable,
                 });
             }
+            if let Caller::Native(native) = &caller {
+                native
+                    .access()
+                    .bind_original(&context)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             let record = InteractionRecord {
-                session_id: invocation.session_id.clone(),
-                turn_id: invocation.turn_id.clone(),
-                run_id: invocation.run_id.clone(),
+                execution: execution.clone(),
                 request_id: format!(
                     "form_{}",
                     hex::encode(Sha256::digest(
@@ -131,14 +146,17 @@ impl Handler for Forms {
                 request,
                 outcome: None,
             };
-            let Some(result) = maka_agent_authority::interaction_wait::publish(
-                &store,
-                &context,
-                &invocation,
-                &record,
-            )
-            .await?
-            else {
+            let Some(result) = (match &caller {
+                Caller::Native(native) => {
+                    maka_agent_authority::interaction_wait::publish(
+                        native.access(),
+                        &context,
+                        &record,
+                    )
+                    .await?
+                }
+                Caller::Executor(executor) => executor.0.publish_form(&context, &record).await?,
+            }) else {
                 return encode(Answer::Rejected {
                     reason: maka_interactions_api::questions::Rejection::Unavailable,
                 });
@@ -148,6 +166,10 @@ impl Handler for Forms {
                 InteractionOutcome::Closure { reason, .. } => Answer::Closed { reason },
                 _ => return Err("form_outcome_invalid".into()),
             })
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

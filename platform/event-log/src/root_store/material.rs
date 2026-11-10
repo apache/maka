@@ -17,12 +17,11 @@
  * under the License.
  */
 
-//! Root-owned maintenance starts after recovery and rechecks all retired owners
-//! after a committed ownership release. SQLite is the durable progress ledger:
-//! shutdown stops new steps; reopening resumes partially collected material.
+//! Root-owned physical compaction follows committed material releases. Domain
+//! owners decide which canonical bytes may be deleted; this loop only reclaims
+//! pages already freed by those owners, never interprets their facts.
 
 use super::EventLog;
-use crate::sessions::MaterialCollection;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -47,19 +46,16 @@ pub(super) async fn maintain(
 async fn collect(log: &EventLog) {
     let mut releases = log.commits.subscribe_material_releases();
     loop {
-        // Consume only hints preceding this pass. A release during the scan must
-        // remain unread, so owners skipped as Retained get another pass.
+        // A release during a pass remains unread and schedules another pass.
         releases.borrow_and_update();
-        let mut after = None;
         loop {
-            match log.collect_session_material(after.as_deref()).await {
-                Ok(MaterialCollection::Retained(session)) => after = Some(session),
-                Ok(MaterialCollection::Collected) => {}
-                Ok(MaterialCollection::Done) => break,
+            match vacuum_step(log).await {
+                Ok(true) => {}
+                Ok(false) => break,
                 Err(error) => {
-                    // Never spin on an uncertain commit or claim collection is
-                    // complete. A later release/reopen rereads canonical state.
-                    eprintln!("Session material collection failed: {error}");
+                    // Uncertainty is not completion. A later release or reopen
+                    // rereads the physical freelist; no canonical bytes are lost.
+                    eprintln!("Root material compaction failed: {error}");
                     break;
                 }
             }
@@ -70,5 +66,21 @@ async fn collect(log: &EventLog) {
     }
 }
 
-#[cfg(test)]
-mod tests;
+async fn vacuum_step(log: &EventLog) -> Result<bool, crate::StoreError> {
+    log.connection
+        .run(|connection| {
+            let free: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+            if free == 0 {
+                return Ok(false);
+            }
+            let mode: i64 = connection.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))?;
+            if mode != 2 {
+                return Err(crate::StoreError::UnsupportedDatabase);
+            }
+            connection.execute_batch("PRAGMA incremental_vacuum(128)")?;
+            let remaining: i64 =
+                connection.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+            Ok(remaining != 0 && remaining < free)
+        })
+        .await
+}

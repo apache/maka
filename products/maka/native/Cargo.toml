@@ -25,7 +25,10 @@ publish.workspace = true
 [dependencies]
 futures-util.workspace = true
 maka-agent-ports.workspace = true
+maka-agent-state.workspace = true
+maka-event-log.workspace = true
 maka-capabilities.workspace = true
+maka-plugin-core.workspace = true
 maka-config.workspace = true
 maka-model.workspace = true
 maka-network.workspace = true
@@ -47,5 +50,4 @@ maka-web.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true
-maka-event-log.workspace = true
 tempfile.workspace = true

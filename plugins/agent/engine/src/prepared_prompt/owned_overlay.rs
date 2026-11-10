@@ -22,7 +22,6 @@ use maka_agent_facts::{
     context::PreparedContextBreakdown,
     model::prompt_source::{PromptInstructions, source::*},
 };
-use maka_event_log::context::ContextView;
 use maka_provider_protocol::json_stream::pull::{JsonEscape, Transform};
 use sha2::{Digest, Sha256};
 use std::{io, mem, ops::Range, sync::Arc};
@@ -53,19 +52,6 @@ impl OwnedOverlay {
     pub fn user_metadata_bytes() -> usize {
         Self::system_metadata_bytes() + arc_bytes::<PlainUser>().max(arc_bytes::<NativeItem>())
     }
-    pub fn checkpoint_payload_bytes(source: &ContextView) -> usize {
-        source
-            .baseline
-            .as_ref()
-            .and_then(|baseline| baseline.native_item())
-            .map_or(0, |item| {
-                usize::try_from(
-                    maka_agent_facts::context::measure::json_tokens(item).saturating_mul(3),
-                )
-                .unwrap_or(usize::MAX)
-                .saturating_add(arc_bytes::<String>())
-            })
-    }
     pub fn checkpoint_metadata_bytes() -> usize {
         Self::user_metadata_bytes()
     }
@@ -80,37 +66,6 @@ impl OwnedOverlay {
     }
     pub fn user(text: Arc<String>) -> Self {
         Self::new(TextOwner::Owned(text), MessageRole::User)
-    }
-    /// The label contains the complete separator, including the original blank line.
-    pub fn checkpoint(source: Arc<ContextView>, label: &'static str) -> Option<Self> {
-        let baseline = source.baseline.as_ref()?;
-        let checkpoint = &baseline.checkpoint;
-        if let maka_agent_facts::context::CheckpointContent::CodexNative {
-            estimated_tokens, ..
-        } = &checkpoint.summary
-        {
-            let item = baseline
-                .native_item()
-                .expect("validated native checkpoint item");
-            let capacity = usize::try_from(
-                maka_agent_facts::context::measure::json_tokens(item).saturating_mul(3),
-            )
-            .expect("native payload fits its reserved overlay");
-            let mut bytes = Vec::with_capacity(capacity);
-            serde_json::to_writer(&mut bytes, item).expect("native item serializes to JSON");
-            let text = String::from_utf8(bytes).expect("JSON is UTF-8");
-            let mut overlay = Self::new(TextOwner::Owned(Arc::new(text)), MessageRole::Assistant);
-            Arc::get_mut(&mut overlay.0)
-                .expect("new native overlay")
-                .breakdown
-                .assistant
-                .estimated_tokens = *estimated_tokens + 16;
-            return Some(overlay);
-        }
-        Some(Self::new(
-            TextOwner::Checkpoint { source, label },
-            MessageRole::User,
-        ))
     }
     fn new(text: TextOwner, role: MessageRole) -> Self {
         let source = TextSource::new(
@@ -415,26 +370,11 @@ impl RecipeCursor<IdentifiedText> for BoundEmpty {
 #[derive(Clone)]
 enum TextOwner {
     Owned(Arc<String>),
-    Checkpoint {
-        source: Arc<ContextView>,
-        label: &'static str,
-    },
 }
 impl TextOwner {
     fn parts(&self) -> [&str; 2] {
         match self {
             Self::Owned(text) => [text.as_str(), ""],
-            Self::Checkpoint { source, label } => [
-                label,
-                source
-                    .baseline
-                    .as_ref()
-                    .expect("captured checkpoint baseline")
-                    .checkpoint
-                    .summary
-                    .text_value()
-                    .expect("text checkpoint overlay"),
-            ],
         }
     }
     fn len(&self) -> usize {
@@ -453,13 +393,6 @@ impl TextOwner {
     fn materialize(&self) -> String {
         match self {
             Self::Owned(text) => text.as_ref().clone(),
-            Self::Checkpoint { .. } => {
-                let mut text = String::with_capacity(self.len());
-                for part in self.parts() {
-                    text.push_str(part);
-                }
-                text
-            }
         }
     }
     fn commitment(&self, role: MessageRole) -> [u8; 32] {

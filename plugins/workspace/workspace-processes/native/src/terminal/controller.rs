@@ -18,11 +18,11 @@
  */
 
 use super::*;
-use maka_agent_facts::terminal::input::encoded_actions_byte_len;
 use maka_host_runtime::{
     application::Caller,
     shell::{ControlErrorKind, ControlInput, ShellHandle},
 };
+use maka_plugin_core::terminal::input::encoded_actions_byte_len;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -85,6 +85,16 @@ impl Processes {
             .map_err(worker_error)?;
         if !record.state.active() || !record.output.is_pty() {
             return Err(failed("Only an active PTY can be controlled"));
+        }
+        if !context
+            .scope()
+            .sandbox_floor()
+            .contains(&record.permissions.sandbox)
+            .map_err(failed)?
+        {
+            return Err(failed(
+                "PTY sandbox lacks the current private namespace restrictions; start a new terminal",
+            ));
         }
         if current.configuration.permission_basis() != record.permissions.basis {
             return Err(failed(

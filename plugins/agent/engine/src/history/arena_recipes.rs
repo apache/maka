@@ -44,6 +44,7 @@ const RESULT: u64 = 9;
 const MESSAGE: u64 = 10;
 const IDENTIFIED_TEXT: u64 = 12;
 const CONTENT_TEXT_LIST: u64 = 13;
+const REPLAY_ORIGIN: u64 = 14;
 
 /// Zero denotes an absent optional reference; actual arena positions use +1.
 #[derive(Clone, Copy)]
@@ -82,7 +83,8 @@ impl ArenaRecipes {
         let decoded_sources = 8
             * (maka_event_log::context::semantic::CapturedSource::locator_metadata_bytes()
                 + std::mem::size_of::<OwnedBytes>()
-                + 2 * std::mem::size_of::<usize>());
+                + 2 * std::mem::size_of::<usize>()
+                + std::mem::size_of::<ReplayOrigin>());
         decoded_sources
             + std::mem::size_of::<Store>()
             + 2 * std::mem::size_of::<usize>()
@@ -403,6 +405,19 @@ impl ArenaRecipes {
         ))
         .await
     }
+    async fn replay_origin(&self, origin: ReplayOrigin) -> io::Result<Node> {
+        self.record(words(REPLAY_ORIGIN, &origin.encode())).await
+    }
+    async fn read_replay_origin(&self, node: Node) -> io::Result<ReplayOrigin> {
+        let record = self.read(node).await?;
+        if record[0] != REPLAY_ORIGIN {
+            return Err(invalid("missing replay origin"));
+        }
+        ReplayOrigin::decode(
+            record[1..1 + REPLAY_ORIGIN_WORDS].try_into()
+                .map_err(|_| invalid("invalid replay origin record"))?,
+        )
+    }
     pub async fn assistant(
         &self,
         part: AssistantRecipe,
@@ -410,10 +425,20 @@ impl ArenaRecipes {
         cancel: &CancellationToken,
     ) -> io::Result<Node> {
         let reasoning = matches!(&part, AssistantRecipe::Reasoning { .. });
+        let origin = match &part {
+            AssistantRecipe::Reasoning { provider_options, .. } => {
+                let origin = provider_options.as_ref().map(JsonSource::replay_origin)
+                    .unwrap_or(ReplayOrigin::Unattested);
+                Some(self.replay_origin(origin).await?)
+            }
+            AssistantRecipe::CodexCompaction { item } =>
+                Some(self.replay_origin(item.replay_origin()).await?),
+            _ => None,
+        };
         let (tag, fields) = match part {
             AssistantRecipe::CodexCompaction { item } => {
                 let item = self.json(Some(item), budget, cancel).await?;
-                (CODEX_COMPACTION, [item.0, 0, 0, 0, 0, 0])
+                (CODEX_COMPACTION, [item.0, origin.expect("compaction origin").0, 0, 0, 0, 0])
             }
             AssistantRecipe::Text {
                 text,
@@ -431,7 +456,7 @@ impl ArenaRecipes {
                     } else {
                         ASSISTANT_TEXT
                     },
-                    [text.0, options.0, 0, 0, 0, 0],
+                    [text.0, options.0, origin.map_or(0, |node| node.0), 0, 0, 0],
                 )
             }
             AssistantRecipe::ToolCall {
@@ -834,16 +859,21 @@ impl Decode for AssistantRecipe {
                     item: store
                         .read_json(Node(r[1]))
                         .await?
-                        .ok_or_else(|| invalid("missing native compaction"))?,
+                        .ok_or_else(|| invalid("missing native compaction"))?
+                        .with_replay_origin(store.read_replay_origin(Node(r[2])).await?),
                 },
                 ASSISTANT_TEXT => Self::Text {
                     text: store.read_text(Node(r[1])).await?,
                     provider_options: store.read_json(Node(r[2])).await?,
                 },
-                ASSISTANT_REASONING => Self::Reasoning {
-                    text: store.read_text(Node(r[1])).await?,
-                    provider_options: store.read_json(Node(r[2])).await?,
-                },
+                ASSISTANT_REASONING => {
+                    let origin = store.read_replay_origin(Node(r[3])).await?;
+                    Self::Reasoning {
+                        text: store.read_text(Node(r[1])).await?,
+                        provider_options: store.read_json(Node(r[2])).await?
+                            .map(|value| value.with_replay_origin(origin)),
+                    }
+                }
                 ASSISTANT_CALL => Self::ToolCall {
                     tool_call_id: store.read_text(Node(r[1])).await?,
                     tool_name: store.read_text(Node(r[2])).await?,

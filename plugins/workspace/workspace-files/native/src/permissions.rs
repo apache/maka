@@ -22,25 +22,22 @@ use maka_agent_facts::interaction::PermissionRequest;
 use std::path::Component;
 
 pub(super) async fn authorize(
-    store: &maka_event_log::SessionStore,
+    access: &dyn NativeCallAccess,
     captured: Captured,
     configuration: &ResolvedConfiguration,
     tool: &'static str,
     input: &Value,
-    context: &ToolCallContext,
+    floor: &Sandbox,
     cancellation: &CancellationToken,
 ) -> Result<Captured, ToolError> {
     if matches!(captured.sandbox, Sandbox::Disabled) {
         return Ok(captured);
     }
-    let grants = store
-        .permission_grants(
-            &context.invocation,
-            Some(&context.tool_use_id()),
-            &configuration.permission_basis(),
-        )
-        .await
-        .map_err(|_| failed("Workspace permission observation unavailable"))?;
+    let grants = access
+        .permission_grants(access.target(), &configuration.permission_basis())
+        .await?;
+    let floor = floor.clone();
+    let grant_floor = floor.clone();
     let input = input.clone();
     let (mut captured, required) = tokio::task::spawn_blocking(move || {
         let mut captured = captured;
@@ -48,6 +45,7 @@ pub(super) async fn authorize(
             captured.sandbox = captured
                 .sandbox
                 .with_grant(&grant.permissions, &captured.ceiling)
+                .and_then(|sandbox| sandbox.intersect(&grant_floor))
                 .map_err(failed)?;
         }
         let paths = maka_fs_tools::mutation_paths(tool, input, &captured.path)?;
@@ -151,20 +149,20 @@ pub(super) async fn authorize(
         return Ok(captured);
     }
     let grant = maka_agent_authority::permissions::request(
-        store,
-        configuration,
+        access,
         PermissionRequest {
             reason: format!("{tool} needs write access to these files."),
             command: None,
             permissions: required.clone(),
         },
-        context,
+        access.target(),
         cancellation,
     )
     .await?;
     captured.sandbox = captured
         .sandbox
         .with_grant(&grant.permissions, &captured.ceiling)
+        .and_then(|sandbox| sandbox.intersect(&floor))
         .map_err(failed)?;
     if !captured.sandbox.permits(&required).map_err(failed)? {
         return Err(failed(

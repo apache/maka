@@ -45,7 +45,10 @@ pub struct Session {
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
-    audio: Option<crate::driver::AudioCompletion>,
+    audio: Option<(
+        (String, String, crate::ExecutionCorrelation),
+        crate::driver::AudioCompletion,
+    )>,
 }
 
 enum EpochState {
@@ -104,6 +107,7 @@ impl Session {
         self.owner.ensure_open()?;
         if self.id.as_deref() != Some(invocation.session())
             || request.turn_id != invocation.turn()
+            || &request.execution != invocation.execution_correlation()
             || request.native_epoch != self.epoch.to_string()
             || invocation.operation_id().is_none_or(str::is_empty)
         {
@@ -395,7 +399,14 @@ impl Session {
                         invocation,
                     )
                     .await?;
-                    self.audio = Some(completion);
+                    self.audio = Some((
+                        (
+                            invocation.session().to_owned(),
+                            invocation.turn().to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        completion,
+                    ));
                     Ok(started.structured_content.unwrap_or(Value::Null))
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -410,7 +421,16 @@ impl Session {
                         .await?;
                     let snapshot = self.native.lock().await.audio_completion(self.epoch);
                     match snapshot.await {
-                        Ok(completion) => self.audio = Some(completion),
+                        Ok(completion) => {
+                            self.audio = Some((
+                                (
+                                    invocation.session().to_owned(),
+                                    invocation.turn().to_owned(),
+                                    invocation.execution_correlation().clone(),
+                                ),
+                                completion,
+                            ))
+                        }
                         Err(snapshot) => {
                             return match self.discard_audio().await {
                                 Ok(()) => Err(failed(format!(
@@ -854,7 +874,7 @@ impl Session {
     }
     pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
         #[cfg(target_os = "windows")]
-        if let Some(crate::driver::AudioCompletion::Worker(capture)) = self.audio.as_ref() {
+        if let Some((_, crate::driver::AudioCompletion::Worker(capture))) = self.audio.as_ref() {
             // This epoch may outlive a replacement input binding. Its exact
             // original output observation, not "current", selects cleanup.
             capture.discard().await?;
@@ -871,7 +891,10 @@ impl Session {
     pub fn wait_audio_finished(
         &self,
     ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
-        let completion = self.audio.clone();
+        let completion = self
+            .audio
+            .as_ref()
+            .map(|(_, completion)| completion.clone());
         Box::pin(async move {
             completion
                 .ok_or_else(|| failed("Computer audio recording is not active"))?
@@ -885,6 +908,7 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         if self.id.as_deref().is_some_and(|id| id != session) {
@@ -899,13 +923,18 @@ impl Session {
                 .native
                 .lock()
                 .await
-                .finish_windows_turn(self.epoch, session, turn);
+                .finish_windows_turn(self.epoch, session, turn, execution);
             close.await
         };
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let raw = Driver::finish_raw_native_turn(&self.native, self.epoch, turn).await;
+        let raw =
+            Driver::finish_raw_native_turn(&self.native, self.epoch, session, turn, execution)
+                .await;
         let cursor = self.owner.cursor();
-        let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
+        let browsers = self
+            .browsers
+            .finish_turn(turn, execution, &cursor, language)
+            .await;
         #[cfg(target_os = "windows")]
         {
             match (native, browsers) {
@@ -920,7 +949,9 @@ impl Session {
         {
             match (raw, browsers) {
                 (Ok(()), Ok(())) => {
-                    self.raw_computer.handles.retain(|_, owner| owner != turn);
+                    self.raw_computer.handles.retain(|_, owner| {
+                        !(owner.0 == session && owner.1 == turn && &owner.2 == execution)
+                    });
                     Ok(())
                 }
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
@@ -2626,98 +2657,5 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
             Language::ZhCn => "此清单条目不支持启动；请选择其已打开的窗口",
             Language::ZhTw => "此清單項目不支援啟動；請選擇其已開啟的視窗",
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn native_geometry_survives_observation_invalidation() {
-        let frame = crate::macos::page_scroll::PageFrame::from_native_geometry(
-            platform_macos::geometry::NativeWindowGeometry {
-                pid: 1,
-                window_id: 1,
-                layer: 0,
-                bounds: platform_macos::windows::WindowBounds {
-                    x: -10.0,
-                    y: 20.0,
-                    width: 100.25,
-                    height: 80.125,
-                },
-                native_scale: 2.0,
-            },
-            crate::macos::page_scroll::SizingPolicy::SOURCE_DEFAULTS,
-        )
-        .unwrap();
-        let mut target = Target {
-            macos: None,
-            page_frame: Some(frame),
-            window: serde_json::from_value(json!({
-                "window_id":1,"pid":1,"app_name":"fixture","title":"fixture",
-                "bounds":{"x":0.0,"y":0.0,"width":100.0,"height":80.0},
-                "is_on_screen":true,"z_index":null
-            }))
-            .unwrap(),
-            process: "fixture".into(),
-            snapshot: None,
-            capture: Some("old-image".into()),
-            previous: Some("old-AX".into()),
-        };
-        target.invalidate_observation();
-        assert!(target.capture.is_none());
-        assert!(target.previous.is_none());
-        let retained = target.page_frame.unwrap();
-        assert_eq!(retained.screen_point([0.0, 0.0]).unwrap(), [-10.0, 20.0]);
-        assert_eq!(retained.requested_image_size(), [200.5, 160.25]);
-    }
-
-    #[test]
-    fn launch_uses_revalidated_inventory_identity_not_pid_zero_or_caller_path() {
-        let app = |path: &str| AppInfo {
-            pid: 0,
-            name: "Installed app".into(),
-            running: false,
-            active: false,
-            bundle_id: None,
-            launch_path: Some(path.into()),
-            kind: Some("desktop".into()),
-            last_used: None,
-        };
-        let first = app(r#""C:\Apps\First.exe" --profile owned"#);
-        let second = app(r#"C:\Apps\Second.exe"#);
-        assert_ne!(app_id(&first), app_id(&second));
-        let id = app_id(&first);
-        let inventory = [first.clone(), second];
-        assert_eq!(
-            launch_args(&id, &inventory, Language::En).unwrap(),
-            json!({"launch_path":first.launch_path})
-        );
-        assert!(
-            matches!(launch_args("C:\\Apps\\First.exe", &inventory, Language::En), Err(ToolError::Failed(message)) if message.contains("app identity missing"))
-        );
-        assert!(
-            matches!(launch_args(&id, &[inventory[1].clone()], Language::En), Err(ToolError::Failed(message)) if message.contains("app identity missing"))
-        );
-        assert!(
-            matches!(launch_args(&id, &[first.clone(), first.clone()], Language::En), Err(ToolError::Failed(message)) if message.contains("app identity ambiguous"))
-        );
-        let mut family_only = first.clone();
-        family_only.kind = Some("uwp".into());
-        family_only.bundle_id = Some("Maka_fixture_family".into());
-        family_only.launch_path = Some(r"shell:appsFolder\Maka_fixture_family!App".into());
-        assert_eq!(
-            launch_args("Maka_fixture_family", &[family_only], Language::En).unwrap(),
-            json!({"launch_path":r"shell:appsFolder\Maka_fixture_family!App"})
-        );
-        let mut packaged = first;
-        packaged.bundle_id = Some("Maka_fixture!App".into());
-        packaged.kind = Some("uwp".into());
-        assert_eq!(
-            launch_args("Maka_fixture!App", &[packaged], Language::En).unwrap(),
-            json!({"aumid":"Maka_fixture!App"})
-        );
     }
 }

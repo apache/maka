@@ -51,7 +51,7 @@ pub fn method(name: &str) -> Option<(&'static str, bool)> {
     })
 }
 pub fn contract() -> Contract {
-    let methods = [
+    let mut methods: BTreeMap<String, Method> = [
         ("readText", maka_fs_tools::read_schema()),
         ("readImage", maka_fs_tools::read_schema()),
         ("glob", maka_fs_tools::glob_schema()),
@@ -84,6 +84,19 @@ pub fn contract() -> Contract {
         )
     })
     .collect();
+    methods.insert(
+        "publishChange".into(),
+        Method {
+            progress: None,
+            mode: MethodMode::Mutation,
+            input: schemars::schema_for!(maka_fs_tools::publication::PublishChange).into(),
+            output: schemars::schema_for!(maka_fs_tools::publication::PublicationResult).into(),
+            resources: BTreeMap::from([(
+                "content".into(),
+                maka_plugin_core::contract::binary_resource_type().optional(),
+            )]),
+        },
+    );
     Contract {
         name: "maka.workspace.Files".into(),
         version: 1,

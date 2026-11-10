@@ -24,8 +24,24 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("source read failed ({primary}); file cleanup also failed ({cleanup})")]
+    Cleanup {
+        #[source]
+        primary: Box<Error>,
+        cleanup: ReadError,
+    },
     #[error(transparent)]
-    Storage(#[from] maka_capabilities::storage::StoreError),
+    Worker(#[from] tokio::task::JoinError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Encoding(#[from] base64::DecodeError),
+    #[error("unsupported exact source content: {0}")]
+    Unsupported(String),
+    #[error("exact import publication failed: {0}")]
+    Sink(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(transparent)]
+    Storage(#[from] maka_plugin_core::storage::StoreError),
     #[error(transparent)]
     Remote(#[from] maka_agent_ports::remote::Error),
     #[error(transparent)]
@@ -41,8 +57,9 @@ pub enum Error {
     Invalid(&'static str),
 }
 
-/// Evidence for one fixed prefix, including any incomplete final write. Pinning
-/// alone does not freeze in-place writes; multi-pass formats compare this digest.
+/// Evidence for the adapter's fixed source view: exact JSONL prefix bytes, or
+/// the ordered original SQL-cell archive (not SQLite's physical main file).
+/// Pinning does not freeze in-place writes; multi-pass formats compare this digest.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Fingerprint {

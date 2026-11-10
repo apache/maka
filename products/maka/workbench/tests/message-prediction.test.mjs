@@ -91,10 +91,13 @@ function prediction(t, conversation, preferences) {
                 kind: 'recorded',
                 outcome: {
                   kind: 'returned',
-                  value: {
-                    sourceTurnId: input.expectedTurnId,
-                    policyRevision: revision,
-                    suggestion,
+                  result: {
+                    kind: 'success',
+                    value: {
+                      sourceTurnId: input.expectedTurnId,
+                      policyRevision: revision,
+                      suggestion,
+                    },
                   },
                 },
               },
@@ -376,10 +379,13 @@ test('cancelling before begin returns still drains the original receipt after di
         kind: 'recorded',
         outcome: {
           kind: 'returned',
-          value: {
-            sourceTurnId: 'turn-original',
-            policyRevision: 1,
-            suggestion: 'This belongs to the disposed observer.',
+          result: {
+            kind: 'success',
+            value: {
+              sourceTurnId: 'turn-original',
+              policyRevision: 1,
+              suggestion: 'This belongs to the disposed observer.',
+            },
           },
         },
       },

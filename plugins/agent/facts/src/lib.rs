@@ -24,15 +24,16 @@ pub mod archive;
 pub mod artifact;
 pub mod attachment;
 pub mod capability;
+pub mod cells;
 pub mod composition;
 pub mod configuration;
 pub mod context;
 pub mod continuation;
+pub mod durable;
 pub mod event;
 mod event_write;
 pub mod execution;
 pub mod executor;
-pub mod handoff;
 pub mod history;
 pub mod import;
 pub mod input;
@@ -40,7 +41,6 @@ pub mod interaction;
 pub mod language;
 pub mod message;
 pub mod model;
-pub mod model_retry;
 pub mod native_approval;
 pub mod oauth;
 pub mod pricing;
@@ -48,13 +48,16 @@ pub mod provider;
 pub mod public_catalog;
 pub mod read;
 pub mod session;
-pub mod shell_result;
-pub mod shell_run;
-pub mod terminal;
 pub mod tool_call;
 pub mod tool_output;
 pub mod tools;
-pub mod workspace;
 
 pub mod diagnostics;
 pub mod display;
+
+pub mod external_effects;
+pub mod external_publication;
+
+pub mod external_steering;
+
+pub mod history_snapshot;

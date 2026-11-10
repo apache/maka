@@ -21,17 +21,18 @@ use super::*;
 use maka_agent_api::contract::WorkspaceAccess;
 use maka_agent_facts::interaction::PermissionCommand;
 use maka_agent_facts::interaction::PermissionRequest;
-use maka_agent_facts::shell_run::ShellOutput;
-use maka_agent_facts::shell_run::ShellPermissions;
-use maka_agent_facts::shell_run::ShellRun;
-use maka_agent_facts::shell_run::ShellState;
-use maka_agent_facts::shell_run::ShellVisibility;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::display::Display;
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPermissions;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::display::Display;
 use maka_sandbox::filesystem::{Access, Rule};
 
 pub(super) struct Captured {
     pub(super) executor: maka_process::ShellExecutor,
+    pub(super) workspace: std::fs::File,
     ceiling: Sandbox,
 }
 pub(super) fn capture(
@@ -39,6 +40,7 @@ pub(super) fn capture(
     settings: &Configuration,
     state_root: &std::path::Path,
     shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+    floor: &Sandbox,
 ) -> Result<Captured, ToolError> {
     let workspace = &configuration.workspace;
     if workspace.worktree.is_some() && !settings.isolated_workspaces {
@@ -56,15 +58,18 @@ pub(super) fn capture(
     {
         return Err(failed("Workspace marker identity changed"));
     }
+    let workspace_directory = directory.try_clone().map_err(failed)?.into_std_file();
     if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+        let sandbox = Sandbox::Disabled.intersect(floor).map_err(failed)?;
         let executor = maka_process::ShellExecutor::from_directory(
             path,
             directory.into_std_file(),
-            Sandbox::Disabled,
+            sandbox.clone(),
         )?;
         return Ok(Captured {
             executor: select_shell(platform(executor, settings, state_root), shell)?,
-            ceiling: Sandbox::Disabled,
+            workspace: workspace_directory,
+            ceiling: sandbox,
         });
     }
     let (base, protections) =
@@ -80,13 +85,21 @@ pub(super) fn capture(
         filesystem: installed_filesystem,
         network: settings.network.clone(),
     };
-    let ceiling = installation.intersect(&protections).map_err(failed)?;
+    let ceiling = installation
+        .intersect(&protections)
+        .map_err(failed)?
+        .intersect(floor)
+        .map_err(failed)?;
     let base = base.intersect(&ceiling).map_err(failed)?;
     maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
     let executor =
         maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), base)?;
     let executor = select_shell(platform(executor, settings, state_root), shell)?;
-    Ok(Captured { executor, ceiling })
+    Ok(Captured {
+        executor,
+        workspace: workspace_directory,
+        ceiling,
+    })
 }
 /// Platform bootstrap shared by Session and explicitly installed setup launches.
 pub(super) fn platform(
@@ -128,10 +141,12 @@ impl Processes {
     pub(super) async fn execute(
         &self,
         mut input: Execute,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
         configuration: ResolvedConfiguration,
+        floor: &Sandbox,
         cancellation: &CancellationToken,
     ) -> Result<Value, ToolError> {
+        let tool = access.call();
         let requested = input
             .additional_permissions
             .take()
@@ -145,10 +160,11 @@ impl Processes {
             });
         let captured = self
             .prepare(
-                tool,
+                access,
                 &configuration,
                 requested,
                 input.shell.take(),
+                floor,
                 cancellation,
             )
             .await?;
@@ -168,16 +184,7 @@ impl Processes {
         })
         .await
         .map_err(failed)??;
-        // Original SQL projection orders admission against metadata CAS and Turn closure.
-        let current = maka_agent_authority::permissions::live(
-            &maka_agent_authority::permissions::execution(
-                &self.store,
-                &tool.invocation,
-                tool.execution.as_deref(),
-            )?,
-            &tool.invocation,
-        )
-        .await?;
+        let current = access.current().await?;
         if current.permission_basis() != configuration.permission_basis()
             || current.workspace != configuration.workspace
         {
@@ -201,10 +208,9 @@ impl Processes {
         let at = maka_agent_authority::now();
         let record = ShellRun {
             id: format!("{}{}", self.prefix, uuid::Uuid::new_v4()),
-            session_id: tool.invocation.session_id.clone(),
-            source_run_id: Some(tool.invocation.run_id.clone()),
-            source_turn_id: tool.invocation.turn_id.clone(),
-            source_tool_call_id: tool.tool_use_id(),
+            session_id: tool.execution.session_id.clone(),
+            source_work_id: Some(tool.execution.run_id.to_string()),
+            correlation: serde_json::json!({ "execution": tool.execution, "operationId": tool.operation_id, "toolUseId": tool.tool_use_id() }),
             visibility: ShellVisibility::Model,
             permissions: ShellPermissions {
                 basis: configuration.permission_basis(),
@@ -231,14 +237,13 @@ impl Processes {
                 }
             },
         };
-        let execution = tool
-            .execution
-            .as_ref()
-            .map(|token| (tool.invocation.clone(), token.clone()));
+        let custody = tool.custody.clone();
         let mut handle = if input.pty {
-            self.resources.start_pty(record, command, size, execution)
+            self.resources
+                .start_pty(record, command, size, custody, Some(captured.workspace))
         } else {
-            self.resources.start_pipes(record, command, execution)
+            self.resources
+                .start_pipes(record, command, custody, Some(captured.workspace))
         }
         .map_err(|error| match error {
             ShellError::Process(error) => error,
@@ -263,10 +268,11 @@ impl Processes {
 impl Processes {
     pub(super) async fn prepare(
         &self,
-        tool: &ToolCallContext,
+        access: &dyn NativeCallAccess,
         configuration: &ResolvedConfiguration,
         requested: Option<PermissionRequest>,
         shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
+        floor: &Sandbox,
         cancellation: &CancellationToken,
     ) -> Result<Captured, ToolError> {
         let shell = match shell {
@@ -283,24 +289,21 @@ impl Processes {
         let settings = self.settings.clone();
         let state_root = self.state_root.clone();
         let captured_configuration = configuration.clone();
+        let captured_floor = floor.clone();
         let mut captured = tokio::task::spawn_blocking(move || {
-            capture(&captured_configuration, &settings, &state_root, &shell)
+            capture(
+                &captured_configuration,
+                &settings,
+                &state_root,
+                &shell,
+                &captured_floor,
+            )
         })
         .await
         .map_err(failed)??;
-        let store = maka_agent_authority::permissions::execution(
-            &self.store,
-            &tool.invocation,
-            tool.execution.as_deref(),
-        )?;
-        let grants = store
-            .permission_grants(
-                &tool.invocation,
-                Some(&tool.tool_use_id()),
-                &configuration.permission_basis(),
-            )
-            .await
-            .map_err(persistence)?;
+        let grants = access
+            .permission_grants(access.target(), &configuration.permission_basis())
+            .await?;
         let mut sandbox = captured.executor.sandbox().clone();
         for grant in grants {
             sandbox = sandbox
@@ -322,14 +325,13 @@ impl Processes {
             }
             if !sandbox.permits(&required).map_err(failed)? {
                 let grant = maka_agent_authority::permissions::request(
-                    &store,
-                    configuration,
+                    access,
                     PermissionRequest {
                         reason: requested.reason,
                         command: requested.command,
                         permissions: required.clone(),
                     },
-                    tool,
+                    access.target(),
                     cancellation,
                 )
                 .await?;
@@ -353,7 +355,7 @@ impl Processes {
                 .map_err(|_| failed("Process network route unavailable"))?;
         captured.executor = captured
             .executor
-            .with_sandbox(sandbox)
+            .with_sandbox(sandbox.intersect(floor).map_err(failed)?)
             .with_network_route(route);
         Ok(captured)
     }

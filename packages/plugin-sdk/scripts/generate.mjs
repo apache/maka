@@ -190,9 +190,16 @@ outputs.set(
   new URL('../src/contracts.ts', import.meta.url),
   banner +
     "import type { Contract } from './generated/runtime.js';\n\n" +
-    'export const contracts = ' +
+    'export const contracts: {\n' +
+    Object.entries(catalog.contracts)
+      .map(
+        ([name, contract]) =>
+          `  ${JSON.stringify(name)}: Contract & { name: ${JSON.stringify(contract.name)}; version: ${contract.version}; transport: ${JSON.stringify(contract.transport)}; interface: Extract<Contract['interface'], { kind: ${JSON.stringify(contract.interface.kind)} }> };`,
+      )
+      .join('\n') +
+    '\n} = ' +
     JSON.stringify(catalog.contracts, null, 2) +
-    ' satisfies Record<string, Contract>;\n',
+    ';\n',
 );
 outputs.set(
   new URL('../src/configurations.ts', import.meta.url),

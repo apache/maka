@@ -928,6 +928,12 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
     focused_view(surface).filter(|view| view.state().input.is_some())
 }
 
+pub(crate) fn focused_has_selection(surface: &Surface) -> bool {
+    focused(surface)
+        .and_then(|view| input_of(&view))
+        .is_some_and(|input| input.model.borrow().has_selection())
+}
+
 pub(crate) fn composing(view: &NshView) -> bool {
     input_of(view).is_some_and(|input| input.model.borrow().composition.is_some())
 }

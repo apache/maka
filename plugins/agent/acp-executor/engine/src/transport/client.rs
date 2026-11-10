@@ -24,19 +24,14 @@ use agent_client_protocol::{
     v1::{self, schema as acp_v1},
     v2::{self, schema as acp_v2},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 use tokio::sync::mpsc;
 
 pub(super) async fn connect<C: sdk::ConnectTo<sdk::Client>>(
     send: mpsc::Sender<Event>,
     files: bool,
-    mut transport: impl FnMut() -> C + Clone + Send + 'static,
+    transport: impl FnMut() -> C + Clone + Send + 'static,
 ) -> sdk::Result<()> {
-    let retry = Arc::new(AtomicBool::new(false));
-    let result = sdk::Client
+    sdk::Client
         .protocol_connector()
         .with_v1({
             let send = send.clone();
@@ -44,18 +39,10 @@ pub(super) async fn connect<C: sdk::ConnectTo<sdk::Client>>(
         })
         .with_v2({
             let send = send.clone();
-            let retry = retry.clone();
-            move || v2(send.clone(), retry.clone())
+            move || v2(send.clone())
         })
-        .connect_to(transport.clone())
-        .await;
-    if result.is_err() && retry.load(Ordering::Acquire) {
-        // Some legacy peers echo version 2 with a v1 response envelope. The
-        // failed typed initialize authorizes one fresh, native v1 attempt only.
-        // No response is rewritten and no business request has been sent.
-        return sdk::ConnectTo::<sdk::Client>::connect_to(transport(), v1(send, files)).await;
-    }
-    result
+        .connect_to(transport)
+        .await
 }
 
 pub(crate) enum Peer {
@@ -117,7 +104,7 @@ impl Event {
     }
 }
 
-pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<sdk::Agent> {
+pub(super) fn v1(send: mpsc::Sender<Event>, _files: bool) -> impl sdk::ConnectTo<sdk::Agent> {
     let (updates, reads, writes, permissions) =
         (send.clone(), send.clone(), send.clone(), send.clone());
     sdk::Client
@@ -160,23 +147,31 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
             sdk::on_receive_request!(),
         )
         .with_spawned(async move |peer| {
-            let initialized = peer
-                .send_request(
-                    acp_v1::InitializeRequest::new(ProtocolVersion::V1)
-                        .client_info(acp_v1::Implementation::new(
-                            "maka",
-                            env!("CARGO_PKG_VERSION"),
-                        ))
-                        .client_capabilities(
-                            acp_v1::ClientCapabilities::new().fs(
-                                acp_v1::FileSystemCapabilities::new()
-                                    .read_text_file(files)
-                                    .write_text_file(files),
+            let initialized =
+                peer
+                    .send_request(
+                        acp_v1::InitializeRequest::new(ProtocolVersion::V1)
+                            .client_info(acp_v1::Implementation::new(
+                                "maka",
+                                env!("CARGO_PKG_VERSION"),
+                            ))
+                            .client_capabilities(
+                                acp_v1::ClientCapabilities::new()
+                                    .fs(acp_v1::FileSystemCapabilities::new()
+                                        .read_text_file(false)
+                                        .write_text_file(false))
+                                    .session(
+                                        acp_v1::ClientSessionCapabilities::new().config_options(
+                                            acp_v1::SessionConfigOptionsCapabilities::new()
+                                                .boolean(
+                                                    acp_v1::BooleanConfigOptionCapabilities::new(),
+                                                ),
+                                        ),
+                                    ),
                             ),
-                        ),
-                )
-                .block_task()
-                .await?;
+                    )
+                    .block_task()
+                    .await?;
             if initialized.protocol_version != ProtocolVersion::V1 {
                 return Err(sdk_error("unsupported negotiated ACP version"));
             }
@@ -187,10 +182,7 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
         })
 }
 
-pub(super) fn v2(
-    send: mpsc::Sender<Event>,
-    retry: Arc<AtomicBool>,
-) -> impl sdk::ConnectTo<sdk::Agent> {
+pub(super) fn v2(send: mpsc::Sender<Event>) -> impl sdk::ConnectTo<sdk::Agent> {
     let (updates, permissions) = (send.clone(), send.clone());
     sdk::Client
         .v2()
@@ -221,9 +213,7 @@ pub(super) fn v2(
                 ))
                 .block_task()
                 .await;
-            let initialized = initialized.inspect_err(|error| {
-                retry.store(error.code == sdk::ErrorCode::PARSE_ERROR, Ordering::Release);
-            })?;
+            let initialized = initialized?;
             send.send(Event::Initialized(Box::new(Peer::V2(peer, initialized))))
                 .await
                 .map_err(sdk_error)?;

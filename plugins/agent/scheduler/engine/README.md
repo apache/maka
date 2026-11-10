@@ -21,6 +21,6 @@
 
 [简体中文](README.zh-CN.md)
 
-Owns scheduled-task definitions, scheduling decisions and delivery state. `controller` drives the workflow; `repository` persists tasks; `authorization` checks the task's authority. A due task still needs normal execution admission. Delivery and recovery records prevent uncertainty from being treated as permission to dispatch again.
+Provides scheduled-task timing, cron/timezone calculation, misfire policy and pure `TaskPlan<E, A>` claim, settlement and editing rules. The Agent owner supplies effect and approval types, persists plans in its Root and submits execution through the shared durable Run driver. Frozen Fire data preserves an original delivery's identity across recovery; it does not grant execution authority.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

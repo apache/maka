@@ -24,12 +24,53 @@ use cua_driver_core::browser::{
     ExtensionClaimCdpDrainProof, ExtensionClaimPreparationProof, ExtensionCreatedTab,
     ExtensionCreationReceipt, ExtensionEffectOwner, ExtensionFixedSessionReceipt,
     ExtensionGroupColor, ExtensionGroupPresentation, ExtensionHeader, ExtensionHeaderPolicyScope,
-    ExtensionHostOperation, ExtensionManagedGroupReceipt, ExtensionOperation,
-    ExtensionPhysicalClaim, ExtensionPopupRequest, ExtensionPreparationDocument,
-    ExtensionPreparationPolicy, ExtensionProviderEvent, ExtensionRecoveredOperation,
-    ExtensionSessionHeaderProof, ExtensionSessionPopupRequest, ExtensionSessionPreparation,
-    ExtensionSessionRequestRegistration, ExtensionUserTabsOrder, ExtensionWireContext,
+    ExtensionManagedGroupReceipt, ExtensionOperation, ExtensionPhysicalClaim,
+    ExtensionPopupRequest, ExtensionPreparationDocument, ExtensionPreparationPolicy,
+    ExtensionProviderEvent, ExtensionRecoveredOperation, ExtensionSessionHeaderProof,
+    ExtensionSessionPopupRequest, ExtensionSessionPreparation, ExtensionSessionRequestRegistration,
+    ExtensionUserTabsOrder, ExtensionWireContext,
 };
+/// Original admitted routing metadata, not a lease or permission. Vendor wire
+/// observations intentionally retain their presentation turn, never an execution alias.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BoundHostOperation {
+    pub(super) operation_id: String,
+    pub(super) turn_id: String,
+    pub(super) execution: crate::ExecutionCorrelation,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ExecutionScope {
+    pub(super) turn: String,
+    pub(super) execution: crate::ExecutionCorrelation,
+}
+impl ExecutionScope {
+    fn new(turn: &str, execution: &crate::ExecutionCorrelation) -> Self {
+        Self {
+            turn: turn.to_owned(),
+            execution: execution.clone(),
+        }
+    }
+    fn matches(&self, turn: Option<&str>, execution: Option<&crate::ExecutionCorrelation>) -> bool {
+        turn.is_none_or(|turn| self.turn == turn)
+            && execution.is_none_or(|execution| &self.execution == execution)
+    }
+}
+
+impl BoundHostOperation {
+    fn scope(&self) -> ExecutionScope {
+        ExecutionScope::new(&self.turn_id, &self.execution)
+    }
+    fn to_wire(&self) -> cua_driver_core::browser::ExtensionHostOperation {
+        cua_driver_core::browser::ExtensionHostOperation {
+            operation_id: self.operation_id.clone(),
+            turn_id: self.turn_id.clone(),
+        }
+    }
+    fn matches_wire(&self, wire: &cua_driver_core::browser::ExtensionHostOperation) -> bool {
+        self.operation_id == wire.operation_id && self.turn_id == wire.turn_id
+    }
+}
+
 fn mark_to_core(mark: TabMark) -> cua_driver_core::browser::ExtensionKeepStatus {
     match mark {
         TabMark::Handoff => cua_driver_core::browser::ExtensionKeepStatus::Handoff,
@@ -169,8 +210,8 @@ impl Host {
             .calls
             .get(&scope.context.operation_id)
             .ok_or_else(|| failed("user-tab context lost its original Host operation"))?;
-        if state.current_turn.as_deref() != Some(scope.context.turn_id.as_str())
-            || state.retiring_turn.is_some()
+        if state.current_scope.as_ref() != Some(&scope.context.scope())
+            || state.retiring_scope.is_some()
             || state.headers_unknown
             || call.epoch != scope.epoch
             || call.turn != scope.context.turn_id
@@ -319,13 +360,16 @@ enum FocusReadiness {
 pub(super) struct Acquisition {
     owner: uuid::Uuid,
     identity: TabIdentity,
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     sequence: u64,
 }
 impl Acquisition {
     pub(super) fn turn(&self) -> &str {
         &self.operation.turn_id
+    }
+    pub(super) fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        &self.operation.execution
     }
 }
 
@@ -342,14 +386,14 @@ enum ControlCleanup {
 enum UserPreparation {
     #[default]
     NotAttempted,
-    Pending(ExtensionHostOperation),
+    Pending(BoundHostOperation),
     Completed,
     Unknown(String),
 }
 
 #[derive(Clone)]
 struct CreatedOperation {
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
 }
 
@@ -357,7 +401,7 @@ struct CreatedOperation {
 enum PreparedOperation {
     Observed,
     Acquired {
-        operation: ExtensionHostOperation,
+        operation: BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
     },
 }
@@ -373,7 +417,7 @@ struct PreparationAttempt {
     document: ExtensionPreparationDocument,
     policy: Arc<ExtensionPreparationPolicy>,
     wire: ExtensionWireContext,
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     previous: Option<PreparationAcknowledgement>,
     effects: PreparationEffectSnapshot,
 }
@@ -446,7 +490,7 @@ enum ClaimRetirement {
 /// remains authoritative until a matched acquisition acknowledgement commits it.
 pub(super) struct HandoffTransfer {
     requested: Creator,
-    operation: ExtensionHostOperation,
+    operation: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     previous: ClaimState,
     previous_parked: bool,
@@ -489,7 +533,7 @@ impl HandoffTransfer {
         &self,
         owner: uuid::Uuid,
         provider: &Provider,
-        context: &ExtensionHostOperation,
+        context: &BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
     ) -> bool {
         self.requested.owner == owner
@@ -534,7 +578,7 @@ pub(super) struct ClaimState {
     fixed_preparation: FixedPreparation,
     preparation_effects: PreparationEffects,
     metadata_attached: bool,
-    session_prepared_operation: Option<ExtensionHostOperation>,
+    session_prepared_operation: Option<BoundHostOperation>,
     cleanup_started: bool,
     cleanup_revocation: Option<String>,
     physical_cleanup: Option<CleanupProof>,
@@ -554,7 +598,7 @@ impl ClaimState {
 
     fn finish_preparation_error(
         &mut self,
-        operation: Option<&ExtensionHostOperation>,
+        operation: Option<&BoundHostOperation>,
         refused: bool,
         reason: &str,
     ) {
@@ -601,6 +645,7 @@ struct BoundExtensionCreated {
 struct LeaseChildScope {
     effects: Arc<dyn crate::BrowserHostEffects>,
     turn: String,
+    execution: crate::ExecutionCorrelation,
     epoch: crate::desktop::NativeEpochId,
 }
 
@@ -643,12 +688,14 @@ impl PopupSource {
             Self::Fixed(request) => request.url(),
         }
     }
-    fn subject(&self) -> crate::BrowserLeaseSubject {
+    fn subject(&self) -> maka_plugin_core::computer::BrowserLeaseSubject {
         match self {
-            Self::Physical(request) => crate::BrowserLeaseSubject::PhysicalClaim {
-                claim_id: request.claim_id().into(),
-            },
-            Self::Fixed(request) => crate::BrowserLeaseSubject::FixedSession {
+            Self::Physical(request) => {
+                maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim {
+                    claim_id: request.claim_id().into(),
+                }
+            }
+            Self::Fixed(request) => maka_plugin_core::computer::BrowserLeaseSubject::FixedSession {
                 scope_id: request.scope_id().into(),
             },
         }
@@ -725,7 +772,7 @@ struct OverlayScope {
     epoch: crate::desktop::NativeEpochId,
     origin: crate::BrowserAttachmentOrigin,
     provider: Provider,
-    context: ExtensionHostOperation,
+    context: BoundHostOperation,
 }
 #[derive(Default)]
 struct ControlGate {
@@ -835,6 +882,7 @@ impl SessionRequestRegistration {
 #[derive(Clone)]
 struct CallContext {
     turn: String,
+    execution: crate::ExecutionCorrelation,
     epoch: crate::desktop::NativeEpochId,
     purposes: HashSet<CallPurpose>,
     issuing: Arc<AtomicUsize>,
@@ -843,6 +891,9 @@ struct CallContext {
     controls: Arc<ControlGate>,
 }
 impl CallContext {
+    fn scope(&self) -> ExecutionScope {
+        ExecutionScope::new(&self.turn, &self.execution)
+    }
     fn requires_finish(&self) -> bool {
         self.activation.load(Ordering::SeqCst)
             || self
@@ -877,7 +928,7 @@ struct CallScope {
     controls: Arc<ControlGate>,
     owner: uuid::Uuid,
     provider: Provider,
-    context: ExtensionHostOperation,
+    context: BoundHostOperation,
     epoch: crate::desktop::NativeEpochId,
     target: Option<String>,
     purpose: CallPurpose,
@@ -900,7 +951,7 @@ pub(super) enum PreparationTransport {
 }
 
 struct AgentTransportAuthorization {
-    context: ExtensionHostOperation,
+    context: BoundHostOperation,
     request: crate::BrowserSessionPreparation,
     authorization: Arc<dyn crate::BrowserAuthorization>,
 }
@@ -1131,6 +1182,7 @@ impl CallScope {
         }
         preparation.check_scope(
             invocation.turn(),
+            invocation.execution_correlation(),
             invocation.operation_id().unwrap_or_default(),
         )?;
         if operation(invocation)? != self.context
@@ -1164,8 +1216,9 @@ impl CallScope {
                     browser_id: self.provider.id().to_owned(),
                     generation: preparation.generation.clone(),
                     turn_id: self.context.turn_id.clone(),
+                    execution: self.context.execution.clone(),
                     tab_id: claim.tab_id().to_string(),
-                    subject: crate::BrowserLeaseSubject::PhysicalClaim {
+                    subject: maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim {
                         claim_id: claim.claim_id().to_owned(),
                     },
                 },
@@ -1198,6 +1251,7 @@ impl CallScope {
             browser_id: self.provider.id().to_owned(),
             generation: extension.identity().generation.clone(),
             turn_id: self.context.turn_id.clone(),
+            execution: self.context.execution.clone(),
             operation_id: self.context.operation_id.clone(),
             target,
         };
@@ -1281,7 +1335,7 @@ impl SessionMetadataCall {
         self.host.lock().await.resume_marked_handoffs(
             self.scope.owner,
             &self.scope.provider,
-            &self.scope.context.turn_id,
+            &self.scope.context,
         );
         self.check().await?;
         let ledger = self.host.lock().await;
@@ -1418,14 +1472,14 @@ enum FinishPhase {
 }
 pub(super) struct ProviderState {
     provider: Provider,
-    pub(super) current_turn: Option<String>,
+    pub(super) current_scope: Option<ExecutionScope>,
     pub(super) pending_viewport: Option<capability::viewport::Pending>,
-    retiring_turn: Option<String>,
+    retiring_scope: Option<ExecutionScope>,
     logical_active: Option<String>,
     session_group_title: Option<String>,
     calls: HashMap<String, CallContext>,
     applied: HashSet<u64>,
-    finish_phases: HashMap<String, FinishPhase>,
+    finish_phases: HashMap<ExecutionScope, FinishPhase>,
     session_headers: Option<ExtensionSessionHeaderProof>,
     headers_unknown: bool,
     uploads: upload::Custody,
@@ -1435,7 +1489,7 @@ pub(super) struct ProviderState {
 impl ProviderState {
     fn fold_activation(&mut self) {
         for call in self.calls.values().filter(|call| call.requires_finish()) {
-            match self.finish_phases.entry(call.turn.clone()) {
+            match self.finish_phases.entry(call.scope()) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(FinishPhase::Required);
                 }
@@ -1443,28 +1497,32 @@ impl ProviderState {
                     if matches!(entry.get(), FinishPhase::Acknowledged) =>
                 {
                     entry.insert(FinishPhase::Unknown(
-                        "extension activation crossed an acknowledged turn cleanup".to_owned(),
+                        "extension activation crossed an acknowledged scope cleanup".to_owned(),
                     ));
                 }
                 _ => {}
             }
         }
     }
-    fn activation_turn(&self, selected: Option<&str>) -> Option<String> {
-        self.finish_phases.iter().find_map(|(turn, phase)| {
-            (selected.is_none_or(|selected| selected == turn)
-                && !matches!(phase, FinishPhase::Acknowledged))
-            .then(|| turn.clone())
+    fn activation_scope(
+        &self,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) -> Option<ExecutionScope> {
+        self.finish_phases.iter().find_map(|(scope, phase)| {
+            (scope.matches(turn, execution) && !matches!(phase, FinishPhase::Acknowledged))
+                .then(|| scope.clone())
         })
     }
-    fn admit_turn(&mut self, turn: &str) -> Result<(), ToolError> {
-        if self.retiring_turn.is_some() {
+    fn admit_scope(&mut self, operation: &BoundHostOperation) -> Result<(), ToolError> {
+        let scope = operation.scope();
+        if self.retiring_scope.is_some() {
             return Err(ToolError::CleanupUnconfirmed(
-                "extension turn cleanup remains active".to_owned(),
+                "extension scope cleanup remains active".to_owned(),
             ));
         }
         if matches!(
-            self.finish_phases.get(turn),
+            self.finish_phases.get(&scope),
             Some(
                 FinishPhase::Pending
                     | FinishPhase::Unknown(_)
@@ -1473,48 +1531,44 @@ impl ProviderState {
             )
         ) {
             return Err(ToolError::CleanupUnconfirmed(
-                "extension turn has an unresolved or completed cleanup".to_owned(),
+                "extension scope has an unresolved or completed cleanup".to_owned(),
             ));
         }
-        if self.current_turn.as_deref() != Some(turn) {
-            // Seal old prospective scopes before inspecting their may-dispatch
-            // facts. A late old operation cannot race the logical turn switch.
-            for call in self.calls.values().filter(|call| call.turn != turn) {
+        if self.current_scope.as_ref() != Some(&scope) {
+            for call in self.calls.values().filter(|call| call.scope() != scope) {
                 call.controls.seal();
             }
             self.fold_activation();
             if self
                 .calls
                 .values()
-                .any(|call| call.turn != turn && !call.controls.is_idle())
-                || self
-                    .finish_phases
-                    .iter()
-                    .any(|(old, phase)| old != turn && !matches!(phase, FinishPhase::Acknowledged))
+                .any(|call| call.scope() != scope && !call.controls.is_idle())
+                || self.finish_phases.iter().any(|(old, phase)| {
+                    old != &scope && !matches!(phase, FinishPhase::Acknowledged)
+                })
             {
                 return Err(ToolError::CleanupUnconfirmed(
-                    "previous extension turn activation must be cleaned before changing turn"
+                    "previous extension scope activation must be cleaned before changing execution"
                         .to_owned(),
                 ));
             }
-            self.current_turn = Some(turn.to_owned());
+            self.current_scope = Some(scope);
         }
         Ok(())
     }
 }
 
-fn operation(
-    invocation: &crate::InvocationContext<'_>,
-) -> Result<ExtensionHostOperation, ToolError> {
+fn operation(invocation: &crate::InvocationContext<'_>) -> Result<BoundHostOperation, ToolError> {
     let id = invocation
         .operation_id()
         .filter(|id| !id.is_empty())
         .ok_or_else(|| {
             failed("extension browser mutations require the current Host operation identity")
         })?;
-    Ok(ExtensionHostOperation {
+    Ok(BoundHostOperation {
         operation_id: id.to_owned(),
         turn_id: invocation.turn().to_owned(),
+        execution: invocation.execution_correlation().clone(),
     })
 }
 fn preparation_headers(invocation: &crate::InvocationContext<'_>) -> Vec<ExtensionHeader> {
@@ -1541,10 +1595,11 @@ fn fixed_cursor_spec(
         .ok_or_else(|| failed("fixed extension preparation requires the Host cursor configuration"))
 }
 
-fn context_operation(turn: &str) -> ExtensionHostOperation {
-    ExtensionHostOperation {
+fn context_operation(turn: &str, execution: &crate::ExecutionCorrelation) -> BoundHostOperation {
+    BoundHostOperation {
         operation_id: format!("cleanup:{}", uuid::Uuid::new_v4()),
         turn_id: turn.to_owned(),
+        execution: execution.clone(),
     }
 }
 
@@ -1630,7 +1685,7 @@ impl Host {
         preparation: &TransportPreparation,
     ) -> Result<Origin, ToolError> {
         let binding = &preparation.binding;
-        binding.check_turn(&binding.turn_id)?;
+        binding.check_scope(&binding.turn_id, &binding.execution)?;
         let extension = preparation
             .provider
             .extension()
@@ -1641,7 +1696,7 @@ impl Host {
             || binding.browser_id != preparation.provider.id()
             || binding.generation != extension.identity().generation
             || binding.tab_id != preparation.claim.tab_id().to_string()
-            || !matches!(&binding.subject, crate::BrowserLeaseSubject::PhysicalClaim { claim_id }
+            || !matches!(&binding.subject, maka_plugin_core::computer::BrowserLeaseSubject::PhysicalClaim { claim_id }
                 if claim_id == preparation.claim.claim_id())
             || preparation.claim.is_cleanup_only()
             || preparation.claim.generation() != binding.generation
@@ -1654,8 +1709,11 @@ impl Host {
             .extension
             .get(&(preparation.owner, browser.clone()))
             .ok_or_else(|| failed("extension CDP preparation owner retired"))?;
-        if provider.current_turn.as_deref() != Some(binding.turn_id.as_str())
-            || provider.retiring_turn.is_some()
+        if !provider
+            .current_scope
+            .as_ref()
+            .is_some_and(|scope| scope.matches(Some(&binding.turn_id), Some(&binding.execution)))
+            || provider.retiring_scope.is_some()
             || provider.headers_unknown
         {
             return Err(ToolError::CleanupUnconfirmed(
@@ -1663,9 +1721,11 @@ impl Host {
             ));
         }
         if let TransportAuthorization::Agent(agent) = &preparation.authorization {
-            agent
-                .request
-                .check_scope(&binding.turn_id, &agent.context.operation_id)?;
+            agent.request.check_scope(
+                &binding.turn_id,
+                &binding.execution,
+                &agent.context.operation_id,
+            )?;
             if agent.context.turn_id != binding.turn_id
                 || provider
                     .calls
@@ -1735,7 +1795,11 @@ impl Host {
         scope: &CallScope,
         request: &crate::BrowserSessionPreparation,
     ) -> Result<(), ToolError> {
-        request.check_scope(&scope.context.turn_id, &scope.context.operation_id)?;
+        request.check_scope(
+            &scope.context.turn_id,
+            &scope.context.execution,
+            &scope.context.operation_id,
+        )?;
         let extension = scope
             .provider
             .extension()
@@ -1762,8 +1826,8 @@ impl Host {
             .ok_or_else(|| failed("extension session preparation lost its original Host call"))?;
         let configuration = scope.purpose == CallPurpose::FixedConfiguration
             && call.purposes.contains(&CallPurpose::FixedConfiguration);
-        if (!configuration && state.current_turn.as_deref() != Some(scope.context.turn_id.as_str()))
-            || state.retiring_turn.is_some()
+        if (!configuration && state.current_scope.as_ref() != Some(&scope.context.scope()))
+            || state.retiring_scope.is_some()
             || state.headers_unknown
             || call.turn != scope.context.turn_id
             || call.epoch != scope.epoch
@@ -1945,7 +2009,7 @@ impl Host {
     fn extension_preparation_failed(
         &mut self,
         identity: &TabIdentity,
-        operation: &ExtensionHostOperation,
+        operation: &BoundHostOperation,
         not_dispatched: bool,
         error: &cua_driver_core::browser::ExtensionProviderError,
     ) {
@@ -1982,8 +2046,12 @@ impl Host {
                 .extension
                 .get(&(owner, browser.clone()))
                 .is_none_or(|state| {
-                    state.current_turn.as_deref() != Some(wire.host_turn_id())
-                        || state.retiring_turn.is_some()
+                    state
+                        .current_scope
+                        .as_ref()
+                        .map(|scope| scope.turn.as_str())
+                        != Some(wire.host_turn_id())
+                        || state.retiring_scope.is_some()
                 })
         {
             return false;
@@ -1994,6 +2062,11 @@ impl Host {
                 lease.creator.owner == owner
                     && lease.creator.provider == *provider
                     && lease.creator.turn == wire.host_turn_id()
+                    && self
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .and_then(|state| state.current_scope.as_ref())
+                        .is_some_and(|current| current.execution == lease.creator.execution)
                     && matches!(lease.disposition, Disposition::Live)
                     && lease.extension.as_ref().is_some_and(|state| {
                         !state.revoked
@@ -2049,8 +2122,12 @@ impl Host {
                 .extension
                 .get(&(owner, browser.clone()))
                 .is_none_or(|state| {
-                    state.current_turn.as_deref() != Some(wire.host_turn_id())
-                        || state.retiring_turn.is_some()
+                    state
+                        .current_scope
+                        .as_ref()
+                        .map(|scope| scope.turn.as_str())
+                        != Some(wire.host_turn_id())
+                        || state.retiring_scope.is_some()
                         || state.headers_unknown
                 })
         {
@@ -2063,6 +2140,11 @@ impl Host {
                     && lease.creator.provider == *provider
                     && lease.creator.generation == extension.identity().generation
                     && lease.creator.turn == wire.host_turn_id()
+                    && self
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .and_then(|state| state.current_scope.as_ref())
+                        .is_some_and(|current| current.execution == lease.creator.execution)
                     && matches!(lease.disposition, Disposition::Live)
                     && lease.extension.as_ref().is_some_and(|state| {
                         let Some(prepared) = state.fixed_preparation.ready() else {
@@ -2085,6 +2167,7 @@ impl Host {
                                 .is_none_or(|scope| scope.owner == request.owner())
                             && state.lease_children.as_ref().is_some_and(|scope| {
                                 scope.turn == wire.host_turn_id()
+                                    && scope.execution == lease.creator.execution
                                     && scope.effects.supports_lease_children()
                             })
                     })
@@ -2095,7 +2178,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         proof: ExtensionClaimPreparationProof,
     ) -> Result<(), ToolError> {
         let extension = provider
@@ -2106,8 +2189,12 @@ impl Host {
         }
         let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
         let current = self.extension.get(&(owner, browser)).is_some_and(|state| {
-            state.current_turn.as_deref() == Some(proof.wire_context().host_turn_id())
-                && state.retiring_turn.is_none()
+            state
+                .current_scope
+                .as_ref()
+                .map(|scope| scope.turn.as_str())
+                == Some(proof.wire_context().host_turn_id())
+                && state.retiring_scope.is_none()
         });
         let lease = self
             .tabs
@@ -2399,7 +2486,7 @@ impl Host {
             let cleanup_control = provider
                 .extension()
                 .ok_or_else(|| failed("extension cleanup provider unavailable"))?
-                .with_host_operation(operation)
+                .with_host_operation(operation.to_wire())
                 .with_wire_context(receipt.wire_context().clone());
             self.finalize_fixed_session_ui(owner, identity, &receipt, &cleanup_control, purpose)
                 .await
@@ -2430,7 +2517,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
-        context: ExtensionHostOperation,
+        context: BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
         target: CallTarget,
         activate: bool,
@@ -2448,6 +2535,17 @@ impl Host {
             .extension()
             .ok_or_else(|| failed("extension provider required"))?;
         let identity = BrowserIdentity::of(provider, &extension.identity().generation)?;
+        if purpose != CallPurpose::Retirement
+            && let Some(target) = target.as_deref()
+            && let Some(state) = self
+                .tabs
+                .get(&identity.tab(target))
+                .and_then(|lease| lease.extension.as_ref())
+        {
+            state
+                .fixed_preparation
+                .check_execution(&context.execution)?;
+        }
         if activate {
             self.known(&identity)?;
             // A new logical turn would invalidate an older retained input's
@@ -2459,7 +2557,7 @@ impl Host {
                 .filter(|lease| lease.creator.owner == owner && lease.creator.provider == *provider)
             {
                 if let Some(input) = &lease.input
-                    && !input.belongs(Some(&context.turn_id), None)
+                    && !input.belongs(Some(&context.turn_id), Some(&context.execution), None)
                 {
                     input.check_settled()?;
                 }
@@ -2494,7 +2592,7 @@ impl Host {
         if state.owner_parked {
             return Err(failed("extension owner has permanently retired"));
         }
-        if activate && state.retiring_turn.is_some() {
+        if activate && state.retiring_scope.is_some() {
             return Err(ToolError::Failed(
                 "extension turn cleanup must settle before this provider admits another effect"
                     .into(),
@@ -2506,19 +2604,19 @@ impl Host {
             ));
         }
         if activate {
-            state.admit_turn(&context.turn_id)?;
+            state.admit_scope(&context)?;
         } else if !matches!(
             purpose,
             CallPurpose::Retirement | CallPurpose::FixedConfiguration
-        ) && (state.retiring_turn.is_some()
-            || state.current_turn.as_deref() != Some(&context.turn_id))
+        ) && (state.retiring_scope.is_some()
+            || state.current_scope.as_ref() != Some(&context.scope()))
         {
             return Err(ToolError::Failed(
                 "extension call no longer belongs to the current live turn".to_owned(),
             ));
         }
         let control = extension
-            .with_host_operation(context.clone())
+            .with_host_operation(context.to_wire())
             .with_wire_context(
                 cua_driver_core::browser::ExtensionWireContext::new(
                     owner.to_string(),
@@ -2533,6 +2631,7 @@ impl Host {
             .entry(context.operation_id)
             .or_insert(CallContext {
                 turn: context.turn_id,
+                execution: context.execution.clone(),
                 epoch,
                 purposes: HashSet::from([purpose]),
                 issuing: Arc::new(AtomicUsize::new(0)),
@@ -2540,7 +2639,10 @@ impl Host {
                 registration: None,
                 controls: Arc::new(ControlGate::default()),
             });
-        if call.epoch != epoch || call.turn != issued_turn {
+        if call.epoch != epoch
+            || call.turn != issued_turn
+            || call.execution != issued_context.execution
+        {
             return Err(failed(
                 "extension Host operation identity was reused across an epoch or turn",
             ));
@@ -2586,7 +2688,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
-        operation: &ExtensionHostOperation,
+        operation: &BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
         target: &str,
     ) -> Result<bool, ToolError> {
@@ -2634,6 +2736,7 @@ impl Host {
             requested: Creator {
                 owner,
                 turn: operation.turn_id.clone(),
+                execution: operation.execution.clone(),
                 provider: provider.clone(),
                 generation: extension.identity().generation.clone(),
             },
@@ -2670,6 +2773,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         adapter: Option<ExtensionAdapterMode>,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) {
         let calls: Vec<_> = self
             .tabs
@@ -2677,6 +2781,7 @@ impl Host {
             .filter_map(|lease| {
                 let attempt = lease.handoff_transfer.as_ref()?;
                 ((attempt.requested.owner == owner || lease.creator.owner == owner)
+                    && execution.is_none_or(|execution| &attempt.operation.execution == execution)
                     && adapter.is_none_or(|adapter| {
                         lease.creator.provider.extension_adapter() == Some(adapter)
                     }))
@@ -2684,17 +2789,23 @@ impl Host {
             })
             .collect();
         for (requested, provider) in calls {
-            self.rollback_unentered_handoffs(requested, &provider);
+            self.rollback_unentered_handoffs(requested, &provider, execution);
         }
     }
 
-    fn rollback_unentered_handoffs(&mut self, owner: uuid::Uuid, provider: &Provider) {
+    fn rollback_unentered_handoffs(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) {
         let candidates: Vec<_> = self
             .tabs
             .iter()
             .filter_map(|(identity, lease)| {
                 let attempt = lease.handoff_transfer.as_ref()?;
                 if attempt.requested.owner != owner
+                    || execution.is_some_and(|execution| &attempt.operation.execution != execution)
                     || attempt.requested.provider != *provider
                     || attempt.preparation_phase.load(Ordering::SeqCst) != HANDOFF_RESERVED
                     || attempt.retained_completion.is_some()
@@ -2747,7 +2858,7 @@ impl Host {
         &mut self,
         identity: &TabIdentity,
         owner: uuid::Uuid,
-        operation: &ExtensionHostOperation,
+        operation: &BoundHostOperation,
     ) -> bool {
         let Some(lease) = self.tabs.get_mut(identity) else {
             return false;
@@ -2799,7 +2910,7 @@ impl Host {
         identity: &TabIdentity,
         owner: uuid::Uuid,
         provider: &Provider,
-        context: &ExtensionHostOperation,
+        context: &BoundHostOperation,
         epoch: crate::desktop::NativeEpochId,
     ) -> Result<(), ToolError> {
         let Some(lease) = self.tabs.get(identity) else {
@@ -2838,7 +2949,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
-        turn: &str,
+        operation: &BoundHostOperation,
         target: &str,
         origin: Origin,
     ) -> Result<(), ToolError> {
@@ -2880,7 +2991,8 @@ impl Host {
                 extension_sequence: None,
                 creator: Creator {
                     owner,
-                    turn: turn.into(),
+                    turn: operation.turn_id.clone(),
+                    execution: operation.execution.clone(),
                     provider: provider.clone(),
                     generation: extension.identity().generation.clone(),
                 },
@@ -2899,8 +3011,9 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) -> Result<bool, ToolError> {
-        self.rollback_unentered_handoffs(owner, provider);
+        self.rollback_unentered_handoffs(owner, provider, execution);
         let extension = provider
             .extension()
             .ok_or_else(|| failed("extension provider required"))?;
@@ -2934,7 +3047,18 @@ impl Host {
                 continue;
             }
             if completion.outcome.is_none() {
-                unsettled = true;
+                if execution.is_none_or(|execution| {
+                    completion.host_operation.as_ref().is_some_and(|operation| {
+                        self.extension
+                            .get(&(owner, browser.clone()))
+                            .and_then(|state| state.calls.get(&operation.operation_id))
+                            .is_some_and(|call| {
+                                call.turn == operation.turn_id && &call.execution == execution
+                            })
+                    })
+                }) {
+                    unsettled = true;
+                }
                 continue;
             }
             if let Some(source) = PopupSource::from_operation(&completion.operation) {
@@ -2972,7 +3096,7 @@ impl Host {
                         if let Some(attempt) = &mut lease.handoff_transfer
                             && attempt.requested.owner == owner
                             && attempt.requested.provider == *provider
-                            && attempt.operation == *context
+                            && attempt.operation.matches_wire(context)
                         {
                             attempt.retained_completion = Some(completion.id);
                         }
@@ -3040,7 +3164,7 @@ impl Host {
         &mut self,
         identity: &TabIdentity,
         owner: uuid::Uuid,
-        context: Option<&ExtensionHostOperation>,
+        context: Option<&BoundHostOperation>,
         epoch: crate::desktop::NativeEpochId,
         expected_status: Option<TabMark>,
         result: Result<(), MarkFailure>,
@@ -3066,16 +3190,23 @@ impl Host {
         self.mark_result(identity, owner, &attempt, result)
     }
 
-    fn resume_marked_handoffs(&mut self, owner: uuid::Uuid, provider: &Provider, turn: &str) {
+    fn resume_marked_handoffs(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        operation: &BoundHostOperation,
+    ) {
+        let turn = operation.turn_id.as_str();
         let mut resumed = Vec::new();
         for (identity, lease) in &mut self.tabs {
             if lease.creator.owner == owner
                 && lease.creator.provider == *provider
                 && lease.handoff_transfer.is_none()
                 && matches!(lease.retention, Retention::Handoff)
-                && lease.creator.turn != turn
+                && (lease.creator.turn != turn || lease.creator.execution != operation.execution)
             {
                 lease.creator.turn = turn.to_owned();
+                lease.creator.execution = operation.execution.clone();
                 lease.retention = Retention::Unmarked;
                 resumed.push((
                     lease.extension_sequence.unwrap_or(u64::MAX),
@@ -3177,7 +3308,7 @@ impl Host {
         }
         // This folds extension-local facts only. The outer Host's original journal
         // and retained effect futures keep their own T1/T2 custody independently.
-        if self.reconcile_provider(owner, provider).await? {
+        if self.reconcile_provider(owner, provider, None).await? {
             return Err(ToolError::CleanupUnconfirmed(
                 "extension control custody remains pending before claim retirement".into(),
             ));
@@ -3347,8 +3478,8 @@ impl Host {
                 .get(&(owner, browser.clone()))
                 .is_some_and(|state| {
                     !state.owner_parked
-                        && state.retiring_turn.is_none()
-                        && state.current_turn.as_deref() == Some(operation.turn_id.as_str())
+                        && state.retiring_scope.is_none()
+                        && state.current_scope.as_ref() == Some(&operation.scope())
                         && state
                             .calls
                             .get(&operation.operation_id)
@@ -3447,6 +3578,7 @@ impl Host {
         }
         if let PreparedOperation::Acquired { operation, .. } = &receipt {
             lease.creator.turn = operation.turn_id.clone();
+            lease.creator.execution = operation.execution.clone();
         }
         let state = lease
             .extension
@@ -3462,6 +3594,7 @@ impl Host {
         owner: uuid::Uuid,
         provider: &Provider,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         commit: Option<&cua_driver_core::browser::ExtensionLogicalLeaseCommit>,
     ) -> Result<(), ToolError> {
         if !provider.extension().is_some_and(|extension| {
@@ -3478,6 +3611,7 @@ impl Host {
             lease.creator.owner == owner
                 && lease.creator.provider == *provider
                 && lease.creator.turn == turn
+                && &lease.creator.execution == execution
         }) {
             let Some(current) = &lease.logical_lease else {
                 continue;
@@ -3528,11 +3662,15 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         browser: &BrowserIdentity,
-        turn: &str,
+        scope: &ExecutionScope,
     ) {
-        self.clear_pending_viewport(owner, browser, turn);
+        self.clear_pending_viewport(owner, browser, &scope.turn, &scope.execution);
         if let Some(state) = self.extension.get_mut(&(owner, browser.clone())) {
-            for call in state.calls.values_mut().filter(|call| call.turn == turn) {
+            for call in state
+                .calls
+                .values_mut()
+                .filter(|call| call.scope() == *scope)
+            {
                 call.activation.store(false, Ordering::SeqCst);
                 if let Some(observation) = &mut call.registration {
                     observation.acknowledged = observation.registration.count();
@@ -3549,7 +3687,7 @@ impl Host {
         recovered: ExtensionRecoveredOperation,
     ) -> Result<(), ToolError> {
         let operation = &completion.operation;
-        let context = completion.host_operation.as_ref();
+        let wire_context = completion.host_operation.as_ref();
         let extension = provider
             .extension()
             .ok_or_else(|| failed("extension provider required"))?;
@@ -3566,13 +3704,23 @@ impl Host {
         {
             return Ok(());
         }
-        let call = context
+        let call = wire_context
             .and_then(|context| {
                 self.extension
                     .get(&(owner, browser.clone()))
                     .and_then(|state| state.calls.get(&context.operation_id))
+                    .filter(|call| call.turn == context.turn_id)
             })
             .cloned();
+        let original_context =
+            wire_context
+                .zip(call.as_ref())
+                .map(|(wire, call)| BoundHostOperation {
+                    operation_id: wire.operation_id.clone(),
+                    turn_id: wire.turn_id.clone(),
+                    execution: call.execution.clone(),
+                });
+        let context = original_context.as_ref();
         let event = matches!(
             &recovered,
             ExtensionRecoveredOperation::OrphanCdpCompletion { .. }
@@ -3665,7 +3813,7 @@ impl Host {
                 | ExtensionOperation::MoveMousePresentation { .. }
         ) && let Some(context) = context
         {
-            self.resume_marked_handoffs(owner, provider, &context.turn_id);
+            self.resume_marked_handoffs(owner, provider, context);
         }
         if let (Some(target), Some(context), Some(call)) = (target.as_ref(), context, call.as_ref())
         {
@@ -3841,14 +3989,15 @@ impl Host {
                     owner,
                     provider,
                     &call.turn,
+                    &call.execution,
                     ack.logical_lease_commit.as_ref(),
                 )?;
                 self.extension
                     .get_mut(&(owner, browser.clone()))
                     .ok_or_else(|| unknown("extension finish owner retired"))?
                     .finish_phases
-                    .insert(call.turn.clone(), FinishPhase::Acknowledged);
-                self.finish_session_activation(owner, &browser, &call.turn);
+                    .insert(call.scope(), FinishPhase::Acknowledged);
+                self.finish_session_activation(owner, &browser, &call.scope());
             }
             ExtensionRecoveredOperation::Created(created) => {
                 let call = call.ok_or_else(|| unknown("created tab lost its Host context"))?;
@@ -3876,6 +4025,7 @@ impl Host {
                         creator: Creator {
                             owner,
                             turn: call.turn,
+                            execution: call.execution.clone(),
                             provider: provider.clone(),
                             generation: extension.identity().generation.clone(),
                         },
@@ -4111,7 +4261,7 @@ impl Host {
                         .ok_or_else(|| unknown("extension finish owner retired"))?
                         .finish_phases
                         .insert(
-                            call.turn.clone(),
+                            call.scope(),
                             if not_dispatched {
                                 FinishPhase::Required
                             } else {
@@ -4186,14 +4336,15 @@ impl Host {
                         owner,
                         provider,
                         &call.turn,
+                        &call.execution,
                         ack.logical_lease_commit.as_ref(),
                     )?;
                     self.extension
                         .get_mut(&(owner, browser.clone()))
                         .ok_or_else(|| unknown("uncertain finish owner retired"))?
                         .finish_phases
-                        .insert(call.turn.clone(), FinishPhase::Acknowledged);
-                    self.finish_session_activation(owner, &browser, &call.turn);
+                        .insert(call.scope(), FinishPhase::Acknowledged);
+                    self.finish_session_activation(owner, &browser, &call.scope());
                 } else if matches!(operation, ExtensionOperation::FinishTurn { .. })
                     && let Some(call) = call.as_ref()
                 {
@@ -4201,7 +4352,7 @@ impl Host {
                         .get_mut(&(owner, browser.clone()))
                         .ok_or_else(|| unknown("uncertain finish owner retired"))?
                         .finish_phases
-                        .insert(call.turn.clone(), FinishPhase::Unknown(reason.clone()));
+                        .insert(call.scope(), FinishPhase::Unknown(reason.clone()));
                 }
                 if matches!(
                     operation,
@@ -4262,6 +4413,7 @@ impl Host {
                         creator: Creator {
                             owner,
                             turn: call.turn,
+                            execution: call.execution.clone(),
                             provider: provider.clone(),
                             generation: extension.identity().generation.clone(),
                         },
@@ -4296,6 +4448,7 @@ impl Host {
                         browser.clone(),
                         owner,
                         &call.turn,
+                        &call.execution,
                         provider.clone(),
                         extension.identity().generation.clone(),
                     );
@@ -4414,6 +4567,7 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
         epoch: Option<crate::desktop::NativeEpochId>,
         adapter: Option<ExtensionAdapterMode>,
     ) -> ControlDrain {
@@ -4430,6 +4584,7 @@ impl Host {
             }
             for call in state.calls.values().filter(|call| {
                 turn.is_none_or(|turn| call.turn == turn)
+                    && execution.is_none_or(|execution| &call.execution == execution)
                     && epoch.is_none_or(|epoch| call.epoch == epoch)
             }) {
                 call.controls.seal();
@@ -4438,23 +4593,25 @@ impl Host {
             state.fold_activation();
             // Epoch retirement cannot retire a different VM's current turn.
             // The actual epoch/claim gates still reject its old producers.
-            let preserves_fixed = turn.is_some_and(|turn| {
+            let preserves_fixed = turn.zip(execution).is_some_and(|(turn, execution)| {
                 tabs.values().any(|lease| {
                     lease.creator.owner == owner
                         && lease.creator.provider == state.provider
                         && lease.extension.as_ref().is_some_and(|extension| {
-                            extension.fixed_preparation.protected_from_turn(turn)
+                            extension
+                                .fixed_preparation
+                                .protected_from_scope(turn, execution)
                         })
                 })
             });
-            if epoch.is_none() && state.retiring_turn.is_none() && !preserves_fixed {
-                state.retiring_turn = state
-                    .activation_turn(turn)
+            if epoch.is_none() && state.retiring_scope.is_none() && !preserves_fixed {
+                state.retiring_scope = state
+                    .activation_scope(turn, execution)
                     .or_else(|| {
                         state
-                            .current_turn
+                            .current_scope
                             .clone()
-                            .filter(|current| turn.is_none_or(|turn| current == turn))
+                            .filter(|scope| scope.matches(turn, execution))
                     })
                     .or_else(|| {
                         tabs.values()
@@ -4462,16 +4619,29 @@ impl Host {
                                 lease.creator.owner == owner
                                     && lease.creator.provider == state.provider
                                     && turn.is_none_or(|turn| lease.creator.turn == turn)
+                                    && execution.is_none_or(|execution| {
+                                        &lease.creator.execution == execution
+                                    })
                             })
-                            .map(|lease| lease.creator.turn.clone())
+                            .map(|lease| {
+                                ExecutionScope::new(&lease.creator.turn, &lease.creator.execution)
+                            })
                     })
                     .or_else(|| {
                         creations
                             .get(&(owner, browser.clone()))
                             .filter(|creation| {
                                 turn.is_none_or(|turn| creation.creator.turn == turn)
+                                    && execution.is_none_or(|execution| {
+                                        &creation.creator.execution == execution
+                                    })
                             })
-                            .map(|creation| creation.creator.turn.clone())
+                            .map(|creation| {
+                                ExecutionScope::new(
+                                    &creation.creator.turn,
+                                    &creation.creator.execution,
+                                )
+                            })
                     });
             }
         }
@@ -4520,7 +4690,8 @@ impl Host {
         let released = scope
             .dispatch_retirement(scope.control.release_created_tab_group(&creation, &group))
             .await;
-        self.reconcile_provider(owner, &scope.provider).await?;
+        self.reconcile_provider(owner, &scope.provider, None)
+            .await?;
         let phase = match &released {
             Ok(_) => ControlCleanup::Confirmed,
             Err(error) if scope.control.undispatched_control(error).is_some() => {
@@ -4554,7 +4725,7 @@ impl Host {
         owner: uuid::Uuid,
         adapter: Option<ExtensionAdapterMode>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
-        self.rollback_owner_unentered_handoffs(owner, adapter);
+        self.rollback_owner_unentered_handoffs(owner, adapter, None);
         if self.tabs.values().any(|lease| {
             adapter
                 .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
@@ -4584,7 +4755,7 @@ impl Host {
             let caps = extension
                 .capabilities()
                 .map_err(provider::extension_error)?;
-            if self.reconcile_provider(owner, &provider).await? {
+            if self.reconcile_provider(owner, &provider, None).await? {
                 return Err(unknown(
                     "extension cleanup requires the original control operations to settle",
                 ));
@@ -4619,12 +4790,13 @@ impl Host {
                     "owner teardown must drain original admitted control futures first",
                 ));
             }
-            let turn = state.current_turn.clone().or_else(|| {
-                identities
-                    .first()
-                    .map(|identity| self.tabs[identity].creator.turn.clone())
+            let original_scope = state.current_scope.clone().or_else(|| {
+                identities.first().map(|identity| {
+                    let creator = &self.tabs[identity].creator;
+                    ExecutionScope::new(&creator.turn, &creator.execution)
+                })
             });
-            let Some(turn) = turn else {
+            let Some(original_scope) = original_scope else {
                 if let Some(state) = self.extension.get_mut(&(owner, browser.clone())) {
                     state.owner_parked = true;
                 }
@@ -4637,7 +4809,7 @@ impl Host {
             let scope = self.extension_context(
                 owner,
                 &provider,
-                context_operation(&turn),
+                context_operation(&original_scope.turn, &original_scope.execution),
                 crate::desktop::NativeEpochId::new(),
                 CallTarget::Retirement,
                 false,
@@ -4656,7 +4828,7 @@ impl Host {
                 let result = scope
                     .dispatch_retirement(scope.control.clear_session_headers())
                     .await;
-                self.reconcile_provider(owner, &provider).await?;
+                self.reconcile_provider(owner, &provider, None).await?;
                 let proof = result.map_err(provider::extension_error)?;
                 if proof.active || !proof.cleanup_confirmed {
                     return Err(unknown("owner session headers remain unconfirmed"));
@@ -4670,8 +4842,8 @@ impl Host {
                 for call in state.calls.values() {
                     call.controls.seal();
                 }
-                state.current_turn = None;
-                state.retiring_turn = None;
+                state.current_scope = None;
+                state.retiring_scope = None;
                 state.logical_active = None;
                 state.owner_parked = true;
             }
@@ -4711,7 +4883,7 @@ impl Host {
                 let result = scope
                     .dispatch_retirement(scope.control.clear_scoped_headers(claim))
                     .await;
-                self.reconcile_provider(owner, provider).await?;
+                self.reconcile_provider(owner, provider, None).await?;
                 if !result.map_err(provider::extension_error)?.cleanup_confirmed {
                     return Err(unknown("owner scoped headers remain unconfirmed"));
                 }
@@ -4721,7 +4893,7 @@ impl Host {
                     "extension claim must be drained before physical retirement",
                 ));
             }
-            self.reconcile_provider(owner, provider).await?;
+            self.reconcile_provider(owner, provider, None).await?;
             if !self.tabs[identity]
                 .extension
                 .as_ref()
@@ -4731,7 +4903,7 @@ impl Host {
                 let result = scope
                     .dispatch_retirement(scope.control.detach_tab(claim))
                     .await;
-                self.reconcile_provider(owner, provider).await?;
+                self.reconcile_provider(owner, provider, None).await?;
                 result.map_err(provider::extension_error)?;
             }
         }
@@ -4765,21 +4937,62 @@ impl Host {
         Ok(())
     }
 
+    fn extension_scope_pending(
+        &self,
+        owner: uuid::Uuid,
+        state: &ProviderState,
+        turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
+    ) -> bool {
+        execution.is_none()
+            || state
+                .current_scope
+                .as_ref()
+                .is_some_and(|scope| scope.matches(turn, execution))
+            || state
+                .retiring_scope
+                .as_ref()
+                .is_some_and(|scope| scope.matches(turn, execution))
+            || state.finish_phases.iter().any(|(scope, phase)| {
+                scope.matches(turn, execution) && !matches!(phase, FinishPhase::Acknowledged)
+            })
+            || state.calls.values().any(|call| {
+                call.scope().matches(turn, execution)
+                    && (call.requires_finish() || !call.controls.is_idle())
+            })
+            || self.tabs.values().any(|lease| {
+                lease.creator.owner == owner
+                    && lease.creator.provider == state.provider
+                    && !matches!(lease.retention, Retention::Handoff)
+                    && turn.is_none_or(|turn| lease.creator.turn == turn)
+                    && execution.is_none_or(|execution| &lease.creator.execution == execution)
+            })
+            || self.uncertain_creations.values().any(|creation| {
+                creation.creator.owner == owner
+                    && creation.creator.provider == state.provider
+                    && turn.is_none_or(|turn| creation.creator.turn == turn)
+                    && execution.is_none_or(|execution| &creation.creator.execution == execution)
+            })
+    }
+
     pub(super) async fn finish_extension(
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
         adapter: Option<ExtensionAdapterMode>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
         if turn.is_none() {
             return self.park_extension_owner(owner, adapter).await;
         }
-        self.rollback_owner_unentered_handoffs(owner, adapter);
+        self.rollback_owner_unentered_handoffs(owner, adapter, execution);
         if self.tabs.values().any(|lease| {
             adapter
                 .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
                 && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
-                    attempt.requested.owner == owner || lease.creator.owner == owner
+                    (attempt.requested.owner == owner || lease.creator.owner == owner)
+                        && execution
+                            .is_none_or(|execution| &attempt.operation.execution == execution)
                 })
         }) {
             return Err(unknown(
@@ -4792,6 +5005,7 @@ impl Host {
             .filter(|((current, _), state)| {
                 *current == owner
                     && !state.owner_parked
+                    && self.extension_scope_pending(owner, state, turn, execution)
                     && adapter
                         .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
             })
@@ -4807,7 +5021,7 @@ impl Host {
                 .capabilities()
                 .map_err(provider::extension_error)?;
             let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
-            if self.reconcile_provider(owner, &provider).await? {
+            if self.reconcile_provider(owner, &provider, execution).await? {
                 return Err(unknown(
                     "extension cleanup requires the original control operations to settle",
                 ));
@@ -4818,6 +5032,7 @@ impl Host {
                 .filter(|(_, lease)| {
                     lease.creator.owner == owner
                         && lease.creator.provider == provider
+                        && execution.is_none_or(|execution| &lease.creator.execution == execution)
                         && !matches!(lease.retention, Retention::Handoff)
                         && turn.is_none_or(|turn| {
                             lease.creator.turn == turn
@@ -4831,11 +5046,17 @@ impl Host {
                 })
                 .map(|(identity, _)| identity.clone())
                 .collect();
-            let purpose = turn
-                .map(|turn| FixedCleanupPurpose::Turn {
+            let purpose = match turn {
+                Some(turn) => FixedCleanupPurpose::Turn {
                     turn: turn.to_owned(),
-                })
-                .unwrap_or(FixedCleanupPurpose::Owner);
+                    execution: execution
+                        .ok_or_else(|| {
+                            unknown("fixed turn cleanup lost its original execution correlation")
+                        })?
+                        .clone(),
+                },
+                None => FixedCleanupPurpose::Owner,
+            };
             let mut identities = Vec::new();
             let mut preserves_fixed = false;
             for identity in candidates {
@@ -4856,38 +5077,40 @@ impl Host {
                 .get(&(owner, browser.clone()))
                 .filter(|uncertain| {
                     uncertain.creator.owner == owner
+                        && execution
+                            .is_none_or(|execution| &uncertain.creator.execution == execution)
                         && turn.is_none_or(|turn| uncertain.creator.turn == turn)
                 })
                 .cloned();
             let current = self
                 .extension
                 .get(&(owner, browser.clone()))
-                .and_then(|state| state.current_turn.clone())
-                .filter(|current| turn.is_none_or(|turn| current == turn));
+                .and_then(|state| state.current_scope.clone())
+                .filter(|current| current.matches(turn, execution));
             let owed = self
                 .extension
                 .get(&(owner, browser.clone()))
-                .and_then(|state| state.activation_turn(turn));
+                .and_then(|state| state.activation_scope(turn, execution));
             if identities.is_empty() && uncertain.is_none() && current.is_none() && owed.is_none() {
                 continue;
             }
-            let cleanup_turn = turn
-                .map(str::to_owned)
-                .or(owed)
+            let cleanup_scope = owed
                 .or(current)
                 .or_else(|| {
-                    identities
-                        .first()
-                        .map(|identity| self.tabs[identity].creator.turn.clone())
+                    identities.first().map(|identity| {
+                        let creator = &self.tabs[identity].creator;
+                        ExecutionScope::new(&creator.turn, &creator.execution)
+                    })
                 })
                 .or_else(|| {
-                    uncertain
-                        .as_ref()
-                        .map(|uncertain| uncertain.creator.turn.clone())
+                    uncertain.as_ref().map(|uncertain| {
+                        ExecutionScope::new(&uncertain.creator.turn, &uncertain.creator.execution)
+                    })
                 });
-            let Some(cleanup_turn) = cleanup_turn else {
+            let Some(cleanup_scope) = cleanup_scope else {
                 continue;
             };
+            let cleanup_turn = cleanup_scope.turn.clone();
             if self
                 .extension
                 .get(&(owner, browser.clone()))
@@ -4895,7 +5118,7 @@ impl Host {
                     state
                         .calls
                         .values()
-                        .any(|call| call.turn == cleanup_turn && !call.controls.is_idle())
+                        .any(|call| call.scope() == cleanup_scope && !call.controls.is_idle())
                 })
             {
                 return Err(ToolError::CleanupUnconfirmed(
@@ -4907,21 +5130,21 @@ impl Host {
                 .get_mut(&(owner, browser.clone()))
                 .ok_or_else(|| unknown("extension cleanup owner retired"))?;
             if provider_state
-                .retiring_turn
-                .as_deref()
-                .is_some_and(|turn| turn != cleanup_turn)
+                .retiring_scope
+                .as_ref()
+                .is_some_and(|scope| scope != &cleanup_scope)
             {
                 return Err(ToolError::CleanupUnconfirmed(
                     "another extension turn cleanup is still unsettled".into(),
                 ));
             }
             if !preserves_fixed {
-                provider_state.retiring_turn = Some(cleanup_turn.clone());
+                provider_state.retiring_scope = Some(cleanup_scope.clone());
             }
             let scope = self.extension_context(
                 owner,
                 &provider,
-                context_operation(&cleanup_turn),
+                context_operation(&cleanup_turn, &cleanup_scope.execution),
                 crate::desktop::NativeEpochId::new(),
                 CallTarget::Retirement,
                 false,
@@ -4939,7 +5162,7 @@ impl Host {
                         });
                 if needs_clear {
                     let cleared = scope.dispatch(scope.control.clear_session_headers()).await;
-                    self.reconcile_provider(owner, &provider).await?;
+                    self.reconcile_provider(owner, &provider, execution).await?;
                     let cleared = cleared.map_err(provider::extension_error)?;
                     if cleared.active || !cleared.cleanup_confirmed {
                         return Err(ToolError::CleanupUnconfirmed(
@@ -4971,7 +5194,7 @@ impl Host {
                     let cleared = scope
                         .dispatch(scope.control.clear_scoped_headers(claim))
                         .await;
-                    self.reconcile_provider(owner, &provider).await?;
+                    self.reconcile_provider(owner, &provider, execution).await?;
                     if !cleared
                         .map_err(provider::extension_error)?
                         .cleanup_confirmed
@@ -5001,7 +5224,7 @@ impl Host {
                             "extension claim must be drained before Turn cleanup",
                         ));
                     }
-                    if self.reconcile_provider(owner, &provider).await? {
+                    if self.reconcile_provider(owner, &provider, execution).await? {
                         return Err(ToolError::CleanupUnconfirmed(
                             "extension CDP settled but retained operation custody is still pending"
                                 .into(),
@@ -5025,7 +5248,7 @@ impl Host {
                         let detached = scope
                             .dispatch_retirement(scope.control.detach_tab(claim))
                             .await;
-                        self.reconcile_provider(owner, &provider).await?;
+                        self.reconcile_provider(owner, &provider, execution).await?;
                         detached.map_err(provider::extension_error)?;
                     }
                     Origin::UserClaimed if !state.released => {
@@ -5034,7 +5257,7 @@ impl Host {
                             let detached = scope
                                 .dispatch_retirement(scope.control.detach_tab(claim))
                                 .await;
-                            self.reconcile_provider(owner, &provider).await?;
+                            self.reconcile_provider(owner, &provider, execution).await?;
                             detached.map_err(provider::extension_error)?;
                         } else if state.unknown.is_some() {
                             return Err(ToolError::CleanupUnconfirmed(
@@ -5064,7 +5287,7 @@ impl Host {
                         let stopped = scope
                             .dispatch_retirement(scope.control.stop_created_tab(receipt))
                             .await;
-                        self.reconcile_provider(owner, &provider).await?;
+                        self.reconcile_provider(owner, &provider, execution).await?;
                         stopped.map_err(provider::extension_error)?;
                     }
                     _ => {}
@@ -5074,11 +5297,13 @@ impl Host {
                 self.extension
                     .get(&(owner, browser.clone()))
                     .is_some_and(|state| {
-                        state.activation_turn(Some(&cleanup_turn)).is_some()
+                        state
+                            .activation_scope(Some(&cleanup_turn), Some(&cleanup_scope.execution))
+                            .is_some()
                             || state
                                 .calls
                                 .values()
-                                .any(|call| call.turn == cleanup_turn && call.requires_finish())
+                                .any(|call| call.scope() == cleanup_scope && call.requires_finish())
                     });
             if capabilities.turn_lifecycle_owner == ExtensionEffectOwner::Provider
                 && activation_owed
@@ -5086,7 +5311,7 @@ impl Host {
                 let phase = self
                     .extension
                     .get(&(owner, browser.clone()))
-                    .and_then(|state| state.finish_phases.get(&cleanup_turn));
+                    .and_then(|state| state.finish_phases.get(&cleanup_scope));
                 let acknowledged = match phase {
                     Some(FinishPhase::Acknowledged) => true,
                     Some(FinishPhase::Pending) => {
@@ -5106,24 +5331,24 @@ impl Host {
                         .get_mut(&(owner, browser.clone()))
                         .ok_or_else(|| unknown("extension finish owner retired"))?
                         .finish_phases
-                        .insert(cleanup_turn.clone(), FinishPhase::Pending);
+                        .insert(cleanup_scope.clone(), FinishPhase::Pending);
                     let finish = scope
                         .dispatch_retirement(scope.control.finish_turn(None))
                         .await;
-                    self.reconcile_provider(owner, &provider).await?;
+                    self.reconcile_provider(owner, &provider, execution).await?;
                     if finish
                         .as_ref()
                         .err()
                         .is_some_and(|error| scope.control.undispatched_control(error).is_some())
                         && let Some(state) = self.extension.get_mut(&(owner, browser.clone()))
                         && matches!(
-                            state.finish_phases.get(&cleanup_turn),
+                            state.finish_phases.get(&cleanup_scope),
                             Some(FinishPhase::Pending)
                         )
                     {
                         state
                             .finish_phases
-                            .insert(cleanup_turn.clone(), FinishPhase::Required);
+                            .insert(cleanup_scope.clone(), FinishPhase::Required);
                     }
                     finish.map_err(provider::extension_error)?;
                 }
@@ -5144,7 +5369,7 @@ impl Host {
                         let stopped = scope
                             .dispatch_retirement(scope.control.stop_created_tab(&receipt))
                             .await;
-                        self.reconcile_provider(owner, &provider).await?;
+                        self.reconcile_provider(owner, &provider, execution).await?;
                         stopped.map_err(provider::extension_error)?;
                     }
                 }
@@ -5158,7 +5383,7 @@ impl Host {
                     let stopped = scope
                         .dispatch_retirement(scope.control.stop_created_tab(&receipt))
                         .await;
-                    self.reconcile_provider(owner, &provider).await?;
+                    self.reconcile_provider(owner, &provider, execution).await?;
                     stopped.map_err(provider::extension_error)?;
                 } else {
                     return Err(ToolError::CleanupUnconfirmed("extension tab creation outcome remains unknown without a recoverable receipt; creation was not replayed".into()));
@@ -5204,7 +5429,7 @@ impl Host {
                 let phase = self
                     .extension
                     .get(&(owner, browser.clone()))
-                    .and_then(|state| state.finish_phases.get(&cleanup_turn));
+                    .and_then(|state| state.finish_phases.get(&cleanup_scope));
                 match phase {
                     Some(FinishPhase::Acknowledged) => {}
                     Some(
@@ -5219,11 +5444,11 @@ impl Host {
                             .get_mut(&(owner, browser.clone()))
                             .ok_or_else(|| unknown("logical commit owner retired"))?
                             .finish_phases
-                            .insert(cleanup_turn.clone(), FinishPhase::Pending);
+                            .insert(cleanup_scope.clone(), FinishPhase::Pending);
                         let finished = scope
                             .dispatch_retirement(scope.control.finish_turn(None))
                             .await;
-                        self.reconcile_provider(owner, &provider).await?;
+                        self.reconcile_provider(owner, &provider, execution).await?;
                         finished.map_err(provider::extension_error)?;
                     }
                 }
@@ -5284,14 +5509,14 @@ impl Host {
                 }
             }
             if let Some(state) = self.extension.get_mut(&(owner, browser)) {
-                if state.current_turn.as_deref() == Some(&cleanup_turn) {
+                if state.current_scope.as_ref() == Some(&cleanup_scope) {
                     state.logical_active = None;
-                    state.current_turn = None;
+                    state.current_scope = None;
                 }
-                if state.retiring_turn.as_deref() == Some(&cleanup_turn) {
-                    state.retiring_turn = None;
+                if state.retiring_scope.as_ref() == Some(&cleanup_scope) {
+                    state.retiring_scope = None;
                 }
-                state.finish_phases.remove(&cleanup_turn);
+                state.finish_phases.remove(&cleanup_scope);
             }
         }
         Ok(closed)
@@ -5370,6 +5595,7 @@ impl Host {
             state.lease_children = Some(LeaseChildScope {
                 effects,
                 turn: scope.context.turn_id.clone(),
+                execution: scope.context.execution.clone(),
                 epoch: scope.epoch,
             });
         } else {
@@ -5460,6 +5686,7 @@ async fn dispatch_extension_popups(
                     native_owner: owner,
                     native_epoch: scope.epoch.to_string(),
                     turn_id: scope.turn,
+                    execution: scope.execution.clone(),
                     completion_id: completion.id,
                     opener_subject: source.subject(),
                     opener_tab_id: source.tab_id(),
@@ -5544,8 +5771,8 @@ async fn register(
     if let Some(state) = ledger.extension.get_mut(&key) {
         if state.owner_parked && state.provider == *provider {
             state.owner_parked = false;
-            state.current_turn = None;
-            state.retiring_turn = None;
+            state.current_scope = None;
+            state.retiring_scope = None;
             state.calls.clear();
             state.finish_phases.clear();
             state.applied.clear();
@@ -5556,9 +5783,9 @@ async fn register(
         key,
         ProviderState {
             provider: provider.clone(),
-            current_turn: None,
+            current_scope: None,
             pending_viewport: None,
-            retiring_turn: None,
+            retiring_scope: None,
             logical_active: None,
             session_group_title: None,
             calls: HashMap::new(),
@@ -5621,7 +5848,7 @@ async fn register(
                 | Ok(ExtensionProviderEvent::ClaimCdpProgress { .. })
                 | Ok(ExtensionProviderEvent::PendingOperationsChanged)
                 | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = ledger.reconcile_provider(owner, &provider).await;
+                    let _ = ledger.reconcile_provider(owner, &provider, None).await;
                     drop(ledger);
                     if popup_dispatch.is_none() {
                         let host = host.clone();
@@ -5699,13 +5926,13 @@ async fn register(
                     | ExtensionProviderEvent::OrphanCdpCompletion { .. }
                     | ExtensionProviderEvent::SessionPreparationCleanup { .. },
                 ) => {
-                    let _ = ledger.reconcile_provider(owner, &provider).await;
+                    let _ = ledger.reconcile_provider(owner, &provider, None).await;
                 }
                 Ok(
                     ExtensionProviderEvent::PopupRequested { .. }
                     | ExtensionProviderEvent::SessionPopupRequested { .. },
                 ) => {
-                    let _ = ledger.reconcile_provider(owner, &provider).await;
+                    let _ = ledger.reconcile_provider(owner, &provider, None).await;
                     drop(ledger);
                     if popup_dispatch.is_none() {
                         let host = host.clone();
@@ -5737,22 +5964,26 @@ pub(super) async fn drain_extension_cleanup(
     host: &Arc<tokio::sync::Mutex<Host>>,
     owner: uuid::Uuid,
     turn: Option<&str>,
+    execution: Option<&crate::ExecutionCorrelation>,
     adapter: Option<ExtensionAdapterMode>,
     target: Option<&TabIdentity>,
 ) -> Result<(), ToolError> {
-    let providers: Vec<_> = host
-        .lock()
-        .await
-        .extension
-        .iter()
-        .filter(|((id, browser), state)| {
-            *id == owner
-                && !state.owner_parked
-                && adapter.is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
-                && target.is_none_or(|target| target.browser == *browser)
-        })
-        .map(|(_, state)| state.provider.clone())
-        .collect();
+    let providers: Vec<_> = {
+        let ledger = host.lock().await;
+        ledger
+            .extension
+            .iter()
+            .filter(|((id, browser), state)| {
+                *id == owner
+                    && !state.owner_parked
+                    && ledger.extension_scope_pending(owner, state, turn, execution)
+                    && adapter
+                        .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+                    && target.is_none_or(|target| target.browser == *browser)
+            })
+            .map(|(_, state)| state.provider.clone())
+            .collect()
+    };
     for provider in providers {
         let extension = provider
             .extension()
@@ -5762,7 +5993,7 @@ pub(super) async fn drain_extension_cleanup(
             let pending = host
                 .lock()
                 .await
-                .reconcile_provider(owner, &provider)
+                .reconcile_provider(owner, &provider, execution)
                 .await?;
             if !pending {
                 break;
@@ -5783,6 +6014,7 @@ pub(super) async fn drain_extension_cleanup(
                 .filter(|(identity, lease)| {
                     lease.creator.owner == owner
                         && lease.creator.provider == provider
+                        && execution.is_none_or(|execution| &lease.creator.execution == execution)
                         && !matches!(lease.disposition, Disposition::Parked)
                         && target.is_none_or(|target| *identity == target)
                         && turn.is_none_or(|turn| {
@@ -5802,17 +6034,24 @@ pub(super) async fn drain_extension_cleanup(
                         .as_ref()?
                         .physical_claim()
                         .cloned()
-                        .map(|claim| (identity.clone(), claim, lease.creator.turn.clone()))
+                        .map(|claim| {
+                            (
+                                identity.clone(),
+                                claim,
+                                ExecutionScope::new(&lease.creator.turn, &lease.creator.execution),
+                            )
+                        })
                 })
                 .collect();
             let mut planned = Vec::new();
-            for (identity, claim, claim_turn) in claims {
+            for (identity, claim, claim_scope) in claims {
                 if let Some(turn) = turn
                     && ledger.fixed_cleanup_protected(
                         owner,
                         &identity,
                         &FixedCleanupPurpose::Turn {
                             turn: turn.to_owned(),
+                            execution: claim_scope.execution.clone(),
                         },
                     )?
                 {
@@ -5822,7 +6061,7 @@ pub(super) async fn drain_extension_cleanup(
                 let scope = ledger.extension_context(
                     owner,
                     &provider,
-                    context_operation(turn.unwrap_or(&claim_turn)),
+                    context_operation(turn.unwrap_or(&claim_scope.turn), &claim_scope.execution),
                     crate::desktop::NativeEpochId::new(),
                     CallTarget::Retirement,
                     false,
@@ -5862,6 +6101,7 @@ impl Browsers {
             self.owner,
             None,
             None,
+            None,
             Some(ExtensionAdapterMode::Chatgpt),
         );
         drain.wait().await
@@ -5870,13 +6110,14 @@ impl Browsers {
     pub(super) async fn drain_extension_controls(
         &self,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
         epoch: Option<crate::desktop::NativeEpochId>,
     ) -> Result<(), ToolError> {
         let host = self.host().await;
         let drain = host
             .lock()
             .await
-            .seal_extension_controls(self.owner, turn, epoch, None);
+            .seal_extension_controls(self.owner, turn, execution, epoch, None);
         // A control future may need a Host callback before it becomes ready.
         // Keep its original permit/resource and wait only after releasing Host.
         drain.wait().await
@@ -6047,7 +6288,7 @@ impl Browsers {
             .host
             .lock()
             .await
-            .reconcile_provider(self.owner, &provider)
+            .reconcile_provider(self.owner, &provider, None)
             .await?;
         let result = result.map_err(provider::extension_error)?;
         pending.check().await?;
@@ -6107,7 +6348,7 @@ impl Browsers {
                 .host
                 .lock()
                 .await
-                .reconcile_provider(self.owner, &provider)
+                .reconcile_provider(self.owner, &provider, None)
                 .await?;
             result.map_err(provider::extension_error)?;
             pending.check().await?;
@@ -6167,7 +6408,7 @@ impl Browsers {
                 .host
                 .lock()
                 .await
-                .reconcile_provider(self.owner, &provider)
+                .reconcile_provider(self.owner, &provider, None)
                 .await?;
             match result.as_ref().map_err(|error| error.as_ref()) {
                 Ok(_)
@@ -6276,7 +6517,7 @@ impl Browsers {
         if host
             .lock()
             .await
-            .reconcile_provider(self.owner, provider)
+            .reconcile_provider(self.owner, provider, None)
             .await?
         {
             return Err(ToolError::Failed(
@@ -6366,7 +6607,9 @@ impl Browsers {
                 .dispatch(scope.control.resolve_session_tab(&tab.info.id))
                 .await;
             let mut ledger = host.lock().await;
-            ledger.reconcile_provider(self.owner, &tab.provider).await?;
+            ledger
+                .reconcile_provider(self.owner, &tab.provider, None)
+                .await?;
             let observed = observed.map_err(provider::extension_error)?;
             if observed.id.to_string() != identity.target {
                 return Err(unknown("retained page metadata changed its issued tab"));
@@ -6396,7 +6639,9 @@ impl Browsers {
             .err()
             .is_some_and(|error| scope.control.undispatched_control(error).is_some());
         let mut ledger = host.lock().await;
-        ledger.reconcile_provider(self.owner, &tab.provider).await?;
+        ledger
+            .reconcile_provider(self.owner, &tab.provider, None)
+            .await?;
         if ledger.mark_attempt_pending(&identity, self.owner, &attempt) {
             let outcome = match &result {
                 Ok(_) => {
@@ -6411,6 +6656,7 @@ impl Browsers {
         }
         result.map_err(provider::extension_error)?;
         tab.last_turn = invocation.turn().to_owned();
+        tab.last_execution = invocation.execution_correlation().clone();
         Ok(Value::Null)
     }
 
@@ -6418,6 +6664,7 @@ impl Browsers {
         &self,
         handle: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<(), ToolError> {
         let tab = self
             .targets
@@ -6439,7 +6686,13 @@ impl Browsers {
                 "extension download belongs to an old provider generation",
             ));
         }
-        if tab.provider.extension().is_none() || acquired != turn {
+        if tab.provider.extension().is_none()
+            || acquired != turn
+            || tab
+                .extension_acquisition
+                .as_ref()
+                .is_some_and(|acquired| acquired.execution_correlation() != execution)
+        {
             return Ok(());
         }
         let identity = tab.identity()?;
@@ -6450,13 +6703,18 @@ impl Browsers {
             .extension
             .get(&(self.owner, identity.browser.clone()))
             .is_some_and(|state| {
-                state.current_turn.as_deref() == Some(turn) && state.retiring_turn.is_none()
+                state
+                    .current_scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.matches(Some(turn), Some(execution)))
+                    && state.retiring_scope.is_none()
             });
         let logical = ledger.tabs.get(&identity).is_some_and(|lease| {
             lease.creator.owner == self.owner
                 && lease.creator.provider == tab.provider
                 && lease.creator.generation == tab.generation
                 && lease.creator.turn == turn
+                && &lease.creator.execution == execution
                 && matches!(lease.disposition, Disposition::Live)
         });
         if !current || !logical {
@@ -6505,7 +6763,7 @@ impl Browsers {
                 && lease.extension.as_ref().is_some_and(|state| state.revoked)
         });
         if revoked {
-            drain_extension_cleanup(&host, self.owner, None, None, Some(&identity)).await?;
+            drain_extension_cleanup(&host, self.owner, None, None, None, Some(&identity)).await?;
         }
         let history = self
             .acquisition_history(&provider)
@@ -6535,7 +6793,7 @@ impl Browsers {
                 let retirement = ledger.extension_context(
                     self.owner,
                     &provider,
-                    context_operation(invocation.turn()),
+                    context_operation(invocation.turn(), invocation.execution_correlation()),
                     self.epoch,
                     CallTarget::Retirement,
                     false,
@@ -6554,7 +6812,7 @@ impl Browsers {
                 ledger.extension_reserve(
                     self.owner,
                     &provider,
-                    invocation.turn(),
+                    &context,
                     &id.to_string(),
                     Origin::UserClaimed,
                 )?;
@@ -6605,7 +6863,7 @@ impl Browsers {
                 .await;
             host.lock()
                 .await
-                .reconcile_provider(self.owner, &provider)
+                .reconcile_provider(self.owner, &provider, None)
                 .await?;
             applied.map_err(provider::extension_error)?;
         }
@@ -6699,7 +6957,7 @@ impl Browsers {
             }
             host.lock()
                 .await
-                .reconcile_provider(self.owner, &provider)
+                .reconcile_provider(self.owner, &provider, None)
                 .await?;
             let prepared = match prepared {
                 Ok(prepared) => prepared,
@@ -6775,6 +7033,7 @@ impl Browsers {
         if request.native_owner != self.owner
             || request.native_epoch != self.epoch.to_string()
             || request.turn_id != invocation.turn()
+            || &request.execution != invocation.execution_correlation()
         {
             return Err(failed(
                 "extension popup belongs to another owner, epoch or turn",
@@ -6831,14 +7090,14 @@ impl Browsers {
                 .get(&browser.tab(&request.opener_tab_id.to_string()))
                 .and_then(|lease| lease.extension.as_ref())
                 .ok_or_else(|| failed("extension popup opener custody is unavailable"))?;
-            if state
-                .lease_children
-                .as_ref()
-                .is_none_or(|scope| scope.epoch != self.epoch || scope.turn != request.turn_id)
-                || ledger
-                    .extension
-                    .get(&(self.owner, browser.clone()))
-                    .is_none_or(|state| !state.applied.contains(&request.completion_id))
+            if state.lease_children.as_ref().is_none_or(|scope| {
+                scope.epoch != self.epoch
+                    || scope.turn != request.turn_id
+                    || scope.execution != request.execution
+            }) || ledger
+                .extension
+                .get(&(self.owner, browser.clone()))
+                .is_none_or(|state| !state.applied.contains(&request.completion_id))
             {
                 return Err(failed(
                     "extension popup was not issued by its prepared source lease",
@@ -6882,7 +7141,7 @@ impl Browsers {
         };
         host.lock()
             .await
-            .reconcile_provider(self.owner, &provider)
+            .reconcile_provider(self.owner, &provider, None)
             .await?;
         // A lost creation reply is already in the existing Created/Unknown
         // ledger, including a real creation receipt without an observed tab ID.
@@ -6897,7 +7156,7 @@ impl Browsers {
                 .await;
             host.lock()
                 .await
-                .reconcile_provider(self.owner, &provider)
+                .reconcile_provider(self.owner, &provider, None)
                 .await?;
             cleanup.map_err(provider::extension_error)?;
             return Err(failed(
@@ -6961,8 +7220,13 @@ impl Browsers {
         }
         // This exact captured page request uses the service's dedicated current
         // global/network authorization. Ordinary model Navigate is unchanged.
-        self.use_tab(&identity, invocation.turn(), cancellation)
-            .await?;
+        self.use_tab(
+            &identity,
+            invocation.turn(),
+            invocation.execution_correlation(),
+            cancellation,
+        )
+        .await?;
         let child = self
             .targets
             .get_mut(&handle)
@@ -6980,8 +7244,9 @@ impl Browsers {
                     .extension
                     .get(&(self.owner, browser))
                     .is_none_or(|state| {
-                        state.current_turn.as_deref() != Some(request.turn_id.as_str())
-                            || state.retiring_turn.is_some()
+                        !state.current_scope.as_ref().is_some_and(|scope| {
+                            scope.matches(Some(&request.turn_id), Some(&request.execution))
+                        }) || state.retiring_scope.is_some()
                             || state.logical_active.as_deref() != Some(identity.target.as_str())
                     })
             {
@@ -7085,7 +7350,7 @@ impl Browsers {
                     .map_err(provider::extension_error)?;
                 host.lock()
                     .await
-                    .reconcile_provider(self.owner, provider)
+                    .reconcile_provider(self.owner, provider, None)
                     .await?;
                 let existing = host
                     .lock()
@@ -7127,7 +7392,7 @@ impl Browsers {
                     .map_err(provider::extension_error)?;
                 host.lock()
                     .await
-                    .reconcile_provider(self.owner, provider)
+                    .reconcile_provider(self.owner, provider, None)
                     .await?;
             }
         }
@@ -7275,7 +7540,7 @@ impl Browsers {
                     .await;
                 host.lock()
                     .await
-                    .reconcile_provider(self.owner, &provider)
+                    .reconcile_provider(self.owner, &provider, None)
                     .await?;
                 applied.map_err(provider::extension_error)?;
             }
@@ -7331,7 +7596,7 @@ impl Browsers {
         let created = scope.dispatch(scope.control.create_tab(preferred)).await;
         host.lock()
             .await
-            .reconcile_provider(self.owner, &provider)
+            .reconcile_provider(self.owner, &provider, None)
             .await?;
         let created = created.map_err(provider::extension_error)?;
         let BoundExtensionCreated {
@@ -7516,7 +7781,7 @@ impl Tab {
         self.cursor_host
             .lock()
             .await
-            .reconcile_provider(self.cursor_owner, &self.provider)
+            .reconcile_provider(self.cursor_owner, &self.provider, None)
             .await?;
         let shown = shown.map_err(provider::extension_error)?;
         Ok(Some(
@@ -7541,7 +7806,7 @@ impl Tab {
         host.lock().await.extension_reserve(
             self.cursor_owner,
             &self.provider,
-            invocation.turn(),
+            &operation(invocation)?,
             &self.info.id,
             Origin::UserClaimed,
         )?;
@@ -7629,7 +7894,7 @@ impl Tab {
                 .await;
             host.lock()
                 .await
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?;
             let prepared = match prepared {
                 Ok(prepared) => prepared,
@@ -7675,7 +7940,7 @@ impl Tab {
                     .await;
                 host.lock()
                     .await
-                    .reconcile_provider(self.cursor_owner, &self.provider)
+                    .reconcile_provider(self.cursor_owner, &self.provider, None)
                     .await?;
                 attached.map_err(provider::extension_error)?;
                 host.lock()
@@ -7861,6 +8126,7 @@ impl Tab {
                         state.lease_children = Some(LeaseChildScope {
                             effects,
                             turn: invocation.turn().to_owned(),
+                            execution: invocation.execution_correlation().clone(),
                             epoch: self.cursor_epoch,
                         });
                     }
@@ -7927,7 +8193,7 @@ impl Tab {
                     Err(_) => {}
                 }
                 ledger
-                    .reconcile_provider(self.cursor_owner, &self.provider)
+                    .reconcile_provider(self.cursor_owner, &self.provider, None)
                     .await?;
                 let lease = ledger
                     .tabs
@@ -8005,7 +8271,10 @@ impl Tab {
             .as_ref()
             .map(Acquisition::turn)
             .ok_or_else(|| failed("extension download has no acknowledged acquisition"))?;
-        let mut reclaim = acquired != invocation.turn();
+        let mut reclaim = acquired != invocation.turn()
+            || self.extension_acquisition.as_ref().is_some_and(|acquired| {
+                acquired.execution_correlation() != invocation.execution_correlation()
+            });
         let capabilities = extension
             .capabilities()
             .map_err(provider::extension_error)?;
@@ -8021,7 +8290,7 @@ impl Tab {
         let scope = {
             let mut ledger = host.lock().await;
             if ledger
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?
             {
                 return Err(ToolError::CleanupUnconfirmed(
@@ -8032,7 +8301,7 @@ impl Tab {
             ledger.extension_reserve(
                 self.cursor_owner,
                 &self.provider,
-                invocation.turn(),
+                &operation(invocation)?,
                 &self.info.id,
                 Origin::UserClaimed,
             )?;
@@ -8074,7 +8343,7 @@ impl Tab {
                 .is_some_and(|receipt| {
                     matches!(receipt,
                     PreparedOperation::Acquired { operation, epoch }
-                        if operation.turn_id == invocation.turn() && *epoch == self.cursor_epoch)
+                        if operation.turn_id == invocation.turn() && &operation.execution == invocation.execution_correlation() && *epoch == self.cursor_epoch)
                 })
         };
         if recovered_acquisition {
@@ -8168,7 +8437,7 @@ impl Tab {
                     .await;
                 host.lock()
                     .await
-                    .reconcile_provider(self.cursor_owner, &self.provider)
+                    .reconcile_provider(self.cursor_owner, &self.provider, None)
                     .await?;
                 match prepared {
                     Ok(prepared) => {
@@ -8289,7 +8558,7 @@ impl Tab {
             ledger.extension_reserve(
                 self.cursor_owner,
                 &self.provider,
-                invocation.turn(),
+                &operation(invocation)?,
                 &self.info.id,
                 Origin::UserClaimed,
             )?;
@@ -8411,7 +8680,7 @@ impl Tab {
                     .await;
                 host.lock()
                     .await
-                    .reconcile_provider(self.cursor_owner, &self.provider)
+                    .reconcile_provider(self.cursor_owner, &self.provider, None)
                     .await?;
                 applied.map_err(provider::extension_error)?;
             }
@@ -8466,7 +8735,7 @@ impl Tab {
                 .await;
             host.lock()
                 .await
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?;
             match prepared {
                 Ok(prepared) => {
@@ -8502,7 +8771,7 @@ impl Tab {
             let attached = scope.dispatch(scope.control.attach_tab(raw_id)).await;
             host.lock()
                 .await
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?;
             attached.map_err(provider::extension_error)?;
             claim = host
@@ -8636,7 +8905,10 @@ impl Tab {
                 self.clipboard_authorization = services.attachment;
                 self.dialog_host = services.effects;
                 self.attachment_settlement = services.settlement;
-                if let Some(bridge) = &self.clipboard {
+                if let Some(bridge) = &self.clipboard
+                    && bridge.turn() == invocation.turn()
+                    && bridge.execution_correlation() == invocation.execution_correlation()
+                {
                     bridge.update(
                         self.clipboard_authorization.clone(),
                         self.dialog_host.clone(),
@@ -8713,7 +8985,7 @@ impl Tab {
                             .await;
                         host.lock()
                             .await
-                            .reconcile_provider(self.cursor_owner, &self.provider)
+                            .reconcile_provider(self.cursor_owner, &self.provider, None)
                             .await?;
                         applied.map_err(provider::extension_error)?;
                     }
@@ -8928,6 +9200,7 @@ impl Tab {
             &identity,
             &FixedCleanupPurpose::Turn {
                 turn: invocation.turn().to_owned(),
+                execution: invocation.execution_correlation().clone(),
             },
         )? {
             return Err(ToolError::CleanupUnconfirmed(
@@ -8976,7 +9249,11 @@ impl Tab {
                 "extension close changed its issued source operation or claim",
             ));
         }
-        request.check_scope(invocation.turn(), &scope.context.operation_id)?;
+        request.check_scope(
+            invocation.turn(),
+            invocation.execution_correlation(),
+            &scope.context.operation_id,
+        )?;
         {
             let ledger = self.cursor_host.lock().await;
             let lease = ledger
@@ -9021,7 +9298,7 @@ impl Tab {
             self.cursor_host
                 .lock()
                 .await
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?;
             if !cleared
                 .map_err(provider::extension_error)?
@@ -9056,6 +9333,7 @@ impl Tab {
                     &identity,
                     FixedCleanupPurpose::Turn {
                         turn: invocation.turn().to_owned(),
+                        execution: invocation.execution_correlation().clone(),
                     },
                 )
                 .await?;
@@ -9073,7 +9351,7 @@ impl Tab {
                 .ok_or_else(|| unknown("extension close drain lost its exact claim"))?
                 .cdp_drain = Some(drain);
             if ledger
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?
             {
                 return Err(ToolError::CleanupUnconfirmed(
@@ -9102,7 +9380,7 @@ impl Tab {
             self.cursor_host
                 .lock()
                 .await
-                .reconcile_provider(self.cursor_owner, &self.provider)
+                .reconcile_provider(self.cursor_owner, &self.provider, None)
                 .await?;
             closed.map_err(provider::extension_error)?;
         }
@@ -9194,6 +9472,7 @@ async fn refresh_control(
                 let valid = ledger.tabs.get(&identity).is_some_and(|lease| {
                     lease.creator.owner == owner
                         && lease.creator.turn == overlay.turn
+                        && lease.creator.execution == overlay.context.execution
                         && matches!(lease.disposition, Disposition::Live)
                         && lease
                             .extension
@@ -9233,7 +9512,7 @@ async fn refresh_control(
                     .map_err(provider::extension_error)?;
                 host.lock()
                     .await
-                    .reconcile_provider(owner, &overlay.provider)
+                    .reconcile_provider(owner, &overlay.provider, None)
                     .await?;
             }
             Ok(())
@@ -9250,451 +9529,6 @@ async fn refresh_control(
         }),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn row(id: u64, extra: Value) -> cua_driver_core::browser::ExtensionTabInfo {
-        let mut row = json!({"id":id});
-        for (key, value) in extra.as_object().unwrap() {
-            row[key] = value.clone();
-        }
-        serde_json::from_value(row).unwrap()
-    }
-    #[test]
-    fn managed_metadata_omits_user_inventory_only_fields() {
-        let tab = row(
-            17,
-            json!({"title":"Observed title","url":"https://fixture.test/","providerTabId":"actual-provider-id","lastOpened":"observed-date","groupTitle":"Observed group"}),
-        );
-        assert_eq!(
-            managed_tab_info(&tab),
-            json!({"id":"17","titleJson":"\"Observed title\"","url":"https://fixture.test/","providerTabId":"actual-provider-id"})
-        );
-        assert_eq!(managed_tab_info(&row(18, json!({}))), json!({"id":"18"}));
-        assert!(is_internal_url("chrome://settings"));
-        assert!(!is_internal_url("chrome-extension://fixture/welcome.html"));
-    }
-
-    #[test]
-    fn provider_projected_order_and_optional_metadata_remain_observed() {
-        let rows = ordered_user_tabs(
-            vec![
-                row(
-                    9,
-                    json!({"lastOpened":"actual-provider-string","providerTabId":"actual-provider-id"}),
-                ),
-                row(1, json!({"lastAccessed":99999,"windowId":1,"index":0})),
-            ],
-            ExtensionUserTabsOrder::Provider,
-        );
-        assert_eq!(
-            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec![9, 1]
-        );
-        assert_eq!(
-            tab_info(&rows[0]),
-            json!({"id":"9","lastOpened":"actual-provider-string","providerTabId":"actual-provider-id"})
-        );
-        assert_eq!(tab_info(&rows[1]), json!({"id":"1"}));
-    }
-    #[test]
-    fn raw_extension_order_uses_activity_then_window_index_and_id() {
-        let rows = ordered_user_tabs(
-            vec![
-                row(4, json!({"lastAccessed":10,"windowId":2,"index":0})),
-                row(3, json!({"lastAccessed":10,"windowId":1,"index":1})),
-                row(2, json!({"lastAccessed":20,"windowId":2,"index":1})),
-                row(1, json!({"lastAccessed":10,"windowId":1,"index":1})),
-            ],
-            ExtensionUserTabsOrder::Host,
-        );
-        assert_eq!(
-            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec![2, 1, 3, 4]
-        );
-    }
-    #[test]
-    fn user_inventory_deduplicates_before_cap_without_creating_timestamps() {
-        let rows = (0..1003)
-            .flat_map(|id| [row(id, json!({})), row(id, json!({"title":"duplicate"}))])
-            .collect();
-        let rows = ordered_user_tabs(rows, ExtensionUserTabsOrder::Provider);
-        assert_eq!(rows.len(), 1000);
-        assert_eq!(rows.last().unwrap().id, 999);
-        assert!(
-            rows.iter()
-                .all(|row| row.title.is_none() && row.last_opened.is_none())
-        );
-    }
-}
-
-#[cfg(test)]
-mod preparation_effect_tests {
-    use super::*;
-
-    #[test]
-    fn cleanup_and_refused_retries_preserve_other_scopes_and_header_liability() {
-        let old = ExtensionWireContext::new("fixture-session", "old-turn").unwrap();
-        let current = ExtensionWireContext::new("fixture-session", "current-turn").unwrap();
-        let mut effects = PreparationEffects::default();
-        effects.begin(&old, true);
-        effects.begin(&current, true);
-        let retry = effects.begin(&current, true);
-        effects.refused(&current, retry);
-        assert_eq!(effects.scopes, [old.clone(), current.clone()]);
-        effects.fixed_cleanup(&old, true);
-        assert_eq!(effects.scopes.as_slice(), std::slice::from_ref(&current));
-        assert!(!effects.settled());
-        effects.fixed_cleanup(&current, true);
-        assert!(effects.scopes.is_empty());
-        assert!(
-            !effects.settled(),
-            "fixed cleanup does not acknowledge headers"
-        );
-        effects.headers_may_exist = false;
-        assert!(effects.settled());
-    }
-
-    #[test]
-    fn preparation_refusal_keeps_unknown_and_only_current_no_dispatch_refunds() {
-        fn pending() -> (ClaimState, ExtensionHostOperation) {
-            let operation = context_operation("projection-turn");
-            let wire = ExtensionWireContext::new("projection-session", "projection-turn").unwrap();
-            let mut state = ClaimState::default();
-            let effects = state.preparation_effects.begin(&wire, true);
-            state.claim_preparation = ClaimPreparation::Pending(Arc::new(PreparationAttempt {
-                document: ExtensionPreparationDocument {
-                    frame_id: "frame".into(),
-                    loader_id: "loader".into(),
-                    url: "https://fixture.invalid".into(),
-                },
-                policy: Arc::new(ExtensionPreparationPolicy::default()),
-                wire,
-                operation: operation.clone(),
-                previous: None,
-                effects,
-            }));
-            (state, operation)
-        }
-        let (mut state, operation) = pending();
-        state.finish_preparation_error(
-            Some(&operation),
-            false,
-            "remote refusal after actual request",
-        );
-        assert!(
-            matches!(&state.claim_preparation, ClaimPreparation::Unknown {reason,..}
-            if reason == "remote refusal after actual request")
-        );
-        assert!(!state.preparation_effects.settled());
-        state.finish_preparation_error(Some(&operation), true, "later no-dispatch cannot wash it");
-        assert!(
-            matches!(&state.claim_preparation, ClaimPreparation::Unknown {reason,..}
-            if reason == "remote refusal after actual request")
-        );
-        assert!(!state.preparation_effects.settled());
-        let (mut state, operation) = pending();
-        let foreign = context_operation("projection-turn");
-        state.finish_preparation_error(Some(&foreign), true, "unrelated request");
-        assert!(matches!(
-            state.claim_preparation,
-            ClaimPreparation::Pending(_)
-        ));
-        assert!(!state.preparation_effects.settled());
-        state.finish_preparation_error(Some(&operation), true, "matching no-dispatch");
-        assert!(matches!(
-            state.claim_preparation,
-            ClaimPreparation::NotAttempted
-        ));
-        assert!(state.preparation_effects.settled());
-    }
-}
-
-#[cfg(test)]
-mod control_lifetime_tests {
-    use super::*;
-    use std::{future::Future, task::Poll};
-
-    // The provider is inert. These keepers exercise the actual Host mutex and
-    // call-lifetime transitions, not extension activation or permission proofs.
-    fn fixture() -> (uuid::Uuid, BrowserIdentity, ProviderState) {
-        let provider = Provider::Cdp(maka_capabilities::computer::BrowserConnection {
-            id: "control-lifetime".into(),
-            endpoint: "http://127.0.0.1:9222".into(),
-        });
-        let browser = BrowserIdentity::of(
-            &provider,
-            "ws://127.0.0.1:9222/devtools/browser/control-lifetime",
-        )
-        .unwrap();
-        (
-            uuid::Uuid::new_v4(),
-            browser,
-            ProviderState {
-                provider,
-                current_turn: Some("old-turn".into()),
-                pending_viewport: None,
-                session_group_title: None,
-                retiring_turn: None,
-                logical_active: None,
-                calls: HashMap::new(),
-                applied: HashSet::new(),
-                finish_phases: HashMap::new(),
-                session_headers: None,
-                headers_unknown: false,
-                uploads: upload::Custody::default(),
-                owner_parked: false,
-            },
-        )
-    }
-    fn call(epoch: crate::desktop::NativeEpochId) -> CallContext {
-        CallContext {
-            turn: "old-turn".into(),
-            epoch,
-            purposes: HashSet::from([CallPurpose::SessionInventory]),
-            issuing: Arc::new(AtomicUsize::new(0)),
-            activation: Arc::new(AtomicBool::new(false)),
-            registration: None,
-            controls: Arc::new(ControlGate::default()),
-        }
-    }
-
-    #[tokio::test]
-    async fn control_drain_releases_host_for_the_original_future_callback() {
-        let (owner, browser, mut state) = fixture();
-        let call = call(crate::desktop::NativeEpochId::new());
-        let gate = call.controls.clone();
-        let permit = gate.enter().unwrap();
-        state.calls.insert("accepted-control".into(), call);
-        let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-        host.lock()
-            .await
-            .extension
-            .insert((owner, browser.clone()), state);
-        let (release, released) = tokio::sync::oneshot::channel();
-        let callback_host = host.clone();
-        let callback_browser = browser.clone();
-        let original = tokio::spawn(async move {
-            released.await.unwrap();
-            callback_host
-                .lock()
-                .await
-                .extension
-                .get_mut(&(owner, callback_browser))
-                .unwrap()
-                .logical_active = Some("callback-ran".into());
-            drop(permit);
-        });
-        let drain = host
-            .lock()
-            .await
-            .seal_extension_controls(owner, Some("old-turn"), None, None);
-        let mut drained = Box::pin(drain.wait());
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(drained.as_mut().poll(cx).is_pending())).await
-        );
-        assert!(
-            gate.enter().is_err(),
-            "sealing must reject an unpolled old call"
-        );
-        release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), &mut drained)
-            .await
-            .unwrap()
-            .unwrap();
-        original.await.unwrap();
-        assert_eq!(
-            host.lock().await.extension[&(owner, browser)]
-                .logical_active
-                .as_deref(),
-            Some("callback-ran")
-        );
-    }
-
-    #[tokio::test]
-    async fn extension_event_lock_keeps_polling_the_same_dispatch_that_holds_host() {
-        let (owner, browser, state) = fixture();
-        let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-        host.lock()
-            .await
-            .extension
-            .insert((owner, browser.clone()), state);
-        let (release, released) = tokio::sync::oneshot::channel();
-        let callback_host = host.clone();
-        let callback_browser = browser.clone();
-        let completed = Arc::new(AtomicUsize::new(0));
-        let terminal = completed.clone();
-        let mut original: Option<crate::HostEffectFuture> = Some(Box::pin(async move {
-            let mut ledger = callback_host.lock().await;
-            released.await.unwrap();
-            ledger
-                .extension
-                .get_mut(&(owner, callback_browser))
-                .unwrap()
-                .logical_active = Some("same-original-terminal".into());
-            terminal.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }));
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(
-                original.as_mut().unwrap().as_mut().poll(cx).is_pending()
-            ))
-            .await
-        );
-        assert!(
-            host.try_lock().is_err(),
-            "the actual original future owns Host"
-        );
-        assert_eq!(completed.load(Ordering::SeqCst), 0);
-        release.send(()).unwrap();
-        let ledger = tokio::time::timeout(
-            Duration::from_secs(1),
-            lock_for_extension_event(&host, &mut original),
-        )
-        .await
-        .expect("event lock must continue its retained lock-owning dispatch");
-        assert!(
-            original.is_none(),
-            "the same future reached its real terminal"
-        );
-        assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            ledger.extension[&(owner, browser)]
-                .logical_active
-                .as_deref(),
-            Some("same-original-terminal")
-        );
-    }
-
-    #[tokio::test]
-    async fn control_ready_between_seal_and_wait_does_not_lose_completion() {
-        let gate = Arc::new(ControlGate::default());
-        let permit = gate.enter().unwrap();
-        gate.seal();
-        drop(permit);
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            ControlDrain {
-                gates: vec![gate.clone()],
-            }
-            .wait(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(gate.enter().is_err(), "idle must not reopen a retired call");
-    }
-
-    #[tokio::test]
-    async fn epoch_drain_does_not_seal_a_replacement_epoch_call() {
-        let (owner, browser, mut state) = fixture();
-        let old_epoch = crate::desktop::NativeEpochId::new();
-        let new_epoch = crate::desktop::NativeEpochId::new();
-        let old = call(old_epoch);
-        let new = call(new_epoch);
-        let old_gate = old.controls.clone();
-        let new_gate = new.controls.clone();
-        state.calls.insert("old".into(), old);
-        state.calls.insert("new".into(), new);
-        let mut host = Host::default();
-        host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, None, Some(old_epoch), None)
-            .wait()
-            .await
-            .unwrap();
-        assert!(old_gate.enter().is_err());
-        assert!(
-            new_gate.enter().is_ok(),
-            "old VM retirement must not seal the replacement"
-        );
-        assert!(host.extension[&(owner, browser)].retiring_turn.is_none());
-    }
-
-    #[tokio::test]
-    async fn late_old_turn_cleanup_does_not_poison_the_current_turn() {
-        let (owner, browser, mut state) = fixture();
-        state
-            .finish_phases
-            .insert("old-turn".into(), FinishPhase::Acknowledged);
-        state.admit_turn("new-turn").unwrap();
-        state.logical_active = Some("current-target".into());
-        let mut host = Host::default();
-        host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, Some("old-turn"), None, None)
-            .wait()
-            .await
-            .unwrap();
-        let current = host.extension.get_mut(&(owner, browser)).unwrap();
-        assert!(current.retiring_turn.is_none());
-        assert_eq!(current.current_turn.as_deref(), Some("new-turn"));
-        assert_eq!(current.logical_active.as_deref(), Some("current-target"));
-        current.admit_turn("new-turn").unwrap();
-    }
-
-    #[test]
-    fn issued_intent_does_not_create_finish_or_clear_another_calls_obligation() {
-        let (_, _, mut state) = fixture();
-        let first = call(crate::desktop::NativeEpochId::new());
-        state.calls.insert("not-polled".into(), first);
-        state.fold_activation();
-        assert!(
-            state.finish_phases.is_empty(),
-            "local intent or Host refusal is not activation"
-        );
-        state.calls["not-polled"]
-            .activation
-            .store(true, Ordering::SeqCst);
-        state.fold_activation();
-        state.calls.insert(
-            "parallel-refused".into(),
-            call(crate::desktop::NativeEpochId::new()),
-        );
-        state.fold_activation();
-        assert!(matches!(
-            state.finish_phases.get("old-turn"),
-            Some(FinishPhase::Required)
-        ));
-        assert!(state.admit_turn("new-turn").is_err());
-        assert_eq!(state.current_turn.as_deref(), Some("old-turn"));
-        assert!(matches!(
-            state.finish_phases.get("old-turn"),
-            Some(FinishPhase::Required)
-        ));
-        assert!(state.calls.values().all(|call| call.controls.is_sealed()));
-    }
-
-    #[test]
-    fn an_accepted_control_blocks_intent_switch_before_its_activation_marker() {
-        let (_, _, mut state) = fixture();
-        let call = call(crate::desktop::NativeEpochId::new());
-        let permit = call.controls.enter().unwrap();
-        state.calls.insert("enter-won-before-seal".into(), call);
-        assert!(state.admit_turn("new-turn").is_err());
-        assert_eq!(state.current_turn.as_deref(), Some("old-turn"));
-        state.calls["enter-won-before-seal"]
-            .activation
-            .store(true, Ordering::SeqCst);
-        drop(permit);
-        state.fold_activation();
-        assert!(matches!(
-            state.finish_phases.get("old-turn"),
-            Some(FinishPhase::Required)
-        ));
-        state.finish_phases.insert(
-            "old-turn".into(),
-            FinishPhase::Unknown("original result unknown".into()),
-        );
-        assert!(state.admit_turn("new-turn").is_err());
-        assert!(
-            matches!(state.finish_phases.get("old-turn"), Some(FinishPhase::Unknown(reason)) if reason == "original result unknown")
-        );
-    }
-}
-
-#[cfg(all(test, unix))]
-#[path = "extension/inventory_tests.rs"]
-mod inventory_tests;
 
 // Append in browser/extension.rs. This reuses the same metadata operation
 // registration, session ownership and current Host session-preparation check.
@@ -9729,6 +9563,7 @@ impl Browsers {
             self.owner,
             &browser,
             call.invocation.turn(),
+            call.invocation.execution_correlation(),
             value,
         )?;
         let Some(identity) = identity else {
@@ -9767,26 +9602,5 @@ impl Browsers {
         pending.check().await?;
         super::capability::viewport::apply(tab, value).await?;
         Ok(Value::Null)
-    }
-}
-
-#[cfg(test)]
-mod encoded_title_tests {
-    use super::*;
-
-    #[test]
-    fn title_and_group_use_only_encoded_text_until_the_facade() {
-        let tab: cua_driver_core::browser::ExtensionTabInfo = serde_json::from_value(json!({
-            "id":17,"titleJson":r#""\ud800""#,"groupTitleJson":r#""\udc00""#,"url":"about:blank"
-        }))
-        .unwrap();
-        assert_eq!(
-            tab_info(&tab),
-            json!({"id":"17","titleJson":r#""\ud800""#,"tabGroupJson":r#""\udc00""#,"url":"about:blank"})
-        );
-        assert_eq!(
-            managed_tab_info(&tab),
-            json!({"id":"17","titleJson":r#""\ud800""#,"url":"about:blank"})
-        );
     }
 }

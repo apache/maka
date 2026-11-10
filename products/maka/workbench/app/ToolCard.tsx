@@ -133,13 +133,7 @@ function reference(tool: HistoryTool, field: 'arguments' | 'result'): ToolSource
         presentation: tool.call ? tool.call.presentation : undefined,
         callPosition: tool.call?.position ?? null,
         resultPosition: tool.result?.position ?? null,
-        key: JSON.stringify([
-          field,
-          tool.toolUseId,
-          position.sourceSequence,
-          position.itemIndex,
-          tool.call?.presentation ?? null,
-        ]),
+        key: JSON.stringify([field, tool.toolUseId, position, tool.call?.presentation ?? null]),
       }
     : null;
 }

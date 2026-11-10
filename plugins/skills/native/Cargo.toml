@@ -42,6 +42,7 @@ maka-skills.workspace = true
 maka-workspace-support.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rusqlite.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true
@@ -55,3 +56,4 @@ libc.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+maka-packages.workspace = true

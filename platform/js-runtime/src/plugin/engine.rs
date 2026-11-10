@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::{Health, Limits, Result, failed};
+use super::{Health, Limits, Result, failed, rejected};
 use deno_core::{JsRuntime, RuntimeOptions, v8};
 use futures_util::future::LocalBoxFuture;
 use serde_json::Value;
@@ -188,7 +188,7 @@ pub(super) fn call(
 ) -> Result<Call> {
     let value = invoke(runtime, module, path, args)?;
     let resolving = runtime.resolve(value);
-    Ok(Box::pin(async move { resolving.await.map_err(failed) }))
+    Ok(Box::pin(async move { resolving.await.map_err(rejected) }))
 }
 
 fn invoke(
@@ -221,12 +221,13 @@ fn invoke(
             .map(|value| super::json::to_v8(scope, value).map_err(failed))
             .collect::<Result<Vec<_>>>()?;
         let Some(value) = function.call(scope, object.into(), &args) else {
-            return Err(failed(
-                scope
-                    .exception()
-                    .map(|value| value.to_rust_string_lossy(scope))
-                    .unwrap_or_else(|| "plugin call terminated".into()),
-            ));
+            return Err(if scope.has_terminated() {
+                failed("plugin call terminated")
+            } else if let Some(exception) = scope.exception() {
+                rejected(exception.to_rust_string_lossy(scope))
+            } else {
+                failed("plugin call did not return")
+            });
         };
         v8::Global::new(scope, value)
     };
@@ -279,7 +280,7 @@ pub(super) fn call_bound(
 ) -> Result<Call> {
     let value = invoke_bound(runtime, callbacks, method, args, context)?;
     let resolving = runtime.resolve(value);
-    Ok(Box::pin(async move { resolving.await.map_err(failed) }))
+    Ok(Box::pin(async move { resolving.await.map_err(rejected) }))
 }
 
 fn invoke_bound<'a>(
@@ -323,12 +324,13 @@ fn invoke_bound<'a>(
         let value = function
             .call(scope, receiver.into(), &args)
             .ok_or_else(|| {
-                failed(
-                    scope
-                        .exception()
-                        .map(|value| value.to_rust_string_lossy(scope))
-                        .unwrap_or_else(|| "plugin call terminated".into()),
-                )
+                if scope.has_terminated() {
+                    failed("plugin call terminated")
+                } else if let Some(exception) = scope.exception() {
+                    rejected(exception.to_rust_string_lossy(scope))
+                } else {
+                    failed("plugin call did not return")
+                }
             })?;
         v8::Global::new(scope, value)
     };

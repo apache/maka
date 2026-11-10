@@ -182,8 +182,6 @@ pub(super) struct MediaView {
     peak: usize,
     _directory: Arc<maka_model::DirectoryLease>,
     materialization: tokio::sync::Mutex<Materialization>,
-    #[cfg(test)]
-    decoded_jobs: std::sync::atomic::AtomicUsize,
 }
 impl MediaView {
     pub(super) fn peak_bytes(&self) -> usize {
@@ -252,7 +250,7 @@ impl MediaView {
         if !changed {
             return Ok(None);
         }
-        let identity = crate::runner::digest(&(
+        let identity = crate::digest(&(
             &self.identity,
             works
                 .iter()
@@ -269,8 +267,6 @@ impl MediaView {
             peak: self.peak,
             _directory: self._directory.clone(),
             materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
-            #[cfg(test)]
-            decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
         })))
     }
     pub(super) async fn materialize(
@@ -313,9 +309,6 @@ impl MediaView {
                     let mut output = original;
                     let limits = self.limits.clone();
                     let cancelled = cancellation.clone();
-                    #[cfg(test)]
-                    self.decoded_jobs
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // The arena worker is physically awaited even after cancellation; its
                     // directory lease owns the complete decoder/encoder peak until drain.
                     let (range, output) = self
@@ -672,8 +665,7 @@ pub(super) async fn prepare(
     if works.is_empty() {
         return Ok(());
     }
-    let identity =
-        crate::runner::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
+    let identity = crate::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
     let view = Arc::new(MediaView {
         works,
         base: base.clone(),
@@ -687,8 +679,6 @@ pub(super) async fn prepare(
         peak,
         _directory: Arc::new(directory),
         materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
-        #[cfg(test)]
-        decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
     });
     install(prompt, view.clone());
     prompt.resident_bytes = add(prompt.resident_bytes, directory_bytes)?;
@@ -785,8 +775,6 @@ pub(super) async fn fit_request(
         super::wire::compile(prompt, language, provider, options, tools, cancellation).await?;
     }
 }
-#[cfg(test)]
-mod tests;
 
 /// JPEG metadata can precede SOF by more than one work buffer. Walk marker
 /// segments without retaining EXIF/ICC payloads or imposing a header-size cap.

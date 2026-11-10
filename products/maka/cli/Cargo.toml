@@ -46,6 +46,26 @@ name = "integration"
 path = "tests/integration/main.rs"
 
 [[test]]
+name = "mainline_reopen"
+path = "tests/mainline_reopen.rs"
+
+[[test]]
+name = "journal_recovery"
+path = "tests/journal_recovery.rs"
+
+[[test]]
+name = "codemode_reopen"
+path = "tests/codemode_reopen.rs"
+
+[[test]]
+name = "external_jobs"
+path = "tests/external_jobs.rs"
+
+[[test]]
+name = "producer_reopen"
+path = "tests/producer_reopen.rs"
+
+[[test]]
 name = "native-desktop"
 path = "tests/native_desktop.rs"
 harness = false
@@ -55,11 +75,14 @@ required-features = ["desktop-tests"]
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
 
 [dependencies]
+jiff.workspace = true
+maka-tools.workspace = true
 nsh-terminal.workspace = true
 maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
+maka-agent-state.workspace = true
 maka-agent-ports.workspace = true
 maka-packages.workspace = true
 maka-product-native.workspace = true

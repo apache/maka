@@ -434,6 +434,32 @@ impl Selection {
         false
     }
 
+    /// While an input without its own selection holds focus, a non-empty page
+    /// selection still owns Copy and Escape; any other key clears it first so
+    /// the focused input edits cleanly.
+    pub(crate) fn key_while_editing(
+        &mut self,
+        key: &str,
+        modifiers: crate::Modifiers,
+        tree: &Mounter,
+        geometry: &[Geometry],
+        clipboard: &dyn nsh_core::clipboard::ClipboardBackend,
+    ) -> bool {
+        if self.root.is_none() || self.model.is_empty() {
+            return false;
+        }
+        let copy_or_escape = key == "Escape"
+            || (modifiers.ctrl && key == "g")
+            || ((modifiers.ctrl || modifiers.cmd) && key.eq_ignore_ascii_case("c"))
+            || (modifiers.ctrl && key == "Insert")
+            || (modifiers.alt && key == "w");
+        if copy_or_escape {
+            return self.key(key, modifiers, tree, geometry, clipboard);
+        }
+        self.clear();
+        false
+    }
+
     pub(crate) fn draw(&mut self, scene: Scene<'_>, buffer: &mut Buffer) {
         let Scene {
             area,

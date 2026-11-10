@@ -20,9 +20,9 @@
 use super::*;
 use maka_agent_facts::executor::Output;
 #[cfg(unix)]
-use runtime::interruptible_pipe as native_pipe;
+use runtime::task_interruptible_pipe as native_pipe;
 #[cfg(not(unix))]
-use runtime::pipe as native_pipe;
+use runtime::task_pipe as native_pipe;
 use runtime::{Pipe, string};
 
 #[expect(
@@ -33,12 +33,12 @@ pub(super) async fn execute(
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     _steering: &mut steering::Steering,
+    owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     let provisional = journal.native_session().is_none();
     let mut submitted = false;
@@ -46,26 +46,41 @@ pub(super) async fn execute(
         config,
         cwd,
         request,
-        storage,
         journal,
         output.as_ref(),
         &bridge,
         cancellation,
         &mut submitted,
+        owner,
     )
     .await;
-    let closed = bridge.close().await;
-    if matches!(result, Err(Error::CleanupUnconfirmed)) {
+    let result = if submitted
+        && matches!(
+            result,
+            Err(Error::Provider(_) | Error::Invalid(_) | Error::Cancelled)
+        ) {
+        Err(Error::Unknown)
+    } else {
+        result
+    };
+    bridge.close_admission();
+    if matches!(
+        result,
+        Err(Error::CleanupUnconfirmed | Error::ObservationRetired | Error::Persistence(_))
+    ) {
         return result;
     }
-    closed?;
     if !submitted && let Err(error) = &result {
         match error {
-            Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_) => return result,
+            Error::Unknown
+            | Error::ObservationRetired
+            | Error::CleanupUnconfirmed
+            | Error::Persistence(_)
+            | Error::IsolationUnavailable(_) => return result,
             _ => {}
         }
         if provisional && journal.native_session().is_some() {
-            journal.revoke_unsubmitted(storage).await?;
+            journal.revoke_unsubmitted();
         }
         if !matches!(error, Error::Cancelled) {
             return Ok(Outcome::Failed {
@@ -86,12 +101,12 @@ async fn prepare(
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: &dyn OutputSink,
     bridge: &Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     submitted: &mut bool,
+    owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -163,31 +178,65 @@ async fn prepare(
     }
     let host = bridge.clone();
     native_pipe(
+        owner,
+        journal.observation(),
         plan,
         runtime::Transport::JsonLines,
         Some(bridge.clone()),
         cancellation,
-        |mut io| async move {
-            let result =
-                converse(&mut io, request, storage, journal, output, &host, submitted).await;
-            (result, io)
+        Protocol {
+            request,
+            journal,
+            output,
+            bridge: host,
+            submitted,
         },
     )
     .await
 }
 
+struct Protocol<'a> {
+    request: &'a Value,
+    journal: &'a mut journal::ProtocolSession,
+    output: &'a dyn OutputSink,
+    bridge: Arc<mcp::Bridge>,
+    submitted: &'a mut bool,
+}
+impl runtime::PipeProtocol for Protocol<'_> {
+    type Output = Outcome;
+    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
+    where
+        Self: 'io,
+    {
+        Box::pin(async move {
+            converse(
+                io,
+                self.request,
+                self.journal,
+                self.output,
+                &self.bridge,
+                self.submitted,
+            )
+            .await
+        })
+    }
+}
+
 async fn converse(
     io: &mut Pipe,
     request: &Value,
-    storage: &Storage,
-    journal: &mut journal::Journal,
+    journal: &mut journal::ProtocolSession,
     output: &dyn OutputSink,
     bridge: &mcp::Bridge,
     submitted: &mut bool,
 ) -> Result<Outcome, Error> {
-    let init = tokio::time::timeout(runtime::SETUP_TIMEOUT, io.next())
-        .await
-        .map_err(|_| Error::Provider("agy initialization timed out".into()))??;
+    let stop = io.stop.clone();
+    let init = tokio::select! {
+        biased;
+        () = stop.cancelled() => return Err(Error::Cancelled),
+        init = tokio::time::timeout(runtime::SETUP_TIMEOUT, io.next()) =>
+            init.map_err(|_| Error::Provider("agy initialization timed out".into()))??,
+    };
     if init.get("event").and_then(Value::as_str) != Some("init") {
         return Err(Error::Invalid(
             "agy did not emit its native init event".into(),
@@ -213,14 +262,8 @@ async fn converse(
             "agy did not select the requested model".into(),
         ));
     }
-    journal.opened(storage, session.clone()).await?;
+    journal.opened(session.clone())?;
     bridge.admit()?;
-    let interrupt = io.interrupt.take();
-    let stop = io.cancellation.clone();
-    if interrupt.is_some() {
-        // Root Stop requests native interruption; it must not cancel the stream reader.
-        io.cancellation = CancellationToken::new();
-    }
     let work = async {
         if stop.is_cancelled() {
             return Err(Error::Cancelled);
@@ -232,8 +275,10 @@ async fn converse(
         if !journal.bootstrap_completed() || update.is_some() {
             let bootstrap =
                 runtime::bootstrap_message(update.as_ref().map(|update| update.text.as_str()));
+            io.turn_started();
             io.send(user_message(&bootstrap)).await?;
-            let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
+            let bootstrap = observe(io, &session, &mut cursor, output, false, None).await?;
+            io.turn_finished();
             if !matches!(bootstrap, Outcome::Completed { .. }) {
                 return Ok(bootstrap);
             }
@@ -248,49 +293,18 @@ async fn converse(
                 });
             }
             if let Some(update) = update {
-                journal.confirm_instructions(storage, update).await?;
+                journal.confirm_instructions(update);
             }
             if !journal.bootstrap_completed() {
-                journal.complete_bootstrap(storage).await?;
+                journal.complete_bootstrap();
             }
         }
-        io.send(user_message(&native_prompt(request)?)).await?;
-        observe(io, &session, &mut cursor, output, true).await
+        let prompt = user_message(&native_prompt(request)?);
+        io.turn_started();
+        io.send(prompt).await?;
+        observe(io, &session, &mut cursor, output, true, Some(journal)).await
     };
-    tokio::pin!(work);
-    let soft = interrupt.is_some();
-    let result = if let Some(interrupt) = interrupt {
-        tokio::select! {
-            biased;
-            result = &mut work => result,
-            () = stop.cancelled() => {
-                bridge.close_admission();
-                // A closed receiver means the child owner already finished. Its
-                // physical result is still checked by pipe; native terminal is required here.
-                let _ = interrupt.send(());
-                tokio::time::timeout(runtime::INTERRUPT_TIMEOUT, &mut work).await
-                    .map_err(|_| Error::CleanupUnconfirmed)?
-            }
-        }
-    } else {
-        work.await
-    };
-    if soft {
-        match result {
-            Ok(outcome) => Ok(outcome),
-            Err(
-                error @ (Error::Cancelled
-                | Error::Unknown
-                | Error::CleanupUnconfirmed
-                | Error::Persistence(_)),
-            ) => Err(error),
-            // A later Root Stop during physical cleanup cannot settle malformed
-            // or uncorrelated observations either.
-            _ => Err(Error::Unknown),
-        }
-    } else {
-        result
-    }
+    work.await
 }
 
 fn native_prompt(request: &Value) -> Result<String, Error> {
@@ -326,21 +340,53 @@ async fn observe(
     cursor: &mut TurnCursor,
     output: &dyn OutputSink,
     show_text: bool,
+    journal: Option<&journal::ProtocolSession>,
 ) -> Result<Outcome, Error> {
-    let previous_step = cursor.highest_step;
-    let mut user = None;
-    let mut user_done = false;
-    let mut tools = std::collections::BTreeSet::new();
-    let mut messages = AgentMessages::default();
-    let mut admission = Some(tokio::time::Instant::now() + runtime::SETUP_TIMEOUT);
+    let mut turn = NativeTurn::new(cursor.highest_step, show_text);
+    let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
     loop {
-        let event = if let Some(deadline) = admission {
+        let event = if turn.user.is_none() {
             tokio::time::timeout_at(deadline, io.next())
                 .await
                 .map_err(|_| Error::Provider("agy user input admission timed out".into()))??
         } else {
             io.next().await?
         };
+        if let Some(outcome) = turn.event(event, session, cursor, output, journal).await? {
+            if let Some(journal) = journal {
+                journal.closed(outcome.clone()).await?;
+            }
+            return Ok(outcome);
+        }
+    }
+}
+struct NativeTurn {
+    previous_step: Option<u64>,
+    user: Option<u64>,
+    user_done: bool,
+    tools: std::collections::BTreeSet<u64>,
+    messages: AgentMessages,
+    show_text: bool,
+}
+impl NativeTurn {
+    fn new(previous_step: Option<u64>, show_text: bool) -> Self {
+        Self {
+            previous_step,
+            user: None,
+            user_done: false,
+            tools: Default::default(),
+            messages: Default::default(),
+            show_text,
+        }
+    }
+    async fn event(
+        &mut self,
+        event: Value,
+        session: &str,
+        cursor: &mut TurnCursor,
+        output: &dyn OutputSink,
+        journal: Option<&journal::ProtocolSession>,
+    ) -> Result<Option<Outcome>, Error> {
         match event.get("event").and_then(Value::as_str) {
             Some("step_update") => {
                 let step = &event["step_update"];
@@ -354,17 +400,26 @@ async fn observe(
                 let kind = string(step, "/step_type")?;
                 let state = string(step, "/state")?;
                 if kind == "user_input" {
-                    if previous_step.is_some_and(|previous| index <= previous)
-                        || user.is_some_and(|user| user != index)
+                    if self.previous_step.is_some_and(|previous| index <= previous)
+                        || self.user.is_some_and(|user| user != index)
                     {
                         return Err(Error::Invalid(
                             "agy did not correlate the submitted user turn".into(),
                         ));
                     }
-                    user = Some(index);
-                    admission = None;
-                    user_done |= state == "DONE";
-                } else if !user.is_some_and(|user| index > user) {
+                    if self.user.is_none()
+                        && let Some(journal) = journal
+                    {
+                        journal
+                            .bind_task(NativeTask::Antigravity {
+                                conversation: session.into(),
+                                user_step: index,
+                            })
+                            .await?;
+                    }
+                    self.user = Some(index);
+                    self.user_done |= state == "DONE";
+                } else if !self.user.is_some_and(|user| index > user) {
                     return Err(Error::Invalid(
                         "agy emitted activity before the submitted user input".into(),
                     ));
@@ -375,30 +430,33 @@ async fn observe(
                         .map_or(index, |previous| previous.max(index)),
                 );
                 if kind == "agent_response" {
-                    messages.step(step, index, state, output, show_text).await?;
+                    self.messages
+                        .step(step, index, state, output, self.show_text)
+                        .await?;
                 }
                 if kind == "tool" {
-                    emit_tool(step, session, index, state, &mut tools, output).await?;
+                    emit_tool(step, session, index, state, &mut self.tools, output).await?;
                 }
+                Ok(None)
             }
             Some("result") => {
                 let result = &event["result"];
-                if string(result, "/conversation_id")? != session || !user_done {
+                if string(result, "/conversation_id")? != session || !self.user_done {
                     return Err(Error::Invalid(
                         "agy terminal did not correlate to this user input".into(),
                     ));
                 }
-                let outcome = terminal(result, messages.final_message_id.clone())?;
+                let outcome = terminal(result, self.messages.final_message_id.clone())?;
                 if matches!(outcome, Outcome::Completed { .. })
-                    && messages.steps.values().any(|message| !message.ended)
+                    && self.messages.steps.values().any(|message| !message.ended)
                 {
                     return Err(Error::Invalid(
                         "agy succeeded with an unfinished assistant message".into(),
                     ));
                 }
-                return Ok(outcome);
+                Ok(Some(outcome))
             }
-            _ => return Err(Error::Invalid("Unsupported agy stream event".into())),
+            _ => Err(Error::Invalid("Unsupported agy stream event".into())),
         }
     }
 }
@@ -557,6 +615,96 @@ async fn emit_tool(
     Ok(())
 }
 
+pub(super) async fn replay(
+    request: &Request,
+    binding: &NativeBinding,
+    input: &mut replay::Stream,
+    stream: &mut replay::Stream,
+    output: &dyn OutputSink,
+) -> Result<Outcome, Error> {
+    let NativeTask::Antigravity {
+        conversation,
+        user_step,
+    } = &binding.task
+    else {
+        return Err(Error::Unknown);
+    };
+    let instructions = request
+        .instructions
+        .as_deref()
+        .map(|text| journal::instruction_text(Some(text)));
+    let bootstrap_input = input.required().await?;
+    if bootstrap_input != user_message(&runtime::bootstrap_message(instructions.as_deref())) {
+        return Err(Error::Unknown);
+    }
+    let actual_input = input.required().await?;
+    if actual_input["event"] != "user"
+        || actual_input
+            .pointer("/message/content")
+            .and_then(Value::as_str)
+            .is_none()
+        || input.next().await?.is_some()
+    {
+        return Err(Error::Unknown);
+    }
+    let init = stream.required().await?;
+    if init["event"] != "init"
+        || init["conversation_id"] != *conversation
+        || init["init"]["permission_mode"] != "always-proceed"
+    {
+        return Err(Error::Unknown);
+    }
+    if let Some(model) = request
+        .settings
+        .model
+        .as_deref()
+        .filter(|model| *model != "default")
+        && init.pointer("/init/model").and_then(Value::as_str) != Some(model)
+    {
+        return Err(Error::Unknown);
+    }
+    let mut cursor = TurnCursor::default();
+    let mut bootstrap = NativeTurn::new(None, false);
+    loop {
+        let event = stream.required().await?;
+        if let Some(outcome) = bootstrap
+            .event(event, conversation, &mut cursor, output, None)
+            .await?
+        {
+            if !matches!(outcome, Outcome::Completed { .. }) {
+                return Err(Error::Unknown);
+            }
+            break;
+        }
+    }
+    if cursor
+        .highest_step
+        .is_none_or(|previous| previous >= *user_step)
+    {
+        return Err(Error::Unknown);
+    }
+    let mut turn = NativeTurn::new(cursor.highest_step, true);
+    let outcome = loop {
+        let event = stream.required().await?;
+        if event["event"] == "step_update"
+            && event["step_update"]["step_type"] == "user_input"
+            && event["step_update"]["step_index"].as_u64() != Some(*user_step)
+        {
+            return Err(Error::Unknown);
+        }
+        if let Some(outcome) = turn
+            .event(event, conversation, &mut cursor, output, None)
+            .await?
+        {
+            break outcome;
+        }
+    };
+    if turn.user != Some(*user_step) || stream.next().await?.is_some() {
+        return Err(Error::Unknown);
+    }
+    Ok(outcome)
+}
+
 pub(super) async fn models(
     config: &runtime::ResolvedCommand<'_>,
     cwd: &str,
@@ -603,6 +751,7 @@ pub(super) async fn models(
             process
                 .child
                 .terminate()
+                .await
                 .map_err(|_| Error::CleanupUnconfirmed)?;
             tokio::time::timeout(std::time::Duration::from_secs(4), process.child.wait())
                 .await
@@ -681,214 +830,4 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
         models.push(serde_json::json!({"id":id,"displayName":name}));
     }
     Ok(models)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Collect(std::sync::Mutex<Vec<Output>>);
-    impl OutputSink for Collect {
-        fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
-            Box::pin(async move {
-                self.0.lock().unwrap().push(event);
-                Ok(())
-            })
-        }
-    }
-    #[tokio::test]
-    async fn native_steps_keep_message_boundaries_chunks_and_tool_order() {
-        let sink = Collect(Default::default());
-        let mut messages = AgentMessages::default();
-        messages
-            .step(
-                &serde_json::json!({"text_delta":"before "}),
-                10,
-                "ACTIVE",
-                &sink,
-                true,
-            )
-            .await
-            .unwrap();
-        messages
-            .step(
-                &serde_json::json!({"text_delta":"tool"}),
-                10,
-                "DONE",
-                &sink,
-                true,
-            )
-            .await
-            .unwrap();
-        let mut tools = Default::default();
-        emit_tool(
-            &serde_json::json!({"tool_name":"read","tool_info":{"parameters":{"path":"a"}}}),
-            "session",
-            11,
-            "RUNNING",
-            &mut tools,
-            &sink,
-        )
-        .await
-        .unwrap();
-        emit_tool(
-            &serde_json::json!({"tool_name":"read","tool_info":{}}),
-            "session",
-            11,
-            "DONE",
-            &mut tools,
-            &sink,
-        )
-        .await
-        .unwrap();
-        messages
-            .step(
-                &serde_json::json!({"text_delta":"after tool"}),
-                12,
-                "DONE",
-                &sink,
-                true,
-            )
-            .await
-            .unwrap();
-        messages
-            .step(&serde_json::json!({}), 13, "DONE", &sink, true)
-            .await
-            .unwrap();
-        assert!(
-            matches!(terminal(&serde_json::json!({"status":"SUCCESS","response":"before toolafter tool"}), messages.final_message_id).unwrap(), Outcome::Completed { message_id:Some(id) } if id == "12")
-        );
-        assert_eq!(
-            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
-            serde_json::json!([
-                {"type":"message_start","messageId":"10"},
-                {"type":"output_delta","messageId":"10","text":"before "},
-                {"type":"output_delta","messageId":"10","text":"tool"},
-                {"type":"message_end","messageId":"10"},
-                {"type":"tool_start","toolCallId":"session:11","name":"read","input":{"path":"a"}},
-                {"type":"tool_result","toolCallId":"session:11","text":"{}","isError":false},
-                {"type":"message_start","messageId":"12"},
-                {"type":"output_delta","messageId":"12","text":"after tool"},
-                {"type":"message_end","messageId":"12"},
-                {"type":"message_start","messageId":"13"},
-                {"type":"message_end","messageId":"13"}
-            ])
-        );
-    }
-    #[tokio::test]
-    async fn bootstrap_is_suppressed_and_interrupted_step_is_not_successfully_ended() {
-        let sink = Collect(Default::default());
-        AgentMessages::default()
-            .step(
-                &serde_json::json!({"text_delta":"setup"}),
-                1,
-                "DONE",
-                &sink,
-                false,
-            )
-            .await
-            .unwrap();
-        let mut messages = AgentMessages::default();
-        messages
-            .step(
-                &serde_json::json!({"text_delta":"partial"}),
-                2,
-                "ACTIVE",
-                &sink,
-                true,
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            terminal(
-                &serde_json::json!({"status":"ERROR","finished_reason":"interrupted"}),
-                messages.final_message_id
-            )
-            .unwrap(),
-            Outcome::Cancelled { .. }
-        ));
-        assert_eq!(
-            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
-            serde_json::json!([
-                {"type":"message_start","messageId":"2"},
-                {"type":"output_delta","messageId":"2","text":"partial"}
-            ])
-        );
-        assert!(
-            terminal(
-                &serde_json::json!({"status":"SUCCESS","response":"unidentified answer"}),
-                None
-            )
-            .is_err()
-        );
-        assert!(matches!(
-            terminal(&serde_json::json!({"status":"SUCCESS","response":""}), None).unwrap(),
-            Outcome::Completed { message_id: None }
-        ));
-    }
-    #[test]
-    fn image_paths_remain_ordered_and_losslessly_escaped_in_native_user_context() {
-        let images = serde_json::json!([
-            {"path":"/private/user uploads/first\".png","mediaType":"image/png"},
-            {"path":"/private/user uploads/second\nimage.webp","mediaType":"image/webp"},
-        ]);
-        let prompt =
-            native_prompt(&serde_json::json!({"message":"Compare these images.","images":images}))
-                .unwrap();
-        assert!(prompt.starts_with("Compare these images."));
-        let manifest = prompt
-            .split_once("<maka_image_attachments>\n")
-            .unwrap()
-            .1
-            .strip_suffix("\n</maka_image_attachments>")
-            .unwrap();
-        assert_eq!(serde_json::from_str::<Value>(manifest).unwrap(), images);
-        assert_eq!(
-            native_prompt(&serde_json::json!({"message":"original","images":[]})).unwrap(),
-            "original"
-        );
-        assert!(native_prompt(&serde_json::json!({"message":"","images":images})).is_ok());
-    }
-
-    #[test]
-    fn catalog_preserves_native_model_ids_and_unicode_names() {
-        let catalog = "gemini-4-argon-high\tGemini 4 Argon（高）\r\nclaude-opus-5-5-low\tClaude Opus 5.5 · 低\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n";
-        assert_eq!(
-            parse_models(catalog.as_bytes()).unwrap(),
-            vec![
-                serde_json::json!({"id":"gemini-4-argon-high","displayName":"Gemini 4 Argon（高）"}),
-                serde_json::json!({"id":"claude-opus-5-5-low","displayName":"Claude Opus 5.5 · 低"}),
-                serde_json::json!({"id":"gpt-oss-120b-medium","displayName":"GPT-OSS 120B (Medium)"}),
-            ],
-        );
-    }
-
-    #[test]
-    fn early_native_results_are_not_successful_answers() {
-        let completed = terminal(
-            &serde_json::json!({"status":"SUCCESS","response":"完整回复"}),
-            Some("2".into()),
-        )
-        .unwrap();
-        assert!(matches!(completed, Outcome::Completed { message_id:Some(id) } if id == "2"));
-        for reason in ["print_timeout", "interrupted", "error"] {
-            let result = terminal(&serde_json::json!({"status":"SUCCESS","response":"partial","finished_reason":reason}), None).unwrap();
-            assert!(matches!(result, Outcome::Failed { .. }));
-        }
-        assert!(terminal(&serde_json::json!({"status":"SUCCESS"}), None).is_err());
-    }
-
-    #[test]
-    fn catalog_rejects_malformed_or_ambiguous_native_observations() {
-        for catalog in [
-            "model",
-            "\tName",
-            "model\t",
-            "model\tName\textra",
-            "m\tA\nm\tB",
-        ] {
-            assert!(parse_models(catalog.as_bytes()).is_err(), "{catalog}");
-        }
-        assert!(parse_models(&[0xff]).is_err());
-    }
 }

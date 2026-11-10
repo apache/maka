@@ -17,9 +17,7 @@
  * under the License.
  */
 
-//! Root-authorized accounting reads; all data comes from physical EventLog facts.
-use maka_agent_facts::accounting::Activity;
-use maka_agent_facts::accounting::Group;
+//! Root-authorized reads of the Agent canonical accounting index.
 use maka_agent_facts::accounting::ModelSummary;
 use maka_agent_facts::accounting::ModelTotals;
 use maka_agent_facts::accounting::Pending;
@@ -27,7 +25,11 @@ use maka_agent_facts::accounting::ProviderSummary;
 use maka_agent_facts::accounting::Selection;
 use maka_agent_facts::accounting::ToolSummary;
 use maka_agent_facts::accounting::ToolTotals;
-use maka_event_log::root_store::{RootStore, UsageActivityCursor, UsageFence, UsageGroupCursor};
+use maka_agent_facts::accounting::{Activity, Group};
+use maka_agent_state::usage::{
+    UsageActivityCursor, UsageFence, UsageGroupCursor, UsageQuery, UsageStore,
+};
+use maka_event_log::root_store::RootStore;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,11 +49,12 @@ pub struct Range {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageFence>")]
     pub through: Option<UsageFence>,
 }
-impl From<Range> for maka_event_log::root_store::UsageQuery {
+impl From<Range> for UsageQuery {
     fn from(value: Range) -> Self {
         Self {
             from: value.from,
             to: value.to,
+            owner: None,
             session_id: value.session_id,
             through: value.through,
         }
@@ -121,8 +124,12 @@ pub enum PricingResult {
 
 pub(crate) async fn page(log: &RootStore, input: Value) -> Result<Value, String> {
     let input: Read = serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
-    let page = log
-        .usage_activity(input.range.into(), input.selection, input.cursor)
+    let store = UsageStore::new(
+        log.data_writer()
+            .map_err(|_| "settings_usage_unavailable")?,
+    );
+    let page = store
+        .activity(input.range.into(), input.selection, input.cursor)
         .await
         .map_err(|_| "settings_usage_unavailable")?;
     super::connections::encode(Page {
@@ -134,8 +141,12 @@ pub(crate) async fn page(log: &RootStore, input: Value) -> Result<Value, String>
 }
 pub(crate) async fn summary(log: &RootStore, input: Value) -> Result<Value, String> {
     let input: SummaryRead = serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
-    let report = log
-        .usage_summary_page(input.range.into(), input.group, input.cursor)
+    let store = UsageStore::new(
+        log.data_writer()
+            .map_err(|_| "settings_usage_unavailable")?,
+    );
+    let report = store
+        .summary(input.range.into(), input.group, input.cursor)
         .await
         .map_err(|_| "settings_usage_unavailable")?;
     let summary = report.summary;

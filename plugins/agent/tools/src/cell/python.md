@@ -6,7 +6,7 @@ Helpers:
 - image(value, detail=None): emit a Host image, MCP image block or base64 data URL; image_url objects are accepted. detail is auto/low/high/original; an explicit argument overrides embedded detail.
 - audio(value): emit an MCP audio block, audio_url object or base64 data URL. Audio is delivered as native model input when supported; unsupported adapters receive an explicit notice.
 - generated_image({"image_url": ..., "output_hint": ...}): emit an image and optional hint.
-- store(key, value), load(key): retain JSON between exec calls in this live session, including across turns and compaction. Missing keys return None. No Python globals survive. Writes publish after settlement. Host restart/session retirement clears the store.
+- store(key, value), load(key): retain JSON between exec calls in this session, including across turns, compaction and Host restart. Missing keys return None. No Python globals survive. Writes publish only with successful canonical Cell final-result acceptance; failed/interrupted drafts are discarded.
 - notify(value): inject output into model history without wait, yielding or finishing the cell. Notifications during a model request arrive on the next step.
 - await yield_control(): return accumulated output while the cell continues.
 - exit(): end the script successfully.

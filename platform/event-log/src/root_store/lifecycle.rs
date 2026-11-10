@@ -28,6 +28,11 @@ pub(super) struct Lifecycle {
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
     maintenance: Option<tokio::sync::oneshot::Sender<()>>,
 }
+enum CloseFailure {
+    RetainedWork,
+    Unconfirmed(String),
+}
+
 impl Lifecycle {
     pub(super) async fn start(
         log: Arc<EventLog>,
@@ -84,7 +89,7 @@ impl Lifecycle {
                         // have stopped using SQL. Keep their live
                         // actors and original authority so valid execution pins
                         // can still persist known results before quarantining.
-                        return Err("accepted Root work cleanup is unconfirmed".into());
+                        return Err(CloseFailure::RetainedWork);
                     }
                     log.request_shutdown();
                     let mut failures: Vec<String> = runtime.block_on(log.shutdown()).err().map(|error|error.to_string()).into_iter().collect();
@@ -92,25 +97,51 @@ impl Lifecycle {
                     if failures.is_empty() {
                         Ok(())
                     } else {
-                        Err(failures.join("; "))
+                        Err(CloseFailure::Unconfirmed(failures.join("; ")))
                     }
                 }))
                 .unwrap_or_else(|_| {
-                    Err("Root lifecycle owner panicked before confirming cleanup".into())
+                    Err(CloseFailure::Unconfirmed(
+                        "Root lifecycle owner panicked before confirming cleanup".into(),
+                    ))
                 });
-                let failed = result.is_err();
-                if !failed {
-                    drop(log);
-                    drop(gates);
-                }
-                let _ = done.send(result);
-                if failed {
-                    // Retain the original authority and unconfirmed work. Reporting
-                    // failure is not permission to install a replacement Root.
-                    loop {
-                        std::thread::park();
+                match result {
+                    Ok(()) => {
+                        drop(log);
+                        drop(gates);
+                        let _ = done.send(Ok(()));
+                    }
+                    Err(CloseFailure::RetainedWork) => {
+                        let _ = done.send(Err("accepted Root work cleanup is unconfirmed".into()));
+                        // The original failure receipt stays failed. Only actual
+                        // original settlement can release the retained authority.
+                        let closed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            runtime.block_on(async {
+                                gates.wait_for_settlement().await;
+                                log.request_shutdown();
+                                log.shutdown().await
+                            })
+                        }));
+                        match closed {
+                            Ok(Ok(())) => {
+                                drop(log);
+                                drop(gates);
+                            }
+                            failure => {
+                                if let Ok(Err(error)) = failure {
+                                    eprintln!("Root late cleanup close is unconfirmed: {error}");
+                                }
+                                loop { std::thread::park(); }
+                            }
+                        }
+                    }
+                    Err(CloseFailure::Unconfirmed(error)) => {
+                        let _ = done.send(Err(error));
+                        // A failed SQL close or lost owner has no release proof.
+                        loop { std::thread::park(); }
                     }
                 }
+
             })?;
         match started.await {
             Ok(Ok(())) => Ok(Self {
@@ -134,10 +165,7 @@ impl Lifecycle {
             .send(())
             .map_err(|_| StoreError::ConnectionClosed)
     }
-    #[cfg(test)]
-    pub(super) fn receipt(&self) -> Shared<BoxFuture<'static, Result<(), String>>> {
-        self.closed.clone()
-    }
+
     pub(super) async fn wait(&self) -> Result<(), StoreError> {
         self.closed.clone().await.map_err(StoreError::CloseFailed)
     }

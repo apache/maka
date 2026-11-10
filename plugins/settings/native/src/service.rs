@@ -18,9 +18,13 @@
  */
 
 use crate::contract::*;
+#[cfg(test)]
+mod tests;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::configuration::*;
-use maka_host_runtime::application::{Context, Handler, NativeOwner};
+use maka_host_runtime::application::{
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeOwner,
+};
 use serde_json::Value;
 use std::sync::Arc;
 pub(crate) struct Settings {
@@ -289,7 +293,7 @@ impl Handler for Settings {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let store = self.configuration.clone();
         let public_catalog = self.catalog.clone();
         let log = self.log.clone();
@@ -297,7 +301,7 @@ impl Handler for Settings {
         let native_language = self.native_language;
         let source = self.source.clone();
         let workspace_locations = self.workspace_locations.clone();
-        Box::pin(async move {
+        let result = async move {
             match method.as_str() {
                 "workspaceLocations" => {
                     super::workspace_locations::read(
@@ -685,6 +689,10 @@ impl Handler for Settings {
                 }
                 _ => Err("settings_method_unknown".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }
@@ -704,6 +712,3 @@ impl NativeOwner for Settings {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

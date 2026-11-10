@@ -18,8 +18,8 @@
  */
 
 //! Provenance for managed physical directories; skill contents remain in the filesystem.
-use maka_capabilities::storage::{Data, Mutation, Namespace, Scan};
 use maka_event_log::RootStore;
+use maka_plugin_core::storage::{Data, Mutation, Namespace, Scan};
 use maka_skills_api::contract::Installation;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};

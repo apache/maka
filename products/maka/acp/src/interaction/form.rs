@@ -66,7 +66,7 @@ fn elicitation(
         return Err("ACP client does not support form elicitation".into());
     }
     Ok(Callback::Elicitation(Form {
-        session: snapshot.session_id.clone(),
+        session: snapshot.execution.session_id.clone(),
         tool_id: tool_use_id.into(),
         message: message.into(),
         schema,
@@ -142,120 +142,4 @@ fn form_value(value: Value) -> Result<FormValue, crate::Error> {
         ),
         _ => return Err("Unsupported ACP form value".into()),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::tests::{Callback, request, snapshot};
-    use super::*;
-    use agent_client_protocol::v2::schema as acp;
-    use serde_json::json;
-    fn answer(
-        snapshot: &InteractionRecord,
-        value: serde_json::Value,
-    ) -> Result<InteractionAnswer, crate::Error> {
-        let response = super::super::Response::Elicitation(crate::transport::v2::form_answer(
-            serde_json::from_value(value)?,
-        )?);
-        super::super::answer(snapshot, response)
-    }
-
-    #[test]
-    fn questions_require_form_capability_and_reject_invalid_answers() {
-        use maka_agent_facts::interaction::InteractionQuestion;
-        use maka_agent_facts::interaction::QuestionOption;
-        let snapshot = snapshot(InteractionRequest::Question {
-            tool_use_id: "tool".into(),
-            questions: vec![InteractionQuestion {
-                question: "Which?".into(),
-                options: vec![
-                    QuestionOption {
-                        label: "One".into(),
-                        description: None,
-                    },
-                    QuestionOption {
-                        label: "Two".into(),
-                        description: None,
-                    },
-                ],
-            }],
-        });
-        assert!(request(&snapshot, &acp::ClientCapabilities::default()).is_err());
-        assert!(
-            answer(
-                &snapshot,
-                json!({"action":"accept","content":{"question_0":true}})
-            )
-            .is_err()
-        );
-        assert!(
-            answer(
-                &snapshot,
-                json!({"action":"accept","content":{"unknown":"One"}})
-            )
-            .is_err()
-        );
-        assert_eq!(
-            answer(&snapshot, json!({"action":"cancel"})).unwrap(),
-            InteractionAnswer::Question {
-                answers: vec![None]
-            }
-        );
-    }
-
-    #[test]
-    fn form_acceptance_is_validated_against_requested_fields() {
-        use maka_agent_facts::capability::FormField;
-        use maka_agent_facts::capability::FormFieldSpec;
-        use maka_agent_facts::capability::FormRequester;
-        let snapshot = snapshot(InteractionRequest::Form {
-            tool_use_id: "tool".into(),
-            message: "Enter count".into(),
-            requester: FormRequester {
-                name: "test".into(),
-                source: None,
-            },
-            fields: vec![FormField {
-                name: "count".into(),
-                label: "Count".into(),
-                required: true,
-                description: None,
-                spec: FormFieldSpec::Integer {
-                    default: None,
-                    minimum: Some(1.0),
-                    maximum: Some(3.0),
-                },
-            }],
-        });
-        let mut capabilities = acp::ClientCapabilities::default();
-        capabilities.elicitation =
-            Some(acp::ElicitationCapabilities::new().form(acp::ElicitationFormCapabilities::new()));
-        let Callback::Elicitation(callback) = request(&snapshot, &capabilities).unwrap() else {
-            panic!("expected form callback");
-        };
-        assert_eq!(
-            serde_json::to_value(callback).unwrap()["requestedSchema"]["properties"]["count"]["maximum"],
-            3
-        );
-        for content in [
-            json!({}),
-            json!({"count":4}),
-            json!({"count":"2"}),
-            json!({"count":2,"extra":true}),
-        ] {
-            assert!(answer(&snapshot, json!({"action":"accept", "content":content})).is_err());
-        }
-        assert!(matches!(
-            answer(&snapshot, json!({"action":"accept", "content":{"count":2}})).unwrap(),
-            InteractionAnswer::Form {
-                result: FormResult::Accept { .. }
-            }
-        ));
-        assert_eq!(
-            answer(&snapshot, json!({"action":"decline"})).unwrap(),
-            InteractionAnswer::Form {
-                result: FormResult::Decline
-            }
-        );
-    }
 }

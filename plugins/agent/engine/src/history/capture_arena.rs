@@ -18,9 +18,8 @@
  */
 
 //! Request-local derived bytes with one original-owner backing and explicit seal.
-use super::request_backing::RequestBackingBuilder;
+use super::{preparation_io::PreparationIo, request_backing::RequestBackingBuilder};
 use maka_agent_facts::model::prompt_source::source::*;
-use maka_event_log::context::semantic::CapturedSource;
 use std::{
     io,
     io::Write,
@@ -56,18 +55,15 @@ pub(crate) fn source_metadata_bytes(count: usize) -> io::Result<usize> {
         .ok_or_else(|| io::Error::other("arena source metadata size overflow"))
 }
 struct Inner {
-    captured: CapturedSource,
+    io: PreparationIo,
     identity: Arc<SourceIdentity>,
     builder: Mutex<Option<RequestBackingBuilder>>,
     published: AtomicU64,
-    close_result: Mutex<Option<Result<(), String>>>,
+    close_result: Mutex<Option<Result<(), Arc<io::Error>>>>,
     serial: Arc<tokio::sync::Mutex<()>>,
     access: Arc<tokio::sync::Mutex<()>>,
 }
 impl CaptureArena {
-    pub(super) fn captured(&self) -> &CapturedSource {
-        &self.0.captured
-    }
     pub(super) fn owns_arena_locator(&self, identity: &Arc<SourceIdentity>) -> bool {
         Arc::ptr_eq(&self.0.identity, identity)
     }
@@ -76,6 +72,7 @@ impl CaptureArena {
             + std::mem::size_of::<Inner>()
             + 2 * std::mem::size_of::<usize>()
             + RequestBackingBuilder::metadata_bytes()
+            + PreparationIo::metadata_bytes()
             + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<tokio::sync::Mutex<()>>()
             + 2 * std::mem::size_of::<usize>()
@@ -83,11 +80,11 @@ impl CaptureArena {
     }
 
     pub async fn new(
-        captured: CapturedSource,
+        io: PreparationIo,
         resident: Option<maka_model::DirectoryLease>,
     ) -> io::Result<Self> {
         let inner = Arc::new(Inner {
-            captured: captured.clone(),
+            io: io.clone(),
             identity: Arc::new(SourceIdentity),
             builder: Mutex::new(None),
             published: AtomicU64::new(0),
@@ -96,27 +93,25 @@ impl CaptureArena {
             access: Arc::new(tokio::sync::Mutex::new(())),
         });
         let worker = inner.clone();
-        captured
-            .with_local_io(move || {
-                let builder = match resident {
-                    Some(lease) => RequestBackingBuilder::resident(worker.captured.clone(), lease)?,
-                    None => RequestBackingBuilder::file(
-                        worker.captured.clone(),
-                        worker
-                            .captured
-                            .reserve_local_resource()
-                            .map_err(io::Error::other)?,
-                    )?,
-                };
-                *worker.builder.lock().expect("capture arena lock poisoned") = Some(builder);
-                Ok(())
-            })
-            .await
-            .map_err(io::Error::other)?;
+        io.with_local_io(move || {
+            let builder = match resident {
+                Some(lease) => RequestBackingBuilder::resident(worker.io.clone(), lease)?,
+                None => RequestBackingBuilder::file(
+                    worker.io.clone(),
+                    worker
+                        .io
+                        .reserve_local_resource()
+                        .map_err(io::Error::other)?,
+                )?,
+            };
+            *worker.builder.lock().expect("capture arena lock poisoned") = Some(builder);
+            Ok(())
+        })
+        .await?;
         Ok(Self(inner))
     }
 
-    /// The callback runs only in the original source worker, with no state lock
+    /// The callback runs only in the original resource worker, with no state lock
     /// held during its I/O. Callers must serialize it with the capture sequence.
     pub fn with_writer_sync<T>(
         &self,
@@ -160,13 +155,12 @@ impl CaptureArena {
         let access = self.0.access.clone().lock_owned().await;
         let arena = self.clone();
         self.0
-            .captured
+            .io
             .with_local_io(move || {
                 let _access = access;
-                arena.with_writer_sync(write).map_err(Into::into)
+                arena.with_writer_sync(write)
             })
             .await
-            .map_err(io::Error::other)
     }
 
     /// Internal fixed metadata reads may run while an append sequence consumes
@@ -261,7 +255,7 @@ impl CaptureArena {
         let access = self.0.access.clone().lock_owned().await;
         let arena = self.clone();
         self.0
-            .captured
+            .io
             .with_local_io(move || {
                 let _access = access;
                 let length = arena.with_writer_sync(RequestBackingBuilder::seal_prefix)?;
@@ -269,7 +263,6 @@ impl CaptureArena {
                 Ok(())
             })
             .await
-            .map_err(io::Error::other)
     }
 
     /// Caller has established that this request intrinsically exceeds resident policy.
@@ -278,29 +271,26 @@ impl CaptureArena {
         let access = self.0.access.clone().lock_owned().await;
         let arena = self.clone();
         self.0
-            .captured
+            .io
             .with_local_io(move || {
                 let _access = access;
-                arena
-                    .with_writer_sync(|builder| {
-                        let resource = arena
-                            .0
-                            .captured
-                            .reserve_local_resource()
-                            .map_err(io::Error::other)?;
-                        builder.promote_to_file(resource)
-                    })
-                    .map_err(Into::into)
+                arena.with_writer_sync(|builder| {
+                    let resource = arena
+                        .0
+                        .io
+                        .reserve_local_resource()
+                        .map_err(io::Error::other)?;
+                    builder.promote_to_file(resource)
+                })
             })
             .await
-            .map_err(io::Error::other)
     }
     pub async fn close(&self) -> io::Result<()> {
         let _serial = self.0.serial.lock().await;
         let access = self.0.access.clone().lock_owned().await;
         let arena = self.clone();
         self.0
-            .captured
+            .io
             .with_local_io(move || {
                 let _access = access;
                 if let Some(result) = arena
@@ -310,7 +300,9 @@ impl CaptureArena {
                     .expect("capture arena lock poisoned")
                     .as_ref()
                 {
-                    return result.clone().map_err(io::Error::other).map_err(Into::into);
+                    return result
+                        .clone()
+                        .map_err(|error| io::Error::new(error.kind(), error));
                 }
                 let builder = arena
                     .0
@@ -321,17 +313,16 @@ impl CaptureArena {
                 let result = match builder {
                     Some(builder) => builder.abort_in_worker(),
                     None => Ok(()),
-                };
+                }
+                .map_err(Arc::new);
                 *arena
                     .0
                     .close_result
                     .lock()
-                    .expect("capture arena lock poisoned") =
-                    Some(result.as_ref().map(|_| ()).map_err(ToString::to_string));
-                result.map_err(Into::into)
+                    .expect("capture arena lock poisoned") = Some(result.clone());
+                result.map_err(|error| io::Error::new(error.kind(), error))
             })
             .await
-            .map_err(io::Error::other)
     }
 }
 struct RangeSource {
@@ -403,17 +394,14 @@ impl ByteCursor for Cursor {
             let buffer = self
                 .arena
                 .0
-                .captured
+                .io
                 .with_local_io(move || {
                     let _access = access;
-                    arena
-                        .with_writer_sync(|builder| {
-                            builder.read_buffer_at(offset, buffer, available, ())
-                        })
-                        .map_err(Into::into)
+                    arena.with_writer_sync(|builder| {
+                        builder.read_buffer_at(offset, buffer, available, ())
+                    })
                 })
-                .await
-                .map_err(io::Error::other)?;
+                .await?;
             self.position += available as u64;
             Ok(SourceRead {
                 buffer,

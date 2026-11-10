@@ -19,7 +19,9 @@
 
 //! Physical accounting; independent of conversation membership and current prices.
 
-use crate::{context::ModelPurpose, event::Invocation, execution::ModelBinding, model::ModelUsage};
+use crate::{
+    context::ModelPurpose, durable::ExecutionIdentity, execution::ModelBinding, model::ModelUsage,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 mod activity;
@@ -30,7 +32,33 @@ pub use summary::{
     Cost, Group, ModelSummary, ModelTotals, Pending, ProviderSummary, Summary, Tokens, ToolSummary,
     ToolTotals,
 };
-pub use tool::{ToolAttempt, ToolResult, ToolStatus};
+pub use tool::{ToolStatus, ToolUsage, ToolUsageResult, ToolUsageSource};
+
+/// The selected model and contemporaneous public rate decision, sealed with the
+/// immutable request. Missing usage or pricing is never equivalent to zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelEvidence {
+    pub binding: ModelBinding,
+    pub model_id: String,
+    pub purpose: ModelPurpose,
+    pub quote: Option<crate::pricing::Quote>,
+}
+impl ModelEvidence {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.model_id.is_empty()
+            || self.model_id.chars().any(char::is_control)
+            || self.binding.connection_id.is_empty()
+            || self.binding.model.is_empty()
+        {
+            return Err("invalid original model accounting identity");
+        }
+        if let Some(quote) = &self.quote {
+            quote.validate(&self.model_id)?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -55,12 +83,12 @@ pub enum AuxiliarySource {
         fingerprint: String,
     },
     /// One Host-owned title request, authorized by the first committed user opening.
-    /// It may finish after that invocation ends and cannot execute tools.
+    /// It may finish after that execution ends and cannot execute tools.
     SessionTitle {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
     },
     Agent {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         operation_id: String,
     },
     HostEffect {
@@ -73,7 +101,8 @@ pub enum AuxiliarySource {
 #[schemars(rename = "UsageOrigin")]
 pub enum Origin {
     Agent {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
+        link: crate::durable::AgentStepLink,
         purpose: ModelPurpose,
     },
     Auxiliary {

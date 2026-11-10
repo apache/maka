@@ -17,20 +17,22 @@
  * under the License.
  */
 
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { platform, Text, View } from 'nsh';
-import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
+import type { HistoryTool, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { ImageThumbnail } from './ImageThumbnail';
 import { C, captionTextStyle } from './ui';
 import type { ImagePreview } from './ImageThumbnail';
 export type { ImagePreview } from './ImageThumbnail';
-import type { Position } from './history';
+
+import { historyRowKey, historyTurnKey, compareHistoryOrder } from './history';
 import { useHost } from './host';
 import { immutableAsset } from './immutableAsset';
 
 export function ToolImage(props: {
   sessionId: string;
   through: () => number;
-  position: Position;
+  position: HistoryRowAddress;
   /** One of the result's `images`; absent when the content is the image. */
   image?: number;
   mini?: boolean;
@@ -56,13 +58,13 @@ export function ToolImage(props: {
   );
 }
 
-export type ToolImageRef = { key: string; position: Position; image?: number };
+export type ToolImageRef = { key: string; position: HistoryRowAddress; image?: number };
 
 /** The content image has no index; the others are what the model saw beside the content. */
 export function toolImages(tool: HistoryTool | null | undefined): ToolImageRef[] {
   const result = tool?.result;
   if (!result) return [];
-  const key = `${tool.toolUseId}/${result.position.sourceSequence}/${result.position.itemIndex}`;
+  const key = `${tool.toolUseId}/${historyRowKey(result.position)}`;
   return [
     ...(result.image ? [{ key: `${key}/content`, position: result.position }] : []),
     ...Array.from({ length: result.images ?? 0 }, (_, image) => ({
@@ -75,19 +77,27 @@ export function toolImages(tool: HistoryTool | null | undefined): ToolImageRef[]
 
 /** Every tool image of one Turn, in transcript order, each tool once. */
 export function turnImages(
-  rows: Iterable<{ turnId?: string; tool?: HistoryTool | null }>,
-  turnId: string,
+  rows: Iterable<{
+    turnId?: string;
+    importedTurn?: number;
+    position?: HistoryRowAddress;
+    order?: HistoryOrder;
+    tool?: HistoryTool | null;
+  }>,
+  turnKey: string,
 ): ToolImageRef[] {
-  const tools = new Map<string, HistoryTool>();
-  for (const row of rows)
-    if (row.turnId === turnId && row.tool?.result) tools.set(row.tool.toolUseId, row.tool);
+  const tools = new Map<string, { tool: HistoryTool; order: HistoryOrder | undefined }>();
+  for (const row of rows) {
+    if (historyTurnKey(row) !== turnKey || !row.tool?.result) continue;
+    const key = historyRowKey(row.tool.result.position);
+    const previous = tools.get(key);
+    tools.set(key, { tool: row.tool, order: previous?.order ?? row.order });
+  }
   return [...tools.values()]
-    .toSorted(
-      (left, right) =>
-        left.result!.position.sourceSequence - right.result!.position.sourceSequence ||
-        left.result!.position.itemIndex - right.result!.position.itemIndex,
+    .toSorted((left, right) =>
+      left.order && right.order ? compareHistoryOrder(left.order, right.order) : 0,
     )
-    .flatMap(toolImages);
+    .flatMap((item) => toolImages(item.tool));
 }
 
 const stripLimit = 4;

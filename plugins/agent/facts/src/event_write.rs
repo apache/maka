@@ -17,15 +17,16 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 use crate::artifact::{Artifact, content_digest};
-use crate::event::{CommitError, Fact, Invocation, RuntimeEvent, ToolOutcome};
+use crate::event::{CommitError, Fact, RuntimeEvent, ToolOutcome};
 use crate::tool_output::{RawToolResultRef, ToolOutput, ToolSuccess, encode_raw_tool_result};
 use std::{sync::Arc, time::SystemTime};
 
 /// One checked transaction submission: successful facts cannot omit their bytes.
 #[derive(Clone, Debug)]
 pub struct EventWrite {
-    retry_consumption: Option<crate::model_retry::ModelRetryConsumption>,
     composition: Option<crate::composition::CompositionEvidence>,
     quote: Option<crate::pricing::Quote>,
     event: Arc<RuntimeEvent>,
@@ -62,27 +63,21 @@ impl ProjectionArtifactWrite {
 }
 
 impl EventWrite {
-    /// Carry exact retry ownership into the request's atomic append.
-    pub fn with_model_retry_consumption(
-        mut self,
-        evidence: crate::model_retry::ModelRetryConsumption,
-    ) -> Result<Self, CommitError> {
-        if !matches!(self.event.fact, Fact::ModelRequested { .. })
-            || evidence.checkpoint_id.is_empty()
+    pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
+        if let Fact::ToolDispatched {
+            operation_id, call, ..
+        }
+        | Fact::ToolRejected {
+            operation_id, call, ..
+        } = &event.fact
+            && let crate::tool_call::ToolOrigin::Provider { link } = &call.origin
+            && (link.run != event.execution.run_id
+                || *operation_id != format!("{}:{}", link.attempt, call.tool_call_id))
         {
             return Err(CommitError::Rejected(
-                "retry consumption requires a model request and checkpoint identity".into(),
+                "tool obligation identity differs from its Run or original attempt".into(),
             ));
         }
-        self.retry_consumption = Some(evidence);
-        Ok(self)
-    }
-
-    pub fn model_retry_consumption(&self) -> Option<&crate::model_retry::ModelRetryConsumption> {
-        self.retry_consumption.as_ref()
-    }
-
-    pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
         match &event.fact {
             Fact::ModelCompleted { output, .. } => {
                 let mut ids = std::collections::HashSet::new();
@@ -182,14 +177,14 @@ impl EventWrite {
                 .validate()
                 .map_err(|error| CommitError::Rejected(error.to_string()))?;
         }
-        if let Fact::InvocationOpened { input, .. } = &event.fact {
+        if let Fact::RunOpened { input, .. } = &event.fact {
             input
-                .validate_inheritance(&event.invocation)
+                .validate_inheritance(&event.execution)
                 .map_err(|reason| CommitError::Rejected(reason.into()))?;
         }
-        if let Fact::InvocationOpened {
+        if let Fact::RunOpened {
             input:
-                crate::input::InvocationInput::Continuation {
+                crate::input::RunInput::Continuation {
                     request_fingerprint,
                     ..
                 },
@@ -201,9 +196,9 @@ impl EventWrite {
                 "invalid continuation request fingerprint".into(),
             ));
         }
-        if let Fact::InvocationOpened {
+        if let Fact::RunOpened {
             input:
-                crate::input::InvocationInput::Message {
+                crate::input::RunInput::Message {
                     content,
                     source_messages,
                     ..
@@ -217,17 +212,17 @@ impl EventWrite {
                 if let Some(intent) = &source.submitted_intent {
                     crate::input::validate_selection_session(
                         &intent.input_selection_sources,
-                        &event.invocation.session_id,
+                        &event.execution.session_id,
                     )
                     .map_err(|message| CommitError::Rejected(message.into()))?;
                 }
             }
         }
         if let Fact::MessageSteered { message, source } = &event.fact {
-            crate::event::validate_steered_source(message, source, &event.invocation.session_id)
+            crate::event::validate_steered_source(message, source, &event.execution.session_id)
                 .map_err(|message| CommitError::Rejected(message.into()))?;
         }
-        if let Fact::InvocationOpened {
+        if let Fact::RunOpened {
             configuration: Some(configuration),
             ..
         } = &event.fact
@@ -278,7 +273,6 @@ impl EventWrite {
             ));
         }
         Ok(Self {
-            retry_consumption: None,
             composition: None,
             quote: None,
             event: Arc::new(event),
@@ -291,13 +285,13 @@ impl EventWrite {
     pub fn tool_success(
         id: String,
         recorded_at: SystemTime,
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         operation_id: String,
         success: ToolSuccess,
     ) -> Result<(Self, ToolOutput), CommitError> {
         let is_error = success.is_error;
         let success = success
-            .normalize(&id, recorded_at, &invocation)
+            .into_durable(&id, recorded_at, &execution)
             .map_err(|message| CommitError::Rejected(message.into()))?;
         let output = success.output;
         let bytes = encode_raw_tool_result(&output)
@@ -308,13 +302,12 @@ impl EventWrite {
         };
         Ok((
             Self {
-                retry_consumption: None,
                 composition: None,
                 quote: None,
                 event: Arc::new(RuntimeEvent {
                     id,
                     recorded_at,
-                    invocation,
+                    execution,
                     fact: Fact::ToolSettled {
                         operation_id,
                         outcome: ToolOutcome::Succeeded {

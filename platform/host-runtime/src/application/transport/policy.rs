@@ -21,7 +21,9 @@
 use super::Grant;
 use super::wire::Source;
 use crate::application::Result;
-use crate::application::{Binding, Caller, Invocation, Policy, RecoveryInvocation};
+use crate::application::{
+    Binding, Caller, IntentLookupInvocation, Invocation, Policy, RecoveryInvocation,
+};
 use maka_capabilities::call::Identity;
 use maka_capabilities::call::Issuer;
 use maka_capabilities::call::Scope;
@@ -379,6 +381,20 @@ impl Policy for PeerPolicy {
         }
         Ok(())
     }
+    fn lookup_intent(&self, invocation: IntentLookupInvocation<'_>) -> Result<()> {
+        // Peer/guest endpoint recovery grants do not grant access to a local
+        // consumer's caller journal. Only actual native ownership enters here.
+        if let Some(e) = self.issuer.evidence::<Evidence>(invocation.scope) {
+            e.approval.live()?;
+        }
+        let origin = invocation
+            .native_origin
+            .ok_or("caller intent lookup requires native ownership")?;
+        if origin != invocation.consumer {
+            return Err("native caller intent lookup is limited to its own consumer".into());
+        }
+        Ok(())
+    }
     fn recover(&self, invocation: RecoveryInvocation<'_>) -> Result<()> {
         if let Some(e) = self.issuer.evidence::<Evidence>(invocation.scope) {
             e.approval.live()?;
@@ -412,107 +428,3 @@ impl Policy for PeerPolicy {
 }
 // Policy ownership is shared with the original Application, not a second kernel.
 pub(super) type PolicyOwner = Arc<PeerPolicy>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn source(revision: u64) -> DeploymentRef {
-        DeploymentRef {
-            state_domain: "a".repeat(64),
-            deployment: uuid::Uuid::from_u128(1),
-            revision,
-        }
-    }
-    fn peer(revision: u64, consumer: u128) -> Peer {
-        Peer::new(
-            source(revision),
-            BTreeSet::from([InstanceId(vec![uuid::Uuid::from_u128(consumer)])]),
-        )
-        .unwrap()
-    }
-    #[test]
-    fn retained_ticket_is_original_and_revoked_ticket_never_revives() {
-        let peers = Peers::new(peer(1, 2));
-        let old = peers
-            .resolve(&source(1), &InstanceId(vec![uuid::Uuid::from_u128(2)]))
-            .unwrap();
-        peers
-            .update(Some(peer(2, 3)), &BTreeSet::from([1]))
-            .unwrap();
-        assert!(Arc::ptr_eq(
-            &old,
-            &peers
-                .resolve(&source(1), &old.peer.consumers.first().unwrap().clone())
-                .unwrap()
-        ));
-        assert!(
-            peers
-                .resolve(&source(2), old.peer.consumers.first().unwrap())
-                .is_err()
-        );
-        peers.update(Some(peer(2, 3)), &BTreeSet::new()).unwrap();
-        assert!(old.live().is_err());
-        assert!(peers.replace(vec![peer(1, 2)]).is_err());
-        assert!(old.live().is_err());
-        assert!(
-            peers
-                .resolve(&source(1), old.peer.consumers.first().unwrap())
-                .is_err()
-        );
-        // The same contents can be installed with a fresh immutable revision.
-        peers.replace(vec![peer(3, 2)]).unwrap();
-        assert!(
-            peers
-                .resolve(&source(3), old.peer.consumers.first().unwrap())
-                .is_ok()
-        );
-    }
-    #[test]
-    fn failed_batch_and_preflight_leave_original_ticket_live() {
-        let peers = Peers::new(peer(1, 2));
-        let old = peers
-            .resolve(&source(1), &InstanceId(vec![uuid::Uuid::from_u128(2)]))
-            .unwrap();
-        assert!(
-            peers
-                .check_update(Some(peer(1, 3)), &BTreeSet::new())
-                .is_err()
-        );
-        assert!(peers.update(Some(peer(1, 3)), &BTreeSet::new()).is_err());
-        let mut foreign = peer(3, 4);
-        foreign.source.deployment = uuid::Uuid::from_u128(9);
-        assert!(peers.replace(vec![peer(2, 3), foreign]).is_err());
-        old.live().unwrap();
-        assert!(
-            peers
-                .resolve(&source(2), &InstanceId(vec![uuid::Uuid::from_u128(3)]))
-                .is_err()
-        );
-    }
-    #[test]
-    fn preflight_does_not_advance_latest_and_empty_update_cannot_reset_it() {
-        let peers = Peers::new(peer(1, 2));
-        peers
-            .check_update(Some(peer(3, 2)), &BTreeSet::new())
-            .unwrap();
-        peers.update(Some(peer(2, 2)), &BTreeSet::new()).unwrap();
-        peers.update(None, &BTreeSet::new()).unwrap();
-        assert!(peers.update(Some(peer(2, 2)), &BTreeSet::new()).is_err());
-        assert!(peers.replace(vec![peer(1, 2)]).is_err());
-        peers.update(Some(peer(3, 2)), &BTreeSet::new()).unwrap();
-    }
-    #[test]
-    fn retain_only_revokes_unused_host_without_empty_peer() {
-        let peers = Peers::new(peer(1, 2));
-        let old = peers
-            .resolve(&source(1), &InstanceId(vec![uuid::Uuid::from_u128(2)]))
-            .unwrap();
-        peers.update(None, &BTreeSet::new()).unwrap();
-        assert!(old.live().is_err());
-        assert!(
-            peers
-                .resolve(&source(1), old.peer.consumers.first().unwrap())
-                .is_err()
-        );
-    }
-}

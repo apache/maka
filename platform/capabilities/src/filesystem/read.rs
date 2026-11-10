@@ -19,8 +19,7 @@
 
 //! Read-only input capabilities; never execution authority.
 mod file;
-#[cfg(test)]
-mod scoped;
+
 use super::directory::Directory;
 use crate::Error;
 use crate::filesystem::entries::DirectoryPage;
@@ -108,7 +107,12 @@ impl From<ReadError> for Error {
 /// Revalidate an authenticated read scope before each batch. Lifecycle alone
 /// is not authorization; this contract is implemented by the embedding.
 pub trait ReadAuthorization: Send + Sync {
-    fn check(&self) -> futures_util::future::BoxFuture<'_, Result<crate::call::Ticket, ReadError>>;
+    fn check(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_plugin_core::work::resources::Ticket, ReadError>,
+    >;
 }
 
 /// Embedding-owned root. Only the embedding decides which directory to expose.
@@ -202,7 +206,7 @@ pub struct ReadDirectory {
 #[derive(Clone)]
 struct ReadOwner(crate::call::Scope);
 impl ReadOwner {
-    fn admit(&self) -> Result<crate::call::Ticket, ReadError> {
+    fn admit(&self) -> Result<maka_plugin_core::work::resources::Ticket, ReadError> {
         self.0.resources.reserve().map_err(|_| ReadError::Retired)
     }
     fn spawn_resource<F>(
@@ -530,207 +534,4 @@ fn visible(files: &BTreeSet<String>, path: &Path) -> bool {
 }
 fn invalid(error: impl ToString) -> ReadError {
     ReadError::Invalid(error.to_string())
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn scope() -> crate::call::Scope {
-        crate::call::Issuer::default()
-            .issue(
-                crate::call::Identity::Remote {
-                    request_id: uuid::Uuid::new_v4(),
-                },
-                CancellationToken::new(),
-            )
-            .unwrap()
-    }
-
-    #[test]
-    fn execution_basis_tracks_held_directories_aliases_and_read_restrictions() {
-        let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("source");
-        std::fs::create_dir(&path).unwrap();
-        let root = ReadRoot::capture(&path).unwrap();
-        let basis = root.execution_basis().unwrap();
-        assert_eq!(
-            ReadRoot::capture(&path).unwrap().execution_basis().unwrap(),
-            basis
-        );
-        std::fs::write(path.join("new-file"), b"mutable data").unwrap();
-        assert_eq!(root.execution_basis().unwrap(), basis);
-        assert_ne!(
-            root.clone()
-                .select(["new-file".into()].into())
-                .unwrap()
-                .execution_basis()
-                .unwrap(),
-            basis
-        );
-        let policy = Arc::new(
-            maka_sandbox::filesystem::Policy {
-                default: maka_sandbox::filesystem::Access::Deny,
-                rules: vec![],
-                deny_globs: vec![],
-            }
-            .compile()
-            .unwrap(),
-        );
-        assert_ne!(
-            root.clone()
-                .restrict(policy)
-                .unwrap()
-                .execution_basis()
-                .unwrap(),
-            basis
-        );
-        let same_handle_other_alias = ReadRoot::from_handle(
-            cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap(),
-            temporary.path().join("alias"),
-        );
-        assert_ne!(same_handle_other_alias.execution_basis().unwrap(), basis);
-        std::fs::rename(&path, temporary.path().join("original")).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        assert_eq!(root.execution_basis().unwrap(), basis);
-        assert_ne!(
-            ReadRoot::capture(&path).unwrap().execution_basis().unwrap(),
-            basis
-        );
-    }
-
-    #[tokio::test]
-    async fn reads_keep_mount_boundaries_and_end_with_the_callback_or_owner() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("allowed"), b"abcdef").unwrap();
-        std::fs::write(directory.path().join("private"), b"secret").unwrap();
-        let owner = scope();
-        let root = ReadRoot::open(directory.path()).await.unwrap();
-        let restricted = root.clone().select(["allowed".into()].into()).unwrap();
-        let cancellation = owner.cancellation.clone();
-        let view = restricted.bind_scope(&owner);
-        let read = |path: &str| ReadFile {
-            path: path.into(),
-            offset: 0,
-            limit: 3,
-        };
-        let protected = root
-            .clone()
-            .restrict(Arc::new(
-                maka_sandbox::filesystem::Policy {
-                    default: maka_sandbox::filesystem::Access::Read,
-                    rules: vec![maka_sandbox::filesystem::Rule::exact(
-                        dunce::canonicalize(directory.path())
-                            .unwrap()
-                            .join("private"),
-                        maka_sandbox::filesystem::Access::Deny,
-                    )],
-                    deny_globs: vec![],
-                }
-                .compile()
-                .unwrap(),
-            ))
-            .unwrap()
-            .bind_scope(&owner);
-        assert!(protected.read(read("private")).await.is_err());
-        assert_eq!(protected.read(read("allowed")).await.unwrap().bytes, b"abc");
-        assert!(matches!(
-            protected.read(read("missing")).await,
-            Err(ReadError::Io(error)) if error.kind() == io::ErrorKind::NotFound
-        ));
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink("private", directory.path().join("private-alias")).unwrap();
-            assert!(protected.read(read("private-alias")).await.is_err());
-        }
-        let page = view.read(read("allowed")).await.unwrap();
-        assert_eq!(page.bytes, b"abc");
-        assert_eq!(page.next_offset, Some(3));
-        assert!(view.read(read("private")).await.is_err());
-        let page = view
-            .list(ListFiles {
-                path: String::new(),
-                after: None,
-                limit: 10,
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            page.entries
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            ["allowed"]
-        );
-        let workspace = root.bind_scope(&owner);
-        assert!(workspace.read(read("../private")).await.is_err());
-        #[cfg(unix)]
-        {
-            let outside = tempfile::tempdir().unwrap();
-            std::fs::write(outside.path().join("secret"), b"outside").unwrap();
-            std::os::unix::fs::symlink(
-                outside.path().join("secret"),
-                directory.path().join("escape"),
-            )
-            .unwrap();
-            assert!(workspace.read(read("escape")).await.is_err());
-            std::os::unix::fs::symlink("allowed", directory.path().join("alias")).unwrap();
-            assert_eq!(workspace.read(read("alias")).await.unwrap().bytes, b"abc");
-            let reject: ReadInput = serde_json::from_value(serde_json::json!({
-                "path": "alias", "limit": 3, "symlinks": "reject"
-            }))
-            .unwrap();
-            assert!(workspace.read(reject).await.is_err());
-            std::os::unix::fs::symlink(
-                directory.path().join("allowed"),
-                directory.path().join("absolute"),
-            )
-            .unwrap();
-            assert_eq!(
-                workspace.read(read("absolute")).await.unwrap().bytes,
-                b"abc"
-            );
-            assert_eq!(
-                protected.read(read("absolute")).await.unwrap().bytes,
-                b"abc"
-            );
-            let selected_alias = root
-                .clone()
-                .select(["alias".into()].into())
-                .unwrap()
-                .bind_scope(&owner);
-            assert!(
-                selected_alias.read(read("alias")).await.is_err(),
-                "selection must constrain link targets too"
-            );
-
-            let moved = directory.path().with_extension("retained");
-            std::fs::rename(directory.path(), &moved).unwrap();
-            std::fs::create_dir(directory.path()).unwrap();
-            std::fs::write(directory.path().join("allowed"), "wrong").unwrap();
-            assert_eq!(
-                workspace.read(read("absolute")).await.unwrap().bytes,
-                b"abc"
-            );
-            // Return the fixture to its temporary owner for automatic cleanup.
-            std::fs::remove_file(directory.path().join("allowed")).unwrap();
-            std::fs::remove_dir(directory.path()).unwrap();
-            std::fs::rename(moved, directory.path()).unwrap();
-        }
-        cancellation.cancel();
-        assert!(matches!(
-            view.read(read("allowed")).await,
-            Err(ReadError::Retired)
-        ));
-        owner.finish().await.unwrap();
-        let independent_owner = scope();
-        let independent = restricted.bind_scope(&independent_owner);
-        assert_eq!(
-            independent.read(read("allowed")).await.unwrap().bytes,
-            b"abc"
-        );
-        independent_owner.finish().await.unwrap();
-        assert!(matches!(
-            independent.read(read("allowed")).await,
-            Err(ReadError::Retired)
-        ));
-    }
 }

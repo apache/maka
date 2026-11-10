@@ -22,142 +22,51 @@
 
 use super::super::browser_access::tests::Fixture;
 use super::*;
-use maka_agent_facts::event::{EventWrite, Fact, InvocationInput, RuntimeEvent};
-use maka_capabilities::call::{Identity, Issuer};
+use futures_util::FutureExt;
+use maka_agent_state::artifacts::{ArtifactStore, SessionScope};
 
-async fn turn(fixture: &Fixture, code: &str) {
-    let prepared = fixture
-        .store
-        .execution_scope(Some(fixture.basis()))
-        .await
-        .unwrap();
-    let (parent, effects) = prepared
-        .accept_invocation(fixture.invocation.clone(), CancellationToken::new())
-        .unwrap();
-    let source = parent.store();
-    let operation_id = Uuid::new_v4().to_string();
-    let scope = Issuer::default()
-        .issue_with_execution(
-            Identity::Agent {
-                invocation: fixture.invocation.clone(),
-                operation_id: Some(operation_id.clone()),
+async fn turn(fixture: &Fixture) {
+    let result = fixture.run_call().await;
+    let ResultValue::Completed { artifact, .. } = result else {
+        panic!(
+            "real Host evaluation failed: {}",
+            serde_json::to_string(&result).unwrap()
+        );
+    };
+    let session = fixture.execution.session_id.clone();
+    let turn = fixture.execution.turn_id.clone();
+    let outputs = ArtifactStore::new(fixture.host.root.data_writer().unwrap())
+        .with_content(
+            SessionScope {
+                owner: fixture.call.authority.run_owner().clone(),
+                session: session.clone(),
             },
-            (),
-            CancellationToken::new(),
-            source.execution_custody().unwrap(),
+            artifact,
+            move |artifact, read| {
+                assert_eq!(artifact.session_id, session);
+                assert_eq!(artifact.turn_id, turn);
+                let mut text = String::new();
+                read.read_to_string(&mut text).unwrap();
+                text
+            },
         )
-        .unwrap();
-    let interaction = fixture
-        .owner
-        .sessions
-        .get(&fixture.invocation.session_id)
-        .unwrap();
-    let code = code.to_owned();
-    let input =
-        serde_json::json!({"code":code,"timeout_ms":30000,"title":"Verify retained test pages"});
-    let owner = fixture.owner.clone();
-    let basis = fixture.basis();
-    let execution_interaction = interaction.clone();
-    let execution_input = input.clone();
-    let result = ToolJournal::new(Arc::new(source.clone()), fixture.invocation.clone())
-        .invoke_prepared_output(
-            operation_id,
-            ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
-            "cua_repl".into(),
-            input,
-            None,
-            CancellationToken::new(),
-            PreparedEffect::new(move |cancellation| {
-                Box::pin(async move {
-                    let result = owner
-                        .evaluate(
-                            "evaluate",
-                            execution_input,
-                            EvaluationScope {
-                                call: scope,
-                                input_resources: None,
-                            },
-                            basis,
-                            execution_interaction,
-                            cancellation,
-                        )
-                        .await?;
-                    Ok(serde_json::to_value(result).map_err(failed)?.into())
-                })
-            }),
-        )
-        .await
-        .and_then(|output| {
-            serde_json::from_value::<ResultValue>(output.into_json()).map_err(failed)
-        });
-    if let Ok(ResultValue::Completed { artifact, .. }) = &result {
-        let outputs = source
-            .with_artifact(
-                maka_event_log::artifacts::ArtifactReadScope::Execution(&fixture.invocation),
-                artifact,
-                |_, read| {
-                    let mut text = String::new();
-                    read.read_to_string(&mut text).unwrap();
-                    text
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        for output in serde_json::from_str::<Vec<Value>>(&outputs).unwrap() {
-            if let Some(text) = output["text"].as_str()
-                && let Ok(ids) = serde_json::from_str::<Value>(text)
-                && ids.get("testPageId").is_some()
-            {
-                println!("MAKA_HANDOFF_SMOKE:OWNED={ids}");
-            }
-        }
-    }
-    assert!(
-        matches!(&result, Ok(ResultValue::Completed { .. })),
-        "real Host evaluation failed: {}",
-        match result {
-            Ok(value) => serde_json::to_string(&value).unwrap(),
-            Err(error) => error.to_string(),
-        }
-    );
-    fixture.end().await;
-    sessions::drain_ended_turns(
-        &fixture.owner,
-        &interaction,
-        &fixture.invocation.session_id,
-        Language::En,
-    )
-    .await
-    .unwrap();
-    effects.settle().await.unwrap();
-    parent.finish();
-}
-
-async fn next_turn(fixture: &mut Fixture, name: &str) {
-    let configuration = fixture
-        .store
-        .invocation_configuration(&fixture.invocation)
         .await
         .unwrap()
-        .unwrap();
-    fixture.invocation.turn_id = name.into();
-    fixture.invocation.run_id = Uuid::new_v4().to_string();
-    fixture.invocation.invocation_id = Uuid::new_v4().to_string();
+        .expect("original Computer output artifact");
+    for output in serde_json::from_str::<Vec<Value>>(&outputs).unwrap() {
+        if let Some(text) = output["text"].as_str()
+            && let Ok(ids) = serde_json::from_str::<Value>(text)
+            && ids.get("testPageId").is_some()
+        {
+            println!("MAKA_HANDOFF_SMOKE:OWNED={ids}");
+        }
+    }
     fixture
-        .store
-        .append(
-            &EventWrite::plain(RuntimeEvent::new(
-                fixture.invocation.clone(),
-                Fact::InvocationOpened {
-                    configuration: Some(Box::new(configuration)),
-                    input: InvocationInput::Code {
-                        source: "retained browser hardware smoke".into(),
-                    },
-                },
-            ))
-            .unwrap(),
-        )
+        .host
+        .wait_terminal(fixture.execution.run_id)
+        .await
+        .unwrap();
+    sessions::drain_ended_turns(&fixture.owner, &fixture.entry, Language::En)
         .await
         .unwrap();
 }
@@ -170,9 +79,7 @@ async fn real_host_retained_browser_pages_survive_handoff() {
         Ok("1"),
         "use the external runner; this test changes only its own blank tabs"
     );
-    let mut fixture = Fixture::browser_handoff().await;
-    turn(
-        &fixture,
+    let mut fixture = Fixture::browser_handoff(
         r#"
         globalThis.firstBrowser=await cua.getBrowser({id:'chatgpt'});
         globalThis.testPage=await firstBrowser.tabs.new();
@@ -188,9 +95,10 @@ async fn real_host_retained_browser_pages_survive_handoff() {
     "#,
     )
     .await;
+    let result = std::panic::AssertUnwindSafe(async {
+    turn(&fixture).await;
     println!("MAKA_HANDOFF_SMOKE:CREATED");
-    next_turn(&mut fixture, "same-native-generation").await;
-    turn(&fixture, r#"
+    fixture.next_call(r#"
         globalThis.sameBrowser=await cua.getBrowser({id:'chatgpt'});
         if(sameBrowser.browserId!==firstBrowser.browserId) throw Error('peer lost its native generation');
         await sameBrowser.tabs.list();
@@ -203,6 +111,7 @@ async fn real_host_retained_browser_pages_survive_handoff() {
         await againPage.markHandoff();
         nodeRepl.write('same generation and same logical turn page resumed');
     "#).await;
+    turn(&fixture).await;
     println!("MAKA_HANDOFF_SMOKE:RETURN");
     let line = tokio::task::spawn_blocking(|| {
         let mut line = String::new();
@@ -216,8 +125,7 @@ async fn real_host_retained_browser_pages_survive_handoff() {
         "READY",
         "external runner must return and reacquire the host"
     );
-    next_turn(&mut fixture, "new-native-generation").await;
-    turn(&fixture, r#"
+    fixture.next_call(r#"
         globalThis.newBrowser=await cua.getBrowser({id:'chatgpt'});
         if(newBrowser.browserId===firstBrowser.browserId) throw Error('native generation did not change');
         if(!(await newBrowser.user.openTabs()).some(t=>t.id===resultPageId)) throw Error('deliverable page did not survive handback');
@@ -226,13 +134,18 @@ async fn real_host_retained_browser_pages_survive_handoff() {
         await cleanupResult.close();
         nodeRepl.write('new generation page resumed without a new retention mark');
     "#).await;
-    next_turn(&mut fixture, "verify-final-cleanup").await;
-    turn(&fixture, r#"
+    turn(&fixture).await;
+    fixture.next_call(r#"
         globalThis.finalBrowser=await cua.getBrowser({id:'chatgpt'});
         let tabs=await finalBrowser.user.openTabs();
         if(tabs.some(t=>t.id===testPageId||t.id===resultPageId||t.id===unusedPageId)) throw Error('test-owned page remained after cleanup');
         nodeRepl.write('test-owned pages removed');
     "#).await;
+    turn(&fixture).await;
+    }).catch_unwind().await;
     fixture.close().await;
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
     println!("MAKA_HANDOFF_SMOKE:COMPLETE");
 }

@@ -2702,6 +2702,26 @@ pub(crate) fn clear_selected() {
     }
 }
 
+pub(crate) fn has_selection(surface: &crate::surface::Surface) -> bool {
+    let view = SELECTED.with_borrow(|s| {
+        s.as_ref()
+            .filter(|(key, v)| *key == surface.key() && v.attached())
+            .map(|(_, v)| v.clone())
+    });
+    view.is_some_and(|v| selected_text(&v).is_some())
+}
+
+pub(crate) fn clear_surface(surface: &crate::surface::Surface) {
+    let selected = SELECTED.with_borrow(|s| {
+        s.as_ref()
+            .filter(|(key, _)| *key == surface.key())
+            .map(|(_, v)| v.clone())
+    });
+    if let Some(view) = selected {
+        select(surface.key(), &view, None);
+    }
+}
+
 /// True when the text can be selected (`selectable`).
 pub(crate) fn selectable(state: &ViewState) -> bool {
     state.text.as_ref().is_some_and(|t| t.text.is_selectable())

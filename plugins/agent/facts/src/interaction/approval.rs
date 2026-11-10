@@ -17,7 +17,9 @@
  * under the License.
  */
 
-use super::{ComputerAppDecision, Decision, InteractionAnswer};
+use super::{
+    ComputerAppDecision, Decision, InteractionAnswer, PermissionDecision, PermissionScope,
+};
 use maka_sandbox::grant;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +42,7 @@ pub enum ComputerAppApproval {
 pub enum PermissionApproval {
     Allow {
         permissions: grant::Permissions,
-        scope: grant::Scope,
+        scope: PermissionScope,
     },
 }
 
@@ -73,7 +75,7 @@ impl SessionApprovalAnswer {
                 decision: Decision::Deny,
             },
             Self::Permissions { .. } => InteractionAnswer::Permissions {
-                decision: grant::Decision::Deny,
+                decision: PermissionDecision::Deny,
             },
             Self::ClientCapability { .. } => InteractionAnswer::ClientCapability {
                 decision: Decision::Deny,
@@ -96,7 +98,7 @@ impl TryFrom<&InteractionAnswer> for SessionApprovalAnswer {
                 decision: ApprovalAllow::Allow,
             },
             InteractionAnswer::Permissions {
-                decision: grant::Decision::Allow { permissions, scope },
+                decision: PermissionDecision::Allow { permissions, scope },
             } => Self::Permissions {
                 decision: PermissionApproval::Allow {
                     permissions: permissions.clone(),
@@ -132,7 +134,7 @@ impl From<SessionApprovalAnswer> for InteractionAnswer {
             SessionApprovalAnswer::Permissions {
                 decision: PermissionApproval::Allow { permissions, scope },
             } => Self::Permissions {
-                decision: grant::Decision::Allow { permissions, scope },
+                decision: PermissionDecision::Allow { permissions, scope },
             },
             SessionApprovalAnswer::ClientCapability { .. } => Self::ClientCapability {
                 decision: Decision::Allow,

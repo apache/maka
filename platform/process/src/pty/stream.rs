@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use rustix::fd::OwnedFd;
 use std::{io, sync::Arc};
 use tokio::io::unix::AsyncFd;

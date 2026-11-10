@@ -19,7 +19,7 @@
 
 //! Client-facing shell state. It is a projection, never the operational authority.
 mod project;
-pub use maka_agent_facts::shell_result::*;
+pub use maka_plugin_core::shell_result::*;
 pub use project::{local_metadata, local_observation, local_state, local_update};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -31,8 +31,8 @@ pub const SNAPSHOT_MAX_BYTES: usize = 48 * 1024;
 pub struct ResourceUpdate {
     pub session_id: String,
     pub ownership: Ownership,
-    pub source_turn_id: String,
-    pub source_tool_call_id: String,
+    pub correlation: serde_json::Value,
+    pub visibility: maka_plugin_core::shell_run::ShellVisibility,
     pub result: ShellSnapshot,
 }
 
