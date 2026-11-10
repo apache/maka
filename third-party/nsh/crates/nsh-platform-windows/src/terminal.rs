@@ -833,7 +833,23 @@ mod tests {
                 window,
                 DesktopCommand::OpenWindow(Box::new(OpenWindow::default())),
             );
+            // Window.open inserts its modal root after OpenWindow. Rejecting the
+            // OS command must not turn that root into a terminal dialog.
+            surface.mounter.borrow_mut().apply(
+                surface,
+                &MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: window,
+                    before: None,
+                },
+            );
+            surface.mounter.borrow_mut().end_batch(surface);
             desktop(window, DesktopCommand::Request(WindowRequest::Focus));
+            assert_eq!(
+                terminal.editor_text().as_deref(),
+                Some("terminal"),
+                "rejected Window.open stole the terminal editor's focus"
+            );
             assert!(
                 surface.windows.borrow().is_empty(),
                 "terminal opened a secondary HWND"
