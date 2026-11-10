@@ -2034,70 +2034,83 @@ mod model_recovery {
             "summary":[{"type":"summary_text","text":"visible summary"}]})
     }
 
+    /// Main Responses conversations use the WebSocket transport: each
+    /// `response.create` text frame is one physical request.
     async fn serve_replay(
         listener: tokio::net::TcpListener,
         posts: Arc<std::sync::atomic::AtomicUsize>,
         requests: tokio::sync::mpsc::Sender<Vec<u8>>,
         stop: CancellationToken,
     ) -> TestResult<()> {
-        use axum::response::IntoResponse;
-        let app = axum::Router::new().route(
-            "/v1/responses",
-            axum::routing::post(move |request: axum::extract::Request| {
-                let posts = posts.clone();
-                let requests = requests.clone();
-                async move {
-                    let bytes =
-                        match axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await {
-                            Ok(bytes) => bytes,
-                            Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
-                        };
-                    let index = posts.fetch_add(1, Ordering::SeqCst);
-                    if requests.send(bytes.to_vec()).await.is_err() {
-                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
-                    }
-                    if index == 1 {
-                        return (
-                            axum::http::StatusCode::TOO_MANY_REQUESTS,
-                            [("content-type", "application/json"), ("retry-after", "0")],
-                            r#"{"error":{"message":"retry fixture","type":"rate_limit_error"}}"#,
-                        )
-                            .into_response();
-                    }
-                    let item = if index == 0 {
-                        replay_reasoning()
-                    } else {
-                        json!({"type":"message","id":"answer-target","role":"assistant",
-                            "content":[{"type":"output_text","text":"target-answer"}]})
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{
+            Error as WebSocketError, Message, error::ProtocolError,
+        };
+        let mut connections = tokio::task::JoinSet::<TestResult<()>>::new();
+        loop {
+            let (socket, _) = tokio::select! {
+                _ = stop.cancelled() => break,
+                accepted = listener.accept() => accepted?,
+            };
+            let (posts, requests, stop) = (posts.clone(), requests.clone(), stop.clone());
+            connections.spawn(async move {
+                let mut socket = tokio::select! {
+                    _ = stop.cancelled() => return Ok(()),
+                    socket = tokio_tungstenite::accept_async(socket) => socket?,
+                };
+                loop {
+                    let frame = tokio::select! {
+                        _ = stop.cancelled() => return Ok(()),
+                        frame = socket.next() => frame,
                     };
-                    let body = [
-                        json!({"type":"response.output_item.done","item":item}),
-                        json!({"type":"response.completed","response":{
-                            "id":format!("response-{index}"),
-                            "model":if index == 0 { "llama3.2" } else { "llama3.1" },
-                            "output":[item],"usage":{"input_tokens":100,"output_tokens":10}
-                        }}),
-                    ]
-                    .iter()
-                    .map(|event| format!("data: {event}\n\n"))
-                    .collect::<String>();
-                    (
-                        axum::http::StatusCode::OK,
-                        [("content-type", "text/event-stream")],
-                        body,
-                    )
-                        .into_response()
+                    let bytes = match frame {
+                        Some(Ok(Message::Text(text))) => text.as_bytes().to_vec(),
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                        Some(Ok(Message::Close(_))) | None => return Ok(()),
+                        Some(Ok(other)) => return Err(format!("unexpected Responses frame: {other:?}").into()),
+                        // The source process is deliberately killed after its response.
+                        Some(Err(WebSocketError::Protocol(
+                            ProtocolError::ResetWithoutClosingHandshake,
+                        ))) => return Ok(()),
+                        Some(Err(WebSocketError::Io(error)))
+                            if matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => return Ok(()),
+                        Some(Err(error)) => return Err(error.into()),
+                    };
+                    let index = posts.fetch_add(1, Ordering::SeqCst);
+                    requests.send(bytes).await?;
+                    let events = if index == 1 {
+                        vec![json!({"type":"error","status":429,"error":{
+                            "type":"rate_limit_error","code":"rate_limit_exceeded","message":"retry fixture"}})]
+                    } else {
+                        let item = if index == 0 {
+                            replay_reasoning()
+                        } else {
+                            json!({"type":"message","id":"answer-target","role":"assistant",
+                                "content":[{"type":"output_text","text":"target-answer"}]})
+                        };
+                        vec![
+                            json!({"type":"response.output_item.done","item":item}),
+                            json!({"type":"response.completed","response":{
+                                "id":format!("response-{index}"),
+                                "model":if index == 0 { "llama3.2" } else { "llama3.1" },
+                                "output":[item],"usage":{"input_tokens":100,"output_tokens":10}
+                            }}),
+                        ]
+                    };
+                    for event in events {
+                        socket.send(Message::text(event.to_string())).await?;
+                    }
                 }
-            }),
-        );
-        axum::serve(listener, app)
-            .with_graceful_shutdown(stop.cancelled_owned())
-            .await?;
+            });
+        }
+        while let Some(joined) = connections.join_next().await {
+            joined??;
+        }
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn recorded_encrypted_replay_survives_root_reopen_and_http_retry() {
+    async fn recorded_encrypted_replay_survives_root_reopen_and_physical_retry() {
         for (slug, expected) in [("replay-same", true), ("replay-different", false)] {
             let mut rig = Rig::new().expect("owned replay directories");
             let mut child: Option<tokio::process::Child> = None;
@@ -2135,8 +2148,9 @@ mod model_recovery {
                     serde_json::from_value(frozen.upstream["nativeReader"]["process"].clone())?;
                 assert!(identity == original_identity, "source model did not belong to the owned child");
                 let source_wire: Value = serde_json::from_slice(
-                    &requests_rx.recv().await.ok_or("source HTTP request missing")?,
+                    &requests_rx.recv().await.ok_or("source WebSocket request missing")?,
                 )?;
+                assert_eq!(source_wire["type"], "response.create");
                 assert_eq!(source_wire["model"], "llama3.2");
                 assert!(source_wire.to_string().contains("question-source"));
                 let owned = child.as_mut().ok_or("owned child missing")?;
@@ -2173,7 +2187,7 @@ mod model_recovery {
                 assert_eq!(request.accounting.model_id, "llama3.2");
                 assert_eq!(producer.account_id.as_deref(), Some("account-a"));
                 assert_eq!(producer.compatibility.as_ref().map(|value| value.comp_hash.as_str()), Some("3000"));
-                assert_eq!(posts.load(Ordering::SeqCst), 1, "source recovery must not resend its HTTP request");
+                assert_eq!(posts.load(Ordering::SeqCst), 1, "source recovery must not resend its request");
                 assert!(facts(&owner.durable, frozen.run).await?.starts_with(&frozen.facts));
 
                 let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
@@ -2207,7 +2221,7 @@ mod model_recovery {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 };
                 assert!(target_run != frozen.run, "normal new send reused the completed source Run");
-                let first = requests_rx.recv().await.ok_or("target HTTP request missing")?;
+                let first = requests_rx.recv().await.ok_or("target WebSocket request missing")?;
                 let retry = requests_rx.recv().await.ok_or("429 physical retry missing")?;
                 assert_eq!(first, retry, "physical retry changed frozen opaque replay bytes");
                 let sent: Value = serde_json::from_slice(&first)?;
@@ -2241,9 +2255,9 @@ mod model_recovery {
             }
             drop(requests_rx);
             stop.cancel();
-            let wire_ok = match wire {
-                Some(task) => matches!(task.await, Ok(Ok(()))),
-                None => true,
+            let wire_result = match wire {
+                Some(task) => Some(task.await),
+                None => None,
             };
             let cleanup =
                 AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
@@ -2253,7 +2267,10 @@ mod model_recovery {
                 matches!(result, Ok(Ok(Ok(())))),
                 "encrypted replay failed for {slug}: {result:?}"
             );
-            assert!(wire_ok, "replay HTTP fixture did not settle");
+            assert!(
+                matches!(wire_result, None | Some(Ok(Ok(())))),
+                "replay WebSocket fixture did not settle: {wire_result:?}"
+            );
             assert!(
                 matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
                 "replay fixture did not physically settle"

@@ -164,7 +164,9 @@ impl Cursor {
             }
             let next = match &mut self.plan {
                 Plan::Init(source, mode) => {
-                    let plan = initialize(source.clone(), *mode, self.budget.clone()).await?;
+                    // Keep initialization out of every recursive cursor's read future.
+                    let plan =
+                        Box::pin(initialize(source.clone(), *mode, self.budget.clone())).await?;
                     self.plan = plan;
                     continue;
                 }
