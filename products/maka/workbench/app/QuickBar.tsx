@@ -19,10 +19,13 @@
 
 import { Canvas, Path2D, Text, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
+import type { QuickToolInput } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
 export const QUICK_BAR_SLOT = 40;
+/** Fixed, so the launcher can place the selection without measuring rows. */
+export const QUICK_ROW_HEIGHT = 40;
 
 export const quickBarStyle = {
   flexDirection: 'row',
@@ -56,7 +59,11 @@ export function QuickRow(props: {
       accessibilityLabel={props.label}
       selected={props.selected}
       onPress={props.onPress}
-      style={props.icon ? quickRowStyle : { ...quickRowStyle, paddingLeft: 42 }}
+      style={[
+        quickRowStyle,
+        { height: QUICK_ROW_HEIGHT, paddingVertical: 0 },
+        props.icon ? {} : { paddingLeft: 42 },
+      ]}
       selectedStyle={{ backgroundColor: C.raised }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
@@ -81,6 +88,34 @@ export function QuickRow(props: {
         </Text>
       </If>
     </Button>
+  );
+}
+
+/** A tool's rows: it supplies the items and the launcher owns the selection. */
+export function QuickRows<Item>(props: {
+  input: QuickToolInput;
+  items(): readonly Item[];
+  title(item: Item): string;
+  hint(item: Item): string;
+  icon?(item: Item): JSX.Element;
+  activate(item: Item): void;
+}) {
+  const { input } = props;
+  const run = (row: number) => props.activate(props.items()[row]!);
+  input.attach({ rows: () => props.items().length, activate: run });
+  return (
+    <Each of={props.items()}>
+      {(item, index) => (
+        <QuickRow
+          label={`${props.hint(item())} ${props.title(item())}`}
+          title={props.title(item())}
+          hint={props.hint(item())}
+          icon={props.icon?.(item())}
+          selected={input.selected() === index()}
+          onPress={() => run(index())}
+        />
+      )}
+    </Each>
   );
 }
 

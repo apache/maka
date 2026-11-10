@@ -21,12 +21,15 @@ import { host } from 'maka/host';
 import {
   cleanup,
   computed,
+  effect,
   keymap,
   platform,
+  Scroll,
   signal,
   Text,
   View,
   type JSX,
+  type ScrollRef,
   type Signal,
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
@@ -43,6 +46,7 @@ import { loadDraft, saveDraft, type Output } from './host';
 import {
   MakaMark,
   QUICK_BAR_SLOT,
+  QUICK_ROW_HEIGHT,
   QuickRow,
   quickBarStyle,
   quickInputStyle,
@@ -54,6 +58,7 @@ import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 const SHORTCUT = 'alt+space';
 const MAX_HEIGHT = 560;
+const VISIBLE_TOOL_ROWS = 8;
 
 type BotOutbox = Output<'agent', 'botOutbox'>;
 
@@ -159,6 +164,21 @@ function Launcher(
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
+  const listHeight = computed(() => Math.min(toolRows(), VISIBLE_TOOL_ROWS) * QUICK_ROW_HEIGHT);
+  let list: ScrollRef | undefined;
+  let scrolled = 0;
+  const reveal = (y: number) => {
+    scrolled = y;
+    list?.scrollTo({ y, animated: false });
+  };
+  effect(() => {
+    const index = selected();
+    if (index >= toolRows()) return;
+    const top = index * QUICK_ROW_HEIGHT;
+    const bottom = top + QUICK_ROW_HEIGHT;
+    if (top < scrolled) reveal(top);
+    else if (bottom > scrolled + listHeight()) reveal(bottom - listHeight());
+  });
   let removeKeys = () => {};
   cleanup(() => removeKeys());
   let running = false;
@@ -236,9 +256,19 @@ function Launcher(
         />
       </View>
       <View style={{ borderTopWidth: toolRows() > 0 ? 1 : 0, borderTopColor: C.line }}>
-        <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
-          {(tool) => toolView(tool())}
-        </Each>
+        <Scroll
+          ref={(node) => {
+            list = node;
+          }}
+          onScroll={({ offset }) => {
+            scrolled = offset.y;
+          }}
+          style={{ height: listHeight() }}
+        >
+          <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
+            {(tool) => toolView(tool())}
+          </Each>
+        </Scroll>
         <If when={toolRows() > 0}>
           <QuickRow
             label={tr('Ask Maka')}
