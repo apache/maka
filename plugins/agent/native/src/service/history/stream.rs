@@ -557,6 +557,13 @@ pub(super) async fn field_source(
 ) -> Result<(wire::SourceFormat, SourceBytes), String> {
     use maka_agent_state::session_history::source_tree::SourceItem;
     match (field, item, data) {
+        (projection::Field::Receipt(reply), SourceItem::Canonical(item), _) => {
+            let receipt = data::tool_reader(data, item.recorded.run, stop)
+                .operation_reply(reply, budget.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            selected_json(receipt, path, budget).await
+        }
         (projection::Field::Content(reference), SourceItem::Canonical(item), _) => {
             content_source(
                 data,

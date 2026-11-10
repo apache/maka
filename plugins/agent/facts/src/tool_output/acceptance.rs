@@ -114,6 +114,95 @@ impl<'de> Deserialize<'de> for ReturnedToolResult {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredToolResult {
+    Operation(Box<StoredOperationReturn>),
+    Inline(ReturnedToolResult),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredOperationReturn {
+    pub operation: crate::operation::RecordedOperationReply,
+    pub projection: OperationProjection,
+    pub is_error: bool,
+    pub loaded_tools: BTreeSet<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationProjection {
+    Result,
+    Receipt,
+    Inline { projection: DurableToolProjection },
+}
+
+impl OperationProjection {
+    pub fn record(
+        reply: &maka_plugin_core::operation::OperationReply,
+        projection: DurableToolProjection,
+    ) -> Result<Self, serde_json::Error> {
+        if let DurableToolProjection::Json { value } = &projection {
+            if let Receipt::Recorded {
+                outcome:
+                    OperationOutcome::Returned {
+                        result: OperationResult::Success { value: returned },
+                    },
+                ..
+            } = &reply.receipt
+            {
+                if value == returned {
+                    return Ok(Self::Result);
+                }
+            }
+            if value.get("reference").is_some()
+                && value.get("receipt").is_some()
+                && value == &serde_json::to_value(reply)?
+            {
+                return Ok(Self::Receipt);
+            }
+        }
+        Ok(Self::Inline { projection })
+    }
+}
+
+impl StoredOperationReturn {
+    pub fn resolve(
+        self,
+        reply: maka_plugin_core::operation::OperationReply,
+    ) -> Result<ReturnedToolResult, &'static str> {
+        let projection = match self.projection {
+            OperationProjection::Result => {
+                let Receipt::Recorded {
+                    outcome:
+                        OperationOutcome::Returned {
+                            result: OperationResult::Success { value },
+                        },
+                    ..
+                } = &reply.receipt
+                else {
+                    return Err("shared projection has no original success value");
+                };
+                DurableToolProjection::Json {
+                    value: value.clone(),
+                }
+            }
+            OperationProjection::Receipt => DurableToolProjection::Json {
+                value: serde_json::to_value(&reply)
+                    .map_err(|_| "original operation receipt is not JSON")?,
+            },
+            OperationProjection::Inline { projection } => projection,
+        };
+        Ok(ReturnedToolResult {
+            output: ToolOutput::Operation(Box::new(reply)),
+            projection,
+            is_error: self.is_error,
+            loaded_tools: self.loaded_tools,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CellFinalEvidence {
@@ -133,6 +222,9 @@ pub enum AcceptedToolResult {
     },
     Host {
         result: crate::durable::ContentRef,
+    },
+    ObservedOperation {
+        reply: crate::operation::RecordedOperationReply,
     },
     Operation {
         reply: maka_plugin_core::operation::OperationReply,

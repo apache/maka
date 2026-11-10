@@ -113,15 +113,13 @@ impl Engine {
         if view.stopped {
             return Ok(vec![]);
         }
-        let result = tool
-            .local_returned
-            .as_ref()
-            .map(|returned| &returned.result)
-            .or_else(|| tool.host_returned.as_ref().map(|returned| &returned.result));
-        let Some(result) = result else {
+        let Some(returned) = &tool.local_returned else {
             return Ok(vec![]);
         };
-        let bytes = self.store.content(view.run, result.clone()).await?;
+        let bytes = self
+            .store
+            .content(view.run, returned.result.clone())
+            .await?;
         let original: maka_agent_facts::artifact::ToolReturn<ReturnedToolResult> =
             serde_json::from_slice(&bytes).map_err(StoreError::from)?;
         let ToolOutput::Cell(reply) = &original.body.output else {

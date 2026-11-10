@@ -496,6 +496,202 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_operation_receipt_survives_snapshot_transfer() {
+    use maka_agent_facts::{
+        model::prompt_source::source::json as stream,
+        tool_output::{DurableToolProjection, OperationProjection, StoredOperationReturn},
+    };
+    use maka_agent_state::session_history::tool_result_source::{
+        ToolResultReader, ToolResultSource,
+    };
+    use maka_plugin_core::operation::{
+        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig
+            .tool(attempt, "exec", "script", json!({"code":"1"}))
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner.clone();
+        let history = driver.state.session_history(owner.clone(), session);
+        let digest = format!("sha256-{}", "b".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "history".into(),
+            method: "write".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "history".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Local,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let value = json!({"answer":"shared operation evidence"});
+        let outcome = OperationResult::Success {
+            value: value.clone(),
+        };
+        let reply = OperationReply {
+            reference: reference.clone(),
+            receipt: Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: outcome.clone(),
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        };
+        let mut legacy: maka_agent_facts::operation::RecordedOperationReply =
+            serde_json::from_value(serde_json::to_value(&reply)?)?;
+        let Receipt::Recorded { cleanup, .. } = &mut legacy.receipt else {
+            unreachable!()
+        };
+        *cleanup = OperationCleanup::Unconfirmed;
+        let projection =
+            OperationProjection::record(&reply, DurableToolProjection::Json { value })?;
+        let (recorded, material) = maka_agent_state::operation::record_reply(reply)?;
+        let material = material.unwrap();
+        assert_eq!(
+            material.reference(),
+            ContentBlob::json(&outcome)?.reference()
+        );
+        let returned = ContentBlob::json(&ToolReturn {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![],
+            body: StoredOperationReturn {
+                operation: recorded.clone(),
+                projection,
+                is_error: false,
+                loaded_tools: Default::default(),
+            },
+        })?;
+        let result = returned.reference().clone();
+        let fact = Fact::HostToolResultRecorded {
+            tool: tool.clone(),
+            reference: reference.clone(),
+            result: result.clone(),
+            is_error: false,
+        };
+        rig.append(
+            vec![
+                Fact::ToolOriginalBound {
+                    tool: tool.clone(),
+                    reference,
+                },
+                Fact::OperationObserved {
+                    tool: tool.clone(),
+                    reply: legacy.clone(),
+                },
+                Fact::OperationObserved {
+                    tool: tool.clone(),
+                    reply: recorded.clone(),
+                },
+                fact.clone(),
+            ],
+            vec![material, returned],
+        )
+        .await?;
+        assert_eq!(
+            driver.state.frontier(run).await?.tools[&maka_agent_state::fold::tool_key(&tool)]
+                .receipt
+                .as_ref(),
+            Some(&recorded.receipt)
+        );
+
+        let stop = CancellationToken::new();
+        let captured = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let exported = captured.export(tempfile::tempfile()?).await?;
+        let destination = tempfile::tempdir()?;
+        let base = destination.path();
+        let root = RootOwner::create(
+            &base.join("root"),
+            &RootNamespaces {
+                ownership: base.join("owners"),
+                control: base.join("control"),
+            },
+        )?;
+        let migrations = [
+            maka_event_log::ROOT_MIGRATIONS,
+            maka_agent_state::MIGRATIONS,
+        ]
+        .concat();
+        let root = RootStore::open(Arc::new(root), &migrations).await?;
+        let writer = root.data_writer()?;
+        let imported = Store::new(writer.clone(), DriverDomain::new(writer)?)?
+            .session_history(owner, "destination".into())
+            .import_snapshot(
+                Uuid::new_v4(),
+                exported.history,
+                exported.file,
+                stop.clone(),
+            )
+            .await?;
+        let reader = ToolResultReader::snapshot(&imported, run, &stop);
+        let resources = driver.owner.services.model_preparation_resources();
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let ToolResultSource::Returned { body, .. } =
+            reader.result(&fact, &result, budget.clone()).await?
+        else {
+            return Err("missing shared return".into());
+        };
+        for path in [
+            &[
+                "output", "value", "receipt", "outcome", "result", "value", "answer",
+            ][..],
+            &["projection", "value", "answer"][..],
+        ] {
+            let answer = stream::field(&body, path, budget.clone())
+                .await?
+                .ok_or("missing shared result")?;
+            assert!(
+                stream::text_eq(&answer.text()?, "shared operation evidence", budget.clone())
+                    .await?
+            );
+        }
+        let original = reader.operation_reply(&legacy, budget.clone()).await?;
+        let answer = stream::field(
+            &original,
+            &["receipt", "outcome", "result", "value", "answer"],
+            budget.clone(),
+        )
+        .await?
+        .ok_or("missing legacy result")?;
+        assert!(stream::text_eq(&answer.text()?, "shared operation evidence", budget).await?);
+        root.shutdown().await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "operation history regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_progress_and_failed_result_keep_the_original_call() {
     use maka_agent_facts::executor::{Output, Selection, Settings};
     let mut rig = Rig::new().unwrap();

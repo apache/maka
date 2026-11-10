@@ -27,6 +27,7 @@ pub(super) enum Field {
     Text(TextBody),
     Json(Value),
     Content(ContentRef),
+    Receipt(Box<maka_agent_facts::operation::RecordedOperationReply>),
     Imported {
         reference: ContentRef,
         selectors: Vec<String>,
@@ -56,9 +57,9 @@ pub(super) fn visible(fact: &Fact) -> bool {
         } => true,
         Fact::Cell {
             event: CellEvent::ChildObserved { reply, .. },
-        }
-        | Fact::OperationObserved { reply, .. } => {
-            super::super::delivery::settlement(reply).is_some()
+        } => super::super::delivery::settlement(reply).is_some(),
+        Fact::OperationObserved { reply, .. } => {
+            super::super::delivery::recorded_settlement(reply).is_some()
         }
         Fact::Cell { .. } => false,
         Fact::ExternalEffect { event } => matches!(
@@ -565,7 +566,7 @@ pub(super) async fn project(
         }
         Fact::OperationObserved { tool: key, reply } => {
             let mut row = base(item, turn, 0, Role::ToolResult, address)?;
-            let settlement = super::super::delivery::settlement(reply);
+            let settlement = super::super::delivery::recorded_settlement(reply);
             tool(
                 &mut row,
                 super::super::delivery::tool_id(item.recorded.run, key),
@@ -583,7 +584,7 @@ pub(super) async fn project(
             }
             row.fields.push((
                 SourceField::Receipt,
-                Field::Json(serde_json::to_value(reply).map_err(|e| e.to_string())?),
+                Field::Receipt(Box::new(reply.clone())),
             ));
             result.push(row);
         }

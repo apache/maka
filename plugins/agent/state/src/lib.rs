@@ -28,6 +28,7 @@ pub mod external_publication;
 pub mod external_steering;
 pub mod fold;
 pub mod interactions;
+pub mod operation;
 pub mod queue;
 pub mod recall;
 pub mod session_catalog;

@@ -2061,6 +2061,13 @@ impl DriverModel {
         use maka_agent_facts::tool_output::AcceptedToolResult;
         use maka_model::prompt::ToolOutput;
         use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+        let evidence = match evidence {
+            AcceptedToolResult::ObservedOperation { reply } => AcceptedToolResult::Operation {
+                reply: reader.operation_reply(view.run, &reply).await?,
+                result: None,
+            },
+            evidence => evidence,
+        };
         Ok(match evidence {
             AcceptedToolResult::Local { result }
             | AcceptedToolResult::Host { result }
@@ -2099,6 +2106,9 @@ impl DriverModel {
                     ));
                 }
             },
+            AcceptedToolResult::ObservedOperation { .. } => {
+                unreachable!("resolved operation evidence")
+            }
             AcceptedToolResult::RecoveredCell { cell, evidence } => {
                 let (message, _dependencies) = preparation::project_cell_final(
                     reader.notification_source(),
@@ -2194,11 +2204,20 @@ impl DriverModel {
         language: maka_agent_facts::language::Language,
     ) -> Result<maka_model::prompt::ToolOutput, RunError> {
         let returned: maka_agent_facts::artifact::ToolReturn<
-            maka_agent_facts::tool_output::ReturnedToolResult,
+            maka_agent_facts::tool_output::StoredToolResult,
         > = reader.decode(view.run, result).await?;
         returned
             .validate()
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
+        use maka_agent_facts::tool_output::StoredToolResult;
+        let body = match returned.body {
+            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Operation(body) => {
+                let reply = reader.operation_reply(view.run, &body.operation).await?;
+                body.resolve(reply)
+                    .map_err(|reason| RunError::InvalidInput(reason.into()))?
+            }
+        };
         preparation::project_returned_tool_from(
             reader.media_source(
                 maka_agent_state::artifacts::ArtifactScope {
@@ -2209,7 +2228,7 @@ impl DriverModel {
                 }
                 .into(),
             ),
-            &returned.body,
+            &body,
             language,
             vision,
             &self.resources,

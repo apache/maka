@@ -29,7 +29,7 @@ use maka_agent_state::{
     fold::{RunView, Tool, tool_key},
 };
 use maka_event_log::StoreError;
-use maka_plugin_core::operation::{OperationOutcome, Receipt};
+use maka_plugin_core::operation::OperationOutcome;
 use std::{fmt, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -1428,6 +1428,8 @@ impl Engine {
                 live.work.remove(&WorkKey::Tool(key.clone()));
                 match result {
                     Ok(DispatchOutcome::Original(reply)) => {
+                        let (reply, content) =
+                            maka_agent_state::operation::prepare_reply(reply).await?;
                         self.publish(
                             None,
                             &view,
@@ -1441,7 +1443,7 @@ impl Engine {
                                     reply,
                                 },
                             ],
-                            vec![],
+                            content.into_iter().collect(),
                             now,
                         )
                         .await?;
@@ -1526,6 +1528,8 @@ impl Engine {
                 live.work.remove(&WorkKey::Tool(key.clone()));
                 match result {
                     Ok(reply) => {
+                        let (reply, content) =
+                            maka_agent_state::operation::prepare_reply(reply).await?;
                         if view.tools.get(&tool_key(&key)).is_some_and(|tool| {
                             tool.original.as_ref() == Some(&reply.reference)
                                 && tool.receipt.as_ref() == Some(&reply.receipt)
@@ -1536,7 +1540,7 @@ impl Engine {
                             None,
                             &view,
                             vec![Fact::OperationObserved { tool: key, reply }],
-                            vec![],
+                            content.into_iter().collect(),
                             now,
                         )
                         .await?;
@@ -1804,7 +1808,12 @@ impl Engine {
         tool: &Tool,
         outcome: &AcceptedResult,
     ) -> Result<Vec<Fact>, RunError> {
-        use maka_agent_facts::{artifact::ToolReturn, tool_output::ReturnedToolResult};
+        use maka_agent_facts::artifact::ToolReturn;
+        #[derive(serde::Deserialize)]
+        struct ToolLoading {
+            is_error: bool,
+            loaded_tools: std::collections::BTreeSet<String>,
+        }
         if !view.spec.tool_discovery || !matches!(outcome, AcceptedResult::Succeeded) {
             return Ok(vec![]);
         }
@@ -1817,7 +1826,7 @@ impl Engine {
             return Ok(vec![]);
         };
         let bytes = self.store.content(view.run, result.clone()).await?;
-        let returned: ToolReturn<ReturnedToolResult> =
+        let returned: ToolReturn<ToolLoading> =
             serde_json::from_slice(&bytes).map_err(|error| {
                 RunError::InvalidInput(format!("original tool return is invalid: {error}"))
             })?;
@@ -1827,15 +1836,19 @@ impl Engine {
                 version: returned.schema_version,
             }));
         }
-        if returned.body.is_error {
+        let ToolLoading {
+            is_error,
+            loaded_tools,
+        } = returned.body;
+        if is_error {
             return Err(StoreError::EventConflict.into());
         }
-        if returned.body.loaded_tools.is_empty() {
+        if loaded_tools.is_empty() {
             return Ok(vec![]);
         }
         Ok(vec![Fact::ToolsLoaded {
             tool: tool.key.clone(),
-            names: returned.body.loaded_tools,
+            names: loaded_tools,
         }])
     }
 }
@@ -1895,19 +1908,18 @@ fn accepted_content(
     } else if let (
         Some(reference),
         Some(
-            receipt @ Receipt::Recorded {
+            receipt @ maka_agent_facts::operation::RecordedReceipt::Recorded {
                 outcome: OperationOutcome::Returned { .. },
                 ..
             },
         ),
     ) = (&tool.original, &tool.receipt)
     {
-        AcceptedToolResult::Operation {
+        AcceptedToolResult::ObservedOperation {
             reply: maka_plugin_core::operation::OperationReply {
                 reference: reference.clone(),
                 receipt: receipt.clone(),
             },
-            result: None,
         }
     } else if matches!(outcome, AcceptedResult::Rejected) {
         let mut diagnostic = tool

@@ -255,7 +255,12 @@ fn observe_receipt(
     at: UnixMillis,
     reply: &maka_plugin_core::operation::OperationReply,
 ) -> Result<(), StoreError> {
-    observe_returned_receipt_inner(c, id, sequence, at, reply, None)
+    observe_returned_receipt_inner(c, id, sequence, at, reply, None, |result| {
+        matches!(
+            result,
+            maka_plugin_core::operation::OperationResult::Failure { .. }
+        )
+    })
 }
 fn observe_returned_receipt(
     c: &Connection,
@@ -265,15 +270,21 @@ fn observe_returned_receipt(
     reply: &maka_plugin_core::operation::OperationReply,
     is_error: bool,
 ) -> Result<(), StoreError> {
-    observe_returned_receipt_inner(c, id, sequence, at, reply, Some(is_error))
+    observe_returned_receipt_inner(c, id, sequence, at, reply, Some(is_error), |result| {
+        matches!(
+            result,
+            maka_plugin_core::operation::OperationResult::Failure { .. }
+        )
+    })
 }
-fn observe_returned_receipt_inner(
+fn observe_returned_receipt_inner<R>(
     c: &Connection,
     id: &str,
     sequence: u64,
     at: UnixMillis,
-    reply: &maka_plugin_core::operation::OperationReply,
+    reply: &maka_plugin_core::operation::OperationReply<R>,
     is_error: Option<bool>,
+    result_is_error: impl FnOnce(&R) -> bool,
 ) -> Result<(), StoreError> {
     if !c.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_usage_calls WHERE request=?)",
@@ -291,16 +302,13 @@ fn observe_returned_receipt_inner(
             )
         {
             let status = match outcome {
-                OperationOutcome::Returned {
-                    result: maka_plugin_core::operation::OperationResult::Success { .. },
-                } => Some(if is_error == Some(true) {
-                    "error"
-                } else {
-                    "success"
-                }),
-                OperationOutcome::Returned {
-                    result: maka_plugin_core::operation::OperationResult::Failure { .. },
-                } => Some("error"),
+                OperationOutcome::Returned { result } => {
+                    Some(if is_error == Some(true) || result_is_error(result) {
+                        "error"
+                    } else {
+                        "success"
+                    })
+                }
                 OperationOutcome::NotExecuted { .. } => Some("rejected"),
                 OperationOutcome::Unknown { .. } => Some("unknown"),
                 OperationOutcome::Unresolved => None,
@@ -462,9 +470,15 @@ pub(crate) fn index_fact(
             host_returned(c, &tool_id(run, tool), sequence, record.at, *is_error)?;
         }
 
-        Fact::OperationObserved { tool, reply } => {
-            observe_receipt(c, &tool_id(run, tool), sequence, record.at, reply)?
-        }
+        Fact::OperationObserved { tool, reply } => observe_returned_receipt_inner(
+            c,
+            &tool_id(run, tool),
+            sequence,
+            record.at,
+            reply,
+            None,
+            maka_agent_facts::operation::RecordedOperationResult::is_error,
+        )?,
         Fact::Cell { event } => index_cell(
             c,
             Some(&spec.owner),

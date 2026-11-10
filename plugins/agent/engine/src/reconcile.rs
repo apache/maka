@@ -19,6 +19,7 @@
 
 //! The only next-action policy. State folds facts; Native executes capabilities.
 use crate::ports::{Preparation, ReplanInput};
+use maka_agent_facts::operation::RecordedReceipt;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::{
     cells::{CellId, CellOwner, CellStatus},
@@ -29,7 +30,7 @@ use maka_agent_facts::{
     },
 };
 use maka_agent_state::fold::RunView;
-use maka_plugin_core::operation::{OperationOutcome, OperationResult, Receipt};
+use maka_plugin_core::operation::{OperationOutcome, Receipt};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
@@ -248,7 +249,7 @@ fn unresolved(view: &RunView) -> bool {
 fn active(blocker: &maka_agent_state::fold::Blocker) -> bool {
     blocker.decision.is_none() && blocker.resolved_by.is_none()
 }
-fn known(receipt: &Option<Receipt>) -> bool {
+fn known(receipt: &Option<RecordedReceipt>) -> bool {
     matches!(
         receipt,
         Some(Receipt::Recorded {
@@ -285,9 +286,10 @@ fn outcome(tool: &maka_agent_state::fold::Tool) -> Option<AcceptedResult> {
         Some(Receipt::Recorded {
             outcome: OperationOutcome::Returned { result },
             ..
-        }) => Some(match result {
-            OperationResult::Success { .. } => AcceptedResult::Succeeded,
-            OperationResult::Failure { .. } => AcceptedResult::Failed,
+        }) => Some(if result.is_error() {
+            AcceptedResult::Failed
+        } else {
+            AcceptedResult::Succeeded
         }),
         Some(Receipt::Recorded {
             outcome: OperationOutcome::NotExecuted { .. },

@@ -243,8 +243,7 @@ mod tests {
     use crate::reconcile::tests::{apply_policy_fact, budget_closure, model_closure, policy_view};
     use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
     use maka_plugin_core::operation::{
-        OperationOutcome, OperationReply, OperationResult, RecoveryContract, RecoveryProtocol,
-        RecoveryRef,
+        OperationOutcome, OperationReply, RecoveryContract, RecoveryProtocol, RecoveryRef,
     };
 
     #[test]
@@ -361,7 +360,7 @@ mod tests {
                     reference,
                     receipt: Receipt::Recorded {
                         outcome: OperationOutcome::Returned {
-                            result: OperationResult::Success {
+                            result: maka_agent_facts::operation::RecordedOperationResult::Success {
                                 value: serde_json::Value::Null,
                             },
                         },

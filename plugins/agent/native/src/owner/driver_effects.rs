@@ -80,16 +80,21 @@ struct OriginalBatch {
     local: Option<super::LocalCompletion>,
 }
 impl OriginalBatch {
-    fn operation(key: &ToolKey, reply: OperationReply, at: UnixMillis) -> Self {
+    async fn operation(
+        key: &ToolKey,
+        reply: OperationReply,
+        at: UnixMillis,
+    ) -> Result<Self, RunError> {
+        let (stored, content) = maka_agent_state::operation::prepare_reply(reply.clone()).await?;
         let observed = Change::new(
             Fact::OperationObserved {
                 tool: key.clone(),
-                reply: reply.clone(),
+                reply: stored,
             },
             at,
         );
         let fact = observed.id;
-        Self {
+        Ok(Self {
             changes: vec![
                 Change::new(
                     Fact::ToolOriginalBound {
@@ -100,13 +105,13 @@ impl OriginalBatch {
                 ),
                 observed,
             ],
-            contents: vec![],
+            contents: content.into_iter().collect(),
             artifacts: vec![],
             fact,
             observation: Some(reply),
             attempted: std::sync::atomic::AtomicBool::new(false),
             local: None,
-        }
+        })
     }
 
     async fn publish(
@@ -742,7 +747,8 @@ impl OriginalEffects {
                     &material.key,
                     reply.clone(),
                     UnixMillis(now().try_into().expect("Unix milliseconds")),
-                );
+                )
+                .await?;
                 material.batch = Some(batch);
                 material.acknowledged = false;
                 material.observation = Some(reply.clone());
@@ -875,7 +881,7 @@ async fn prepare_result(
         Err(
             ToolError::OperationUnknown { observation, .. }
             | ToolError::OperationCleanupUnconfirmed { observation, .. },
-        ) => return Ok(OriginalBatch::operation(key, *observation, at)),
+        ) => return OriginalBatch::operation(key, *observation, at).await,
         Err(
             error @ (ToolError::OutcomeUnknown(_)
             | ToolError::CleanupUnconfirmed(_)
@@ -922,10 +928,6 @@ async fn prepare_local_result(
                     }
                 })
                 .collect();
-            let original = match &normalized.output {
-                ToolOutput::Operation(reply) => Some(reply.as_ref().clone()),
-                _ => None,
-            };
             let cell_observation = match &mut normalized.output {
                 ToolOutput::Cell(reply) => match &reply.state {
                     maka_agent_facts::cells::CellReplyState::Completed { result } => {
@@ -936,19 +938,41 @@ async fn prepare_local_result(
                 },
                 _ => None,
             };
+            use maka_agent_facts::tool_output::{
+                OperationProjection, StoredOperationReturn, StoredToolResult,
+            };
+            let (body, observation, stored, content) = match normalized.output {
+                ToolOutput::Operation(reply) => {
+                    let (stored, content) =
+                        maka_agent_state::operation::record_reply((*reply).clone())?;
+                    let body = StoredToolResult::Operation(Box::new(StoredOperationReturn {
+                        operation: stored.clone(),
+                        projection: OperationProjection::record(&reply, normalized.projection)
+                            .map_err(RunError::Json)?,
+                        is_error: normalized.is_error,
+                        loaded_tools: normalized.loaded_tools,
+                    }));
+                    (body, Some(*reply), Some(stored), content)
+                }
+                output => (
+                    StoredToolResult::Inline(ReturnedToolResult {
+                        output,
+                        projection: normalized.projection,
+                        is_error: normalized.is_error,
+                        loaded_tools: normalized.loaded_tools,
+                    }),
+                    None,
+                    None,
+                    None,
+                ),
+            };
             let blob = ContentBlob::json(&ToolReturn {
                 schema_version: SCHEMA_VERSION,
                 artifacts,
-                body: ReturnedToolResult {
-                    output: normalized.output,
-                    projection: normalized.projection,
-                    is_error: normalized.is_error,
-                    loaded_tools: normalized.loaded_tools,
-                },
+                body,
             })?;
-            let observation = original.clone();
             let mut changes = vec![];
-            if let Some(reply) = original {
+            if let Some(reply) = stored {
                 changes.push(Change::new(
                     Fact::ToolOriginalBound {
                         tool: key.clone(),
@@ -985,7 +1009,8 @@ async fn prepare_local_result(
                 ));
             }
             let fact = changes.last().expect("original return evidence").id;
-            Ok::<_, RunError>((changes, vec![blob], normalized.artifacts, fact, observation))
+            let contents = std::iter::once(blob).chain(content).collect();
+            Ok::<_, RunError>((changes, contents, normalized.artifacts, fact, observation))
         })
         .await
         .map_err(|error| RunError::Internal(error.to_string()))??;

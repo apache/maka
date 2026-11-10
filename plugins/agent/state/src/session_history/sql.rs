@@ -1032,7 +1032,7 @@ pub(super) fn with_content<T>(
 ) -> Result<T, StoreError> {
     let owner = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
-    let row: Option<i64> = c.query_row("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))", params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
+    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
         invalid("content is not owned by this Run within the captured source cut")
     })?;
