@@ -20,7 +20,7 @@
 // The window around the workbench on a graphical desktop: the headers along
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
-import { effect, platform } from 'nsh';
+import { effect, host, platform } from 'nsh';
 import { currentWindow, isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
@@ -84,6 +84,11 @@ export function applicationMenu(actions: MenuActions) {
       shortcut: 'mod+,',
       onSelect: actions.settings,
     };
+    const quit = {
+      label: tr('Quit Maka'),
+      shortcut: 'mod+q',
+      onSelect: () => host.post('terminal.exit'),
+    };
     Menu.setApplicationMenu([
       mac && {
         label: 'Maka',
@@ -109,7 +114,7 @@ export function applicationMenu(actions: MenuActions) {
           { role: 'close' },
           !mac && settings,
           !mac && { type: 'separator' },
-          !mac && { role: 'quit' },
+          !mac && quit,
         ],
       },
       {
