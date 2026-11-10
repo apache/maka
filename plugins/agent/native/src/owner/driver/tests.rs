@@ -414,7 +414,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &["create", "models", "send", "work"]
         } else {
-            &["create"]
+            &["create", "history", "source", "search"]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -3233,3 +3233,5 @@ mod replay_origin_regressions {
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
     }
 }
+
+mod tool_history;

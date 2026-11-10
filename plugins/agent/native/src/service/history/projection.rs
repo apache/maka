@@ -21,6 +21,8 @@ use super::*;
 use maka_agent_facts::{input::MessageInput, message::MessageOrigin, model::ToolInput};
 use wire::{Chunk, HistoryField, Role, SourceField};
 
+mod cells;
+
 pub(super) enum Field {
     Text(TextBody),
     Json(Value),
@@ -38,8 +40,29 @@ pub(super) enum Body {
 }
 pub(super) struct Row {
     pub chunk: Chunk,
+    pub visible: bool,
     pub body: Body,
     pub fields: Vec<(SourceField, Field)>,
+}
+pub(super) fn visible(fact: &Fact) -> bool {
+    use maka_agent_facts::cells::CellEvent;
+    match fact {
+        Fact::Cell {
+            event:
+                CellEvent::ChildPrepared { .. }
+                | CellEvent::ChildRejected { .. }
+                | CellEvent::ChildResultRecorded { .. }
+                | CellEvent::LocalChildReturned { .. },
+        } => true,
+        Fact::Cell {
+            event: CellEvent::ChildObserved { reply, .. },
+        }
+        | Fact::OperationObserved { reply, .. } => {
+            super::super::delivery::settlement(reply).is_some()
+        }
+        Fact::Cell { .. } => false,
+        _ => true,
+    }
 }
 fn base(
     item: &HistoryItem,
@@ -50,6 +73,7 @@ fn base(
 ) -> Result<Row, String> {
     let position = address.with_item_index(index);
     Ok(Row {
+        visible: visible(&item.recorded.fact),
         chunk: Chunk {
             order: wire::HistoryOrder {
                 path: vec![item.sequence],
@@ -482,32 +506,71 @@ pub(super) async fn project(
             result: reference,
             outcome,
         } => {
+            use maka_agent_facts::{cells::CellStatus, tool_call::ToolSettlement};
+            let settlement = match outcome {
+                AcceptedResult::Succeeded => ToolSettlement::Returned,
+                AcceptedResult::Failed => ToolSettlement::Failed,
+                AcceptedResult::Rejected => ToolSettlement::Rejected,
+                AcceptedResult::RiskAdjudicated { .. } => ToolSettlement::Unknown,
+                AcceptedResult::CellRecovered { cell } => {
+                    if !views.contains_key(&item.recorded.run) {
+                        views.insert(
+                            item.recorded.run,
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    match views[&item.recorded.run]
+                        .cells
+                        .get(cell)
+                        .ok_or("agent_history_cell_missing")?
+                        .status
+                    {
+                        CellStatus::Completed { .. } => ToolSettlement::Returned,
+                        CellStatus::Interrupted { .. } => ToolSettlement::Failed,
+                        CellStatus::Running => {
+                            return Err("agent_history_cell_result_not_final".into());
+                        }
+                    }
+                }
+            };
             let mut row = base(item, turn, 0, Role::ToolResult, address)?;
             tool(
                 &mut row,
                 super::super::delivery::tool_id(item.recorded.run, key),
                 None,
-                Some(!matches!(outcome, AcceptedResult::Succeeded)),
+                Some(settlement != ToolSettlement::Returned),
             );
+            row.chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+                .expect("accepted tool result")
+                .settlement = Some(settlement);
             row.fields
                 .push((SourceField::Result, Field::Content(reference.clone())));
             result.push(row);
         }
         Fact::OperationObserved { tool: key, reply } => {
             let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+            let settlement = super::super::delivery::settlement(reply);
             tool(
                 &mut row,
                 super::super::delivery::tool_id(item.recorded.run, key),
                 None,
-                Some(!matches!(
-                    &reply.receipt,
-                    maka_plugin_core::operation::Receipt::Recorded {
-                        outcome: maka_plugin_core::operation::OperationOutcome::Returned { .. }
-                            | maka_plugin_core::operation::OperationOutcome::NotExecuted { .. },
-                        ..
-                    }
-                )),
+                settlement
+                    .map(|value| value != maka_agent_facts::tool_call::ToolSettlement::Returned),
             );
+            if let Some(result) = row
+                .chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+            {
+                result.settlement = settlement;
+            }
             row.fields.push((
                 SourceField::Receipt,
                 Field::Json(serde_json::to_value(reply).map_err(|e| e.to_string())?),
@@ -655,8 +718,25 @@ pub(super) async fn project(
                     row.fields
                         .push((SourceField::Arguments, Field::Json(input.clone())));
                 }
-                Output::ToolProgress { text: body, .. } | Output::ToolResult { text: body, .. } => {
+                Output::ToolProgress {
+                    tool_call_id,
+                    text: body,
+                }
+                | Output::ToolResult {
+                    tool_call_id,
+                    text: body,
+                    ..
+                } => {
                     row.chunk.role = Role::ToolResult;
+                    let id = maka_agent_facts::tool_call::tool_use_id(
+                        item.recorded.run,
+                        &format!("{task}:{tool_call_id}"),
+                    );
+                    let is_error = match output {
+                        Output::ToolResult { is_error, .. } => Some(*is_error),
+                        _ => None,
+                    };
+                    tool(&mut row, id, None, is_error);
                     text(&mut row, SourceField::Result, body.clone().into());
                 }
                 Output::MessageStart { .. } | Output::MessageEnd { .. } => return Ok(result),
@@ -664,33 +744,22 @@ pub(super) async fn project(
             result.push(row);
         }
         Fact::Cell { event } => {
-            // Cell observations remain typed Cell facts, never synthetic model calls.
-            let mut row = base(item, turn, 0, Role::ToolResult, address)?;
-            row.fields.push((
-                SourceField::Receipt,
-                Field::Json(serde_json::to_value(event).map_err(|e| e.to_string())?),
-            ));
-            use maka_agent_facts::cells::CellEvent;
-            let field = match event {
-                CellEvent::Started { source, .. } => Some((SourceField::Body, source)),
-                CellEvent::ChildPrepared { input, .. }
-                | CellEvent::ChildApprovalRecorded { input, .. } => {
-                    Some((SourceField::Arguments, input))
-                }
-                CellEvent::ChildResultRecorded { result, .. }
-                | CellEvent::LocalChildReturned { result, .. }
-                | CellEvent::Completed { result, .. } => Some((SourceField::Result, result)),
-                CellEvent::Interrupted { report, .. } => Some((SourceField::Result, report)),
-                CellEvent::SessionValuePublished { value, .. } => {
-                    Some((SourceField::Result, value))
-                }
-                CellEvent::NotificationQueued { content, .. } => Some((SourceField::Body, content)),
-                _ => None,
-            };
-            if let Some((field, reference)) = field {
-                row.fields.push((field, Field::Content(reference.clone())));
+            if !views.contains_key(&item.recorded.run) {
+                views.insert(
+                    item.recorded.run,
+                    reader
+                        .view_at(item.recorded.run)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                );
             }
-            result.push(row);
+            result.push(cells::project(
+                item,
+                turn,
+                address,
+                event,
+                &views[&item.recorded.run],
+            )?);
         }
         Fact::ContextCompacted { baseline } => {
             let compact: maka_agent_facts::context::CompactedContext =
