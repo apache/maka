@@ -1020,6 +1020,7 @@ pub struct LocalCellResult {
 pub struct CellReply {
     pub cell: CellId,
     pub state: CellReplyState,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub observation: serde_json::Value,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

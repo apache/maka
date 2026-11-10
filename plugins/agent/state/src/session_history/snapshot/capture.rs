@@ -188,37 +188,52 @@ impl Statement for Capture {
             ));
         }
         {
-            let mut statement=c.prepare_cached("SELECT r.run,b.content_sha256,length(b.payload),r.first_sequence,p.content_id FROM agent_history_content_refs r LEFT JOIN agent_content_pins p ON p.run=r.run AND p.content_id=r.content_id JOIN contents b ON b.id=r.content_id WHERE r.owner=? AND r.session=? AND r.first_sequence<=? ORDER BY r.run,r.content_id")?;
-            let mut rows = statement.query(params![
-                owner,
-                self.0.session,
-                bind_u64(self.1.cut.through_sequence)?
-            ])?;
-            while let Some(row) = rows.next()? {
-                if row.get::<_, Option<i64>>(4)?.is_none() {
-                    return Err(invalid(
-                        "snapshot payload lost its original Run content custody",
-                    ));
+            let mut runs = c.prepare_cached(
+                "SELECT run FROM agent_run_specs WHERE owner=? AND session=? ORDER BY run",
+            )?;
+            let mut runs = runs.query(params![owner, self.0.session])?;
+            let mut members = c.prepare_cached(
+                "SELECT b.content_sha256,length(b.payload),r.first_sequence,
+                        r.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=r.content_id)
+                 FROM agent_history_content r JOIN contents b ON b.id=r.content_id
+                 WHERE r.owner=? AND r.session=? AND r.run=? AND r.first_sequence<=?
+                 ORDER BY r.content_id",
+            )?;
+            while let Some(run) = runs.next()? {
+                let run: String = run.get(0)?;
+                let mut rows = members.query(params![
+                    owner,
+                    self.0.session,
+                    run,
+                    bind_u64(self.1.cut.through_sequence)?
+                ])?;
+                let run = super::super::sql::identity(run)?;
+                while let Some(row) = rows.next()? {
+                    if !row.get::<_, bool>(3)? {
+                        return Err(invalid(
+                            "snapshot payload lost its original Run content custody",
+                        ));
+                    }
+                    builder.add(Entry::Payload {
+                        run: Some(run),
+                        introduced_sequence: Some(read_u64(row, 2)?),
+                        content: ContentRef {
+                            digest: row.get(0)?,
+                            bytes: read_u64(row, 1)?,
+                        },
+                    })?;
                 }
-                builder.add(Entry::Payload {
-                    run: Some(super::super::sql::identity(row.get(0)?)?),
-                    introduced_sequence: Some(read_u64(row, 3)?),
-                    content: ContentRef {
-                        digest: row.get(1)?,
-                        bytes: read_u64(row, 2)?,
-                    },
-                })?;
             }
         }
         {
-            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,length(b.payload),p.content_id FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id LEFT JOIN agent_content_pins p ON p.run=r.run AND p.content_id=a.content_id WHERE h.owner=? AND h.session=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
+            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,length(b.payload),EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=a.content_id) FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id WHERE h.owner=? AND h.session=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
             let mut rows = statement.query(params![
                 owner,
                 self.0.session,
                 bind_u64(self.1.cut.through_sequence)?
             ])?;
             while let Some(row) = rows.next()? {
-                if row.get::<_, Option<i64>>(5)?.is_none() {
+                if !row.get::<_, bool>(5)? {
                     return Err(invalid(
                         "snapshot artifact lost its original Run content custody",
                     ));
@@ -335,6 +350,12 @@ impl<'a> Builder<'a> {
         let blob = ContentBlob::json(&page)?;
         blob.store(self.c)?;
         pin(self.c, self.id, blob.reference(), None)?;
+        index_page(
+            self.c,
+            self.id,
+            self.ordinal - page.entries.len() as u64,
+            blob.reference(),
+        )?;
         self.previous = Some(blob.reference().clone());
         Ok(())
     }
@@ -357,6 +378,18 @@ impl<'a> Builder<'a> {
         manifest.validate().map_err(invalid)?;
         Ok(manifest)
     }
+}
+pub(super) fn index_page(
+    c: &Connection,
+    id: SnapshotId,
+    first: u64,
+    reference: &ContentRef,
+) -> Result<(), StoreError> {
+    c.execute(
+        "INSERT INTO agent_history_snapshot_inventory_pages VALUES(?,?,?) ON CONFLICT(snapshot,first_ordinal) DO NOTHING",
+        params![id.to_string(), bind_u64(first)?, content_id(c, reference)?],
+    )?;
+    Ok(())
 }
 pub(super) fn index_entry(
     c: &Connection,
@@ -404,7 +437,7 @@ pub(super) fn index_entry(
             ..
         } => ("artifact", *run, *through_sequence, None),
         Entry::Imported { ordinal, .. } => ("imported", None, None, Some(*ordinal)),
-        Entry::Payload { run, .. } => ("payload", *run, None, None),
+        Entry::Payload { run, content, .. } => return pin(c, id, content, *run),
     };
     for reference in entry.content_refs() {
         pin(c, id, reference, run)?;

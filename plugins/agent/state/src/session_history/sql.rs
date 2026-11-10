@@ -675,12 +675,6 @@ fn index_refs(
                         "historical adoption differs from its original Run admission",
                     ));
                 }
-                let missing:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_pins s WHERE s.snapshot=?1 AND NOT EXISTS(SELECT 1 FROM agent_content_pins p WHERE p.run=?2 AND p.content_id=s.content_id))",params![snapshot,record.run.to_string()],|row|row.get(0))?;
-                if missing {
-                    return Err(invalid(
-                        "historical adoption lost original Run content custody",
-                    ));
-                }
                 let manifest: maka_agent_facts::history_snapshot::Manifest =
                     owned_metadata(c, record.run, original)?;
                 manifest.validate().map_err(invalid)?;
@@ -698,7 +692,6 @@ fn index_refs(
                         "historical adoption original snapshot closure is incomplete",
                     ));
                 }
-                c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,content_id,?4 FROM agent_history_snapshot_pins WHERE snapshot=?5",params![encode(owner)?,session,record.run.to_string(),bind_u64(sequence)?,snapshot])?;
             }
         }
         Fact::StepPrepared { step, request, .. } => {
@@ -732,7 +725,7 @@ fn index_refs(
     }
     let owner = encode(owner)?;
     for reference in references {
-        let content_id: i64 = c.query_row("SELECT b.id FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?", params![record.run.to_string(),reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?.ok_or_else(||invalid("canonical history content is not retained by its original Run"))?;
+        let content_id: i64 = c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?", params![record.run.to_string(),reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?.ok_or_else(||invalid("canonical history content is not retained by its original Run"))?;
         c.execute(
             "INSERT OR IGNORE INTO agent_history_content_refs VALUES(?,?,?,?,?)",
             params![
@@ -744,7 +737,7 @@ fn index_refs(
             ],
         )?;
     }
-    c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_content_pins p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2",params![owner,session,record.run.to_string(),bind_u64(sequence)?,record.id.to_string(),bind_u64(record.revision)?])?;
+    c.execute("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_run_content p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2",params![owner,session,record.run.to_string(),bind_u64(sequence)?,record.id.to_string(),bind_u64(record.revision)?])?;
     Ok(())
 }
 pub(crate) fn index_queue(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> {
@@ -1039,7 +1032,7 @@ pub(super) fn with_content<T>(
 ) -> Result<T, StoreError> {
     let owner = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
-    let row: Option<i64> = c.query_row("SELECT b.id FROM agent_history_content_refs h JOIN agent_content_pins p ON p.run=h.run AND p.content_id=h.content_id JOIN contents b ON b.id=h.content_id WHERE h.owner=? AND h.session=? AND h.run=? AND h.first_sequence<=? AND b.content_sha256=? AND length(b.payload)=?", params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
+    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
         invalid("content is not owned by this Run within the captured source cut")
     })?;
@@ -1553,7 +1546,7 @@ fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result
     if !matches!(spec.trigger, Trigger::Message { .. }) {
         return Ok(());
     }
-    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
+    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
     if is_message {
         let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE owner=? AND session=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![serde_json::to_string(&spec.owner)?,session,run.to_string(),fact,run.to_string()])?;
         if changed != 1 {
@@ -1581,7 +1574,7 @@ fn owned_metadata<T: DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let row:i64=c.query_row("SELECT b.id FROM agent_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
     decode_original(c, row, reference)
 }
 pub(super) fn decode_original<T: DeserializeOwned>(

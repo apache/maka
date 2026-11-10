@@ -1246,6 +1246,7 @@ mod bounded_risk {
                     settlement: ToolSettlement::Returned,
                     result: returned.reference().clone(),
                     is_error: false,
+                    cell_observation: None,
                 },
                 Fact::ToolResultAccepted {
                     tool: parent,
@@ -2541,6 +2542,7 @@ mod model_recovery {
                 preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
                 resources.clone(), &history, &cut, target_run,
                 &serde_json::from_value(frozen["prompt"].clone())?,
+                &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
                 &serde_json::from_value(frozen["layout"].clone())?,
                 &CancellationToken::new(),
             ).await?;

@@ -20,7 +20,9 @@
 use super::*;
 use crate::{
     recall::document::{self, Rule},
-    session_history::tool_result_source::{ToolResultReader, ToolResultSource},
+    session_history::tool_result_source::{
+        ToolProjectionSource, ToolResultFields, ToolResultReader, ToolResultSource,
+    },
 };
 use maka_agent_facts::{
     cells::{CellEvent, CellId},
@@ -393,7 +395,7 @@ impl Producer {
                                 text_field(&mut doc, Field::Result, false, value, &self.budget)
                                     .await?;
                             }
-                            ToolResultSource::Returned { .. } => {
+                            ToolResultSource::Returned(_) => {
                                 return Err(invalid(
                                     "External return is not a ToolReturn envelope",
                                 ));
@@ -426,12 +428,27 @@ impl Producer {
                                 &self.budget,
                             )
                             .await?;
-                            if matches!(selected, ToolResultSource::Returned { .. }) {
+                            if matches!(selected, ToolResultSource::Returned(_)) {
                                 returned(&mut doc, selected, &self.budget, false).await?;
                             }
-                        } else if eq(&kind, "local", &self.budget).await? {
-                            returned(&mut doc, selected, &self.budget, false).await?;
-                        } else if eq(&kind, "provider", &self.budget).await? {
+                        } else if let ToolResultSource::Returned(selected) = selected {
+                            let fields = selected
+                                .fields(self.budget.clone())
+                                .await
+                                .map_err(io_error)?;
+                            if eq(&kind, "host", &self.budget).await? {
+                                raw_field(
+                                    &mut doc,
+                                    Field::Result,
+                                    fields.value(self.budget.clone()).await.map_err(io_error)?,
+                                    &self.budget,
+                                )
+                                .await?;
+                            }
+                            returned_projection(&mut doc, &fields, &self.budget, false).await?;
+                        } else if eq(&kind, "provider", &self.budget).await?
+                            || eq(&kind, "observed_operation", &self.budget).await?
+                        {
                             raw_field(
                                 &mut doc,
                                 Field::Result,
@@ -597,16 +614,21 @@ impl Producer {
                         }
                         _ => return Err(invalid("external position has no document")),
                     },
-                    Rule::Receipt(_) => {
-                        raw_field(
-                            &mut doc,
-                            Field::Receipt,
-                            required(&raw, &["fact", "reply"], &self.budget)
-                                .await?
-                                .source,
-                            &self.budget,
-                        )
-                        .await?
+                    Rule::Receipt(reply) => {
+                        let source = required(&raw, &["fact", "reply"], &self.budget)
+                            .await?
+                            .source;
+                        let source =
+                            if maka_agent_facts::operation::result_reference(reply).is_some() {
+                                reader
+                                    .operation_source(source, &self.budget)
+                                    .await
+                                    .map_err(io_error)?
+                                    .0
+                            } else {
+                                source
+                            };
+                        raw_field(&mut doc, Field::Receipt, source, &self.budget).await?
                     }
                     Rule::Failure(text) => literal(&mut doc, Field::FailureMessage, text).await?,
                     Rule::Compaction(baseline) => {
@@ -1021,42 +1043,33 @@ async fn returned(
     budget: &Arc<dyn SourceBudget>,
     child_output: bool,
 ) -> Result<(), StoreError> {
-    let body = match source {
-        ToolResultSource::Returned { body, .. } | ToolResultSource::External { body } => body,
-        ToolResultSource::Direct(_) => {
-            return Err(invalid(
-                "original returned document lacks a projection body",
-            ));
-        }
-    };
-    let projection = json::field(&body, &["projection"], budget.clone())
+    let fields = source
+        .fields(budget.clone())
         .await
-        .map_err(io_error)?;
-    if let Some(projection) = projection.filter(|v| v.kind != JsonKind::Null) {
-        let kind = required(&projection.source, &["kind"], budget).await?;
-        if eq(&kind, "text", budget).await? {
-            text_field(
-                doc,
-                Field::Result,
-                false,
-                required(&projection.source, &["text"], budget).await?,
-                budget,
-            )
-            .await?;
-        } else if eq(&kind, "json", budget).await? {
+        .map_err(io_error)?
+        .ok_or_else(|| invalid("original returned document lacks a projection body"))?;
+    returned_projection(doc, &fields, budget, child_output).await
+}
+async fn returned_projection(
+    doc: &mut Document,
+    fields: &ToolResultFields,
+    budget: &Arc<dyn SourceBudget>,
+    child_output: bool,
+) -> Result<(), StoreError> {
+    match fields.projection(budget.clone()).await.map_err(io_error)? {
+        Some(ToolProjectionSource::Text(text)) => {
+            text_field(doc, Field::Result, false, text, budget).await?
+        }
+        Some(ToolProjectionSource::Json(value)) => {
             flatten_field(
                 doc,
                 Field::Result,
-                required(&projection.source, &["value"], budget)
-                    .await?
-                    .source,
+                value.value(budget.clone()).await.map_err(io_error)?,
                 budget,
             )
-            .await?;
-        } else if eq(&kind, "content", budget).await? {
-            let parts = required(&projection.source, &["parts"], budget)
-                .await?
-                .source;
+            .await?
+        }
+        Some(ToolProjectionSource::Content(parts)) => {
             let mut cursor = json::ArrayCursor::open(parts, budget.clone())
                 .await
                 .map_err(io_error)?;
@@ -1084,39 +1097,40 @@ async fn returned(
                 }
             }
             field.finish().await?;
-        } else if eq(&kind, "failure", budget).await? {
+        }
+        Some(ToolProjectionSource::Failure) => {
             literal(
                 doc,
                 Field::Result,
                 maka_agent_facts::tool_output::DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE,
             )
-            .await?;
-        } else {
-            return Err(invalid("unsupported durable projection kind"));
+            .await?
         }
-    } else if child_output {
-        let output = required(&body, &["output"], budget).await?.source;
-        let format = required(&output, &["format"], budget).await?;
-        if eq(&format, "text", budget).await? {
-            text_field(
-                doc,
-                Field::Result,
-                false,
-                required(&output, &["value"], budget).await?,
-                budget,
-            )
-            .await?;
-        } else if eq(&format, "json", budget).await? {
-            raw_field(
-                doc,
-                Field::Result,
-                required(&output, &["value"], budget).await?.source,
-                budget,
-            )
-            .await?;
+        None if child_output => {
+            let output = fields
+                .inline_output()
+                .ok_or_else(|| invalid("Cell return has no inline output"))?;
+            let format = required(output, &["format"], budget).await?;
+            if eq(&format, "text", budget).await? {
+                text_field(
+                    doc,
+                    Field::Result,
+                    false,
+                    required(output, &["value"], budget).await?,
+                    budget,
+                )
+                .await?;
+            } else if eq(&format, "json", budget).await? {
+                raw_field(
+                    doc,
+                    Field::Result,
+                    required(output, &["value"], budget).await?.source,
+                    budget,
+                )
+                .await?;
+            }
         }
-    } else {
-        return Err(invalid("ordinary ToolReturn projection is missing or null"));
+        None => return Err(invalid("ordinary ToolReturn projection is missing or null")),
     }
     Ok(())
 }

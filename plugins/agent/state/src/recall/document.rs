@@ -49,7 +49,7 @@ pub(crate) enum Rule<'a> {
     },
     ExternalReturned(&'a ContentRef),
     Cell(&'a CellEvent),
-    Receipt(&'a maka_plugin_core::operation::OperationReply),
+    Receipt(&'a maka_agent_facts::operation::RecordedOperationReply),
     Failure(&'a str),
     Compaction(&'a ContentRef),
 }

@@ -378,6 +378,304 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_cell_tool_result_reads_the_original_observation() {
+    use maka_agent_facts::{
+        cells::{CellReply, CellReplyState},
+        model::prompt_source::source::json as stream,
+        tool_output::DurableToolProjection,
+    };
+    use maka_agent_state::session_history::tool_result_source::ToolResultReader;
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig
+            .tool(attempt, "exec", "script", json!({"code":"1"}))
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let view = driver.state.frontier(run).await?;
+        let history = driver
+            .state
+            .session_history(view.spec.owner.clone(), session);
+        let resources = driver.owner.services.model_preparation_resources();
+        let cell = CellId::for_agent(
+            AgentStepLink {
+                run,
+                step: view.attempts[&attempt].step,
+                attempt,
+            },
+            &tool.call,
+        );
+        let observed = CellObservation::Completed {
+            cell_id: cell,
+            content: vec![],
+            result: json!({"answer":"original evidence"}),
+        };
+        let observation = ContentBlob::json(&observed)?;
+        let success = ToolSuccess::projected(
+            ToolOutput::Cell(Box::new(CellReply {
+                cell,
+                state: CellReplyState::Completed {
+                    result: observation.reference().clone(),
+                },
+                observation: serde_json::to_value(observed)?,
+            })),
+            DurableToolProjection::Text {
+                text: "Done".into(),
+            },
+        );
+        let fact = super::super::effects::publish_return_for_test(
+            &driver.state,
+            &driver.access,
+            &tool,
+            success,
+            Some(observation),
+        )
+        .await?;
+        let Fact::LocalToolReturned {
+            result: reference, ..
+        } = &fact
+        else {
+            return Err("missing local return".into());
+        };
+        let persisted = driver.state.content(run, reference.clone()).await?;
+        assert!(!String::from_utf8(persisted)?.contains("original evidence"));
+        let stop = CancellationToken::new();
+        let cut = history.capture().await?;
+        let reader = ToolResultReader::live(&history, &cut, run, &stop);
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let value = reader
+            .result(&fact, reference, budget.clone())
+            .await?
+            .value(budget.clone())
+            .await?;
+        let answer = stream::field(&value, &["observation", "result", "answer"], budget.clone())
+            .await?
+            .ok_or("missing original observation")?;
+        assert!(stream::text_eq(&answer.text()?, "original evidence", budget.clone()).await?);
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "Cell history regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_operation_receipt_survives_snapshot_transfer() {
+    use maka_agent_facts::{
+        model::prompt_source::source::json as stream, tool_output::DurableToolProjection,
+    };
+    use maka_agent_state::{
+        recall::Field,
+        session_history::{
+            navigation::SourceFind,
+            source_tree::SourceTree,
+            tool_result_source::{ToolProjectionSource, ToolResultReader, ToolResultSource},
+        },
+    };
+    use maka_plugin_core::operation::{
+        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig
+            .tool(attempt, "exec", "script", json!({"code":"1"}))
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner.clone();
+        let history = driver.state.session_history(owner.clone(), session);
+        let digest = format!("sha256-{}", "b".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "history".into(),
+            method: "original_host_method".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "history".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Local,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let value = json!({"answer":"shared operation evidence"});
+        let outcome = OperationResult::Success {
+            value: value.clone(),
+        };
+        let reply = OperationReply {
+            reference: reference.clone(),
+            receipt: Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: outcome.clone(),
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        };
+        let mut legacy: maka_agent_facts::operation::RecordedOperationReply =
+            serde_json::from_value(serde_json::to_value(&reply)?)?;
+        let Receipt::Recorded { cleanup, .. } = &mut legacy.receipt else {
+            unreachable!()
+        };
+        *cleanup = OperationCleanup::Unconfirmed;
+        rig.append(
+            vec![
+                Fact::ToolOriginalBound { tool: tool.clone(), reference: reference.clone() },
+                Fact::OperationObserved { tool: tool.clone(), reply: legacy },
+            ],
+            vec![],
+        ).await?;
+        let success = ToolSuccess::projected(
+            ToolOutput::Operation(Box::new(reply)),
+            DurableToolProjection::Json { value },
+        );
+        let fact = super::super::effects::publish_return_for_test(
+            &driver.state, &driver.access, &tool, success, None,
+        ).await?;
+        let Fact::HostToolResultRecorded { result, .. } = &fact else {
+            return Err("missing Host return".into());
+        };
+        let persisted = driver.state.content(run, result.clone()).await?;
+        assert!(!String::from_utf8(persisted)?.contains("shared operation evidence"));
+        let view = driver.state.frontier(run).await?;
+        let expected = ContentBlob::json(&outcome)?;
+        assert!(matches!(
+            &view.tools[&maka_agent_state::fold::tool_key(&tool)].receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: maka_agent_facts::operation::RecordedOperationResult::Referenced { content, is_error: false },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            }) if content == expected.reference()
+        ));
+
+        let host = ContentBlob::json(&AcceptedToolResult::Host { result: result.clone() })?;
+        let (observed, _) = rig.tool(attempt, "exec", "receipt-only", json!({})).await?;
+        let (reply, material) = maka_agent_state::operation::record_reply(OperationReply {
+            reference: RecoveryRef { operation: Uuid::new_v4(), method: "recovery".into(), ..reference },
+            receipt: Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success { value: json!("receipt-only evidence") },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        })?;
+        let receipt = ContentBlob::json(&AcceptedToolResult::ObservedOperation { reply: reply.clone() })?;
+        rig.append(
+            vec![
+                Fact::ToolResultAccepted {
+                    tool: tool.clone(), result: host.reference().clone(), outcome: AcceptedResult::Succeeded,
+                },
+                Fact::ToolOriginalBound { tool: observed.clone(), reference: reply.reference.clone() },
+                Fact::OperationObserved { tool: observed.clone(), reply },
+                Fact::ToolResultAccepted {
+                    tool: observed, result: receipt.reference().clone(), outcome: AcceptedResult::Succeeded,
+                },
+            ],
+            [host, receipt].into_iter().chain(material).collect(),
+        ).await?;
+
+        let stop = CancellationToken::new();
+        let captured = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let exported = captured.export(tempfile::tempfile()?).await?;
+        let destination = tempfile::tempdir()?;
+        let base = destination.path();
+        let root = RootOwner::create(
+            &base.join("root"),
+            &RootNamespaces {
+                ownership: base.join("owners"),
+                control: base.join("control"),
+            },
+        )?;
+        let migrations = [
+            maka_event_log::ROOT_MIGRATIONS,
+            maka_agent_state::MIGRATIONS,
+        ]
+        .concat();
+        let root = RootStore::open(Arc::new(root), &migrations).await?;
+        let writer = root.data_writer()?;
+        let imported = Store::new(writer.clone(), DriverDomain::new(writer)?)?
+            .session_history(owner, "destination".into())
+            .import_snapshot(
+                Uuid::new_v4(),
+                exported.history,
+                exported.file,
+                stop.clone(),
+            )
+            .await?;
+        let reader = ToolResultReader::snapshot(&imported, run, &stop);
+        let resources = driver.owner.services.model_preparation_resources();
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let ToolResultSource::Returned(returned) = reader.result(&fact, result, budget.clone()).await? else {
+            return Err("missing shared return".into());
+        };
+        let fields = returned.fields(budget.clone()).await?;
+        let output = fields.value(budget.clone()).await?;
+        let Some(ToolProjectionSource::Json(projection)) = fields.projection(budget.clone()).await? else {
+            return Err("missing shared projection".into());
+        };
+        for (source, path) in [
+            (output, &["receipt", "outcome", "result", "value", "answer"][..]),
+            (projection.value(budget.clone()).await?, &["answer"][..]),
+        ] {
+            let answer = stream::field(&source, path, budget.clone()).await?.ok_or("missing shared result")?;
+            assert!(stream::text_eq(&answer.text()?, "shared operation evidence", budget.clone()).await?);
+        }
+        let tree = SourceTree::snapshot(&imported).await?;
+        for query in ["receipt-only evidence", "original_host_method"] {
+            let found = tree.find_page(SourceFind {
+                after: None,
+                query: query.into(),
+                case_sensitive: true,
+                whole_word: false,
+                include_internal: true,
+            }, stop.clone()).await?;
+            assert!(found.matches.iter().any(|item| item.field == Field::Receipt), "receipt missing for {query}");
+            assert!(found.matches.iter().any(|item| item.field == Field::Result), "accepted result missing for {query}");
+        }
+        root.shutdown().await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "operation history regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_progress_and_failed_result_keep_the_original_call() {
     use maka_agent_facts::executor::{Output, Selection, Settings};
     let mut rig = Rig::new().unwrap();

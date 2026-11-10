@@ -137,6 +137,19 @@ impl<'a> HistorySource<'a> {
         };
         decoded.map_err(RunError::Json)
     }
+    pub(super) async fn operation_reply(
+        &self,
+        run: RunId,
+        reply: &maka_agent_facts::operation::RecordedOperationReply,
+    ) -> Result<maka_plugin_core::operation::OperationReply, RunError> {
+        use maka_agent_facts::operation::{resolve_reply, result_reference};
+        let result = match result_reference(reply) {
+            Some(reference) => Some(self.decode(run, reference).await?),
+            None => None,
+        };
+        resolve_reply(reply.clone(), result).map_err(|reason| RunError::InvalidInput(reason.into()))
+    }
+
     pub(super) fn content_source(&self) -> preparation::ContentSource<'_> {
         match self {
             Self::Live { history, cut, .. } => preparation::ContentSource::Live { history, cut },

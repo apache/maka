@@ -201,7 +201,7 @@ pub(super) fn owned_decode<T: serde::de::DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let rowid:i64=c.query_row("SELECT x.id FROM agent_content_pins p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?",params![run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|row|row.get(0)).optional()?.ok_or_else(||invalid("artifact source is not pinned by original Run"))?;
+    let rowid:i64=c.query_row("SELECT x.id FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?",params![run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|row|row.get(0)).optional()?.ok_or_else(||invalid("artifact source is not pinned by original Run"))?;
     let mut blob = c.blob_open("main", "contents", "payload", rowid, true)?;
     let decoded = serde_json::from_reader(std::io::BufReader::new(&mut blob));
     blob.close()?;
@@ -315,7 +315,7 @@ pub(crate) fn append(
         } else {
             // A pre-existing digest is not authority. Reuse needs this Run's
             // original pin or the same owner's canonical session registration.
-            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_content_pins p JOIN contents x ON x.id=p.content_id WHERE p.run=?1 AND x.content_sha256=?2) OR EXISTS(SELECT 1 FROM agent_session_artifact_registrations s JOIN contents x ON x.id=s.content_id WHERE s.session=?3 AND s.artifact=?4 AND s.owner=?5 AND x.content_sha256=?2)",params![run.to_string(),record.payload.digest,spec.session_id,record.artifact.id,serde_json::to_string(&spec.owner)?],|r|r.get(0))?;
+            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=?1 AND x.content_sha256=?2) OR EXISTS(SELECT 1 FROM agent_session_artifact_registrations s JOIN contents x ON x.id=s.content_id WHERE s.session=?3 AND s.artifact=?4 AND s.owner=?5 AND x.content_sha256=?2)",params![run.to_string(),record.payload.digest,spec.session_id,record.artifact.id,serde_json::to_string(&spec.owner)?],|r|r.get(0))?;
             if !retained {
                 return Err(invalid("artifact bytes lack original Run/session evidence"));
             }
@@ -356,7 +356,7 @@ pub(crate) fn rebuild(c: &Connection, run: RunId) -> Result<(), StoreError> {
             }
         }
         for declaration in declarations(c, run, &facts)? {
-            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_content_pins p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=?)",params![run.to_string(),declaration.record.payload.digest],|r|r.get(0))?;
+            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=?)",params![run.to_string(),declaration.record.payload.digest],|r|r.get(0))?;
             if !retained {
                 return Err(invalid("canonical artifact evidence pin is missing"));
             }
