@@ -17,42 +17,44 @@
   under the License.
 -->
 
-# Agent 执行与恢复
+# Agent Execution and Recovery
 
-Maka 为每次执行分配稳定的 `runId`。进程重启、观察流断开或插件重载，不等于任务失败。重新打开同一本地状态目录（State Root）后，系统会依据持久化记录、原调用回执与当前权限对未终结的原 Run 自动核对并推进。
+[简体中文](durable-agent-execution.zh-CN.md)
 
-## 执行语义与恢复边界
+Maka assigns a stable `runId` to each execution. A process restart, disconnected observation stream, or plugin reload does not mean a task has failed. When reopening the same local state directory (State Root), the system automatically reconciles and advances any non-terminal original Run based on persisted records, original call receipts, and current permissions.
 
-- **原回执核对，不换号重发**：模型流中断后不保证原地断点续接。对已准入但结果未知的工具调用或外部副作用，系统先核查原调用回执，不会更换新 ID 自动重发。若无法确认原执行结果，Run 进入 `blocked` 并附带具体 blocker。
-- **业务结果与资源清理分离**：确定的执行响应既可能是业务成功，也可能是业务错误（业务错误同样可能已产生外部副作用）。结果一旦确定，不会被后续的资源清理状态改写。收到业务结果不代表底层进程或工具已物理退出；清理尚未确认也不能反证业务未执行。
-- **Stop 不是回滚**：执行 Stop 会取消后续步骤并请求终止在途工作，但不会回滚已产生的外部效果。Run 进入 `cancelled` 表示逻辑取消，不代表外部进程或资源已全部退出；残留资源的清理会继续独立追踪。
+## Execution Semantics and Recovery Boundaries
 
-## 权限、预算与执行环境约束
+- **Verify original receipts without re-sending under new IDs**: An interrupted model stream is not guaranteed to resume in place. For admitted tool calls or external side effects whose outcomes are unknown, the system checks the original call receipt first and does not automatically re-send them under a new ID. If the original execution outcome cannot be confirmed, the Run enters `blocked` with the specific blocker attached.
+- **Separation of business outcomes and resource cleanup**: A known execution response may be either a business success or a business error (which may still have produced external side effects). Once known, the outcome is not overwritten by subsequent resource cleanup status. Receiving a business outcome does not mean the underlying process or tool has physically exited, and unconfirmed cleanup does not prove that the business operation did not execute.
+- **Stop is not rollback**: Issuing Stop cancels subsequent steps and requests termination of in-flight work, but does not roll back external effects that have already occurred. A Run entering `cancelled` indicates logical cancellation, not that all external processes or resources have exited; cleanup of residual resources continues to be tracked independently.
 
-- **恢复不会扩大权限或预算**：恢复推进同时受“原任务开局时的权限上限”和“恢复时的当前实时权限”约束。持久化保存的审批记录或配置不等于跨重启直接生效的实时权限；权限不足时 Run 会进入 `waiting` 或 `blocked`，系统不会自动扩大权限。原任务的预算与重试约束在恢复后继续有效。普通父子会话、Goal 与 Scheduler 均遵循同一套执行恢复规则，不会因重启自动扩充预算或授权。
-- **Code Mode**：系统持久保存 Cell 记录、已发布的 `SessionData` 和已发现的工具，并按原记录核对嵌套副作用；但不保存 VM 堆内存或变量执行栈，也不会通过从头重放任意 JS/Python 脚本来模拟恢复。若脚本依赖无法重建的内存状态，中断后可能进入 `blocked`。
-- **外部执行器**：仅当外部执行器提供可验证的原 job/turn 协议时，系统才按原任务身份查询或恢复；不会把新建外部任务当作原任务恢复，也不会仅凭本地 PID 消失、EOF 或超时就判定外部任务已完成。缺乏可靠恢复协议时，Run 保留 `blocked` 状态及诊断信息。
+## Permission, Budget, and Execution Environment Constraints
 
-## 状态判读与风险裁决
+- **Recovery does not expand permissions or budgets**: Recovery is constrained by both the permission ceiling at the start of the original task and the live permissions in effect at recovery time. Persisted approval records or configuration are not live permissions that take effect automatically across restarts; when permissions are insufficient, the Run enters `waiting` or `blocked`, and the system does not automatically expand permissions. Budget and retry constraints from the original task remain in effect after recovery. Standard parent-child sessions, Goal, and Scheduler all follow the same execution recovery rules and do not automatically gain extra budget or authorization from a restart.
+- **Code Mode**: The system persists Cell records, published `SessionData`, and discovered tools, and reconciles nested side effects against the original records; however, it does not persist VM heap memory or variable execution stacks, and does not simulate recovery by replaying arbitrary JS/Python scripts from scratch. If a script depends on in-memory state that cannot be reconstructed, the Run may enter `blocked` after an interruption.
+- **External executors**: The system queries or recovers by original task identity only when the external executor provides a verifiable protocol for the original job/turn. It does not treat a newly created external task as a recovery of the original task, nor does it conclude that an external task has completed solely from a vanished local PID, EOF, or timeout. Without a reliable recovery protocol, the Run retains its `blocked` state along with diagnostic details.
 
-通过 `execution` 读取原 Run 的执行回执，其中的 `state` 分为：
+## State Interpretation and Risk Adjudication
 
-- `admitted` / `running`：已准入或正在执行。
-- `waiting`：正常等待外部条件，例如待审批、待输入或等待定时到期。
-- `blocked`：结果未知或权限、状态约束不足，无法安全自动推进。**不要将 `blocked` 当作普通可重试错误重发请求。**
-- `completed` / `failed` / `cancelled`：Run 已终结。
+Use `execution` to read the execution receipt of the original Run, where `state` is one of:
 
-阻塞原因中列出的 `offeredActions` 是当前支持的人工处理选项，可能包括记录外部观察、授权重新规划或取消该 Run；并非每种阻塞都支持全部选项。通过 `adjudicateRisk` 提交 `decision` 时，使用原 `sessionId`、`runId`、`blockerId`，并以最新回执的 `highWater` 作为 `expectedHighWater`。人工裁决只决定后续处理，不改变原工具回执，也不证明资源已退出。
+- `admitted` / `running`: Admitted or currently executing.
+- `waiting`: Waiting normally on an external condition, such as pending approval, input, or timer expiration.
+- `blocked`: The outcome is unknown, or permission or state constraints are insufficient to advance safely and automatically. **Do not treat `blocked` as a normal retryable error by re-sending the request.**
+- `completed` / `failed` / `cancelled`: The Run has reached a terminal state.
 
-## API 调用与续接规则
+The `offeredActions` listed in a blocker represent the manual resolution options currently supported, which may include recording an external observation, authorizing replanning, or cancelling the Run; not every blocker supports all options. When submitting a `decision` via `adjudicateRisk`, pass the original `sessionId`, `runId`, and `blockerId`, and use `highWater` from the latest receipt as `expectedHighWater`. Manual adjudication only determines follow-up handling; it does not alter the original tool receipt or prove that resources have exited.
 
-- **保留原标识，断流先查原任务**：调用一次 `send` 后，应保存执行回执中的 `runId`；若请求已排队，则保存原 `messageId`。观察流中断或结果不明时，先查询原任务状态；再次调用 `send` 会发起全新任务，而不是恢复原任务。
-- **状态查询与分页观察**：
-  - 向 `execution` 传入 `sessionId` 和 `runId`，读取原 Run 的最新回执。
-  - 向 `work` 传入 `sessionId`、`target` 和可选的 `cursor`，观察执行进展与分页答复。`target` 为 `{kind: 'run', runId}` 或 `{kind: 'message', messageId}`。
-  - `work` 答复分页游标取自返回结果中的 `answer.next`，它与状态推进水位 `execution.highWater` 用途不同，不可混用。
-- **区分自动恢复与 `continueRun`**：
-  - 未终结的原 Run 由系统自动核对，并按等待或阻塞原因处理，**不能**调用 `continueRun` 来恢复。
-  - `continueRun` 仅适用于**已终结**的 Run，校验通过后会创建一个**新 Run**，不会重新打开旧 Run。调用前可用 `continuationAvailability` 查询是否满足继续条件；调用时需传入 `sessionId`、`sourceRunId`、`sourceHighWater`、`model` 及可选的 `thinkingLevel`，其中 `sourceHighWater` 必须使用最新 `execution` 返回的确切值。
+## API Usage and Continuation Rules
 
-具体字段与返回结构见[执行 API 契约](../../plugins/agent/api/src/contract/execution.rs)。
+- **Keep original identifiers and check the original task first on disconnect**: After calling `send` once, save the `runId` from the execution receipt, or save the original `messageId` if the request was queued. If the observation stream disconnects or the outcome is unclear, query the original task status first; calling `send` again starts a brand-new task rather than recovering the original one.
+- **Status queries and paginated observation**:
+  - Pass `sessionId` and `runId` to `execution` to read the latest receipt of the original Run.
+  - Pass `sessionId`, `target`, and an optional `cursor` to `work` to observe execution progress and paginated answers. `target` is `{kind: 'run', runId}` or `{kind: 'message', messageId}`.
+  - The answer pagination cursor for `work` comes from `answer.next` in the response. It serves a different purpose from the state progression high-water mark `execution.highWater`; do not use them interchangeably.
+- **Distinguishing automatic recovery from `continueRun`**:
+  - Non-terminal original Runs are reconciled automatically by the system and handled according to their waiting or blocking conditions; you **cannot** call `continueRun` to recover them.
+  - `continueRun` applies only to **terminal** Runs. Once validated, it creates a **new Run** and does not reopen the old Run. Before calling it, you can check whether continuation conditions are met via `continuationAvailability`; when calling `continueRun`, pass `sessionId`, `sourceRunId`, `sourceHighWater`, `model`, and an optional `thinkingLevel`, where `sourceHighWater` must be the exact value returned by the latest `execution` call.
+
+For exact fields and response structures, see the [Execution API Contract](../../plugins/agent/api/src/contract/execution.rs).
