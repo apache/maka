@@ -553,6 +553,21 @@ pub(super) async fn field_source(
                 .map_err(|error| error.to_string())?;
             selected_json(receipt, path, budget).await
         }
+        (
+            projection::Field::CellChildReceipt {
+                cell,
+                operation,
+                reply,
+            },
+            SourceItem::Canonical(item),
+            _,
+        ) => {
+            let receipt = data::tool_reader(data, item.recorded.run, stop)
+                .cell_child_receipt(*cell, *operation, reply, budget.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            selected_json(receipt, path, budget).await
+        }
         (projection::Field::Content(reference), SourceItem::Canonical(item), _) => {
             content_source(
                 data,

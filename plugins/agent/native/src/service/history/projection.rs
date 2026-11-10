@@ -28,6 +28,11 @@ pub(super) enum Field {
     Json(Value),
     Content(ContentRef),
     Receipt(Box<maka_agent_facts::operation::RecordedOperationReply>),
+    CellChildReceipt {
+        cell: maka_agent_facts::cells::CellId,
+        operation: uuid::Uuid,
+        reply: Box<maka_agent_facts::operation::RecordedOperationReply>,
+    },
     Imported {
         reference: ContentRef,
         selectors: Vec<String>,
@@ -57,7 +62,7 @@ pub(super) fn visible(fact: &Fact) -> bool {
         } => true,
         Fact::Cell {
             event: CellEvent::ChildObserved { reply, .. },
-        } => super::super::delivery::settlement(reply).is_some(),
+        } => super::super::delivery::recorded_settlement(reply).is_some(),
         Fact::OperationObserved { reply, .. } => {
             super::super::delivery::recorded_settlement(reply).is_some()
         }

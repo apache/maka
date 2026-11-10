@@ -19,11 +19,12 @@
 
 //! Durable Cell evidence; no value here represents interpreter or Host custody.
 use crate::durable::{AgentStepLink, ApprovalId, ContentRef, FactId, ResourceRecovery, StepId};
+use crate::operation::{
+    RecordedOperationReply, RecordedOperationResult, result_reference, same_outcome,
+};
 use crate::tool_call::{RejectionKind, ToolSettlement};
 use crate::tools::ToolSemantics;
-use maka_plugin_core::operation::{
-    OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryRef,
-};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -208,7 +209,7 @@ pub enum CellEvent {
     ChildObserved {
         cell: CellId,
         operation: Uuid,
-        reply: OperationReply,
+        reply: RecordedOperationReply,
     },
     /// Original worker output and private draft evidence, not session publication.
     Completed {
@@ -334,6 +335,7 @@ impl CellEvent {
             Self::LocalChildReturned { result, .. } | Self::ChildResultRecorded { result, .. } => {
                 vec![result]
             }
+            Self::ChildObserved { reply, .. } => result_reference(reply).into_iter().collect(),
             Self::Interrupted { report, .. } => vec![report],
             Self::SessionValuePublished { value, .. } => vec![value],
             Self::NotificationQueued { content, .. }
@@ -351,7 +353,7 @@ pub struct CellChild {
     pub input: ContentRef,
     pub resources: Vec<ResourceRecovery>,
     pub reference: Option<RecoveryRef>,
-    pub reply: Option<OperationReply>,
+    pub reply: Option<RecordedOperationReply>,
     pub local_result: Option<LocalCellResult>,
     pub provider_result: Option<LocalCellResult>,
     pub approvals: BTreeMap<ApprovalId, bool>,
@@ -684,21 +686,15 @@ impl CellView {
                             ..
                         }) => ToolSettlement::Rejected,
                         Some(Receipt::Recorded {
-                            outcome:
-                                OperationOutcome::Returned {
-                                    result:
-                                        maka_plugin_core::operation::OperationResult::Failure { .. },
-                                },
+                            outcome: OperationOutcome::Returned { result },
                             ..
-                        }) => ToolSettlement::Failed,
-                        Some(Receipt::Recorded {
-                            outcome:
-                                OperationOutcome::Returned {
-                                    result:
-                                        maka_plugin_core::operation::OperationResult::Success { .. },
-                                },
-                            ..
-                        }) => ToolSettlement::Returned,
+                        }) => {
+                            if result.is_error() {
+                                ToolSettlement::Failed
+                            } else {
+                                ToolSettlement::Returned
+                            }
+                        }
                         _ => return Err("Cell Host result has no known original outcome".into()),
                     },
                 };
@@ -955,9 +951,9 @@ impl CellChild {
     }
 }
 fn join_reply(
-    prior: &OperationReply,
-    next: &OperationReply,
-) -> Result<OperationReply, CellTransitionError> {
+    prior: &RecordedOperationReply,
+    next: &RecordedOperationReply,
+) -> Result<RecordedOperationReply, CellTransitionError> {
     if prior.reference != next.reference {
         return Err("Cell original operation reference changed".into());
     }
@@ -983,12 +979,24 @@ fn join_reply(
         new,
         OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. }
     );
-    if old_known && new_known && old != new {
+    if old_known
+        && new_known
+        && !same_outcome(old, new)
+            .map_err(|_| CellTransitionError::Invalid("Cell operation result cannot be compared"))?
+    {
         return Err(CellTransitionError::Conflict(
             "Cell known provider outcome changed",
         ));
     }
-    let outcome = if old_known || matches!(old, OperationOutcome::Unknown { .. }) && !new_known {
+    let next_uses_reference = matches!(
+        new,
+        OperationOutcome::Returned {
+            result: RecordedOperationResult::Referenced { .. },
+        }
+    );
+    let outcome = if old_known && !next_uses_reference
+        || matches!(old, OperationOutcome::Unknown { .. }) && !new_known
+    {
         old.clone()
     } else {
         new.clone()
@@ -1001,7 +1009,7 @@ fn join_reply(
         ) => old_cleanup.clone(),
         _ => new_cleanup.clone(),
     };
-    Ok(OperationReply {
+    Ok(RecordedOperationReply {
         reference: prior.reference.clone(),
         receipt: Receipt::Recorded { outcome, cleanup },
     })
@@ -1073,4 +1081,22 @@ pub struct CellReturnedResult {
     pub output: crate::tool_output::ToolOutput,
     pub projection: Option<crate::tool_output::DurableToolProjection>,
     pub is_error: bool,
+}
+
+/// Local and historical Cell returns use the original body. Host returns can
+/// share the same stored operation envelope as ordinary Agent tools.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredCellReturn {
+    Operation(Box<crate::tool_output::StoredOperationReturn>),
+    Inline(CellReturnedResult),
+}
+
+impl StoredCellReturn {
+    pub fn is_error(&self) -> bool {
+        match self {
+            Self::Operation(body) => body.is_error,
+            Self::Inline(body) => body.is_error,
+        }
+    }
 }

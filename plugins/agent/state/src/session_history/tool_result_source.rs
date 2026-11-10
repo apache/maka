@@ -323,12 +323,25 @@ impl ToolResultFields {
         }
         let state = present(state)?.source;
         let kind = required(&state, &["kind"], &budget).await?.text()?;
-        if !json::text_eq(&kind, "completed", budget.clone()).await? {
+        let observation = if json::text_eq(&kind, "completed", budget.clone()).await? {
+            let reference =
+                reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
+            reader.source(&reference).await?
+        } else if json::text_eq(&kind, "interrupted", budget.clone()).await? {
+            let reference =
+                reference_value(required(&state, &["report"], &budget).await?, &budget).await?;
+            let report = reader.cell_report(&reference, budget.clone()).await?;
+            let cell = required(&value, &["cell"], &budget).await?.source;
+            joined_json(vec![
+                literal(b"{\"state\":\"interrupted\",\"cell_id\":"),
+                cell.into_bytes(),
+                literal(b",\"report\":"),
+                report.into_bytes(),
+                literal(b"}"),
+            ])?
+        } else {
             return Err(invalid("Cell result has no original observation"));
-        }
-        let reference =
-            reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
-        let observation = reader.source(&reference).await?;
+        };
         let end = value
             .bytes()
             .len()
@@ -428,6 +441,85 @@ impl ToolResultReader {
             return Ok(reply_source);
         }
         Ok(self.operation_source(reply_source, &budget).await?.0)
+    }
+
+    pub async fn cell_report(
+        &self,
+        reference: &ContentRef,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<JsonSource> {
+        let report = self.source(reference).await?;
+        let children_range = member_range(&report, "children", &budget)
+            .await?
+            .ok_or_else(|| invalid("Cell report has no children"))?;
+        let children = report.slice(children_range.clone())?;
+        let mut cursor = json::ObjectCursor::open(children.clone(), budget.clone()).await?;
+        let mut parts = Vec::new();
+        let mut position = 0;
+        while let Some(entry) = cursor.next_spans().await? {
+            let child = children.slice(entry.value_range.clone())?;
+            let Some(reply_range) = member_range(&child, "reply", &budget).await? else {
+                continue;
+            };
+            let reply = child.slice(reply_range.clone())?;
+            let Some(result) = json::field(
+                &reply,
+                &["receipt", "outcome", "result", "kind"],
+                budget.clone(),
+            )
+            .await?
+            else {
+                continue;
+            };
+            if !json::text_eq(&result.text()?, "referenced", budget.clone()).await? {
+                continue;
+            }
+            let start = entry.value_range.start + reply_range.start;
+            let end = entry.value_range.start + reply_range.end;
+            parts.push(children.bytes().slice(position..start)?);
+            parts.push(self.operation_source(reply, &budget).await?.0.into_bytes());
+            position = end;
+        }
+        if parts.is_empty() {
+            return Ok(report);
+        }
+        let children_len = children
+            .bytes()
+            .len()
+            .ok_or_else(|| invalid("unbounded Cell children"))?;
+        parts.push(children.bytes().slice(position..children_len)?);
+        let report_len = report
+            .bytes()
+            .len()
+            .ok_or_else(|| invalid("unbounded Cell report"))?;
+        joined_json(vec![
+            report.bytes().slice(0..children_range.start)?,
+            joined_json(parts)?.into_bytes(),
+            report.bytes().slice(children_range.end..report_len)?,
+        ])
+    }
+
+    pub async fn cell_child_receipt(
+        &self,
+        cell: maka_agent_facts::cells::CellId,
+        operation: uuid::Uuid,
+        reply: &maka_agent_facts::operation::RecordedOperationReply,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<JsonSource> {
+        let reply = self.operation_reply(reply, budget).await?;
+        joined_json(vec![
+            literal(b"{\"kind\":\"child_observed\",\"cell\":"),
+            SourceBytes::Inline(serde_json::to_vec(&cell).map_err(io::Error::other)?.into()),
+            literal(b",\"operation\":"),
+            SourceBytes::Inline(
+                serde_json::to_vec(&operation)
+                    .map_err(io::Error::other)?
+                    .into(),
+            ),
+            literal(b",\"reply\":"),
+            reply.into_bytes(),
+            literal(b"}"),
+        ])
     }
 
     pub(super) async fn operation_source(
@@ -586,6 +678,16 @@ impl ToolResultReader {
             }
             return Err(invalid("unsupported canonical external return"));
         }
+        if matches!(
+            fact,
+            Fact::Cell {
+                event: CellEvent::Interrupted { .. }
+            }
+        ) {
+            return Ok(ToolResultSource::Direct(
+                self.cell_report(reference, budget).await?,
+            ));
+        }
         if matches!(fact, Fact::ToolResultAccepted { .. }) {
             let mut fields = json::fields(
                 &source,
@@ -651,9 +753,11 @@ impl ToolResultReader {
                 } else {
                     return Err(invalid("unsupported canonical recovered Cell evidence"));
                 };
-                // Original CellObservation/report, never a fabricated ToolReturn
-                // or a projection inferred from its child outputs.
-                source = self.source(&reference).await?;
+                source = if json::text_eq(&kind, "interrupted", budget.clone()).await? {
+                    self.cell_report(&reference, budget.clone()).await?
+                } else {
+                    self.source(&reference).await?
+                };
             } else if !json::text_eq(&kind, "risk_adjudicated", budget.clone()).await? {
                 return Err(invalid("unsupported canonical accepted tool result"));
             }
@@ -772,6 +876,21 @@ async fn reference_value(
     reference.validate().map_err(invalid)?;
     Ok(reference)
 }
+async fn member_range(
+    source: &JsonSource,
+    name: &str,
+    budget: &Arc<dyn SourceBudget>,
+) -> io::Result<Option<Range<u64>>> {
+    let mut cursor = json::ObjectCursor::open(source.clone(), budget.clone()).await?;
+    let mut range = None;
+    while let Some((field, selected)) = cursor.next_named_spans([name].into_iter()).await? {
+        if selected.is_some() {
+            range = Some(field.value_range);
+        }
+    }
+    Ok(range)
+}
+
 fn literal(bytes: &'static [u8]) -> SourceBytes {
     SourceBytes::Inline(bytes.into())
 }

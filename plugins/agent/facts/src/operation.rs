@@ -27,7 +27,7 @@ pub type RecordedOperationReply = OperationReply<RecordedOperationResult>;
 pub type RecordedReceipt = Receipt<RecordedOperationResult>;
 pub type RecordedOutcome = OperationOutcome<RecordedOperationResult>;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordedOperationResult {
     Success { value: Value },
@@ -64,6 +64,56 @@ impl RecordedOperationResult {
             (a, b) => Ok(a == b),
         }
     }
+}
+
+pub fn same_outcome(
+    left: &RecordedOutcome,
+    right: &RecordedOutcome,
+) -> Result<bool, serde_json::Error> {
+    match (left, right) {
+        (
+            OperationOutcome::Returned { result: left },
+            OperationOutcome::Returned { result: right },
+        ) => left.same_result(right),
+        _ => Ok(left == right),
+    }
+}
+
+impl From<OperationResult> for RecordedOperationResult {
+    fn from(value: OperationResult) -> Self {
+        match value {
+            OperationResult::Success { value } => Self::Success { value },
+            OperationResult::Failure { diagnostic } => Self::Failure { diagnostic },
+        }
+    }
+}
+
+pub fn inline_reply(reply: OperationReply) -> RecordedOperationReply {
+    reply
+        .try_map_result(|value| Ok::<_, std::convert::Infallible>(value.into()))
+        .unwrap_or_else(|never| match never {})
+}
+
+pub fn restore_result(
+    reply: &mut RecordedOperationReply,
+    stored: OperationResult,
+) -> Result<(), &'static str> {
+    let Receipt::Recorded {
+        outcome: OperationOutcome::Returned { result },
+        ..
+    } = &mut reply.receipt
+    else {
+        return Err("operation receipt has no returned value");
+    };
+    let RecordedOperationResult::Referenced { is_error, .. } = result else {
+        return Err("operation receipt does not reference a stored value");
+    };
+    let stored = RecordedOperationResult::from(stored);
+    if stored.is_error() != *is_error {
+        return Err("original operation result differs from its receipt");
+    }
+    *result = stored;
+    Ok(())
 }
 
 pub fn result_reference(reply: &RecordedOperationReply) -> Option<&ContentRef> {

@@ -6891,7 +6891,6 @@ dependencies = [
  "nsh-platform-macos",
  "nsh-platform-windows",
  "objc2-app-kit 0.3.2",
- "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",
@@ -11170,12 +11169,6 @@ checksum = "ae81208192f9898cbd2424aa42fd4472bd79c44a52092673b101cdca72c89b7c"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "raw-window-handle"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rayon"

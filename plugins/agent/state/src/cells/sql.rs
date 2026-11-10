@@ -406,9 +406,14 @@ pub(crate) fn apply(
             } => {
                 let bytes = maka_event_log::content::read(c, &result.digest)?
                     .ok_or_else(|| invalid("missing Cell Host return content"))?;
-                let returned: maka_agent_facts::artifact::ToolReturn<CellReturnedResult> =
+                use maka_agent_facts::operation::{inline_reply, same_outcome};
+                use maka_agent_facts::tool_output::ToolOutput;
+                use maka_plugin_core::operation::Receipt;
+
+                let returned: maka_agent_facts::artifact::ToolReturn<StoredCellReturn> =
                     serde_json::from_slice(&bytes)?;
-                if returned.schema_version != SCHEMA_VERSION || returned.body.is_error != *is_error
+                if returned.schema_version != SCHEMA_VERSION
+                    || returned.body.is_error() != *is_error
                 {
                     return Err(invalid("Cell Host return schema or status mismatch"));
                 }
@@ -416,28 +421,28 @@ pub(crate) fn apply(
                     .children
                     .get(operation)
                     .ok_or_else(|| invalid("Cell Host child not prepared"))?;
-                let maka_agent_facts::tool_output::ToolOutput::Operation(reply) =
-                    returned.body.output
-                else {
-                    return Err(invalid("Cell Host return has no original provider reply"));
+                let reply = match returned.body {
+                    StoredCellReturn::Operation(body) => body.operation,
+                    StoredCellReturn::Inline(body) => {
+                        let ToolOutput::Operation(reply) = body.output else {
+                            return Err(invalid("Cell Host return has no original provider reply"));
+                        };
+                        inline_reply(*reply)
+                    }
                 };
-                let matches_original = child.reply.as_ref().is_some_and(|original| {
-                    if original.reference != reply.reference {
-                        return false;
-                    }
-                    match (&original.receipt, &reply.receipt) {
-                        (
-                            maka_plugin_core::operation::Receipt::Recorded {
-                                outcome: known, ..
-                            },
-                            maka_plugin_core::operation::Receipt::Recorded {
-                                outcome: returned,
-                                ..
-                            },
-                        ) => known == returned,
-                        _ => false,
-                    }
-                });
+                let matches_original = if let Some(original) = &child.reply
+                    && original.reference == reply.reference
+                    && let (
+                        Receipt::Recorded { outcome: known, .. },
+                        Receipt::Recorded {
+                            outcome: returned, ..
+                        },
+                    ) = (&original.receipt, &reply.receipt)
+                {
+                    same_outcome(known, returned)?
+                } else {
+                    false
+                };
                 if !matches_original {
                     return Err(invalid(
                         "Cell Host return differs from original provider outcome",

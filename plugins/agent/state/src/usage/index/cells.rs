@@ -104,7 +104,15 @@ pub(crate) fn index_cell(
             cell,
             operation,
             reply,
-        } => observe_receipt(c, &key(*cell, *operation), sequence, at, reply)?,
+        } => observe_returned_receipt_inner(
+            c,
+            &key(*cell, *operation),
+            sequence,
+            at,
+            reply,
+            None,
+            maka_agent_facts::operation::RecordedOperationResult::is_error,
+        )?,
         _ => {}
     }
     Ok(())

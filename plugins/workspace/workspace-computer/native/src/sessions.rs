@@ -1043,7 +1043,6 @@ impl Interaction {
     fn observe_browser_cleanup(
         self: &Arc<Self>,
         owner: &Arc<Computer>,
-        session: &str,
         epoch: &Arc<Epoch>,
         receipt: &Arc<BrowserPreparationReceipt>,
         observed: Result<PreparationAuthority, ToolError>,
@@ -1068,7 +1067,6 @@ impl Interaction {
         let owner = owner.clone();
         let epoch = epoch.clone();
         let receipt = receipt.clone();
-        let session = session.to_owned();
         let tasks = owner.tasks.clone();
         let task = tasks.spawn(async move {
             let result = AssertUnwindSafe(async {
@@ -1346,7 +1344,7 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                             continue;
                         }
                         if let Err(error) =
-                            entry.observe_browser_cleanup(&owner, &id, &epoch, &receipt, observed)
+                            entry.observe_browser_cleanup(&owner, &epoch, &receipt, observed)
                         {
                             eprintln!(
                                 "Computer browser cleanup observation failed for {id}: {error}"

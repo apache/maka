@@ -1991,7 +1991,7 @@ impl Browsers {
         let mut failures = Vec::new();
         let mut unsettled = std::collections::HashSet::new();
         for (handle, tab) in &mut self.targets {
-            if (tab.last_turn != turn || &tab.last_execution != execution) {
+            if tab.last_turn != turn || &tab.last_execution != execution {
                 if tab.clipboard.as_ref().is_some_and(|bridge| {
                     bridge.turn() == turn && bridge.execution_correlation() == execution
                 }) && let Err(error) = tab.cleanup_clipboard().await

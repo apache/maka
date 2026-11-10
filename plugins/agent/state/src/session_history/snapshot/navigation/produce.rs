@@ -497,15 +497,23 @@ impl Producer {
                         }
                     }
                     Rule::Cell(event) => {
-                        raw_field(
-                            &mut doc,
-                            Field::Receipt,
+                        let receipt = if let CellEvent::ChildObserved {
+                            cell,
+                            operation,
+                            reply,
+                        } = event
+                            && maka_agent_facts::operation::result_reference(reply).is_some()
+                        {
+                            reader
+                                .cell_child_receipt(*cell, *operation, reply, self.budget.clone())
+                                .await
+                                .map_err(io_error)?
+                        } else {
                             required(&raw, &["fact", "event"], &self.budget)
                                 .await?
-                                .source,
-                            &self.budget,
-                        )
-                        .await?;
+                                .source
+                        };
+                        raw_field(&mut doc, Field::Receipt, receipt, &self.budget).await?;
                         match event {
                             CellEvent::LocalChildReturned { result, .. }
                             | CellEvent::ChildResultRecorded { result, .. } => {
