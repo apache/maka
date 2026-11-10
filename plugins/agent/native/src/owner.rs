@@ -518,12 +518,6 @@ impl Owner {
                     .with_always_visible(&[bot::SEND_USER, bot::SLEEP])
                     .map_err(|error| error.to_string())?;
             }
-            if settings.scheduled_tasks {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(&[discovery::COMPLETE])
-                    .map_err(|e| e.to_string())?;
-            }
             Ok(catalog)
         });
         let crate::tools::Catalog {

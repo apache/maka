@@ -353,10 +353,7 @@ impl RunAccess {
             return Err(ToolError::Failed("Run workspace binding changed".into()));
         }
         // Access mode is current configuration; actual effects enforce the Scope's sandbox floor.
-        current.tools = intersect_tools(
-            owner.admitted_tools(&self.execution.session_id, &current.tools),
-            self.spec.allowed_tools.clone(),
-        );
+        current.tools = intersect_tools(current.tools, self.spec.allowed_tools.clone());
         current.permissions.request_permissions &= self
             .spec
             .permission_ceiling

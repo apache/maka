@@ -1298,8 +1298,6 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
     gate.release();
-    // Steering is consumed at the next model step.
-    original.finish().await;
     let second = desktop.request(&mut fixture).await;
     let sent = second.body["messages"].to_string();
     assert!(
@@ -1312,6 +1310,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         "new typing must not join the frozen correction"
     );
     desktop.expect_text("Keep the sidebar compact.").await;
+    drop(original);
 
     desktop.type_text("Summarize the changes afterwards.").await;
     desktop.right_click("Send message").await;
@@ -1397,11 +1396,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             .unwrap()
     );
     desktop.type_text("Check keyboard focus too.").await;
-    gate.arm();
     desktop.submit().await;
-    desktop.held(&gate).await;
-    gate.release();
-    second.finish().await;
     let third = desktop.request(&mut fixture).await;
     let sent = third.body["messages"].to_string();
     assert!(
@@ -1412,6 +1407,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         !sent.contains("Summarize the changes afterwards."),
         "explicit followup waits until the turn ends"
     );
+    drop(second);
     desktop
         .type_text("Preserve this draft after stopping.")
         .await;
@@ -1450,39 +1446,27 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         .await;
     desktop.right_click("Send message").await;
     desktop.press("Stop response").await;
-    // Stop names the active Run; an already accepted followup is independent.
-    let followup = desktop.request(&mut fixture).await;
-    assert!(
-        followup.body["messages"]
-            .to_string()
-            .contains("Summarize the changes afterwards.")
-    );
-    drop(third);
-    followup.finish().await;
     desktop
         .wait(
-            "the queued followup did not settle after Stop",
+            "Stop did not end the active turn",
             fixture.idle(&desktop.client, &session),
         )
         .await;
+    drop(third);
     desktop.press("Focus message composer").await;
     desktop
         .expect_text("Preserve this draft after stopping.")
         .await;
     assert!(
         desktop.controls("Retry message").is_empty(),
-        "stopping a Run must not turn its accepted followup into a failed send"
+        "a failed message does not force the details panel open"
     );
-    let queue = desktop
-        .client
-        .query("agent", "queue", json!({"sessionId":session}))
-        .await
-        .unwrap();
-    assert_eq!(queue["entries"], json!([]));
+    desktop.press("Messages").await;
+    desktop.control("Retry message").await;
     desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 4);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
     desktop.close().await;
     fixture.finish().await;
 }

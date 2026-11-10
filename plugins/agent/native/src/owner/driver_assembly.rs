@@ -215,16 +215,7 @@ impl Owner {
             })
             .map(|definition| definition.name.as_str())
             .collect();
-        let selected = live_tools.excluding(&excluded);
-        let always_visible: Vec<_> = self
-            .tools
-            .definitions()
-            .filter(|tool| self.tools.always_visible(&tool.name) && selected.contains(&tool.name))
-            .map(|tool| tool.name.as_str())
-            .collect();
-        selected
-            .with_always_visible(&always_visible)
-            .map_err(|error| RunError::InvalidInput(error.to_string()))
+        Ok(live_tools.excluding(&excluded))
     }
 
     async fn unavailable_current(
