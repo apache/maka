@@ -606,11 +606,20 @@ impl Owner {
                     .session_run(&job.worker, run)
                     .await?
                     .ok_or("discovery_execution_unavailable")?;
-                job.execution = Some(ExecutionIdentity {
+                let execution = ExecutionIdentity {
                     session_id: job.worker.clone(),
                     turn_id: view.spec.turn_id.clone(),
                     run_id: run,
-                });
+                };
+                if job.execution.as_ref() != Some(&execution) {
+                    job.execution = Some(execution);
+                    revision = Some(
+                        self.scheduler
+                            .save_investigation(revision, &job)
+                            .await
+                            .map_err(reason)?,
+                    );
+                }
                 if matches!(job.phase, Phase::Stopping) && view.terminal.is_none() && !view.stopped
                 {
                     self.durable

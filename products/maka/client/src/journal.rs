@@ -189,6 +189,8 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+#[cfg(test)]
+mod quote_tests;
 mod recovery;
 mod workspaces;
 mod write;

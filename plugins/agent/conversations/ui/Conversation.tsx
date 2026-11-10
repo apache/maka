@@ -2115,7 +2115,12 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
-  const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
+  const settleReply = (
+    reply: any,
+    text?: string,
+    files: DraftAttachment[] = [],
+    quoted: QuoteRef[] = [],
+  ) => {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
@@ -2127,6 +2132,7 @@ export function Conversation(props: ConversationProps) {
         ...pendingMessages().filter((row) => row.messageId !== accepted.messageId),
         {
           key: `pending/${accepted.messageId}`,
+          quotes: quoted,
           messageId: accepted.messageId,
           field: 'body',
           role: 'user',
@@ -2228,7 +2234,7 @@ export function Conversation(props: ConversationProps) {
         return;
       }
       const sent = await confirmSend(client, id);
-      if (alive) settleReply(sent.reply, frozen.text, frozen.files);
+      if (alive) settleReply(sent.reply, frozen.text, frozen.files, frozen.edit.quotes);
     } catch (reason) {
       sendError(id, reason);
     } finally {
@@ -2382,6 +2388,7 @@ export function Conversation(props: ConversationProps) {
             reply,
             original.correlation.draft.text,
             original.correlation.draft.attachments,
+            original.correlation.draft.quotes ?? [],
           );
       }
       const delivery = await sendDelivery(client, id);
@@ -2488,6 +2495,7 @@ export function Conversation(props: ConversationProps) {
         id: original.id,
         text: original.correlation.draft.text,
         attachments: original.correlation.draft.attachments,
+        quotes: original.correlation.draft.quotes ?? [],
         state: failed
           ? 'failed'
           : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
@@ -2515,6 +2523,7 @@ export function Conversation(props: ConversationProps) {
         id,
         text: frozen.text,
         attachments: frozen.files,
+        quotes: frozen.edit.quotes,
         state: 'sending',
         detail: tr('Sending…'),
         retryable: false,
@@ -2527,6 +2536,7 @@ export function Conversation(props: ConversationProps) {
         id: freezing.frozen.id,
         text: freezing.frozen.text,
         attachments: freezing.frozen.files,
+        quotes: freezing.frozen.edit.quotes,
         state: freezing.kind === 'reserving' ? 'sending' : 'failed',
         detail: freezing.kind === 'reserving' ? tr('Saving message…') : renderText(freezing.error),
         retryable: freezing.kind === 'failed',

@@ -8254,6 +8254,10 @@ export interface AgentHistoryChunk {
    */
   hasReferences?: boolean;
   /**
+   * Bounded quote display, present only on the first message fragment.
+   */
+  quotes?: HistoryQuote[];
+  /**
    * Part of the successfully completed native Turn's final output at `through`.
    * Includes all body parts and source citations; never a Thinking field.
    */
@@ -8285,6 +8289,14 @@ export interface ModelPartIdentity {
   stepId: StepId;
   attemptId: ModelAttemptId;
   ordinal: number;
+}
+/**
+ * Display preview only; the original input retains complete text and provenance.
+ */
+export interface HistoryQuote {
+  text: string;
+  label?: string | null;
+  truncated: boolean;
 }
 /**
  * Duration of a successfully adopted context checkpoint, in recorded milliseconds.

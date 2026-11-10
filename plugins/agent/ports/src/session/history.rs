@@ -428,6 +428,15 @@ pub struct ModelPartIdentity {
     pub ordinal: u64,
 }
 
+/// Display preview only; the original input retains complete text and provenance.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryQuote {
+    pub text: String,
+    pub label: Option<String>,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
@@ -440,6 +449,9 @@ pub struct Chunk {
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
+    /// Bounded quote display, present only on the first message fragment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<HistoryQuote>,
     /// This body belongs to the final output of a successfully completed native
     /// Turn at the page's fence. Includes every text part and source citation;
     /// absence does not establish liveness or identify an imported final answer.

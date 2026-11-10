@@ -371,6 +371,7 @@ async fn tree_window(
 fn fragment_metadata(chunk: &mut wire::Chunk) {
     if chunk.offset != 0 {
         chunk.attachments.clear();
+        chunk.quotes.clear();
         chunk.has_references = false;
         chunk.timing = None;
     }

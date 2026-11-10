@@ -1355,6 +1355,9 @@ pub struct HistoryChunk {
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
+    /// Bounded quote display, present only on the first message fragment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<maka_agent_ports::session::history::HistoryQuote>,
     /// Part of the successfully completed native Turn's final output at `through`.
     /// Includes all body parts and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1549,6 +1552,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     run_id: chunk.run_id,
                     model_part: chunk.model_part,
                     has_references: chunk.has_references,
+                    quotes: chunk.quotes,
                     final_output: chunk.final_output,
                     model: chunk.model,
                     origin: chunk.origin,

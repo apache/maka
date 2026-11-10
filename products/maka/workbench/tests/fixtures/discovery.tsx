@@ -20,8 +20,9 @@
 import { keymap, mount, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { DiscoveryPanel } from '../../app/DiscoveryPanel';
+import { MessageRow } from '../../app/MessageRow';
 import { BotReply } from '../../app/BotReply';
-import type { Host } from '../../app/host';
+import { HostProvider, type Host } from '../../app/host';
 
 mount(() => {
   let detail: any = null,
@@ -163,6 +164,32 @@ mount(() => {
         openLink={async () => {}}
         openInvestigation={opened.set}
       />
+      <HostProvider value={host}>
+        <MessageRow
+          item={() => ({
+            key: 'quoted-user',
+            messageId: 'quoted-user',
+            field: 'body',
+            role: 'user',
+            text: '',
+            quotes: [
+              {
+                text: 'Please stop this recommendation.',
+                label: 'Earlier discovery',
+                truncated: false,
+              },
+            ],
+            attachments: [],
+            hasReferences: true,
+          })}
+          sessionId="bot"
+          through={() => 10}
+          previewImage={() => {}}
+          openLink={async () => {}}
+          userScroll={() => {}}
+          toolMaxHeight={() => 500}
+        />
+      </HostProvider>
       <Text>{`Opened ${opened()}`}</Text>
       <Text>{`Action ${calls()}`}</Text>
     </View>

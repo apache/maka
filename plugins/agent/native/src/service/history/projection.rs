@@ -82,6 +82,7 @@ fn base(
             position,
             model_part: None,
             has_references: false,
+            quotes: Vec::new(),
             final_output: false,
             model: None,
             origin: None,
@@ -114,6 +115,34 @@ fn text(row: &mut Row, field: SourceField, body: TextBody) {
     row.body = Body::Text(body.clone());
     row.fields.push((field, Field::Text(body)));
 }
+pub(super) fn quotes(input: &[maka_agent_facts::input::QuoteRef]) -> Vec<wire::HistoryQuote> {
+    fn prefix(text: &str, bytes: usize) -> String {
+        let mut end = text.len().min(bytes);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_owned()
+    }
+    // Bound even JSON-escaped text below the history frame budget. Original
+    // input and feedback provenance remain in the durable message unchanged.
+    input
+        .iter()
+        .take(16)
+        .map(|quote| {
+            let text = prefix(&quote.text, 256);
+            wire::HistoryQuote {
+                truncated: text.len() < quote.text.len(),
+                text,
+                label: quote
+                    .label
+                    .as_deref()
+                    .or_else(|| quote.source.as_ref().map(|s| s.session_name.as_str()))
+                    .map(|label| prefix(label, 64)),
+            }
+        })
+        .collect()
+}
+
 fn user(
     item: &HistoryItem,
     turn: &str,
@@ -126,6 +155,7 @@ fn user(
     let mut row = base(item, turn, index, Role::User, address)?;
     row.chunk.message_id = message_id;
     row.chunk.origin = origin;
+    row.chunk.quotes = quotes(content.quotes.as_deref().unwrap_or_default());
     let has_references = content
         .quotes
         .as_ref()
@@ -822,4 +852,30 @@ pub(super) async fn project(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quote_previews_fit_history_pages_without_changing_the_original_input() {
+        let quote = maka_agent_facts::input::QuoteRef {
+            text: format!("{}{}", "引用".repeat(10_000), "\u{0001}".repeat(10_000)),
+            label: Some("\u{0001}".repeat(10_000)),
+            source: None,
+            source_message_id: None,
+            source_turn_id: None,
+        };
+        let original = vec![quote; 16];
+        let preview = quotes(&original);
+        assert_eq!(preview.len(), 16);
+        assert!(
+            preview
+                .iter()
+                .all(|quote| quote.truncated && quote.text.starts_with("引用"))
+        );
+        assert!(serde_json::to_vec(&preview).unwrap().len() < 32 * 1024);
+        assert_eq!(original[0].text.len(), 70_000);
+    }
 }

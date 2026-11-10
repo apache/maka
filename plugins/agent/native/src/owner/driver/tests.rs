@@ -414,6 +414,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &[
                 "create",
+                "history",
                 "models",
                 "send",
                 "work",

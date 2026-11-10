@@ -12874,6 +12874,14 @@ export const contracts: {
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
                     type: 'boolean',
                   },
+                  quotes: {
+                    description:
+                      'Bounded quote display, present only on the first message fragment.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryQuote',
+                    },
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
@@ -13018,6 +13026,24 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryQuote: {
+                description:
+                  'Display preview only; the original input retains complete text and provenance.',
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'truncated'],
               },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
@@ -20122,6 +20148,14 @@ export const contracts: {
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
                     type: 'boolean',
                   },
+                  quotes: {
+                    description:
+                      'Bounded quote display, present only on the first message fragment.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryQuote',
+                    },
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
@@ -20266,6 +20300,24 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryQuote: {
+                description:
+                  'Display preview only; the original input retains complete text and provenance.',
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'truncated'],
               },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',

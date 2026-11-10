@@ -471,6 +471,17 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     quiet(&f, &listener, &mut socket).await;
     let original = f.outbox().await;
     assert_eq!(original.as_array().unwrap().len(), 1);
+    let publication = &original[0];
+    let run = f.settled(&task, 1).await["task"]["runs"][0].clone();
+    assert_eq!(publication["discovery"]["recordId"], record);
+    assert_eq!(
+        publication["discovery"]["workerSessionId"],
+        run["sessionId"]
+    );
+    assert_eq!(
+        publication["discovery"]["workerTurnId"],
+        page["records"][0]["source"]["turnId"]
+    );
     f.reopen().await;
     assert_eq!(f.outbox().await, original);
     f.send("Retry the original notification", json!([])).await;
@@ -488,6 +499,73 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     assert_eq!(page["records"][0]["content"]["kind"], "notified");
     assert_eq!(f.outbox().await, original);
     quiet(&f, &listener, &mut socket).await;
+    let quote = json!({"text":"Do not repeat this finding", "label":"Proactive discovery",
+        "sourceMessageId":format!("bot/{}",publication["sequence"]),"sourceTurnId":publication["turnId"],
+        "source":{"sessionId":f.bot,"sessionName":"Bot","capturedAt":maka_agent_authority::now(),"truncated":false}});
+    let sent = f.send("", json!([quote])).await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(body.to_string().contains("Do not repeat this finding"));
+    let (mut socket, rejected) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"feedback","record":"another-investigation","note":"Wrong target"}),
+    )
+    .await;
+    assert!(
+        rejected
+            .to_string()
+            .contains("feedback_does_not_match_quoted_discovery"),
+        "{rejected}"
+    );
+    let (mut socket, saved) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"feedback","note":"Stop repeating this"}),
+    )
+    .await;
+    assert_eq!(saved["recorded"], true, "{saved}");
+    let (mut socket, source) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"feedback_source","record":saved["record"]}),
+    )
+    .await;
+    let source: Value = serde_json::from_str(source["source"].as_str().unwrap()).unwrap();
+    assert_eq!(source["quotes"], json!([quote]));
+    quiet(&f, &listener, &mut socket).await;
+    f.reopen().await;
+    let mut position = json!({"kind":"tail"});
+    let mut through = Value::Null;
+    let displayed = loop {
+        let history = f
+            .query(
+                "history",
+                json!({"sessionId":f.bot,"position":position,"through":through}),
+            )
+            .await;
+        through = history["through"].clone();
+        if let Some(chunk) = history["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|chunk| chunk["messageId"] == sent["messageId"] && chunk["offset"] == 0)
+        {
+            break chunk.clone();
+        }
+        assert!(
+            !history["before"].is_null(),
+            "quoted message missing from history: {sent}"
+        );
+        let before = json!({"kind":"before","cursor":history["before"]});
+        assert_ne!(before, position, "history cursor did not advance");
+        position = before;
+    };
+    assert_eq!(
+        displayed["quotes"],
+        json!([{ "text":quote["text"], "label":quote["label"], "truncated":false }])
+    );
+    assert_eq!(displayed["hasReferences"], true);
+    assert_eq!(displayed["text"], "");
     f.close().await;
 }
 
@@ -1112,5 +1190,77 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     )
     .await;
     assert_eq!(f.settled(id, 1).await["task"]["runs"][0]["outcome"], "ok");
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Desktop plan").await;
+    let schedule = f.detail(&task).await["task"]["schedule"].clone();
+    let reminder = f.query("schedule", json!({"kind":"create","input":{"task":{
+        "title":"Unrelated reminder","intentBody":"Other task","schedule":schedule,"effect":{"kind":"reminder"},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
+    assert_eq!(reminder["kind"], "committed");
+    let page = f
+        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+        .await;
+    assert_eq!(page["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(page["tasks"][0]["id"], task);
+    let other = f
+        .query(
+            "create",
+            json!({"title":"Other session","automaticTitle":false,"labels":[],
+        "workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}}),
+        )
+        .await;
+    assert_eq!(
+        f.query(
+            "schedules",
+            json!({"kind":"discovery","sessionId":other["session"]["id"]})
+        )
+        .await["tasks"],
+        json!([])
+    );
+    f.change(&task, "trigger_now").await;
+    let (mut socket, _) = next(&listener).await;
+    let owner = f.owner();
+    let mut updates = owner.schedule_changes();
+    let active = tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            let active = f.detail(&task).await["investigation"].clone();
+            if !active.is_null() {
+                break active;
+            }
+            updates.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(active["phase"], "investigating");
+    assert_ne!(active["sessionId"], f.bot);
+    assert!(!active["turnId"].as_str().unwrap().is_empty());
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"No material change"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(45), updates.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let done = f.settled(&task, 1).await;
+    assert!(done["investigation"].is_null());
+    assert_eq!(done["task"]["runs"][0]["sessionId"], active["sessionId"]);
+    assert_eq!(
+        f.query(
+            "schedules",
+            json!({"kind":"discovery","sessionId":f.bot,"expectedRevision":page["revision"]})
+        )
+        .await["kind"],
+        "changed"
+    );
+    drop(owner);
     f.close().await;
 }

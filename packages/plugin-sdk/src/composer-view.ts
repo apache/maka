@@ -77,6 +77,7 @@ export interface ComposerSendAction {
 
 export interface ComposerSendStatus {
   id: string;
+  quotes?: QuoteRef[];
   text: string;
   attachments: ClientDraftAttachment[];
   state: 'sending' | 'accepted' | 'failed' | 'unknown';

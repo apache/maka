@@ -129,6 +129,9 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap();
+        app.wait_for("text:Earlier discovery").unwrap();
+        app.wait_for("text:Please stop this recommendation.")
+            .unwrap();
         app.wait_for("role:button[View investigation]").unwrap();
         app.press("role:button[View investigation] >> nth=0")
             .unwrap();
