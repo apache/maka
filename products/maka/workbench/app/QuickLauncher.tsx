@@ -26,6 +26,7 @@ import {
   platform,
   Scroll,
   signal,
+  Storage,
   Text,
   View,
   type JSX,
@@ -40,25 +41,38 @@ import type {
 } from '../../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickIcon,
   type QuickToolHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { afterKeyword, matchOf } from '../../../../plugins/shared/quick-search';
 import { loadDraft, saveDraft, type Output } from './host';
 import {
   MakaMark,
   QUICK_BAR_SLOT,
   QUICK_ROW_HEIGHT,
+  QUICK_SECTION_HEIGHT,
+  QuickFooter,
   QuickRow,
+  QuickSectionTitle,
   quickBarStyle,
   quickInputStyle,
-  quickRowStyle,
 } from './QuickBar';
 import { tr } from './locale';
+import {
+  isFrequent,
+  parseUsage,
+  ranked,
+  recommended,
+  recordUse,
+  type Usage,
+} from './quick-results';
 import { errorText, renderText } from './text';
-import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
+import { C, bodyTextStyle } from './ui';
 
 const SHORTCUT = 'alt+space';
 const MAX_HEIGHT = 560;
-const VISIBLE_TOOL_ROWS = 8;
+const MAX_LIST_HEIGHT = 360;
+const USAGE_KEY = 'maka.quick-launcher.usage';
 
 type BotOutbox = Output<'agent', 'botOutbox'>;
 
@@ -115,8 +129,59 @@ function watchUnread(fail: (reason: unknown) => void) {
   return unread;
 }
 
+type UsageStore = { current(): Usage; record(key: string): void };
+
+function createUsageStore(report: (reason: unknown) => void): UsageStore {
+  const usage = signal<Usage>({});
+  Storage.getItem(USAGE_KEY)
+    .then((stored) => usage.set(parseUsage(stored)))
+    .catch(report);
+  let saving: Promise<void> = Promise.resolve();
+  return {
+    current: usage,
+    record(key) {
+      const next = recordUse(usage(), key, Date.now());
+      usage.set(next);
+      const value = JSON.stringify(next);
+      saving = saving.then(() => Storage.setItem(USAGE_KEY, value)).catch(report);
+    },
+  };
+}
+
+type Row = {
+  key: string;
+  icon: QuickIcon | 'maka';
+  title: string;
+  detail?: string | undefined;
+  trailing?: string | undefined;
+  unread?: boolean;
+  action: string;
+  run(): void;
+};
+
+type Section = { key: string; title: string | null; rows: readonly Row[]; start: number };
+
+function LauncherRow(props: { row: Row; selected: boolean }) {
+  return (
+    <QuickRow
+      label={`${props.row.action} ${props.row.title}`}
+      title={props.row.title}
+      detail={props.row.detail}
+      trailing={props.row.trailing}
+      icon={props.row.icon}
+      unread={props.row.unread === true}
+      selected={props.selected}
+      onPress={props.row.run}
+    />
+  );
+}
+
 function Launcher(
-  props: Navigation & { runtime: UiRuntime<JSX.Element>; close(): Promise<boolean> },
+  props: Navigation & {
+    runtime: UiRuntime<JSX.Element>;
+    close(): Promise<boolean>;
+    usage: UsageStore;
+  },
 ) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
   currentWindow().focus();
@@ -132,21 +197,122 @@ function Launcher(
       ),
   );
   const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
-  const counts = computed(() =>
-    tools().map((tool) => ({ key: tool.key, rows: handles().get(tool.key)?.rows() ?? 0 })),
+  const attached = () =>
+    tools().flatMap((tool) => {
+      const handle = handles().get(tool.key);
+      return handle === undefined ? [] : [{ tool, handle }];
+    });
+  const candidates = computed(() =>
+    attached().flatMap(({ tool, handle }) =>
+      handle.items().map((item) => {
+        const key = `${tool.instance.path.join('/')}/${tool.id}/${item.id}`;
+        return {
+          key,
+          icon: item.icon,
+          title: item.title,
+          detail: item.detail,
+          trailing: item.source,
+          action: item.action,
+          match: item.match,
+          remembered: item.remembered === true,
+          run() {
+            if (item.remembered) props.usage.record(key);
+            item.run();
+          },
+        };
+      }),
+    ),
   );
-  const toolRows = computed(() => counts().reduce((sum, tool) => sum + tool.rows, 0));
-  // Past every tool's rows is the row that asks the Bot.
-  const selection = signal(0);
-  const selected = computed(() => Math.min(selection(), toolRows()));
-  const locate = (index: number) => {
-    let offset = 0;
-    for (const tool of counts()) {
-      if (index < offset + tool.rows) return { key: tool.key, row: index - offset };
-      offset += tool.rows;
-    }
-    return null;
+  const entries = computed(() =>
+    attached().flatMap(({ tool, handle }) =>
+      handle.entries().map((entry) => ({
+        key: `${tool.key}/entry/${entry.keywords[0]}`,
+        entry,
+        icon: entry.icon,
+        title: entry.title,
+        trailing: entry.keywords[0],
+        action: tr('Open'),
+        run:
+          entry.run ??
+          (() => {
+            selection.set(0);
+            query.set(`${entry.keywords[0]} `);
+          }),
+      })),
+    ),
+  );
+  const home = computed(() => query().trim() === '');
+  const botRow = (): Row => ({
+    key: 'bot',
+    icon: 'maka',
+    title: 'Maka Bot',
+    detail: unread()?.preview,
+    trailing: unread() === null ? undefined : clock(unread()!.at),
+    unread: unread() !== null,
+    action: tr('Open'),
+    run: () => void run(),
+  });
+  const askRow = (): Row => ({
+    key: 'ask',
+    icon: 'maka',
+    title: tr('Ask Maka'),
+    action: tr('Ask Maka'),
+    run: () => void run(),
+  });
+  const results = (): Row[] => {
+    const text = query();
+    const found = entries().flatMap((row) => {
+      // Inside a tool its own entry would only push the results down.
+      if (row.entry.run === undefined && afterKeyword(text, row.entry.keywords) !== null) return [];
+      const match = matchOf([row.entry.title, ...row.entry.keywords], text);
+      return match === null ? [] : [{ ...row, match }];
+    });
+    return ranked([...candidates(), ...found], props.usage.current());
   };
+  const recommendations = (): Row[] => {
+    const usage = props.usage.current();
+    return recommended(candidates(), usage).map((row) => ({
+      ...row,
+      detail: isFrequent(usage[row.key]!) ? tr('Frequently used') : tr('Recently used'),
+    }));
+  };
+  const sections = computed(() => {
+    const groups: { key: string; title: string | null; rows: readonly Row[] }[] = home()
+      ? [
+          { key: 'bot', title: null, rows: [botRow()] },
+          { key: 'recommended', title: tr('Recommended'), rows: recommendations() },
+          { key: 'tools', title: tr('Tools'), rows: entries() },
+        ]
+      : [{ key: 'results', title: null, rows: results() }];
+    let start = 0;
+    return groups.flatMap((group): Section[] => {
+      if (group.rows.length === 0) return [];
+      const section = { ...group, start };
+      start += group.rows.length;
+      return [section];
+    });
+  });
+  const listed = computed(() => sections().flatMap((section) => section.rows));
+  // A typed query always keeps a way to ask the Bot, below the rows that scroll.
+  const pinned = computed(() => (home() ? null : askRow()));
+  const rows = computed(() => [...listed(), ...(pinned() ? [pinned()!] : [])]);
+  const selection = signal(0);
+  const selected = computed(() => Math.min(selection(), rows().length - 1));
+  // Where each listed row sits; a section's first row reveals its title with it.
+  const placement = computed(() => {
+    const spans: { top: number; bottom: number }[] = [];
+    let y = 0;
+    for (const section of sections()) {
+      const top = y;
+      if (section.title !== null) y += QUICK_SECTION_HEIGHT;
+      section.rows.forEach((_, index) => {
+        y += QUICK_ROW_HEIGHT;
+        spans.push({ top: index === 0 ? top : y - QUICK_ROW_HEIGHT, bottom: y });
+      });
+    }
+    return { spans, height: y };
+  });
+  const listHeight = computed(() => Math.min(placement().height, MAX_LIST_HEIGHT));
   const toolView = (tool: UiContributionRef) => {
     cleanup(() => {
       const remaining = new Map(handles());
@@ -155,16 +321,11 @@ function Launcher(
     });
     return props.runtime.renderView({ path: tool.instance.path, id: tool.id }, quickToolView, {
       query,
-      selected: () => {
-        const location = locate(selected());
-        return location?.key === tool.key ? location.row : null;
-      },
       close: () => void props.close(),
       report: (reason) => failure.set(errorText(reason)),
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
-  const listHeight = computed(() => Math.min(toolRows(), VISIBLE_TOOL_ROWS) * QUICK_ROW_HEIGHT);
   let list: ScrollRef | undefined;
   let scrolled = 0;
   const reveal = (y: number) => {
@@ -172,12 +333,10 @@ function Launcher(
     list?.scrollTo({ y, animated: false });
   };
   effect(() => {
-    const index = selected();
-    if (index >= toolRows()) return;
-    const top = index * QUICK_ROW_HEIGHT;
-    const bottom = top + QUICK_ROW_HEIGHT;
-    if (top < scrolled) reveal(top);
-    else if (bottom > scrolled + listHeight()) reveal(bottom - listHeight());
+    const span = placement().spans[selected()];
+    if (span === undefined) return;
+    if (span.top < scrolled) reveal(span.top);
+    else if (span.bottom > scrolled + listHeight()) reveal(span.bottom - listHeight());
   });
   let removeKeys = () => {};
   cleanup(() => removeKeys());
@@ -215,11 +374,7 @@ function Launcher(
       running = false;
     }
   };
-  const activate = () => {
-    const location = locate(selected());
-    if (location === null) void run();
-    else handles().get(location.key)!.activate(location.row);
-  };
+  const activate = () => rows()[selected()]!.run();
   return (
     <View style={frameStyle}>
       <View style={quickBarStyle}>
@@ -235,17 +390,21 @@ function Launcher(
                 repeat: true,
                 within: node,
               }),
-              keymap.bind('down', () => selection.set(Math.min(toolRows(), selected() + 1)), {
-                when: 'always',
-                repeat: true,
-                within: node,
-              }),
+              keymap.bind(
+                'down',
+                () => selection.set(Math.min(rows().length - 1, selected() + 1)),
+                {
+                  when: 'always',
+                  repeat: true,
+                  within: node,
+                },
+              ),
             ];
             removeKeys = () => unbind.forEach((remove) => remove());
           }}
           autoFocus
-          accessibilityLabel={tr('Ask Maka')}
-          placeholder={tr('Ask Maka')}
+          accessibilityLabel={tr('Search tools or ask Maka')}
+          placeholder={tr('Search tools or ask Maka')}
           value={query()}
           onChange={({ value }) => {
             selection.set(0);
@@ -255,7 +414,10 @@ function Launcher(
           style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
         />
       </View>
-      <View style={{ borderTopWidth: toolRows() > 0 ? 1 : 0, borderTopColor: C.line }}>
+      <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
+        {(tool) => toolView(tool())}
+      </Each>
+      <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
         <Scroll
           ref={(node) => {
             list = node;
@@ -265,58 +427,25 @@ function Launcher(
           }}
           style={{ height: listHeight() }}
         >
-          <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
-            {(tool) => toolView(tool())}
+          <Each of={sections()} key={(section: Section) => section.key}>
+            {(section) => (
+              <>
+                <If when={section().title !== null}>
+                  <QuickSectionTitle title={section().title!} />
+                </If>
+                <Each of={section().rows} key={(row: Row) => row.key}>
+                  {(row, index) => (
+                    <LauncherRow row={row()} selected={selected() === section().start + index()} />
+                  )}
+                </Each>
+              </>
+            )}
           </Each>
         </Scroll>
-        <If when={toolRows() > 0}>
-          <QuickRow
-            label={tr('Ask Maka')}
-            title={tr('Ask Maka')}
-            icon={<MakaMark />}
-            selected={selected() === toolRows()}
-            onPress={() => void run()}
-          />
+        <If when={pinned() !== null}>
+          <LauncherRow row={pinned()!} selected={selected() === listed().length} />
         </If>
       </View>
-      <If when={unread() !== null && query() === ''}>
-        <Button
-          accessibilityLabel={`Maka Bot: ${unread()!.preview}`}
-          onPress={() => void run()}
-          style={{ ...quickRowStyle, borderTopWidth: 1, borderTopColor: C.line }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <MakaMark />
-          <Text style={{ ...bodyTextStyle, flexShrink: 0, fontWeight: '600', color: C.text }}>
-            Maka Bot
-          </Text>
-          <Text
-            style={{
-              ...bodyTextStyle,
-              flex: 1,
-              minWidth: 0,
-              color: C.secondary,
-              numberOfLines: 1,
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {unread()!.preview}
-          </Text>
-          <View
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: 3,
-              flexShrink: 0,
-              backgroundColor: C.accent,
-            }}
-          />
-          <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>
-            {clock(unread()!.at)}
-          </Text>
-        </Button>
-      </If>
       <If when={failure() !== null}>
         <Text
           style={[
@@ -327,6 +456,7 @@ function Launcher(
           {renderText(failure()!)}
         </Text>
       </If>
+      <QuickFooter action={rows()[selected()]!.action} />
     </View>
   );
 }
@@ -344,6 +474,7 @@ export function QuickLauncher(
     report(reason: unknown): void;
   },
 ) {
+  const usage = createUsageStore(props.report);
   const toggle = () => {
     if (props.opened()) void props.close();
     else props.opened.set(true);
@@ -368,7 +499,7 @@ export function QuickLauncher(
       level="aboveDock"
       transparent
       defaultPosition="center"
-      defaultSize={{ width: 640, height: 112 }}
+      defaultSize={{ width: 680, height: 400 }}
       sizeToContent="height"
       // Escape stops a running reply, and every way out has to save the draft first.
       closeOnEscape={!props.conversing()}
@@ -389,6 +520,7 @@ export function QuickLauncher(
             open={props.open}
             close={props.close}
             runtime={props.runtime}
+            usage={usage}
           />
         }
       >

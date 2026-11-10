@@ -29,19 +29,76 @@ import {
   parseLibrary,
 } from '../../../../plugins/application/quick-library/library.ts';
 import { symbols } from '../../../../plugins/application/symbols/symbols.ts';
-import { afterKeyword, rank } from '../../../../plugins/shared/quick-search.ts';
+import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts';
+import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
 
 const names = (item) => [item];
+const find = (items, query) =>
+  ranked(
+    search(items, query, [], names, true).map(({ item, match }) => ({ key: item, match, item })),
+    {},
+  ).map(({ item }) => item);
 
-test('better matches come first and a limit applies after ranking', () => {
-  const items = ['Screen Sharing', 'Maps', 'Map Editor', 'Bitmap', 'Road map'];
-  assert.deepEqual(rank(items, 'map', names, 10), ['Maps', 'Map Editor', 'Road map', 'Bitmap']);
-  assert.deepEqual(rank(items, 'ma', names, 1), ['Maps']);
-  assert.deepEqual(rank(items, '   ', names, 10), []);
+test('better matches come first', () => {
+  const items = ['Screen Sharing', 'Bitmap', 'Road map', 'Map Editor', 'Maps'];
+  assert.deepEqual(find(items, 'map'), ['Map Editor', 'Maps', 'Road map', 'Bitmap']);
+  assert.deepEqual(find(items, 'zzz'), []);
 });
 
 test('one letter only matches the start of a word', () => {
-  assert.deepEqual(rank(['Bitmap', 'Road map'], 'm', names, 10), ['Road map']);
+  assert.deepEqual(find(['Bitmap', 'Road map'], 'm'), ['Road map']);
+});
+
+test('a keyword lists everything, and text after it searches only that tool', () => {
+  const offered = (query) => search(['alpha', 'beta'], query, ['cb'], names).map((f) => f.item);
+  assert.deepEqual(offered('cb'), ['alpha', 'beta']);
+  assert.deepEqual(offered('cb be'), ['beta']);
+  assert.deepEqual(offered('beta'), []);
+});
+
+test('among equal matches the most used comes first', () => {
+  const at = 1_000_000;
+  let usage = recordUse({}, 'b', at);
+  usage = recordUse(usage, 'b', at + 1);
+  usage = recordUse(usage, 'c', at + 2);
+  const candidates = ['a', 'c', 'b'].map((key) => ({ key, match: 1 }));
+  assert.deepEqual(
+    ranked(candidates, usage).map(({ key }) => key),
+    ['b', 'c', 'a'],
+  );
+  assert.deepEqual(
+    ranked(
+      [
+        { key: 'b', match: 2 },
+        { key: 'a', match: 0 },
+      ],
+      usage,
+    ).map(({ key }) => key),
+    ['a', 'b'],
+  );
+});
+
+test('only used, rememberable results are recommended', () => {
+  const usage = recordUse({}, 'used', 1);
+  const candidates = [
+    { key: 'unused', remembered: true },
+    { key: 'used', remembered: true },
+  ];
+  assert.deepEqual(
+    recommended(candidates, usage).map(({ key }) => key),
+    ['used'],
+  );
+  assert.deepEqual(recommended([{ key: 'used', remembered: false }], usage), []);
+});
+
+test('usage stays bounded by forgetting the least recent', () => {
+  let usage = {};
+  for (let at = 0; at <= MAX_USAGE; at += 1) usage = recordUse(usage, `key-${at}`, at);
+  assert.equal(Object.keys(usage).length, MAX_USAGE);
+  assert.equal(usage['key-0'], undefined);
+  assert.deepEqual(parseUsage(JSON.stringify(usage)), usage);
+  assert.deepEqual(parseUsage(null), {});
+  assert.throws(() => parseUsage('[]'));
 });
 
 test('a keyword must stand alone, so ordinary questions are not captured', () => {
@@ -53,7 +110,9 @@ test('a keyword must stand alone, so ordinary questions are not captured', () =>
 
 test('symbols are found through their terms', () => {
   assert.deepEqual(
-    rank(symbols, 'rocket', ([, terms]) => [terms], 5).map(([character]) => character),
+    search(symbols, 'sym rocket', ['sym'], ([, terms]) => [terms]).map(
+      ({ item: [character] }) => character,
+    ),
     ['🚀'],
   );
 });

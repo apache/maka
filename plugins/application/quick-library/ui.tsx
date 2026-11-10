@@ -21,21 +21,18 @@ import { Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
-import { afterKeyword, rank } from '../../shared/quick-search';
+import { afterKeyword, search, type Found } from '../../shared/quick-search';
 import { expandLink, isTemplate, parseLibrary, type LibraryItem } from './library';
 import { LibrarySettings, type Library } from './settings';
 
 const KEY = 'maka.quick-library.items';
-const LIMIT = 5;
+const SNIPPET_KEYWORDS = ['snippet', 'snippets', '片段'];
 const NOTE_KEYWORDS = ['note', 'notes', '笔记', '筆記'];
-
-type Row =
-  | { kind: 'copy'; id: string; title: string; text: string }
-  | { kind: 'open'; id: string; title: string; url: string };
+const LINK_KEYWORDS = ['link', 'links', '链接', '連結'];
 
 function createLibrary(): Library {
   const items = signal<readonly LibraryItem[] | null>(null);
@@ -64,70 +61,76 @@ function createLibrary(): Library {
   };
 }
 
-function matches(items: readonly LibraryItem[], query: string): Row[] {
-  const copy = (item: LibraryItem): Row => ({
-    kind: 'copy',
+const preview = (value: string) => value.replace(/\s+/g, ' ').slice(0, 120);
+const name = (item: LibraryItem) => [item.name];
+
+function results(items: readonly LibraryItem[], input: QuickToolInput): QuickItem[] {
+  const query = input.query();
+  const remembered = (item: LibraryItem, match: number) => ({
     id: item.id,
     title: item.name,
-    text: item.value,
+    detail: preview(item.value),
+    match,
+    remembered: true,
   });
-  const snippets = items.filter((item) => item.kind === 'snippet');
-  const notes = items.filter((item) => item.kind === 'note');
-  const links = items.filter((item) => item.kind === 'link');
-  const noteText = afterKeyword(query, NOTE_KEYWORDS);
-  const templates = links.flatMap((item): Row[] => {
-    if (!isTemplate(item)) return [];
-    const text = afterKeyword(query, [item.name]);
-    if (!text) return [];
-    return [
-      {
-        kind: 'open',
-        id: item.id,
-        title: `${item.name}: ${text}`,
-        url: expandLink(item.value, text),
-      },
-    ];
+  const copy = ({ item, match }: Found<LibraryItem>): QuickItem => ({
+    ...remembered(item, match),
+    icon: item.kind === 'note' ? 'note' : 'snippet',
+    source: item.kind === 'note' ? tr('Note') : tr('Snippet'),
+    action: tr('Copy and close'),
+    run: () => void Clipboard.writeText(item.value).then(input.close, input.report),
   });
+  const open = (item: LibraryItem, match: number, url: string, title: string): QuickItem => ({
+    ...remembered(item, match),
+    title,
+    icon: 'link',
+    source: tr('Link'),
+    action: tr('Open'),
+    run: () =>
+      void openUrl(url).then(({ opened }) => {
+        if (opened) input.close();
+        else input.report(new Error(tr('The link could not be opened')));
+      }, input.report),
+  });
+  const ofKind = (kind: LibraryItem['kind']) => items.filter((item) => item.kind === kind);
+  const links = ofKind('link');
+  const notes = ofKind('note');
   return [
-    ...templates,
-    ...rank(
+    ...links.filter(isTemplate).flatMap((item) => {
+      const text = afterKeyword(query, [item.name]);
+      return text ? [open(item, 0, expandLink(item.value, text), `${item.name}: ${text}`)] : [];
+    }),
+    ...search(
       links.filter((item) => !isTemplate(item)),
       query,
-      (item) => [item.name],
-      LIMIT,
-    ).map((item): Row => ({ kind: 'open', id: item.id, title: item.name, url: item.value })),
-    ...rank(snippets, query, (item) => [item.name], LIMIT).map(copy),
-    ...(noteText
-      ? rank(notes, noteText, (item) => [item.name, item.value], LIMIT)
-      : noteText === ''
-        ? notes.slice(0, LIMIT)
-        : rank(notes, query, (item) => [item.name], LIMIT)
+      LINK_KEYWORDS,
+      name,
+      true,
+    ).map(({ item, match }) => open(item, match, item.value, item.name)),
+    ...search(ofKind('snippet'), query, SNIPPET_KEYWORDS, name, true).map(copy),
+    ...search(
+      notes,
+      query,
+      NOTE_KEYWORDS,
+      // Note bodies are only searched once the query has asked for notes.
+      afterKeyword(query, NOTE_KEYWORDS) === null ? name : (item) => [item.name, item.value],
+      true,
     ).map(copy),
   ];
 }
 
 function LibraryTool(props: { input: QuickToolInput; library: Library }) {
   const { input, library } = props;
-  const rows = computed(() => matches(library.items() ?? [], input.query()));
-  const run = (row: Row) => {
-    if (row.kind === 'copy') {
-      void Clipboard.writeText(row.text).then(input.close, input.report);
-      return;
-    }
-    openUrl(row.url).then(({ opened }) => {
-      if (opened) input.close();
-      else input.report(new Error(tr('The link could not be opened')));
-    }, input.report);
-  };
-  return (
-    <QuickRows
-      input={input}
-      items={rows}
-      title={(row) => row.title}
-      hint={(row) => (row.kind === 'copy' ? tr('Copy') : tr('Open'))}
-      activate={run}
-    />
-  );
+  const items = computed(() => results(library.items() ?? [], input));
+  input.attach({
+    items,
+    entries: () => [
+      { title: tr('Snippets'), icon: 'snippet', keywords: SNIPPET_KEYWORDS },
+      { title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS },
+      { title: tr('Links'), icon: 'link', keywords: LINK_KEYWORDS },
+    ],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = () => {

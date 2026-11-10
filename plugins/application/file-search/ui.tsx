@@ -22,19 +22,14 @@ import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
 import { afterKeyword } from '../../shared/quick-search';
 
 const KEYWORDS = ['f', 'file', '文件', '檔案'];
 const SETTLE_MS = 200;
-
-const describe = (path: string) => {
-  const slash = path.lastIndexOf('/');
-  return `${path.slice(slash + 1)}  ·  ${path.slice(0, slash).replace(/^\/Users\/[^/]+/, '~')}`;
-};
 
 function FileSearch(props: { input: QuickToolInput; host: ApplicationHost }) {
   const { input, host } = props;
@@ -56,15 +51,24 @@ function FileSearch(props: { input: QuickToolInput; host: ApplicationHost }) {
       clearTimeout(timer);
     });
   });
-  return (
-    <QuickRows
-      input={input}
-      items={found}
-      title={describe}
-      hint={() => tr('Open')}
-      activate={(path) => void host.openLocalPath(path).then(input.close, input.report)}
-    />
-  );
+  input.attach({
+    items: () =>
+      found().map((path): QuickItem => {
+        const slash = path.lastIndexOf('/');
+        return {
+          id: path,
+          title: path.slice(slash + 1),
+          detail: path.slice(0, slash).replace(/^\/Users\/[^/]+/, '~'),
+          icon: 'file',
+          source: tr('File'),
+          action: tr('Open'),
+          match: 0,
+          run: () => void host.openLocalPath(path).then(input.close, input.report),
+        };
+      }),
+    entries: () => [{ title: tr('Search files'), icon: 'file', keywords: KEYWORDS }],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => ({

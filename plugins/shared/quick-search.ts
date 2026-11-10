@@ -25,26 +25,12 @@ function score(term: string, needle: string): number | null {
   return needle.length >= 2 && text.includes(needle) ? 3 : null;
 }
 
-/** The best matches for `query`, best first; a blank query matches nothing. */
-export function rank<T>(
-  items: readonly T[],
-  query: string,
-  terms: (item: T) => readonly string[],
-  limit: number,
-): T[] {
+/** How well the best of `terms` matches, lower being better; null when none does. */
+export function matchOf(terms: readonly string[], query: string): number | null {
   const needle = query.trim().toLowerCase();
-  if (needle === '') return [];
-  const matched: { item: T; score: number }[] = [];
-  for (const item of items) {
-    const scores = terms(item)
-      .map((term) => score(term, needle))
-      .filter((value) => value !== null);
-    if (scores.length > 0) matched.push({ item, score: Math.min(...scores) });
-  }
-  return matched
-    .sort((left, right) => left.score - right.score)
-    .slice(0, limit)
-    .map((match) => match.item);
+  if (needle === '') return null;
+  const scores = terms.map((term) => score(term, needle)).filter((value) => value !== null);
+  return scores.length > 0 ? Math.min(...scores) : null;
 }
 
 /** The text after a leading keyword, or null when `query` does not start with one. */
@@ -57,4 +43,26 @@ export function afterKeyword(query: string, keywords: readonly string[]): string
     if (lower.startsWith(`${word} `)) return text.slice(word.length + 1).trim();
   }
   return null;
+}
+
+export type Found<T> = { item: T; match: number };
+
+/**
+ * What a tool offers for `query`. A blank query or a bare keyword offers everything; text after
+ * a keyword is searched, and other text only when the tool is `searchedDirectly`.
+ */
+export function search<T>(
+  items: readonly T[],
+  query: string,
+  keywords: readonly string[],
+  terms: (item: T) => readonly string[],
+  searchedDirectly = false,
+): Found<T>[] {
+  const text = query.trim() === '' ? '' : afterKeyword(query, keywords);
+  if (text === '') return items.map((item) => ({ item, match: 0 }));
+  if (text === null && !searchedDirectly) return [];
+  return items.flatMap((item) => {
+    const match = matchOf(terms(item), text ?? query);
+    return match === null ? [] : [{ item, match }];
+  });
 }

@@ -17,36 +17,36 @@
  * under the License.
  */
 
-import { computed, platform, type JSX } from 'nsh';
+import { platform, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
-import { rank } from '../../shared/quick-search';
 
 const TERMS = ['screenshot', 'capture', '截图', '截圖'];
 
 function Screenshot(props: { input: QuickToolInput; host: ApplicationHost }) {
   const { input, host } = props;
-  const rows = computed(() => rank(['screenshot'], input.query(), () => TERMS, 1));
   const capture = () => {
     // The popup floats above everything, so it has to be gone before the selection starts.
     input.close();
     host.captureScreenRegion().catch(input.report);
   };
-  return (
-    <QuickRows
-      input={input}
-      items={rows}
-      title={() => tr('Capture a screen region')}
-      hint={() => tr('Copy')}
-      activate={capture}
-    />
-  );
+  input.attach({
+    items: () => [],
+    entries: () => [
+      {
+        title: tr('Capture a screen region'),
+        icon: 'camera',
+        keywords: [tr('screenshot keyword'), ...TERMS],
+        run: capture,
+      },
+    ],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => ({

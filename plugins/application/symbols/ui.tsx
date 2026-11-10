@@ -21,36 +21,37 @@ import { Clipboard, computed, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
-import { afterKeyword, rank } from '../../shared/quick-search';
+import { search } from '../../shared/quick-search';
 import { symbols } from './symbols';
 
 const KEYWORDS = ['sym', 'symbol', '符号', '符號'];
-const LIMIT = 30;
 
 function Symbols(props: { input: QuickToolInput }) {
   const { input } = props;
-  const matches = computed(() => {
-    const text = afterKeyword(input.query(), KEYWORDS);
-    if (text === null) return [];
-    return text === ''
-      ? symbols.slice(0, LIMIT)
-      : rank(symbols, text, ([, terms]) => [terms], LIMIT);
-  });
-  return (
-    <QuickRows
-      input={input}
-      items={matches}
-      title={([character]) => character}
-      hint={() => tr('Copy')}
-      activate={([character]) =>
-        void Clipboard.writeText(character).then(input.close, input.report)
-      }
-    />
+  const items = computed(() =>
+    search(symbols, input.query(), KEYWORDS, ([, terms]) => [terms]).map(
+      ({ item: [character, terms], match }): QuickItem => ({
+        id: character,
+        title: character,
+        detail: terms,
+        icon: 'symbol',
+        source: tr('Symbol'),
+        action: tr('Copy and close'),
+        match,
+        remembered: true,
+        run: () => void Clipboard.writeText(character).then(input.close, input.report),
+      }),
+    ),
   );
+  input.attach({
+    items,
+    entries: () => [{ title: tr('Symbols'), icon: 'symbol', keywords: KEYWORDS }],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = () => ({

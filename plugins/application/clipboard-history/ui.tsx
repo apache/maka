@@ -22,16 +22,15 @@ import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
-import { afterKeyword, rank } from '../../shared/quick-search';
+import { search } from '../../shared/quick-search';
 import { remember } from './history';
 
 const KEYWORDS = ['cb', 'clipboard', '剪贴板', '剪貼簿'];
 const POLL_MS = 1000;
-const LIMIT = 30;
 
 type History = { entries: Signal<readonly string[]>; failure: Signal<unknown> };
 
@@ -68,22 +67,24 @@ function ClipboardHistory(props: { input: QuickToolInput; history: History }) {
   effect(() => {
     if (history.failure() !== null) input.report(history.failure());
   });
-  const matches = computed(() => {
-    const text = afterKeyword(input.query(), KEYWORDS);
-    if (text === null) return [];
-    return text === ''
-      ? history.entries().slice(0, LIMIT)
-      : rank(history.entries(), text, (entry) => [entry], LIMIT);
-  });
-  return (
-    <QuickRows
-      input={input}
-      items={matches}
-      title={(entry) => entry.replace(/\s+/g, ' ').trim().slice(0, 200)}
-      hint={() => tr('Copy')}
-      activate={(entry) => void Clipboard.writeText(entry).then(input.close, input.report)}
-    />
+  const items = computed(() =>
+    search(history.entries(), input.query(), KEYWORDS, (entry) => [entry]).map(
+      ({ item: entry, match }): QuickItem => ({
+        id: entry,
+        title: entry.replace(/\s+/g, ' ').trim().slice(0, 200),
+        icon: 'clipboard',
+        source: tr('Clipboard'),
+        action: tr('Copy and close'),
+        match,
+        run: () => void Clipboard.writeText(entry).then(input.close, input.report),
+      }),
+    ),
   );
+  input.attach({
+    items,
+    entries: () => [{ title: tr('Clipboard history'), icon: 'clipboard', keywords: KEYWORDS }],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {

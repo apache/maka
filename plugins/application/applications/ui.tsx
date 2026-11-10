@@ -22,31 +22,38 @@ import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRows } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
-import { rank } from '../../shared/quick-search';
+import { search } from '../../shared/quick-search';
 
-const LIMIT = 5;
+const KEYWORDS = ['app', 'apps', '应用', '應用'];
 const applicationName = (path: string) => path.slice(path.lastIndexOf('/') + 1, -'.app'.length);
 
 function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   const { input, host } = props;
   const installed = signal<readonly string[]>([]);
   host.installedApplications().then(installed.set, input.report);
-  const matches = computed(() =>
-    rank(installed(), input.query(), (path) => [applicationName(path)], LIMIT),
+  const items = computed(() =>
+    search(installed(), input.query(), KEYWORDS, (path) => [applicationName(path)], true).map(
+      ({ item: path, match }): QuickItem => ({
+        id: path,
+        title: applicationName(path),
+        icon: 'app',
+        source: tr('Application'),
+        action: tr('Open'),
+        match,
+        remembered: true,
+        run: () => void host.openLocalPath(path).then(input.close, input.report),
+      }),
+    ),
   );
-  return (
-    <QuickRows
-      input={input}
-      items={matches}
-      title={applicationName}
-      hint={() => tr('Open')}
-      activate={(path) => void host.openLocalPath(path).then(input.close, input.report)}
-    />
-  );
+  input.attach({
+    items,
+    entries: () => [{ title: tr('Search applications'), icon: 'app', keywords: KEYWORDS }],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => ({
