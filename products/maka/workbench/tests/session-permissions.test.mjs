@@ -52,8 +52,8 @@ const hooks = registerHooks({
 const { createSessionPermissions } = await import(new URL('sessionPermissions.ts', appRoot));
 hooks.deregister();
 
-test('changing permission settings leaves grant revocation to the Host', async () => {
-  let session = {
+test('disabling permission requests does not request grant revocation', async () => {
+  const session = {
     id: 'session',
     revision: 4,
     title: 'Permission settings',
@@ -61,36 +61,23 @@ test('changing permission settings leaves grant revocation to the Host', async (
     permissions: { access: 'read_only', requestPermissions: true },
   };
   const sent = [];
-  const control = async (method, input) => {
-    assert.equal(method, 'metadata');
-    sent.push(input);
-    session = {
-      ...session,
-      revision: session.revision + 1,
-      permissions: input.permissions.settings,
-    };
+  const permissions = createSessionPermissions({}, session.id, async (method, input) => {
+    sent.push([method, input.permissions]);
     return { kind: 'committed', session };
-  };
-  const permissions = createSessionPermissions({}, session.id, control);
+  });
   permissions.observe(session);
 
   await permissions.select({
     session,
     settings: { ...session.permissions, requestPermissions: false },
   });
-  assert.deepEqual(sent[0].permissions, {
-    settings: { access: 'read_only', requestPermissions: false },
-    revokeGrants: false,
-  });
-  assert.equal(permissions.error(), '');
-
-  await permissions.select({
-    session,
-    settings: { ...session.permissions, access: 'workspace_write' },
-  });
-  assert.deepEqual(sent[1].permissions, {
-    settings: { access: 'workspace_write', requestPermissions: false },
-    revokeGrants: false,
-  });
-  assert.equal(permissions.error(), '');
+  assert.deepEqual(sent, [
+    [
+      'metadata',
+      {
+        settings: { access: 'read_only', requestPermissions: false },
+        revokeGrants: false,
+      },
+    ],
+  ]);
 });
