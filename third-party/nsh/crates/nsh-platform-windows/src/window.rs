@@ -893,12 +893,6 @@ unsafe extern "system" fn window_proc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
     }
-    if msg == WM_CLOSE {
-        if !crate::app::resident::should_close(hwnd) {
-            return LRESULT(0);
-        }
-        crate::app::resident::save_placement(hwnd);
-    }
     let surface = data.surface.upgrade();
     let terminal = surface
         .as_ref()
@@ -918,9 +912,8 @@ unsafe extern "system" fn window_proc(
             o.set(o.get().saturating_sub(1));
             o.get()
         });
-        let resident = crate::app::resident::window_closed(hwnd);
-        if left == 0 && !terminal && !resident {
-            // Only a nonresident desktop app owns the message loop.
+        if left == 0 && !terminal {
+            // Terminal hosts reuse their UI thread; only a desktop app owns its message loop.
             // SAFETY: plain call.
             unsafe { PostQuitMessage(0) };
         }

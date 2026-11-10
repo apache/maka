@@ -34,6 +34,7 @@ import {
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { keepDesktopResident } from './desktopResidency';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
@@ -102,6 +103,7 @@ function App(
     navigationGeneration++;
   });
   effect(() => currentLocale.set(runtime.locale()));
+  keepDesktopResident();
   const report = (reason: unknown) => {
     if (alive) notice.set(reason);
   };

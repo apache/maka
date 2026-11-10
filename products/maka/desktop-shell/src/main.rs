@@ -24,10 +24,9 @@
 //! Windows and GTK on Linux.
 //! `maka desktop` starts it for the Host it admitted, named by
 //! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
-//! `MAKA_HOST_EPOCH`. Ordinary close releases the UI and retains its admitted
-//! client when a usable tray exists; explicit Quit detaches it. Without a tray,
-//! close exits. The Host keeps the work it accepted. If that Host stops, the
-//! AppKit or Linux window connects to the Root's next Host, which the launcher named by
+//! `MAKA_HOST_EPOCH`. Closing the window hides it behind the tray; Quit
+//! detaches this client, and the Host keeps the work it accepted. If that Host
+//! stops, the AppKit or Linux window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
 
@@ -49,8 +48,6 @@ mod linux;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
-#[cfg(target_os = "linux")]
-mod tray_linux;
 #[cfg(target_os = "macos")]
 use appkit as backend;
 #[cfg(target_os = "linux")]

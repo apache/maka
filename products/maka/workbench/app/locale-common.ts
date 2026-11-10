@@ -49,6 +49,8 @@ export const commonMessages = {
     '暂时无法读取会话列表，请尝试重新连接。',
     '暫時無法讀取對話清單，請嘗試重新連線。',
   ],
+  'Open Maka': ['Open Maka', '打开 Maka', '打開 Maka'],
+  'Quit Maka': ['Quit Maka', '退出 Maka', '結束 Maka'],
   'The action outcome is unknown. Check the current state before trying again.': [
     'The action outcome is unknown. Check the current state before trying again.',
     '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',
