@@ -27,7 +27,7 @@ import {
 import type { HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ToolActivity } from './toolActivity';
 
-/** Source identity, ordering, failure text and whether an answer has begun. */
+/** Source identity, ordering, failure text and whether text has appeared. */
 export type ProcessRow = Pick<
   Row,
   | 'messageId'
@@ -132,6 +132,11 @@ function compareOptionalOrder(
   if (right === undefined) return -1;
   return compareHistoryOrder(left, right);
 }
+
+function emptyThinking(row: ProcessRow): boolean {
+  return (row.field === 'thinking' || row.role === 'thinking') && !/\S/.test(row.text);
+}
+
 function stepKey(row: ProcessRow): string | undefined {
   if (!row.modelPart) return undefined;
   const p = row.position;
@@ -195,6 +200,7 @@ export function sameProcessRows(
           row.field !== 'body' ||
           Boolean(row.text) === Boolean(next.text)) &&
         row.field === next.field &&
+        emptyThinking(row) === emptyThinking(next) &&
         row.turnId === next.turnId &&
         row.importedTurn === next.importedTurn &&
         compareOptionalOrder(displayOrder(row), displayOrder(next)) === 0 &&
@@ -373,6 +379,11 @@ export function projectProcessGroups(input: {
     presentation.worked = true;
     presentation.answerOutputIds.length = 0;
   };
+  const moveAnswerToWork = (presentation: TurnPresentation) => {
+    if (presentation.answerOutputIds.length === 0) return;
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
+  };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
     .toSorted((left, right) => left.startSequence - right.startSequence);
@@ -401,6 +412,14 @@ export function projectProcessGroups(input: {
     if (input.gapsBefore?.has(position.rowId)) flush(true);
     const rowTurn = historyTurnKey(row);
     if (current && current.turnKey !== rowTurn) flush(true);
+    if (emptyThinking(row)) {
+      // An encrypted or not-yet-streamed thought can resume work without a visible row.
+      if (rowTurn) {
+        moveAnswerToWork(turn(rowTurn));
+        progressed.add(rowTurn);
+      }
+      continue;
+    }
     const body = !row.tool && row.role === 'assistant' && row.field === 'body';
     const outside =
       body ||
@@ -437,10 +456,7 @@ export function projectProcessGroups(input: {
             presentation.worked = true;
             presentation.answerOutputIds.length = 0;
           }
-        } else if (presentation.answerOutputIds.length > 0) {
-          presentation.worked = true;
-          presentation.answerOutputIds.length = 0;
-        }
+        } else moveAnswerToWork(presentation);
         if (body) progressed.add(rowTurn);
       }
       entries.push(message);
