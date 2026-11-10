@@ -676,11 +676,7 @@ mod tests {
         }
 
         fn load(&self) -> (EngineConfig, mpsc::UnboundedReceiver<JsonValue>) {
-            let mut policy = nsh_engine::Policy::default();
-            policy.declared = Some(
-                nsh_engine::parse_capabilities(r#"{"host":["observed"],"windows":{}}"#).unwrap(),
-            );
-            let config = EngineConfig::new(nsh_engine::Bundle::source(r#"
+            self.load_source(r#"
                 import { host } from 'nsh';
                 import { Window, Tray } from 'nsh/desktop';
                 let count = 0;
@@ -700,7 +696,16 @@ mod tests {
                 }, { id: 'secondary', title: 'Secondary', defaultSize: { width: 200, height: 150 } });
                 Tray.set({ menu: [] });
                 host.post('observed', { kind: 'loaded', count });
-            "#.into()).with_policy(policy));
+            "#)
+        }
+
+        fn load_source(&self, source: &str) -> (EngineConfig, mpsc::UnboundedReceiver<JsonValue>) {
+            let mut policy = nsh_engine::Policy::default();
+            policy.declared = Some(
+                nsh_engine::parse_capabilities(r#"{"host":["observed"],"windows":{}}"#).unwrap(),
+            );
+            let config =
+                EngineConfig::new(nsh_engine::Bundle::source(source.into()).with_policy(policy));
             let (observed, received) = mpsc::unbounded_channel();
             config.host.handle("observed", move |call| {
                 let _ = observed.send(call.data().clone());
@@ -715,6 +720,58 @@ mod tests {
             self.window.destroy();
             std::fs::remove_dir_all(&self.directory).unwrap();
         }
+    }
+
+    #[test]
+    #[ignore = "requires GTK and a private D-Bus session; exercised by linux-desktop CI"]
+    fn deferred_close_remains_reachable_when_the_tray_is_lost_before_hide() {
+        let desktop = DesktopTest::new();
+        let (watcher, mut registrations) = Watcher::new();
+        let (config, mut observed) = desktop.load_source(
+            r#"
+            import { host } from 'nsh';
+            import { Window, Tray } from 'nsh/desktop';
+            const main = Window.get('main');
+            main.set({ closeOnPress: false });
+            main.on('closePress', () => host.post('observed', 'close-pending'));
+            host.on('continueHide', () => main.hide());
+            Tray.set({ menu: [] });
+            host.post('observed', 'loaded');
+        "#,
+        );
+        assert_eq!(receive(&mut observed), serde_json::json!("loaded"));
+        receive(&mut registrations).return_value(None);
+        until(tray_registered);
+        for _ in 0..2 {
+            desktop.window.close();
+            assert_eq!(receive(&mut observed), serde_json::json!("close-pending"));
+        }
+        watcher.release_name();
+        until(|| !tray_registered());
+        assert!(desktop.window.is_visible());
+
+        let hidden = Rc::new(Cell::new(false));
+        let notified = hidden.clone();
+        desktop
+            .window
+            .connect_visible_notify(move |_| notified.set(true));
+        for _ in 0..2 {
+            hidden.set(false);
+            config.host.send("continueHide", JsonValue::Null).unwrap();
+            until(|| hidden.get());
+            assert!(
+                desktop.window.is_visible(),
+                "a deferred hide stranded main after tray loss"
+            );
+            assert!(!desktop.quit.detach.0.borrow().quitting);
+        }
+        gtk::prelude::WidgetExt::activate_action(&desktop.window, "app.quit", None).unwrap();
+        assert!(
+            desktop.app.windows().is_empty(),
+            "reachability recovery resurrected Quit"
+        );
+        desktop.quit.detach.0.borrow().moving.send_replace(false);
+        until(|| *desktop.quit.detach.0.borrow().done.borrow());
     }
 
     #[test]
