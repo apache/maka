@@ -30,19 +30,30 @@ pub(crate) async fn search(
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
         .await
         .map_err(|error| error.to_string())?;
-    let page = tree
-        .find_page(
-            SourceFind {
-                after: input.after,
-                query: input.query,
-                case_sensitive: input.case_sensitive,
-                whole_word: input.whole_word,
-                include_internal: input.include_internal,
-            },
-            scope.cancellation.clone(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+    let mut request = SourceFind {
+        after: input.after,
+        query: input.query,
+        case_sensitive: input.case_sensitive,
+        whole_word: input.whole_word,
+        include_internal: input.include_internal,
+    };
+    let page = loop {
+        let mut page = tree
+            .find_page(request.clone(), scope.cancellation.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut matches = Vec::new();
+        for found in page.matches {
+            if source::visible(&tree, &found.position, &scope.cancellation).await? {
+                matches.push(found);
+            }
+        }
+        page.matches = matches;
+        if !page.matches.is_empty() || page.next_after.is_none() {
+            break page;
+        }
+        request.after = page.next_after;
+    };
     authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistorySearchPage::Ready {
         through: cut.through_sequence,

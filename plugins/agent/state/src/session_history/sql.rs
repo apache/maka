@@ -587,6 +587,8 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
                 } => Some(call.name.as_str()),
                 Fact::Cell {
                     event: maka_agent_facts::cells::CellEvent::ChildPrepared { name, .. },
+                } | Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::ToolStart { name, .. }, ..
                 } => Some(name.as_str()),
                 _ => None,
             },
@@ -1378,6 +1380,17 @@ fn tool_locator(
             } => (format!("cell:{cell}:{operation}"), false),
             _ => return Ok(None),
         },
+        Fact::ExternalTaskObserved { task, output, .. } => {
+            use maka_agent_facts::executor::Output;
+            match output {
+                Output::ToolStart { tool_call_id, .. } => (format!("{task}:{tool_call_id}"), true),
+                Output::ToolProgress { tool_call_id, .. }
+                | Output::ToolResult { tool_call_id, .. } => {
+                    (format!("{task}:{tool_call_id}"), false)
+                }
+                _ => return Ok(None),
+            }
+        }
         Fact::ExternalEffect { event } => {
             let key = event.key();
             let original = match event {

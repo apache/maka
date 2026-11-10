@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_facts::history_snapshot::SnapshotId;
 use projection::Field;
 use std::io::Write;
 use wire::{SourceField, SourceFormat, SourcePosition, SourceSegment};
@@ -32,6 +33,7 @@ pub(super) struct Selected {
     pub item: SourceItem,
     pub row: projection::Row,
 }
+type ToolScope = (Vec<RunId>, Option<SnapshotId>, String);
 #[derive(Default)]
 pub(super) struct Cache {
     key: Option<(
@@ -40,6 +42,7 @@ pub(super) struct Cache {
     )>,
     source: Option<maka_agent_state::session_history::RunSource>,
     views: std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
+    tools: std::collections::BTreeMap<ToolScope, Option<wire::Tool>>,
 }
 pub(super) fn snapshot_id(
     address: &wire::HistoryRowAddress,
@@ -50,7 +53,7 @@ pub(super) fn snapshot_id(
         | wire::HistoryRowAddress::Imported { snapshot, .. } => Some(*snapshot),
     }
 }
-pub(super) async fn selected(
+async fn unpaired(
     tree: &SourceTree,
     address: &wire::HistoryRowAddress,
     cache: &mut Cache,
@@ -131,6 +134,183 @@ pub(super) async fn selected(
     }
     row.chunk.order = qualified.order;
     Ok(Selected { data, item, row })
+}
+pub(super) async fn visible(
+    tree: &SourceTree,
+    address: &wire::HistoryRowAddress,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<bool, String> {
+    if stop.is_cancelled() {
+        return Err("agent_history_cancelled".into());
+    }
+    Ok(
+        match tree
+            .item(address)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            SourceItem::Canonical(item) => projection::visible(&item.recorded.fact),
+            SourceItem::Imported { .. } => true,
+        },
+    )
+}
+pub(super) async fn selected(
+    tree: &SourceTree,
+    address: &wire::HistoryRowAddress,
+    cache: &mut Cache,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Selected, String> {
+    let mut row = unpaired(tree, address, cache, stop).await?;
+    pair(tree, &mut row, cache, stop).await?;
+    Ok(row)
+}
+// Recall positions include inspectable receipts that are not transcript entries.
+// Scan past them rather than returning an empty page before the actual history ends.
+pub(super) async fn window(
+    tree: &SourceTree,
+    anchor: Option<wire::HistoryRowAddress>,
+    reverse: bool,
+    include_thinking: bool,
+    limit: usize,
+    cache: &mut Cache,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<Selected>, String> {
+    let mut bound = anchor;
+    let mut exclude_anchor = false;
+    let mut rows = Vec::new();
+    loop {
+        let positions = tree
+            .positions(bound.clone(), reverse, include_thinking, 32)
+            .await
+            .map_err(|error| error.to_string())?;
+        let full = positions.len() == 32;
+        let last = positions.last().map(|row| row.address.clone());
+        for qualified in positions {
+            if exclude_anchor && Some(&qualified.address) == bound.as_ref() {
+                continue;
+            }
+            let row = selected(tree, &qualified.address, cache, stop).await?;
+            if !row.row.visible {
+                continue;
+            }
+            rows.push(row);
+            if rows.len() == limit {
+                return Ok(rows);
+            }
+        }
+        if !full {
+            return Ok(rows);
+        }
+        bound = last;
+        exclude_anchor = true;
+    }
+}
+async fn pair(
+    tree: &SourceTree,
+    row: &mut Selected,
+    cache: &mut Cache,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<(), String> {
+    let Some(tool) = &row.row.chunk.tool else {
+        return Ok(());
+    };
+    // Imported claims have their own recorded association, not native tool locators.
+    if !matches!(row.item, SourceItem::Canonical(_)) {
+        return Ok(());
+    }
+    let address = &row.row.chunk.position;
+    let key = (
+        address.path().to_vec(),
+        snapshot_id(address),
+        tool.tool_use_id.clone(),
+    );
+    if let Some(paired) = cache.tools.get(&key) {
+        if let Some(paired) = paired {
+            row.row.chunk.tool = Some(paired.clone());
+        }
+        return Ok(());
+    }
+    let id = tool.tool_use_id.clone();
+    let mut paired = tool.clone();
+    let mut call_position = None;
+    let mut result_rank = (false, 0);
+    let mut after = None;
+    loop {
+        let positions = tree
+            .tool_positions(&id, after.clone(), 32)
+            .await
+            .map_err(|error| error.to_string())?;
+        if positions.is_empty() {
+            break;
+        }
+        after = positions.last().map(|row| row.address.clone());
+        for position in positions {
+            if position.address.path() != address.path()
+                || snapshot_id(&position.address) != snapshot_id(address)
+            {
+                continue;
+            }
+            let selected = unpaired(tree, &position.address, cache, stop).await?;
+            if !selected.row.visible {
+                continue;
+            }
+            let Some(tool) = selected.row.chunk.tool else {
+                continue;
+            };
+            if let Some(call) = tool.call {
+                if call_position
+                    .as_ref()
+                    .is_some_and(|position| *position != call.position)
+                {
+                    cache.tools.insert(key, None);
+                    return Ok(());
+                }
+                call_position = Some(call.position.clone());
+                paired.call = Some(call);
+            }
+            let rank = match &selected.item {
+                SourceItem::Canonical(item)
+                    if matches!(
+                        item.recorded.fact,
+                        Fact::ToolResultAccepted {
+                            outcome: AcceptedResult::CellRecovered { .. },
+                            ..
+                        }
+                    ) =>
+                {
+                    2
+                }
+                SourceItem::Canonical(item)
+                    if matches!(item.recorded.fact, Fact::ToolResultAccepted { .. }) =>
+                {
+                    3
+                }
+                _ if selected
+                    .row
+                    .fields
+                    .iter()
+                    .any(|(field, _)| *field == SourceField::Result) =>
+                {
+                    2
+                }
+                _ => 1,
+            };
+            if let Some(result) = tool.result {
+                let rank = (
+                    result.settlement != Some(maka_agent_facts::tool_call::ToolSettlement::Unknown),
+                    rank,
+                );
+                // Later uncertainty or cleanup receipts cannot replace a known return.
+                if rank >= result_rank {
+                    paired.result = Some(result);
+                    result_rank = rank;
+                }
+            }
+        }
+    }
+    row.row.chunk.tool = Some(paired.clone());
+    cache.tools.insert(key, Some(paired));
+    Ok(())
 }
 pub(super) async fn display(
     selected: &Selected,
