@@ -226,7 +226,7 @@ async fn original_upload_receipts_and_complete_attachment_drafts_survive_restart
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn frozen_send_survives_restart_and_preserves_the_next_draft() {
+async fn legacy_frozen_send_survives_upgrade_and_preserves_the_next_draft() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let fixture = Fixture::new().await;
         let client = fixture.client().await;
@@ -239,7 +239,18 @@ async fn frozen_send_survives_restart_and_preserves_the_next_draft() {
         drop(frozen);
         client.close().await.unwrap();
 
+        // The previous client had no quote table or quote field in frozen sends.
+        let legacy = SqlitePool::connect_with(sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(fixture.directory.path().join("client.db"))).await.unwrap();
+        sqlx::query("DROP TABLE draft_quotes").execute(&legacy).await.unwrap();
+        sqlx::query("UPDATE operations SET context=json_remove(context,'$.correlation.draft.quotes') WHERE id=?")
+            .bind(original.to_string()).execute(&legacy).await.unwrap();
+        legacy.close().await;
+
         let client = fixture.client().await;
+        let upgraded = client.load_draft("agent", "session-one", "composer").await.unwrap().unwrap();
+        assert_eq!(upgraded.text, "new draft");
+        assert!(upgraded.quotes.is_empty());
         let pending = client.pending_operations("agent", "session-one", "composer").await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].correlation["draft"]["text"], "original message");

@@ -739,7 +739,9 @@ impl Owner {
                         let record = match record {
                             Some(record) if linked.is_empty() || linked.contains(&record) => record,
                             Some(_) => {
-                                return Err(fail("feedback_does_not_match_quoted_discovery".into()));
+                                return Err(fail(
+                                    "feedback_does_not_match_quoted_discovery".into(),
+                                ));
                             }
                             None if linked.len() == 1 => {
                                 linked.into_iter().next().expect("one linked finding")
