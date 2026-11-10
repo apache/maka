@@ -87,6 +87,14 @@ fn completed_key(fire: &str) -> String {
         hex::encode(Sha256::digest(fire.as_bytes()))
     )
 }
+fn report_identity(job: &Job) -> String {
+    hex::encode(Sha256::digest(
+        format!("discovery-report/{}", job.fire_id).as_bytes(),
+    ))
+}
+fn authorization_revoked(authorized: &Result<(), String>) -> bool {
+    matches!(authorized, Err(e) if matches!(e.as_str(), "discovery_cancelled" | "scheduler_authorization_changed" | "agent_session_unavailable"))
+}
 fn reason(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -225,15 +233,79 @@ impl scheduler::Scheduler {
 impl Owner {
     pub(super) async fn restore_discovery(&self) -> Result<(), String> {
         let (revision, job) = self.scheduler.investigation().await?;
-        if let Some(mut job) = job
-            && (!self.settings.bot || !self.settings.scheduled_tasks)
-            && !matches!(job.phase, Phase::Stopping)
+        let Some(mut job) = job else {
+            return Ok(());
+        };
+        let authorized = self.discovery_authorized(&job).await;
+        let pending = self
+            .scheduler
+            .change_basis(&job.task_id)
+            .await?
+            .is_some_and(|saved| {
+                saved.plan.task.status == maka_scheduler::task::Status::Active
+                    && saved.plan.pending.as_ref().is_some_and(|fire| {
+                        fire.id == job.fire_id
+                            && matches!(
+                                fire.authorization,
+                                Some(scheduler::Approval::Discovery { .. })
+                            )
+                    })
+            });
+        if matches!(job.phase, Phase::Stopping)
+            || !pending
+            || authorization_revoked(&authorized)
+            || self.discovery_worker_retired(&job).await?
         {
-            job.phase = Phase::Stopping;
-            self.scheduler
-                .save_investigation(revision, &job)
+            // Preparation enqueues before saving Delivering. Revoke either crash
+            // window before activated() can start consuming the durable queue.
+            self.retract_discovery_report(&job).await?;
+            if !matches!(job.phase, Phase::Stopping) {
+                job.phase = Phase::Stopping;
+                self.scheduler
+                    .save_investigation(revision, &job)
+                    .await
+                    .map_err(reason)?;
+            }
+        } else {
+            authorized?;
+        }
+        Ok(())
+    }
+    async fn discovery_worker_retired(&self, job: &Job) -> Result<bool, String> {
+        match self.store.session_retirement(&job.worker).await {
+            Ok(retired) => Ok(retired.is_some()),
+            Err(maka_event_log::StoreError::SessionNotFound) => Ok(false),
+            Err(error) => Err(reason(error)),
+        }
+    }
+    async fn retract_discovery_report(&self, job: &Job) -> Result<(), String> {
+        let _ordered = self.runs.ordered(&job.bot).await;
+        let queue = self.durable.queue();
+        let identity = report_identity(job);
+        if matches!(
+            queue
+                .resolve_message(job.bot.clone(), format!("m_{identity}"))
+                .await
+                .map_err(reason)?,
+            MessageResolution::Pending
+        ) {
+            let pending = queue.read(job.bot.clone()).await.map_err(reason)?;
+            queue
+                .execute(
+                    job.bot.clone(),
+                    QueueCommand {
+                        id: maka_agent_facts::durable::FactId::new(),
+                        at: UnixMillis(now() as i64),
+                        expected_revision: pending.revision,
+                        edit: QueueEdit::Retract {
+                            request: RequestId(identity),
+                        },
+                    },
+                    vec![],
+                )
                 .await
                 .map_err(reason)?;
+            self.wake_notify.notify_one();
         }
         Ok(())
     }
@@ -395,20 +467,8 @@ impl Owner {
             );
             job
         };
-        if let Phase::Delivering { notification, .. } = &job.phase
-            && self.admit_notification(notification).await?
-        {
-            return self
-                .settle_discovery(fire, revision, &job, Outcome::Ok, "Report admitted to Bot")
-                .await
-                .map(Some);
-        }
-        let retired = match self.store.session_retirement(&job.worker).await {
-            Ok(retired) => retired.is_some(),
-            Err(maka_event_log::StoreError::SessionNotFound) => false,
-            Err(error) => return Err(reason(error)),
-        };
-        if retired {
+        if self.discovery_worker_retired(&job).await? {
+            self.retract_discovery_report(&job).await?;
             job.phase = Phase::Stopping;
             return self
                 .settle_discovery(
@@ -422,13 +482,23 @@ impl Owner {
                 .map(Some);
         }
         let authorized = self.discovery_authorized(&job).await;
-        if !enabled
+        if matches!(job.phase, Phase::Stopping)
+            || !enabled
             || matches!(
                 fire.authorization,
                 Some(scheduler::Approval::CancelledDiscovery { .. })
             )
-            || matches!(&authorized,Err(e) if matches!(e.as_str(),"discovery_cancelled"|"scheduler_authorization_changed"|"agent_session_unavailable"))
+            || authorization_revoked(&authorized)
+            || matches!(
+                self.durable
+                    .queue()
+                    .resolve_message(job.bot.clone(), format!("m_{}", report_identity(&job)))
+                    .await
+                    .map_err(reason)?,
+                MessageResolution::Cancelled
+            )
         {
+            self.retract_discovery_report(&job).await?;
             if !matches!(job.phase, Phase::Stopping) {
                 job.phase = Phase::Stopping;
                 revision = Some(
@@ -438,9 +508,16 @@ impl Owner {
                         .map_err(reason)?,
                 );
             }
-        }
-        if !matches!(job.phase, Phase::Stopping) {
+        } else {
             authorized?;
+        }
+        if let Phase::Delivering { notification, .. } = &job.phase
+            && self.admit_notification(notification).await?
+        {
+            return self
+                .settle_discovery(fire, revision, &job, Outcome::Ok, "Report admitted to Bot")
+                .await
+                .map(Some);
         }
         let queue = self.durable.queue();
         let message = format!("m_{}", job.request);
@@ -690,9 +767,7 @@ impl Owner {
                     job.approval.target.workspace.clone(),
                     job.approval.target.binding,
                 );
-                let identity = hex::encode(Sha256::digest(
-                    format!("discovery-report/{}", job.fire_id).as_bytes(),
-                ));
+                let identity = report_identity(&job);
                 let record = records::outcome_id(&job)?;
                 let text = text.clone();
                 let worker = &job.worker;

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 enum Fault {
-    Unknown(oneshot::Sender<()>),
+    Unknown(oneshot::Sender<()>, bool),
     Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
 }
 
@@ -51,12 +51,18 @@ impl Storage {
         }
     }
     pub(in crate::owner) fn unknown_after(&self, kind: &'static str) -> oneshot::Receiver<()> {
+        self.unknown_at(kind, true)
+    }
+    pub(in crate::owner) fn unknown_before(&self, kind: &'static str) -> oneshot::Receiver<()> {
+        self.unknown_at(kind, false)
+    }
+    fn unknown_at(&self, kind: &'static str, after_commit: bool) -> oneshot::Receiver<()> {
         let (sent, observed) = oneshot::channel();
         assert!(
             self.fault
                 .lock()
                 .unwrap()
-                .replace((kind, Fault::Unknown(sent)))
+                .replace((kind, Fault::Unknown(sent, after_commit)))
                 .is_none()
         );
         observed
@@ -84,10 +90,9 @@ impl Storage {
             let mut armed = self.fault.lock().unwrap();
             if armed.as_ref().is_some_and(|(kind, _)| {
                 writes.iter().any(|write| {
-                    write
-                        .data
-                        .value()
-                        .is_some_and(|v| v["content"]["kind"] == *kind)
+                    write.data.value().is_some_and(|v| {
+                        v["content"]["kind"] == *kind || v["phase"]["kind"] == *kind
+                    })
                 })
             }) {
                 armed.take().map(|(_, fault)| fault)
@@ -101,16 +106,20 @@ impl Storage {
                 release.await.unwrap();
                 None
             }
-            Some(Fault::Unknown(observed)) => Some(observed),
+            Some(Fault::Unknown(observed, after_commit)) => Some((observed, after_commit)),
             None => None,
         };
-        let records = self.inner.batch(writes).await?;
-        if let Some(observed) = unknown {
+        let records = if unknown.as_ref().is_some_and(|(_, after)| !after) {
+            vec![]
+        } else {
+            self.inner.batch(writes).await?
+        };
+        if let Some((observed, _)) = unknown {
             // Native Storage retires after OutcomeUnknown; recovery must reopen the owner.
             self.inner.finish().await.unwrap();
             observed.send(()).unwrap();
             return Err(StoreError::OutcomeUnknown(
-                "test: committed batch acknowledgement lost".into(),
+                "test: batch acknowledgement lost".into(),
             ));
         }
         Ok(records)

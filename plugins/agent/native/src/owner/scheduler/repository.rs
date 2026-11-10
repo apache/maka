@@ -272,7 +272,7 @@ impl Scheduler {
         }
         Ok(catalog)
     }
-    pub(super) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
+    pub(in crate::owner) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
         let record = self.storage.read(task_key(id)).await.map_err(reason)?;
         record
             .map(|record| decode_saved(record, id))

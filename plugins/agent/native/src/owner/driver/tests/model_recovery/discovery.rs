@@ -450,6 +450,141 @@ async fn discovery_committed_outcome_recovers_after_lost_acknowledgement() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_recovery_rechecks_notification_authority() {
+    for (setting, after_commit) in [
+        ("recall", true),
+        ("bot", true),
+        ("scheduledTasks", true),
+        ("recall", false),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut f = Fixture::new(&listener).await;
+        // Keep the Bot occupied so the real report remains queued across the crash.
+        f.send("Wait for my next instruction", json!([])).await;
+        let (_bot_socket, _) = next(&listener).await;
+        let task = f.create("Recovered report authorization").await;
+        f.change(&task, "trigger_now").await;
+        let (mut worker, _) = next(&listener).await;
+        let committed = if after_commit {
+            f.owner().scheduler.storage.unknown_after("delivering")
+        } else {
+            f.owner().scheduler.storage.unknown_before("delivering")
+        };
+        tool(
+            &mut worker,
+            "DiscoveryComplete",
+            json!({"kind":"report","text":"recovery-boundary-finding"}),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(45), committed)
+            .await
+            .unwrap()
+            .unwrap();
+        let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
+        assert_eq!(pending.entries.len(), 1);
+        let report = pending.entries[0].request.clone();
+        f.setting(setting, json!(false)).await;
+        assert_eq!(
+            f.owner()
+                .durable
+                .queue()
+                .resolve_message(f.bot.clone(), report.message_id.clone())
+                .await
+                .unwrap(),
+            maka_agent_state::queue::MessageResolution::Cancelled,
+            "revoked {setting} report survived recovery"
+        );
+        assert_eq!(
+            f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+            "blocked"
+        );
+        f.reopen().await;
+        assert_eq!(
+            f.owner()
+                .durable
+                .queue()
+                .resolve_message(f.bot.clone(), report.message_id)
+                .await
+                .unwrap(),
+            maka_agent_state::queue::MessageResolution::Cancelled
+        );
+        f.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_recovery_delivers_an_authorized_notification_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.send("Wait for my next instruction", json!([])).await;
+    let (_bot_socket, _) = next(&listener).await;
+    let task = f.create("Authorized recovered report").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    let committed = f.owner().scheduler.storage.unknown_after("delivering");
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"authorized-recovery-finding"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(45), committed)
+        .await
+        .unwrap()
+        .unwrap();
+    let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
+    assert_eq!(pending.entries.len(), 1);
+    let report = pending.entries[0].request.clone();
+    f.reopen().await;
+    let busy = f
+        .owner()
+        .durable
+        .latest_run(f.bot.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    f.query("stop", json!({"sessionId":f.bot,"runId":busy}))
+        .await;
+    let (mut bot, body) = next(&listener).await;
+    assert!(
+        body.to_string().contains("authorized-recovery-finding"),
+        "{body}"
+    );
+    quiet(&f, &listener, &mut bot).await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    let delivered = f
+        .owner()
+        .durable
+        .queue()
+        .resolve_message(f.bot.clone(), report.message_id.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        delivered,
+        maka_agent_state::queue::MessageResolution::Delivered { shared: false, .. }
+    ));
+    f.reopen().await;
+    assert_eq!(
+        f.owner()
+            .durable
+            .queue()
+            .resolve_message(f.bot.clone(), report.message_id)
+            .await
+            .unwrap(),
+        delivered
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;

@@ -426,6 +426,7 @@ impl Rig {
                 "project",
                 "projects",
                 "selectBackend",
+                "stop",
             ]
         } else {
             &["create", "history", "source", "search"]
