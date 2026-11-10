@@ -26,8 +26,10 @@ import { tr } from './locale';
 import { initializeAppearance } from './appearance';
 import { C } from './ui';
 import { LoadingState } from './Loading';
+import { nativeDesktop } from './nativeDesktop';
 
 function Bootstrap() {
+  nativeDesktop();
   initializeAppearance();
   const plugins = createPlugins();
   return (

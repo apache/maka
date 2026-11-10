@@ -35,7 +35,6 @@ import {
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
-import { keepDesktopResident } from './desktopResidency';
 import { QuickLauncher } from './QuickLauncher';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
@@ -105,7 +104,6 @@ function App(
     navigationGeneration++;
   });
   effect(() => currentLocale.set(runtime.locale()));
-  keepDesktopResident();
   const mainWindow = currentWindow();
   const report = (reason: unknown) => {
     if (alive) notice.set(reason);
