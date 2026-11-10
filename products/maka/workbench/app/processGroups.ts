@@ -27,7 +27,7 @@ import {
 import type { HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ToolActivity } from './toolActivity';
 
-/** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
+/** Source identity, ordering, failure text and whether text has appeared. */
 export type ProcessRow = Pick<
   Row,
   | 'messageId'
@@ -80,6 +80,8 @@ export type TurnPresentation = {
   timing: Row['timing'] | null;
   active: boolean;
   finalOutputIds: string[];
+  /** Trailing assistant text until more work arrives or history identifies the final output. */
+  answerOutputIds: string[];
   interleavedInput: boolean;
   /** Whether the turn did anything besides its final answer: steps or text between them. */
   worked: boolean;
@@ -89,6 +91,25 @@ export type ProcessProjection = {
   turns: Map<string, TurnPresentation>;
   rowsById: Map<string, ProcessRow>;
 };
+
+export function turnOutcome(turn: TurnPresentation): string | null {
+  return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
+}
+
+export function turnWorkFold(
+  turn: TurnPresentation,
+  terminal: boolean,
+): 'unavailable' | 'open' | 'closed' {
+  const outcome = turnOutcome(turn);
+  if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
+    return 'unavailable';
+  if (
+    turn.answerOutputIds.length > 0 ||
+    (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0))
+  )
+    return 'closed';
+  return terminal ? 'unavailable' : 'open';
+}
 
 /** One identity across streaming fragments, canonical handoff and tool result pairing. */
 export function stableRowId(row: ProcessRow): string {
@@ -111,6 +132,11 @@ function compareOptionalOrder(
   if (right === undefined) return -1;
   return compareHistoryOrder(left, right);
 }
+
+function emptyThinking(row: ProcessRow): boolean {
+  return (row.field === 'thinking' || row.role === 'thinking') && !/\S/.test(row.text);
+}
+
 function stepKey(row: ProcessRow): string | undefined {
   if (!row.modelPart) return undefined;
   const p = row.position;
@@ -170,7 +196,11 @@ export function sameProcessRows(
         row.role === next.role &&
         row.origin?.kind === next.origin?.kind &&
         (row.role !== 'failure' || row.text === next.text) &&
+        (row.role !== 'assistant' ||
+          row.field !== 'body' ||
+          Boolean(row.text) === Boolean(next.text)) &&
         row.field === next.field &&
+        emptyThinking(row) === emptyThinking(next) &&
         row.turnId === next.turnId &&
         row.importedTurn === next.importedTurn &&
         compareOptionalOrder(displayOrder(row), displayOrder(next)) === 0 &&
@@ -225,6 +255,7 @@ export function projectProcessGroups(input: {
   rows: readonly ProcessRow[];
   toolActivity: readonly ProcessActivity[];
   activeTurnId: string | null;
+  answerTurnId?: string | null;
   previous?: readonly ProcessEntry[];
   /** Only caller-known missing coverage, not gaps between raw event numbers. */
   gapsBefore?: ReadonlySet<string>;
@@ -244,6 +275,7 @@ export function projectProcessGroups(input: {
         timing: null,
         active: input.activeTurnId === turnKey,
         finalOutputIds: [],
+        answerOutputIds: [],
         interleavedInput: false,
         worked: false,
       };
@@ -308,7 +340,6 @@ export function projectProcessGroups(input: {
   const flush = (closed: boolean) => {
     if (!current) return;
     const presentation = turn(current.turnKey);
-    presentation.worked = true;
     const { turnKey, members } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
@@ -344,7 +375,14 @@ export function projectProcessGroups(input: {
     }
     current!.members.push(member);
     progressed.add(turnKey);
-    turn(turnKey);
+    const presentation = turn(turnKey);
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
+  };
+  const moveAnswerToWork = (presentation: TurnPresentation) => {
+    if (presentation.answerOutputIds.length === 0) return;
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
   };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
@@ -374,6 +412,14 @@ export function projectProcessGroups(input: {
     if (input.gapsBefore?.has(position.rowId)) flush(true);
     const rowTurn = historyTurnKey(row);
     if (current && current.turnKey !== rowTurn) flush(true);
+    if (emptyThinking(row)) {
+      // An encrypted or not-yet-streamed thought can resume work without a visible row.
+      if (rowTurn) {
+        moveAnswerToWork(turn(rowTurn));
+        progressed.add(rowTurn);
+      }
+      continue;
+    }
     const body = !row.tool && row.role === 'assistant' && row.field === 'body';
     const outside =
       body ||
@@ -400,14 +446,18 @@ export function projectProcessGroups(input: {
       }
       const message: MessageEntry = { kind: 'message', key: position.rowId, rowId: position.rowId };
       if (rowTurn) {
-        if (row.role === 'user' && progressed.has(rowTurn)) turn(rowTurn).interleavedInput = true;
-        if (body) {
-          if (!row.finalOutput) {
-            message.processTurnKey = rowTurn;
-            turn(rowTurn).worked = true;
+        const presentation = turn(rowTurn);
+        if (row.role === 'user' && progressed.has(rowTurn)) presentation.interleavedInput = true;
+        if (body && !row.finalOutput) {
+          message.processTurnKey = rowTurn;
+          if (rowTurn === input.answerTurnId && !row.timing?.finished) {
+            if (row.text) presentation.answerOutputIds.push(position.rowId);
+          } else {
+            presentation.worked = true;
+            presentation.answerOutputIds.length = 0;
           }
-          progressed.add(rowTurn);
-        }
+        } else moveAnswerToWork(presentation);
+        if (body) progressed.add(rowTurn);
       }
       entries.push(message);
     } else {
