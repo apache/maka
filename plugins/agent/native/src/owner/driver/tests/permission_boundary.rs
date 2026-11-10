@@ -18,12 +18,13 @@
  */
 
 use super::*;
+use maka_agent_api::contract::WorkspaceAccess;
 
 async fn update_permissions(
     rig: &Rig,
     session: &str,
     expected_revision: u64,
-    access: &str,
+    access: WorkspaceAccess,
     request_permissions: bool,
     revoke_grants: bool,
 ) -> TestResult<()> {
@@ -76,71 +77,34 @@ async fn permission_request_toggle_preserves_boundary_but_access_and_revoke_adva
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
         let owner = rig.captured.lock().unwrap().clone().unwrap();
-        let initial = owner.mutable_session(&session).await?;
-        let basis = initial.configuration.permission_basis();
-        let boundary = initial.configuration.boundary_revision;
-        let initial_access = serde_json::to_value(initial.configuration.permissions.access)?;
-        let initial_access = initial_access
-            .as_str()
-            .ok_or("permission access is not a string")?;
-        let changed_access = if initial_access == "read_only" {
-            "workspace_write"
-        } else {
-            "read_only"
+        let mut previous = owner.mutable_session(&session).await?;
+        let initial = previous.configuration.permissions.clone();
+        let changed_access = match initial.access {
+            WorkspaceAccess::ReadOnly => WorkspaceAccess::WorkspaceWrite,
+            WorkspaceAccess::WorkspaceWrite | WorkspaceAccess::DangerFullAccess => {
+                WorkspaceAccess::ReadOnly
+            }
         };
-        let initial_requests = initial.configuration.permissions.request_permissions;
-        let mut previous_revision = initial.revision;
-        for requests in [!initial_requests, initial_requests] {
-            update_permissions(
-                &rig,
-                &session,
-                previous_revision,
-                initial_access,
-                requests,
-                false,
-            )
-            .await?;
+        for (access, requests, revoke, preserves_basis) in [
+            (initial.access, !initial.request_permissions, false, true),
+            (initial.access, initial.request_permissions, false, true),
+            (changed_access, false, false, false),
+            (changed_access, false, true, false),
+        ] {
+            update_permissions(&rig, &session, previous.revision, access, requests, revoke).await?;
             let current = owner.mutable_session(&session).await?;
             assert_eq!(
-                current.configuration.permissions.request_permissions,
-                requests
+                serde_json::to_value(&current.configuration.permissions)?,
+                json!({"access":access,"requestPermissions":requests}),
             );
-            assert_eq!(current.configuration.boundary_revision, boundary);
             assert_eq!(
-                current.configuration.permission_basis(),
-                basis,
-                "request availability must not change the basis attached to existing grants"
+                current.configuration.permission_basis()
+                    == previous.configuration.permission_basis(),
+                preserves_basis,
+                "permission basis after access={access:?}, requests={requests}, revoke={revoke}",
             );
-            assert!(current.revision > previous_revision);
-            previous_revision = current.revision;
+            previous = current;
         }
-        update_permissions(
-            &rig,
-            &session,
-            previous_revision,
-            changed_access,
-            false,
-            false,
-        )
-        .await?;
-        let changed = owner.mutable_session(&session).await?;
-        assert_eq!(changed.configuration.boundary_revision, boundary + 1);
-        assert_ne!(changed.configuration.permission_basis(), basis);
-        update_permissions(
-            &rig,
-            &session,
-            changed.revision,
-            changed_access,
-            false,
-            true,
-        )
-        .await?;
-        let revoked = owner.mutable_session(&session).await?;
-        assert_eq!(revoked.configuration.boundary_revision, boundary + 2);
-        assert_ne!(
-            revoked.configuration.permission_basis(),
-            changed.configuration.permission_basis()
-        );
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()
