@@ -68,8 +68,12 @@ function Launcher(props: Navigation & { close(): void }) {
     try {
       const sessionId = await openBot();
       if (!(await props.vacate(sessionId))) return;
-      const text = query().trim();
-      if (text) await draftInSession(sessionId, text);
+      const submitted = query();
+      if (submitted.trim()) {
+        await draftInSession(sessionId, submitted.trim());
+        // The draft holds it now; a retry after refused navigation must not append it again.
+        if (query().startsWith(submitted)) query.set(query().slice(submitted.length));
+      }
       if (await props.open(sessionId)) props.close();
     } catch (reason) {
       failure.set(reason instanceof Error ? reason.message : String(reason));
