@@ -178,4 +178,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "indexed original model cleanup and final settlement",
         sql: include_str!("../migrations/0030_model_cleanup.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 31,
+        description: "indexed imported history positions",
+        sql: include_str!("../migrations/0031_imported_history_position.sql"),
+    },
 ];
