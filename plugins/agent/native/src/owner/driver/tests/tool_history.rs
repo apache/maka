@@ -381,7 +381,7 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
 async fn compact_cell_tool_result_reads_the_original_observation() {
     use maka_agent_facts::{
         cells::{CellReply, CellReplyState},
-        model::prompt_source::source::json as stream,
+        model::prompt_source::source::{JsonSource, SourceBytes, json as stream},
         tool_output::{DurableToolProjection, ReturnedToolResult},
     };
     use maka_agent_state::session_history::tool_result_source::ToolResultReader;
@@ -455,7 +455,34 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
         let answer = stream::field(&value, &["observation", "result", "answer"], budget.clone())
             .await?
             .ok_or("missing original observation")?;
-        assert!(stream::text_eq(&answer.text()?, "original evidence", budget).await?);
+        assert!(stream::text_eq(&answer.text()?, "original evidence", budget.clone()).await?);
+
+        let payload = json!({"answer":"shared payload"});
+        let result = ReturnedToolResult {
+            output: ToolOutput::Json(payload.clone()),
+            projection: DurableToolProjection::Json { value: payload },
+            is_error: false,
+            loaded_tools: Default::default(),
+        };
+        let encoded = serde_json::to_vec(&ToolReturn {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![],
+            body: result.clone(),
+        })?;
+        let decoded: ToolReturn<ReturnedToolResult> = serde_json::from_slice(&encoded)?;
+        assert_eq!(decoded.body, result);
+        let source = JsonSource::new(SourceBytes::Inline(encoded.into()));
+        let maka_agent_state::session_history::tool_result_source::ToolResultSource::Returned {
+            body,
+            ..
+        } = ToolResultReader::returned(source, budget.clone()).await?
+        else {
+            return Err("missing projected tool result".into());
+        };
+        let answer = stream::field(&body, &["projection", "value", "answer"], budget.clone())
+            .await?
+            .ok_or("missing shared projection")?;
+        assert!(stream::text_eq(&answer.text()?, "shared payload", budget).await?);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

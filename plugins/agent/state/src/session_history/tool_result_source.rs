@@ -114,7 +114,7 @@ impl ToolResultSource {
                     SourceBytes::Inline((&b"}"[..]).into()),
                 ];
                 Ok(JsonSource::new(SourceBytes::Source(Arc::new(
-                    ReplyBytes::new(parts.into())?,
+                    JoinedJson::new(parts.into())?,
                 ))))
             }
             Self::External { body } => {
@@ -388,10 +388,52 @@ impl ToolResultReader {
             .await?
             .into_iter();
         let version = present(fields.next().flatten())?;
-        if json::u64_value(&version.source, budget).await? != u64::from(SCHEMA_VERSION) {
+        if json::u64_value(&version.source, budget.clone()).await? != u64::from(SCHEMA_VERSION) {
             return Err(invalid("unsupported canonical ToolReturn schema"));
         }
-        Ok(present(fields.next().flatten())?.source)
+        let body = present(fields.next().flatten())?.source;
+        let projection = json::field(&body, &["projection"], budget.clone()).await?;
+        let Some(projection) = projection.filter(|projection| projection.kind == JsonKind::Object)
+        else {
+            return Ok(body);
+        };
+        let kind = required(&projection.source, &["kind"], &budget)
+            .await?
+            .text()?;
+        if !json::text_eq(&kind, "from_output", budget.clone()).await? {
+            return Ok(body);
+        }
+        let output = required(&body, &["output"], &budget).await?.source;
+        let format = required(&output, &["format"], &budget).await?.text()?;
+        let projected = if json::text_eq(&format, "operation", budget.clone()).await? {
+            required(
+                &output,
+                &["value", "receipt", "outcome", "result", "value"],
+                &budget,
+            )
+            .await?
+        } else if json::text_eq(&format, "json", budget.clone()).await? {
+            required(&output, &["value"], &budget).await?
+        } else {
+            return Err(invalid("shared projection requires a returned JSON value"));
+        };
+        let is_error = required(&body, &["is_error"], &budget).await?.source;
+        let loaded_tools = required(&body, &["loaded_tools"], &budget).await?.source;
+        let literal = |bytes: &'static [u8]| SourceBytes::Inline(bytes.into());
+        let parts = vec![
+            literal(b"{\"output\":"),
+            output.bytes().clone(),
+            literal(b",\"projection\":{\"kind\":\"json\",\"value\":"),
+            projected.source.bytes().clone(),
+            literal(b"},\"is_error\":"),
+            is_error.bytes().clone(),
+            literal(b",\"loaded_tools\":"),
+            loaded_tools.bytes().clone(),
+            literal(b"}"),
+        ];
+        Ok(JsonSource::new(SourceBytes::Source(Arc::new(
+            JoinedJson::new(parts)?,
+        ))))
     }
     fn cancelled(&self) -> io::Result<()> {
         if self.stop.is_cancelled() {
@@ -475,25 +517,25 @@ async fn reference_value(
     reference.validate().map_err(invalid)?;
     Ok(reference)
 }
-struct ReplyBytes {
+struct JoinedJson {
     parts: Vec<SourceBytes>,
     len: u64,
 }
-impl ReplyBytes {
+impl JoinedJson {
     fn new(parts: Vec<SourceBytes>) -> io::Result<Self> {
         let len = parts
             .iter()
             .try_fold(0u64, |len, part| len.checked_add(part.len()?))
-            .ok_or_else(|| invalid("Cell reply length is unknown or overflows"))?;
+            .ok_or_else(|| invalid("joined JSON length is unknown or overflows"))?;
         Ok(Self { parts, len })
     }
 }
-impl ByteSource for ReplyBytes {
+impl ByteSource for JoinedJson {
     fn len(&self) -> Option<u64> {
         Some(self.len)
     }
     fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
-        Box::new(ReplyCursor {
+        Box::new(JoinedCursor {
             parts: self.parts.clone().into_iter(),
             budget,
             active: None,
@@ -501,7 +543,7 @@ impl ByteSource for ReplyBytes {
     }
     fn slice(&self, range: Range<u64>) -> io::Result<Arc<dyn ByteSource>> {
         if range.start > range.end || range.end > self.len {
-            return Err(invalid("Cell reply range exceeds original"));
+            return Err(invalid("joined JSON range exceeds original"));
         }
         let mut parts = Vec::new();
         let mut start = 0;
@@ -520,12 +562,12 @@ impl ByteSource for ReplyBytes {
         }))
     }
 }
-struct ReplyCursor {
+struct JoinedCursor {
     parts: std::vec::IntoIter<SourceBytes>,
     budget: Arc<dyn SourceBudget>,
     active: Option<Box<dyn ByteCursor>>,
 }
-impl ByteCursor for ReplyCursor {
+impl ByteCursor for JoinedCursor {
     fn read_chunk(&mut self, mut buffer: ChargedBuffer) -> pull::ReadSource<'_> {
         Box::pin(async move {
             loop {
@@ -546,7 +588,7 @@ impl ByteCursor for ReplyCursor {
                 if read.eof {
                     self.active = None;
                 } else if read.bytes_read == 0 {
-                    return Err(invalid("Cell reply component made no progress"));
+                    return Err(invalid("joined JSON component made no progress"));
                 }
                 if read.bytes_read != 0 {
                     read.eof = self.active.is_none() && self.parts.len() == 0;
